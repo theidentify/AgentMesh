@@ -56,6 +56,16 @@ def read(db, sql, params=()):
         return c.execute(sql, params).fetchall()
 
 
+@pytest.mark.parametrize('fraction', ['4', '42', '4234', '42345'])
+def test_seed_handles_postgres_trimmed_fractional_timestamps(db, tmp_path, fraction):
+    rows = source()
+    row = session()
+    row['created_at'] = f'2026-09-21T15:00:28.{fraction}+00:00'
+    rows['source_sessions'] = [row]
+    put(db, 'source_sessions', row)
+    assert mirror().seed(db, snapshot(tmp_path, rows))['seeded'] == 1
+
+
 def test_seed_persists_typed_previous_snapshot(db, tmp_path):
     rows = source()
     rows['source_sessions'] = [session()]

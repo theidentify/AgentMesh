@@ -56,7 +56,14 @@ def _row(row, columns, local=False):
         row['confidence'] = float(row['confidence'])
     for field, value in row.items():
         if value is not None and (field.endswith('_at')):
-            stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            # PostgreSQL trims trailing fractional zeros; Python 3.10 accepts
+            # only three or six fractional digits. Preserve the instant while
+            # padding to microseconds before calling its ISO parser.
+            import re
+            text = value.replace('Z', '+00:00')
+            text = re.sub(r'(?<=:\d{2})\.(\d{1,6})(?=[+-]|$)',
+                          lambda match: '.' + match.group(1).ljust(6, '0'), text)
+            stamp = datetime.fromisoformat(text)
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=timezone.utc)
             row[field] = stamp.astimezone(timezone.utc).isoformat()

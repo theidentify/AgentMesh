@@ -1,0 +1,41 @@
+# Private databases, snapshots, change packets and deployment state
+**/data/
+**/sync/
+**/changes/
+**/conflicts/
+**/bootstrap/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.jsonl
+*.jsonl.gz
+*.dump
+*.zip
+*.log
+snapshot*.json
+*verification*.json
+bootstrap-manifest.json
+deployment.json
+runtime.json
+
+# Credentials and local machine configuration
+.env
+.env.*
+!.env.example
+auth.json
+config.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+.pgpass
+
+# Python and OS artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store

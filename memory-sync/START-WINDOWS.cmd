@@ -1,6 +1,6 @@
 @echo off
 setlocal
-echo AgentMesh - checking Python, then starting installation...
+echo [o-A-o] AgentMesh - checking Python, then starting installation...
 cd /d "%~dp0"
 py -3 --version >nul 2>&1
 if %errorlevel% equ 0 goto run_py

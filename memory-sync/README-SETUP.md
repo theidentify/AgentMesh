@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/agentmesh-logo-dark.svg">
+  <img src="assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+</picture>
+
 # macOS and Linux setup
 
 This installs the AgentMesh Python/SQLite memory-sync application, not Hermes or every agent application. Install Python 3.10+ with SQLite FTS5 and JSON support and Syncthing separately. Put `python3` and `syncthing` on PATH. Pair devices, accept the exchange folder, and wait for the bootstrap ZIP and manifest to finish syncing. No wrapper runs brew/apt, changes root configuration, or registers services.

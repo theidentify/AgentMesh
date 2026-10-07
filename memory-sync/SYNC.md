@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/agentmesh-logo-dark.svg">
+  <img src="assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+</picture>
+
 # SQLite immutable exchange sync
 
 `memory_sync.py` implements two-way, offline-safe row exchange for the copied

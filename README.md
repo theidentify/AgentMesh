@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="memory-sync/assets/agentmesh-logo-dark.svg">
+  <img src="memory-sync/assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+</picture>
+
 # AgentMesh
 
 Local-first memory sync and cross-platform setup scripts for AI agents,
@@ -72,6 +77,13 @@ not publish them as GitHub release assets.
 This repository contains code, tests, and documentation only. Real memories,
 transcripts, databases, bootstrap snapshots, change packets, logs, credentials,
 and device-specific deployment files must remain outside Git.
+
+## Brand artwork
+
+The logo, peer-network icon, and terminal mark are original vector geometry and
+custom lettering; no stock image, external font, icon pack, or vendor logo is
+included. See [artwork provenance and license boundary](memory-sync/assets/PROVENANCE.md).
+This does not relicense existing code or claim trademark clearance.
 
 ## Development
 

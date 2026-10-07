@@ -8,7 +8,12 @@ import tempfile
 import uuid
 import zipfile
 
-FILES = ['sqlite_memory.py', 'memory_sync.py', 'pg_mirror.py', 'sync_worker.py',
+FILES = ['brand.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
+         'recall_memory.py', 'summarize_memory.py', 'claude_summary_provider.py',
+         'install_agent_rules.py', 'WORKFLOW.md',
+         'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
+         'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md',
+         'sqlite_memory.py', 'memory_sync.py', 'pg_mirror.py', 'sync_worker.py',
          'schema.sql', 'bootstrap_windows.py', 'platform_service.py',
          'START-WINDOWS.cmd', 'README-WINDOWS.md', 'README-SETUP.md',
          'setup_macos.sh', 'setup_linux.sh', 'SYNC.md']
@@ -60,8 +65,12 @@ def build(snapshot, exchange, group_id):
         # Bootstrap validates the archive hash before touching its database.
         os.replace(archive, exchange / archive.name)
         for name in ['bootstrap_windows.py', 'START-WINDOWS.cmd', 'README-WINDOWS.md',
-                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py']:
+                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py',
+                     'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
+                     'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md']:
             staged = temp / name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            (exchange / name).parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes((root / name).read_bytes())
             os.replace(staged, exchange / name)
         metadata = temp / 'agentmesh-package.json'
@@ -72,7 +81,8 @@ def build(snapshot, exchange, group_id):
 
 def main(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--snapshot', required=True)
     parser.add_argument('--exchange', required=True)
     parser.add_argument('--group', required=True)

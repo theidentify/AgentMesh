@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/agentmesh-logo-dark.svg">
+  <img src="assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+</picture>
+
 # AgentMesh — Windows setup
 
 1. Keep Syncthing running and wait until **OMP Memory Exchange** is Up to Date.

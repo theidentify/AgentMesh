@@ -12,7 +12,7 @@ import memory_sync
 import sqlite_memory
 
 
-def run_once(database, exchange, postgres_dsn=None):
+def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False, progress=None):
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
@@ -24,13 +24,40 @@ def run_once(database, exchange, postgres_dsn=None):
         except Exception as exc:
             # Never emit driver messages, DSNs or memory contents.
             mirror = {'error': type(exc).__name__}
+    workflow_report = None
+    settings = None
+    try:
+        import workflow
+        settings = workflow.load(database, workflow_config)
+        if settings is not None:
+            if progress:
+                progress('Ingesting local observations')
+            workflow_report = {'ingestion': workflow.ingest(database, settings,
+                                postgres_mirror=bool(postgres_dsn))}
+    except Exception as exc:
+        workflow_report = {'ingestion': {'error': type(exc).__name__}}
+    if progress:
+        progress('Publishing and receiving peer changes')
     cycle = memory_sync.cycle(database, exchange)
+    if settings is not None:
+        try:
+            if progress:
+                progress('Checking primary summarization')
+            result = workflow.summarize(database, settings, force=force_summary)
+            workflow_report['summary'] = result
+            if result['status'] == 'committed':
+                if progress:
+                    progress('Publishing generated memory and provenance')
+                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange)
+        except Exception as exc:
+            workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)
     report = {'format': 'agentmesh-status-v1', 'node': state['node'],
               'group': state['group_id'], 'platform': platform.system(),
               'updated_at': datetime.now(timezone.utc).isoformat(),
               'counts': sqlite_memory.status(database)['counts'],
-              'sync': state, 'cycle': cycle, 'postgres_mirror': mirror}
+              'sync': state, 'cycle': cycle, 'postgres_mirror': mirror,
+              'workflow': workflow_report}
     directory = exchange / 'status'
     directory.mkdir(exist_ok=True)
     temp = directory / ('.' + state['node'] + '-' + str(uuid.uuid4()) + '.tmp')
@@ -46,14 +73,26 @@ def run_once(database, exchange, postgres_dsn=None):
     return report
 
 
+def failed(report):
+    workflow = report.get('workflow') or {}
+    return bool('error' in report or
+                (report.get('postgres_mirror') or {}).get('error') or
+                (workflow.get('ingestion') or {}).get('error') or
+                (workflow.get('summary') or {}).get('error') or
+                report.get('sync', {}).get('conflict') or
+                report.get('sync', {}).get('invalid'))
+
+
 def main(argv=None):
     import argparse
     import sys
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('database')
     parser.add_argument('exchange')
     parser.add_argument('--interval', type=float, default=60)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--workflow-config', help='private machine configuration; defaults beside DB')
     parser.add_argument('--postgres', action='store_true', help='read-only PostgreSQL mirror using OMP_MEMORY_DSN')
     args = parser.parse_args(argv)
     if args.interval <= 0:
@@ -61,15 +100,19 @@ def main(argv=None):
     dsn = os.environ.get('OMP_MEMORY_DSN') if args.postgres else None
     if args.postgres and not dsn:
         parser.error('--postgres requires OMP_MEMORY_DSN')
+    first = True
     try:
         while True:
             try:
-                report = run_once(args.database, args.exchange, dsn)
+                report = run_once(args.database, args.exchange, dsn,
+                    workflow_config=args.workflow_config, force_summary=first,
+                    progress=lambda stage: print(__import__("brand").label(stage), file=sys.stderr, flush=True))
+                first = False
             except Exception as exc:
                 report = {'error': type(exc).__name__}
             print(json.dumps(report, ensure_ascii=False), flush=True)
             if args.once:
-                return int('error' in report)
+                return int(failed(report))
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0

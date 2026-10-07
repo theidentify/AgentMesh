@@ -43,7 +43,8 @@ def render_launchagent(python, app_dir, database, exchange, interval=60, postgre
 def main(argv=None):
     import argparse
     import os
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=['generate'])
     parser.add_argument('--platform', required=True, choices=['macos', 'linux'])
     for name in ['python', 'app-dir', 'database', 'exchange', 'output']:

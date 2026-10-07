@@ -229,7 +229,8 @@ def status(path):
 def main():
     import argparse
     import sys
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('init', 'import', 'status', 'search', 'ingest'):
         sub = commands.add_parser(name)

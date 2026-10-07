@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+printf '%s\n' '[o-A-o] AgentMesh - local memory, connected agents.' >&2
 [ "$#" -le 2 ] || { printf '%s\n' 'Usage: sh setup_linux.sh [exchange-folder] [local-dir]' >&2; exit 2; }
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Install Python 3.10+ with SQLite FTS5 and JSON support, then retry.' >&2; exit 1; }

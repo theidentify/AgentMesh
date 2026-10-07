@@ -277,7 +277,8 @@ def main(argv=None):
     import argparse
     import os
     import sys
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
     seed_parser = commands.add_parser('seed')
     seed_parser.add_argument('database')

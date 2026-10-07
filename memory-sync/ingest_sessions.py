@@ -91,7 +91,8 @@ def main(argv=None):
     import argparse
     import json
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('database', help='initialized local SQLite database')
     parser.add_argument('--root', action='append', metavar='AGENT=PATH',
                         help='replace default discovery roots; repeat for multiple agents')

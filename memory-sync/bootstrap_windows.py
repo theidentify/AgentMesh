@@ -127,6 +127,16 @@ def install(exchange, local_dir, node='windows', progress=None):
     state = memory_sync.status(db)
     if state['node'] != node or state['group_id'] != manifest['group_id']:
         raise ValueError('existing database node/group differs; refusing to replace it')
+    workflow_path = data / 'workflow.json'
+    if not workflow_path.exists():
+        try:
+            fd = os.open(workflow_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                json.dump({'ingest': True, 'summarize': False,
+                           'summary_interval_seconds': 86400}, out)
+                out.write('\n')
+        except FileExistsError:
+            pass
     result = {'database': str(db), 'exchange': str(exchange), 'app': str(app), **state}
     (data / 'runtime.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     progress('Ready: local database installed; starting synchronization')
@@ -154,6 +164,10 @@ class ConsoleProgress:
 
     def __enter__(self):
         print('AgentMesh bootstrap starting - checking the private installation', flush=True)
+        try:
+            print(__import__('brand').banner(), flush=True)
+        except ImportError:
+            print('[o-A-o] AgentMesh', flush=True)
         self.thread.start()
         return self
 
@@ -166,7 +180,8 @@ def main(argv=None):
     import argparse
     import json
     import sys
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--exchange', default=str(Path(__file__).resolve().parent))
     parser.add_argument('--node', choices=('mac', 'windows', 'linux'), default='windows')
     parser.add_argument('--local-dir', default=str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.local/share'))) / 'AgentMesh'))

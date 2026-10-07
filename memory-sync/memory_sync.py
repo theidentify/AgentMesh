@@ -343,7 +343,8 @@ def main(argv=None):
     import argparse
     import time
     import sys
-    parser=argparse.ArgumentParser(description=__doc__)
+    parser=argparse.ArgumentParser(description=__import__('brand').description(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sub=parser.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init'); init.add_argument('db'); init.add_argument('--node',choices=tuple(RANGES),required=True); init.add_argument('--group',required=True)
     once=sub.add_parser('once'); once.add_argument('db'); once.add_argument('exchange')

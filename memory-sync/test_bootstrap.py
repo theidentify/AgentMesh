@@ -107,6 +107,14 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     assert any('Initializing sync' in message for message in messages)
     assert any('Ready' in message for message in messages)
     assert Path(first['database']).is_file()
+    config_path = Path(first['database']).parent / 'workflow.json'
+    config = json.loads(config_path.read_text())
+    assert config['ingest'] is True and config['summarize'] is False
+    assert 'command' not in config
+    config['ingest'] = False
+    config_path.write_text(json.dumps(config))
+    module.install(exchange, local, node=node)
+    assert json.loads(config_path.read_text())['ingest'] is False
     assert not Path(first['database']).is_relative_to(exchange)
     assert first['node'] == node
     second = module.install(exchange, local, node=node)

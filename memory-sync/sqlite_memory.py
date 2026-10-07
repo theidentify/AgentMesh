@@ -59,7 +59,7 @@ def init_database(path):
             c.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
 
 
-def import_snapshot(path, snapshot_path):
+def import_snapshot(path, snapshot_path, progress=None):
     # Reject existing data before changing its schema; recheck under the import
     # write lock below so two simultaneous imports cannot both populate it.
     if Path(path).expanduser().exists():
@@ -78,6 +78,7 @@ def import_snapshot(path, snapshot_path):
             raise ValueError('refusing to import into a populated database')
         c.execute('PRAGMA defer_foreign_keys=ON')
         counts = dict.fromkeys(TABLES, 0)
+        imported = 0
         columns = {t: {r['name'] for r in c.execute(f'PRAGMA table_info({t})')} for t in TABLES}
         with Path(snapshot_path).open(encoding='utf-8') as handle:
             manifest = json.loads(handle.readline())
@@ -103,6 +104,11 @@ def import_snapshot(path, snapshot_path):
                 placeholders = ','.join('?' for _ in keys)
                 c.execute(f'INSERT INTO {table} ({fields}) VALUES ({placeholders})', values)
                 counts[table] += 1
+                imported += 1
+                if progress and imported % 1000 == 0:
+                    progress(imported)
+        if progress:
+            progress(imported)
         if c.execute('PRAGMA foreign_key_check').fetchall():
             raise ValueError('snapshot foreign key violations')
         return counts

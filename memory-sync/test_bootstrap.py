@@ -79,7 +79,7 @@ def test_ingest_allocates_local_ids_after_sync_initialization(tmp_path):
 
 
 @pytest.mark.parametrize('node', ['mac', 'windows', 'linux'])
-def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, node):
+def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, node, capsys):
     import gzip
     import hashlib
     import json
@@ -100,7 +100,12 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     (exchange / 'agentmesh-package.json').write_text(json.dumps({'archive_sha256': checksum}))
     module = load_bootstrap()
     local = tmp_path / 'local'
-    first = module.install(exchange, local, node=node)
+    messages = []
+    first = module.install(exchange, local, node=node, progress=messages.append)
+    assert any('Verifying package' in message for message in messages)
+    assert any('Importing' in message for message in messages)
+    assert any('Initializing sync' in message for message in messages)
+    assert any('Ready' in message for message in messages)
     assert Path(first['database']).is_file()
     assert not Path(first['database']).is_relative_to(exchange)
     assert first['node'] == node
@@ -112,3 +117,19 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     assert acknowledgment['counts'] == dict.fromkeys(tables, 0)
     with pytest.raises(ValueError, match='outside'):
         module.install(exchange, exchange / 'bad-local')
+
+
+def test_cli_announces_start_before_package_validation(tmp_path, capsys):
+    result = load_bootstrap().main(['--exchange', str(tmp_path / 'missing'), '--once'])
+    assert result == 1
+    assert capsys.readouterr().out.startswith('AgentMesh bootstrap starting')
+
+
+def test_progress_heartbeat_displays_current_stage(capsys):
+    import time
+    with load_bootstrap().ConsoleProgress(interval=0.02) as progress:
+        progress('[5/6] Initializing sync revisions')
+        time.sleep(0.07)
+    output = capsys.readouterr().out
+    assert 'elapsed' in output
+    assert '[5/6] Initializing sync revisions' in output

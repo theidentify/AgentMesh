@@ -183,14 +183,25 @@ def ingest_file(path, transcript, project=None, agent='omp'):
         else:
             events = parse_omp_lines(lines, str(transcript), project=project)
         inserted = 0
+        synced = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sync_config'").fetchone() is not None
+        if synced:
+            from memory_sync import allocate_id
         for event in events:
             row = asdict(event)
+            if synced:
+                row['id'] = allocate_id(c, 'observation_events')
             row['metadata'] = json.dumps(row['metadata'], ensure_ascii=False)
             row['source_hash'] = sha256(f'{event.source_event_id}\0{event.content}'.encode()).hexdigest()
             fields = ','.join(row)
             inserted += c.execute(f'INSERT INTO observation_events ({fields}) VALUES ({",".join("?" for _ in row)}) ON CONFLICT(event_key) DO NOTHING', tuple(row.values())).rowcount
-        c.executemany('''INSERT INTO ingestion_errors(source_path,byte_offset,line_number,line_hash,error_type,error_message)
-            VALUES(?,?,?,?,?,?) ON CONFLICT(source_path,line_hash) DO NOTHING''', errors)
+        if synced:
+            for error in errors:
+                c.execute('''INSERT INTO ingestion_errors(id,source_path,byte_offset,line_number,line_hash,error_type,error_message)
+                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(source_path,line_hash) DO NOTHING''',
+                    (allocate_id(c, 'ingestion_errors'), *error))
+        else:
+            c.executemany('''INSERT INTO ingestion_errors(source_path,byte_offset,line_number,line_hash,error_type,error_message)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(source_path,line_hash) DO NOTHING''', errors)
         next_offset = offset + len(complete)
         c.execute('''INSERT INTO ingestion_cursors(source_path,file_identity,byte_offset,line_number,source_hash)
             VALUES(?,?,?,?,?) ON CONFLICT(source_path) DO UPDATE SET

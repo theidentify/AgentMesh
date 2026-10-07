@@ -21,6 +21,31 @@ def peers():
             source.backup(target)
         yield a,b,ex
 
+def test_linux_peer_uses_distinct_ids_and_exchanges_with_both_peers(peers):
+    a, b, exchange = peers
+    linux = a.with_name('linux.db')
+    with sqlite3.connect(a) as source, sqlite3.connect(linux) as target:
+        source.backup(target)
+    sync.initialize(a, 'mac', GROUP)
+    sync.initialize(b, 'windows', GROUP)
+    sync.initialize(linux, 'linux', GROUP)
+    with sqlite3.connect(linux) as c:
+        c.execute('BEGIN IMMEDIATE')
+        ident = sync.allocate_id(c, 'memory_items')
+        assert 3 * 2**40 <= ident < 4 * 2**40
+        c.execute("INSERT INTO memory_items(id,kind,scope,content) VALUES(?,'fact','global','linux')", (ident,))
+    sync.cycle(linux, exchange)
+    assert sync.cycle(a, exchange)['receive']['applied'] == 1
+    assert sync.cycle(b, exchange)['receive']['applied'] == 1
+    for db in [a, b, linux]:
+        with sqlite3.connect(db) as c:
+            assert c.execute('SELECT content FROM memory_items WHERE id=?', (ident,)).fetchone()[0] == 'linux'
+    with sqlite3.connect(a) as c:
+        c.execute("UPDATE memory_items SET content='from mac' WHERE id=?", (ident,))
+    sync.cycle(a, exchange)
+    assert sync.cycle(linux, exchange)['receive']['applied'] == 1
+
+
 def test_initialize_idempotence_and_identity(peers):
     a,b,_ = peers
     assert sync.initialize(a,'mac',GROUP)['node'] == 'mac'
@@ -331,7 +356,7 @@ def test_missing_database_not_created_and_bad_init_is_atomic(peers):
     missing=a.parent/'missing.db'
     with pytest.raises((ValueError,sqlite3.OperationalError)): sync.initialize(missing,'mac',GROUP)
     assert not missing.exists()
-    with sqlite3.connect(a) as c: c.execute('UPDATE memory_items SET id=? WHERE id=1',(3*2**40,))
+    with sqlite3.connect(a) as c: c.execute('UPDATE memory_items SET id=? WHERE id=1',(4*2**40,))
     with pytest.raises(ValueError): sync.initialize(a,'mac',GROUP)
     with sqlite3.connect(a) as c:
         assert not c.execute("SELECT name FROM sqlite_master WHERE name LIKE '_sync_%'").fetchall()

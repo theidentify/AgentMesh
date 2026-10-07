@@ -16,6 +16,7 @@ KEYS = {t: ('id',) for t in TABLES}
 KEYS.update(ingestion_cursors=('source_path',), memory_sources=('memory_id','event_id'), summary_state=('consumer',))
 FORMAT = 'omp-memory-changes-v1'
 LIMIT = 2**40
+RANGES = {'windows': (LIMIT, 2*LIMIT), 'mac': (2*LIMIT, 3*LIMIT), 'linux': (3*LIMIT, 4*LIMIT)}
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
@@ -51,7 +52,7 @@ def rows(c):
     return result
 
 def initialize(db, node, group_id):
-    if node not in ('mac','windows'): raise ValueError('node must be mac or windows')
+    if node not in RANGES: raise ValueError('node must be mac, windows or linux')
     if str(uuid.UUID(group_id)) != group_id: raise ValueError('group must be canonical UUID')
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
@@ -71,7 +72,7 @@ def initialize(db, node, group_id):
             for field in KEYS[t]:
                 value=r[field]
                 if field in ('id','memory_id','event_id'):
-                    if type(value) is not int or not 0<value<3*LIMIT: raise ValueError('baseline ID outside supported ranges')
+                    if type(value) is not int or not 0<value<4*LIMIT: raise ValueError('baseline ID outside supported ranges')
                 elif not isinstance(value,str) or not value: raise ValueError('baseline has invalid text key')
             rev = 'baseline:'+digest([t,json.loads(k),r])
             c.execute('INSERT INTO _sync_shadow VALUES(?,?,?,?)',(t,k,canonical(r),rev))
@@ -79,7 +80,7 @@ def initialize(db, node, group_id):
         c.execute('INSERT INTO _sync_config(node,group_id) VALUES(?,?)',(node,group_id))
         for t in TABLES:
             if KEYS[t] == ('id',):
-                low,high = (LIMIT,2*LIMIT) if node=='windows' else (2*LIMIT,3*LIMIT)
+                low,high = RANGES[node]
                 c.execute('INSERT INTO _sync_counters VALUES(?,?)',(t,low))
                 allowed = f'(NEW.id >= {low} AND NEW.id < {high})'
                 if node=='mac': allowed += f' OR (NEW.id>0 AND NEW.id<{LIMIT})'
@@ -93,7 +94,7 @@ def allocate_id(connection, table):
     if table not in TABLES or KEYS[table] != ('id',): raise ValueError('table has no allocated integer ID')
     if not connection.in_transaction: raise ValueError('allocate_id requires caller BEGIN IMMEDIATE')
     node=config(connection)['node']
-    low,high=(LIMIT,2*LIMIT) if node=='windows' else (2*LIMIT,3*LIMIT)
+    low,high=RANGES[node]
     connection.execute('UPDATE _sync_counters SET next_id=next_id WHERE table_name=?',(table,))
     counter=connection.execute('SELECT next_id FROM _sync_counters WHERE table_name=?',(table,)).fetchone()[0]
     maximum=connection.execute('SELECT max(id) FROM '+table+' WHERE id>=? AND id<?',(low,high)).fetchone()[0]
@@ -184,7 +185,7 @@ def load_packet(text):
 def _validate(c, p):
     cfg = config(c)
     if not isinstance(p,dict) or set(p) != {'format','group','node','uuid','body','checksum'}: raise ValueError('invalid envelope')
-    if p['format'] != FORMAT or p['group'] != cfg['group_id'] or p['node'] not in ('mac','windows'): raise ValueError('foreign group/node/format')
+    if p['format'] != FORMAT or p['group'] != cfg['group_id'] or p['node'] not in RANGES: raise ValueError('foreign group/node/format')
     if not valid_uuid(p['uuid']): raise ValueError('invalid packet UUID')
     if not isinstance(p['body'],list) or not p['body'] or p['checksum'] != digest(p['body']): raise ValueError('body checksum/shape mismatch')
     seen = set()
@@ -196,7 +197,7 @@ def _validate(c, p):
         if not isinstance(key,list) or len(key) != len(KEYS[t]): raise ValueError('invalid key')
         for name,value in zip(KEYS[t],key):
             if name.endswith('id') and name != 'consumer':
-                if type(value) is not int or not 0 < value < 3*LIMIT: raise ValueError('invalid integer key')
+                if type(value) is not int or not 0 < value < 4*LIMIT: raise ValueError('invalid integer key')
             elif not isinstance(value,str) or not value: raise ValueError('invalid text key')
         identity = (t,canonical(key))
         if identity in seen: raise ValueError('duplicate change key')
@@ -210,7 +211,7 @@ def _validate(c, p):
                 if len(parent) != 73 or any(ch not in '0123456789abcdef' for ch in parent[9:]): raise ValueError('invalid baseline revision')
             elif not valid_uuid(parent): raise ValueError('invalid parent revision')
         if parent is None and KEYS[t]==('id',):
-            low,high=(LIMIT,2*LIMIT) if p['node']=='windows' else (2*LIMIT,3*LIMIT)
+            low,high=RANGES[p['node']]
             ident=key[0]
             if not (low<=ident<high or (p['node']=='mac' and 0<ident<LIMIT)):
                 raise ValueError('new ID outside sender allocation range')
@@ -344,7 +345,7 @@ def main(argv=None):
     import sys
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='command',required=True)
-    init=sub.add_parser('init'); init.add_argument('db'); init.add_argument('--node',choices=('mac','windows'),required=True); init.add_argument('--group',required=True)
+    init=sub.add_parser('init'); init.add_argument('db'); init.add_argument('--node',choices=tuple(RANGES),required=True); init.add_argument('--group',required=True)
     once=sub.add_parser('once'); once.add_argument('db'); once.add_argument('exchange')
     watch=sub.add_parser('watch'); watch.add_argument('db'); watch.add_argument('exchange'); watch.add_argument('--interval',type=float,default=60)
     stat=sub.add_parser('status'); stat.add_argument('db')

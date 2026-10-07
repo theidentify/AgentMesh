@@ -1,4 +1,5 @@
 """Install OMP Memory Sync outside its Syncthing exchange folder."""
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 import os
 import stat
@@ -114,7 +115,9 @@ def install(exchange, local_dir, node='windows', progress=None):
             progress('[5/6] Initializing sync revisions and ID allocation')
             memory_sync.initialize(staging, node, manifest['group_id'])
             progress('[6/6] Saving the verified local database')
-            with sqlite3.connect(staging) as src, sqlite3.connect(ready) as dst:
+            # Connection context managers commit/rollback but do not close.
+            # Windows requires both handles closed before rename or cleanup.
+            with closing(sqlite3.connect(staging)) as src, closing(sqlite3.connect(ready)) as dst:
                 src.backup(dst)
             os.chmod(ready, 0o600)
             if db.exists():

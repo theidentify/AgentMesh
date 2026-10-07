@@ -79,7 +79,7 @@ def test_ingest_allocates_local_ids_after_sync_initialization(tmp_path):
 
 
 @pytest.mark.parametrize('node', ['mac', 'windows', 'linux'])
-def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, node, capsys):
+def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, node, capsys, monkeypatch):
     import gzip
     import hashlib
     import json
@@ -99,6 +99,31 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     checksum = hashlib.sha256((exchange / 'AgentMesh-bootstrap-v1.zip').read_bytes()).hexdigest()
     (exchange / 'agentmesh-package.json').write_text(json.dumps({'archive_sha256': checksum}))
     module = load_bootstrap()
+    # Use real SQLite handles retained strongly so GC cannot hide the leak.
+    # Enforce Windows' open-file rename restriction on every test host.
+    import sqlite3
+    connections = []
+    connect = sqlite3.connect
+    replace = module.os.replace
+
+    def tracked_connect(filename, *args, **kwargs):
+        connection = connect(filename, *args, **kwargs)
+        if Path(str(filename)).name.startswith(('install-', 'ready-')):
+            connections.append(connection)
+        return connection
+
+    def replace_after_close(source, destination):
+        if Path(source).name.startswith('ready-'):
+            for connection in connections:
+                try:
+                    connection.execute('SELECT 1')
+                except sqlite3.ProgrammingError:
+                    continue
+                raise PermissionError('file is being used by another process: SQLite handle still open')
+        return replace(source, destination)
+
+    monkeypatch.setattr(sqlite3, 'connect', tracked_connect)
+    monkeypatch.setattr(module.os, 'replace', replace_after_close)
     local = tmp_path / 'local'
     messages = []
     first = module.install(exchange, local, node=node, progress=messages.append)

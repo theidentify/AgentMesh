@@ -109,6 +109,7 @@ def test_coordinated_activation_reuses_identity_and_preserves_application_rows(s
         assert wizard.resume(**opts, activate=True, confirm_both_peers=True, confirm_legacy_boundary=True)['policy'] == 'required'
         assert sync.cycle(opts['database'], opts['exchange'], security=signed.Security(opts['security_dir']))['receive']['invalid'] == 0
     assert signed.read_local(first['security_dir'] / 'identity.json') == before
+    assert wizard.resume(**first)['wizard_step'] == 'active'
     with pytest.raises(ValueError): sync.cycle(first['database'], first['exchange'])
 
 
@@ -207,3 +208,21 @@ def test_revoked_peer_blocks_setup_activation(secure_peers):
     result = wizard.resume(**first)
     assert result['pairing'] == 'revoked' and result['roundtrip'] == 'pending'
     with pytest.raises(ValueError): wizard.resume(**first, activate=True, confirm_both_peers=True, confirm_legacy_boundary=True)
+
+
+def test_required_wizard_missing_crypto_is_pending_not_success(secure_peers):
+    first, second = verified(secure_peers)
+    wizard.resume(**first, activate=True, confirm_both_peers=True, confirm_legacy_boundary=True)
+    code = '''import importlib.abc, sys
+class Deny(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith('cryptography'): raise ImportError('blocked for test')
+sys.meta_path.insert(0,Deny())
+import security_wizard
+raise SystemExit(security_wizard.main(sys.argv[1:]))
+'''
+    args = [sys.executable, '-c', code, '--database', str(first['database']), '--exchange', str(first['exchange']),
+            '--security-dir', str(first['security_dir']), '--state', str(first['state_path']), 'resume']
+    result = subprocess.run(args, capture_output=True, text=True, cwd=Path(wizard.__file__).parent)
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)['prerequisites']['crypto_ready'] is False

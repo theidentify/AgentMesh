@@ -110,6 +110,15 @@ def status(db):
                       received=c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0])
         result.update({k:0 for k in ('pending','conflict','invalid')})
         for r in c.execute('SELECT kind,count(*) FROM _sync_diagnostics GROUP BY kind'): result[r[0]]=r[1]
+        required = bool(c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone())
+        security = {'format':'agentmesh-security-status-v1','policy':'required' if required else 'legacy',
+                    'pairing':'unknown','display_name':None,'wizard_step':'unknown','next_action':'unknown',
+                    'roundtrip':'pending','roundtrip_packet_uuid':None,'roundtrip_verified_at':None,
+                    'verification':None}
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_verification'").fetchone():
+            record = c.execute('SELECT attempts,failed_attempts,last_success_at,last_failure_at FROM _sync_verification WHERE id=1').fetchone()
+            if record: security['verification'] = dict(record)
+        result['security'] = security
         return result
 
 def capture(db, *, security=None):
@@ -345,6 +354,7 @@ def receive(db, exchange, *, security=None):
     while retry:
         pending=[]; progress=False
         for path in retry:
+            verified_signature = False
             try:
                 if security is not None:
                     from signed_packets import read_local, parse
@@ -356,6 +366,7 @@ def receive(db, exchange, *, security=None):
                     _security_policy(c, security, exchange)
                     if security is not None:
                         security.verify(p, config(c)['group_id'], path.parent.name)
+                        verified_signature = True
                         if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
                         legacy = {k: p[k] for k in ('group','node','uuid','body')}
                         legacy.update(format=FORMAT, checksum=digest(p['body']))
@@ -374,6 +385,10 @@ def receive(db, exchange, *, security=None):
                     message = type(e).__name__ if security is not None else str(e)
                     c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,message))
                 if kind=='pending': pending.append(path)
+            finally:
+                if security is not None:
+                    from signed_packets import record_verification
+                    record_verification(db, verified_signature)
         if not progress: break
         retry=pending
     report=status(db)

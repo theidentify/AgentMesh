@@ -326,3 +326,24 @@ def test_package_allowlist_contains_security_but_never_keys():
     for name in ('signed_packets.py', 'SIGNED-SYNC.md', 'requirements-security.txt'):
         assert name in build_package.FILES
     assert not any('identity.json' in name or 'trust.json' in name for name in build_package.FILES)
+
+
+def test_verification_telemetry_records_actual_attempts_not_delivery(secure_peers):
+    a, b, ex, sa, sb = secure_peers
+    assert sync.status(b)['security']['policy'] == 'legacy'
+    assert sync.status(b)['security']['verification'] is None
+    path, p = packet(secure_peers)
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    security = sync.status(b)['security']
+    assert security['policy'] == 'required'
+    assert security['verification']['attempts'] == 1
+    assert security['verification']['failed_attempts'] == 0
+    assert security['verification']['last_success_at'] is not None
+    success_at = security['verification']['last_success_at']
+    signed.revoke(sb.directory, sa.public['key_id'])
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    rejected = sync.status(b)['security']['verification']
+    assert rejected['attempts'] == 2 and rejected['failed_attempts'] == 1
+    assert rejected['last_failure_at'] is not None and rejected['last_success_at'] == success_at
+    with sync.connect(b) as c:
+        assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1

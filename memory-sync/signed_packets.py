@@ -251,6 +251,7 @@ class Security:
         existing = c.execute('SELECT sender,group_id,node FROM _sync_security').fetchone()
         if existing is not None and tuple(existing) != expected: raise ValueError('signed database binding mismatch')
         if existing is None: c.execute('INSERT INTO _sync_security VALUES(?,?,?)', expected)
+        c.execute('CREATE TABLE IF NOT EXISTS _sync_verification(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,failed_attempts INTEGER NOT NULL,last_success_at TEXT,last_failure_at TEXT)')
 
     def sign(self, legacy):
         self.check_self()
@@ -292,6 +293,16 @@ def require_policy(c, security=None, exchange=None):
         security.guard(c, exchange)
     elif c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone():
         raise ValueError('signed database requires explicit --security-dir; refusing unsigned downgrade')
+
+
+def record_verification(db, verified):
+    from datetime import datetime, timezone
+    import memory_sync
+    when = datetime.now(timezone.utc).isoformat()
+    with memory_sync.connect(db) as c, c:
+        c.execute('INSERT OR IGNORE INTO _sync_verification VALUES(1,0,0,NULL,NULL)')
+        column = 'last_success_at' if verified else 'last_failure_at'
+        c.execute('UPDATE _sync_verification SET attempts=attempts+1,failed_attempts=failed_attempts+?, '+column+'=? WHERE id=1', (int(not verified), when))
 
 
 def main(argv=None):

@@ -276,6 +276,8 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
             ack = verify_ack(security, signed.parse(signed.read_local(ack_path)), state['probe'], peer)
             state.update(roundtrip={'verified_at': stamp(), 'committed_at': ack['committed_at']},
                          step='activation', next_action='confirm_coordinated_legacy_boundary')
+            if prerequisites['policy'] == 'required':
+                state.update(step='active', next_action='restart_worker_with_same_security_directory')
             current_roundtrip_verified = True
     if activate:
         if not current_roundtrip_verified or state['pairing'] != 'approved' or not confirm_both_peers or not confirm_legacy_boundary:
@@ -358,7 +360,8 @@ def main(argv=None):
                 confirm_both_peers=args.confirm_both_peers, confirm_legacy_boundary=args.confirm_legacy_boundary,
                 dry_run=args.dry_run or args.action == 'status', allow_install_crypto=args.install_crypto)
         print(json.dumps(result, sort_keys=True))
-        return 0 if result['policy'] == 'required' or args.action == 'status' or args.dry_run else 2
+        ready = result['policy'] == 'required' and result['wizard_step'] == 'active' and result['pairing'] == 'approved' and all(result['prerequisites'].values())
+        return 0 if ready or args.action == 'status' or args.dry_run else 2
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError, EOFError):
         print('Wizard blocked. Check identity/scope/approval/receipt and current policy before recovery; no automatic fallback.', file=sys.stderr)
         return 1

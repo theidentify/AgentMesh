@@ -63,11 +63,28 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         except Exception as exc:
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)
+    security_report = dict(state['security'])
+    wizard_path = Path(database).parent / 'security-wizard.json'
+    if wizard_path.exists():
+        try:
+            import security_wizard
+            wizard_state = security_wizard.load_state(wizard_path)
+            if wizard_state is not None:
+                projection = security_wizard.resume(database, exchange, security_dir or wizard_state['security_dir'], wizard_path, dry_run=True)
+                security_report.update(projection)
+        except Exception:
+            # No private paths, key material or raw failures in status.
+            security_report.update(pairing='unknown', wizard_step='unknown', next_action='recover_identity_or_receipt', roundtrip='pending')
+    elif security is not None:
+        from signed_packets import read_trust
+        peers = [p for p in read_trust(security.directory)['peers'].values() if p['sender'] != security.public['sender'] and p['group'] == security.public['group']]
+        security_report['pairing'] = 'approved' if any(not p['revoked'] for p in peers) else 'revoked' if peers else 'pending'
     report = {'format': 'agentmesh-status-v1', 'node': state['node'],
               'group': state['group_id'], 'platform': platform.system(),
               'updated_at': datetime.now(timezone.utc).isoformat(),
               'counts': sqlite_memory.status(database)['counts'],
               'sync': state, 'cycle': cycle, 'postgres_mirror': mirror,
+              'security': security_report,
               'workflow': workflow_report}
     directory = exchange / 'status'
     directory.mkdir(exist_ok=True)

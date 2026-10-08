@@ -20,6 +20,11 @@ cannot simply choose different display names and safely share the same range.
 Authorized peers can modify existing shared records; this is group-level writer
 trust, not per-table or per-record authorization. Signing does not encrypt content.
 Status JSON is still unsigned telemetry, not cryptographic proof of application.
+Strict receive records attempt/failure counters and actual signature-success/rejection
+timestamps in local `_sync_verification`; repeat verification of retained packets
+counts as another attempt. Signature success is separate from database application.
+No recorded attempts means unknown telemetry, not zero errors. These operational
+rows are never captured as shared knowledge.
 
 ## Dependencies and local storage
 
@@ -173,6 +178,9 @@ files and traversal-like identities are rejected; bounded reads prevent FIFO/lar
 file reads. This does not defend against a local administrator changing directories
 concurrently, stealing keys, corrupting trust/DB files or replacing this source.
 Unbounded numbers of transport files remain a possible availability attack.
+Oversized captured batches fail and roll back capture rather than being split or
+silently sent unsigned. Prepare bounded backlogs before rollout; packet chunking is
+not implemented in this protocol change.
 
 ## Verification
 

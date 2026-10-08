@@ -138,6 +138,53 @@ PEER_COUNTS = ('memory_items', 'memory_summaries', 'memory_sources', 'observatio
 PEER_SYNC = ('received', 'outbox', 'pending', 'conflict', 'invalid')
 
 
+def security_projection(value, *, legacy=False):
+    """Allowlisted telemetry only; status JSON itself is not authenticated proof."""
+    from datetime import datetime, timezone
+    import uuid
+    value = value if isinstance(value, dict) and value.get('format') == 'agentmesh-security-status-v1' else {}
+    def choice(key, allowed, default='unknown'):
+        v = value.get(key)
+        return v if isinstance(v, str) and v in allowed else default
+    def timestamp(v):
+        try:
+            if not isinstance(v, str) or len(v) > 64: return None
+            when = datetime.fromisoformat(v.replace('Z', '+00:00'))
+            return when.astimezone(timezone.utc).isoformat() if when.tzinfo else None
+        except (ValueError, OverflowError): return None
+    def count(v):
+        return v if type(v) is int and 0 <= v <= 2**53-1 else None
+    label = value.get('display_name')
+    label = label if isinstance(label, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', label) else None
+    verification = value.get('verification')
+    verification = verification if isinstance(verification, dict) else {}
+    packet = value.get('roundtrip_packet_uuid')
+    try: packet = packet if isinstance(packet, str) and str(uuid.UUID(packet)) == packet else None
+    except ValueError: packet = None
+    verified_at = timestamp(value.get('roundtrip_verified_at'))
+    roundtrip = 'reported verified' if value.get('roundtrip') == 'verified' and packet and verified_at else 'pending' if value.get('roundtrip') == 'pending' else 'unknown'
+    return {'policy': choice('policy', ('legacy', 'required'), 'legacy' if legacy else 'unknown'),
+            'display_name': label, 'pairing': choice('pairing', ('pending', 'approved', 'revoked', 'unknown')),
+            'wizard_step': choice('wizard_step', ('prerequisites', 'identity', 'pairing', 'roundtrip', 'activation', 'active')),
+            'next_action': choice('next_action', ('check_prerequisites', 'create_or_reuse_local_identity', 'confirm_peer_fingerprint_out_of_band', 'send_and_receive_signed_probe', 'confirm_coordinated_legacy_boundary', 'restart_worker_with_same_security_directory', 'recover_identity_or_receipt')),
+            'roundtrip': roundtrip, 'roundtrip_packet_uuid': packet if roundtrip == 'reported verified' else None,
+            'roundtrip_verified_at': verified_at if roundtrip == 'reported verified' else None,
+            'verification': {'attempts':count(verification.get('attempts')), 'failed_attempts':count(verification.get('failed_attempts')),
+                             'last_success_at':timestamp(verification.get('last_success_at')), 'last_failure_at':timestamp(verification.get('last_failure_at'))},
+            'source': 'reported by unsigned status telemetry'}
+
+
+def local_security(c):
+    required = bool(c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone())
+    value: dict = {'format':'agentmesh-security-status-v1','policy':'required' if required else 'legacy'}
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_verification'").fetchone():
+        record = c.execute('SELECT attempts,failed_attempts,last_success_at,last_failure_at FROM _sync_verification WHERE id=1').fetchone()
+        if record: value['verification'] = dict(record)
+    result = security_projection(value)
+    result['source'] = 'local read-only SQLite policy and verification counters'
+    return result
+
+
 def peer_status(home, now=None):
     """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
     from datetime import datetime, timezone
@@ -148,6 +195,7 @@ def peer_status(home, now=None):
         row = {'peer':label, 'available':False, 'availability':'missing',
                'ack_at':None, 'age_seconds':None, 'freshness':'unknown', 'has_error':None, 'partial':False,
                'counts':dict.fromkeys(PEER_COUNTS), 'sync':dict.fromkeys(PEER_SYNC),
+               'security':security_projection(None),
                'cycle':dict.fromkeys(('applied', 'published', 'pending', 'conflict', 'invalid',
                                       'summary_applied', 'summary_published'))}
         rows.append(row)
@@ -167,6 +215,7 @@ def peer_status(home, now=None):
             if not isinstance(report, dict) or report.get('format') != 'agentmesh-status-v1' or report.get('node') != node:
                 raise ValueError('Invalid status format')
             row.update(available=True, availability='available')
+            row['security'] = security_projection(report.get('security'), legacy='security' not in report)
             value = report.get('updated_at')
             try:
                 if not isinstance(value, str) or len(value) > 64:
@@ -269,6 +318,7 @@ def operations(home, reader, sync_db, transport=None):
             raise RuntimeError('No staging database')
         with sqlite_ro(sync_db) as c:
             config = c.execute('SELECT node FROM _sync_config LIMIT 1').fetchone()
+            security = local_security(c)
             sync = {'available':True,'backend':('SQLite authority' if reader.label == 'SQLite authority' else 'SQLite staging'),'node':config['node'] if config else None,'transport':'unknown','receipts':c.execute('SELECT COUNT(*) FROM _sync_receipts').fetchone()[0],'outbox': [dict(r) for r in c.execute('SELECT published,COUNT(*) AS packets FROM _sync_outbox GROUP BY published')],'diagnostics':[dict(r) for r in c.execute('SELECT kind,COUNT(*) AS count FROM _sync_diagnostics GROUP BY kind')],'workers':[],'note':'Receipts confirm local packet import, not peer convergence. Worker timestamps do not prove transport connectivity.'}
             try:
                 sync['workers'] = [dict(r) for r in c.execute('SELECT consumer,last_run,lease_until FROM _agentmesh_worker_state ORDER BY consumer LIMIT 30')]
@@ -276,9 +326,11 @@ def operations(home, reader, sync_db, transport=None):
             except sqlite3.OperationalError:
                 sync['worker_metadata_available'] = False
         result['sync'] = sync
+        result['sync']['security'] = security
     except Exception:
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
     result['sync']['peers'] = peer_status(home)
+    if 'security' not in result['sync']: result['sync']['security'] = security_projection(None)
     if transport is None:
         from syncthing_transport import observe
         transport = observe(home)

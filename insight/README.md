@@ -103,6 +103,32 @@ accounting UI without mixing production logs with isolated smoke samples.
 - Transport connectivity is a read-only Syncthing REST observation, independent of
   ACKs and SQLite availability. Overview and Sync share the same observation.
 
+### Packet security and pairing observation
+
+The read-only Security / Pairing section is separate from Syncthing transport.
+Local `_sync_security` configuration and `_sync_verification` counters are read
+directly from SQLite. A configured required policy is not proof that every remote
+worker enforces it. Legacy databases show **legacy / not enforced**, not secure.
+No recorded verification counters/timestamps means unknown, not zero failures.
+Counters count verification attempts (including repeated replay checks), not
+distinct rejected packets or successful application transactions.
+
+Peer `agentmesh-security-status-v1` metadata is allowlisted from completed-cycle
+status JSON: sanitized ASCII display label, existing slot, reported policy,
+pairing state, wizard step/next action, exact probe UUID and reported verification
+timestamps/counters. Old ACKs without signing fields show legacy policy and unknown
+pairing/verification. Missing or malformed data stays unknown. Full fingerprints,
+public/private keys, trust stores, private paths, credentials and raw errors are
+never projected. This page has no trust/revoke/disable buttons.
+
+The installer only marks its isolated probe verified after verifying a pinned
+signed application receipt for the exact packet UUID/digest. Insight labels this
+**reported verified**, because the completed-cycle status JSON itself remains
+unsigned telemetry and is not independently authenticated by the dashboard.
+It does not establish production recall, fresh liveness or all-peer readiness.
+Use the installer CLI and out-of-band full fingerprint confirmation for authority.
+Transport completion/encryption cannot establish signature enforcement or trust.
+
 ### Syncthing transport observation
 
 Insight discovers the existing `config.xml` in the standard macOS Syncthing,
@@ -182,6 +208,9 @@ with remote debugging enabled, not a copy of a locked user profile:
 ```sh
 node insight/qa.mjs http://127.0.0.1:PORT CHROMIUM_DEBUG_PORT \
   /private/runtime/insight-qa
+# Bounded security-only checks, suitable for an unchanged legacy deployment:
+node insight/security_qa.mjs http://127.0.0.1:PORT CHROMIUM_DEBUG_PORT \
+  /private/runtime/security-qa legacy
 ```
 
 Use a disposable browser profile outside the repository. The test expects configured,
@@ -202,6 +231,8 @@ operational and memory information and must not be committed.
 - `syncthing_transport.py`: bounded loopback-only GET transport projection for the exact exchange folder.
 - `test_insight.py`, `test_peer_status.py` and `test_syncthing_transport.py`: fixture-based safety and reader tests.
 - `qa.mjs`: real Chromium/CDP acceptance checks.
+- `security_qa.mjs` and `test_security_status.py`: bounded security/pairing rendering,
+  actual legacy observations, read-only counters, private-field exclusion and unknown values.
 
 No database schema, sync algorithm, ingest parser, production cron, provider
 configuration or memory is changed by this subproject.

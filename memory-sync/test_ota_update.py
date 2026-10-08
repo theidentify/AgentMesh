@@ -69,6 +69,54 @@ def resign(output, private):
     signed.write_local(output / 'release.json', manifest)
 
 
+def test_supervisor_timeout_reaps_child_and_continues_polling(installed, monkeypatch, capsys):
+    local, _, _, _ = installed
+    worker = local / 'versions' / '0' / 'sync_worker.py'
+    worker.write_text('import time\nif __name__ == "__main__":\n    time.sleep(60)\n')
+    run = subprocess.run
+    calls = []
+    def bounded_run(args, **kwargs):
+        if len(args) > 1 and args[1].endswith('sync_worker.py'):
+            calls.append(args)
+            kwargs['timeout'] = 0.2
+        return run(args, **kwargs)
+    class FinishedPolling(Exception):
+        pass
+    sleeps = []
+    sleep = ota.time.sleep
+    def next_cycle(interval):
+        if interval != 0:
+            return sleep(interval)
+        sleeps.append(interval)
+        if len(sleeps) == 2:
+            raise FinishedPolling()
+    before = (local / 'ota-state.json').read_bytes()
+    monkeypatch.setattr(ota.subprocess, 'run', bounded_run)
+    monkeypatch.setattr(ota.time, 'sleep', next_cycle)
+    with pytest.raises(FinishedPolling):
+        ota.supervise(local, interval=0, once=False)
+    assert len(calls) == 2
+    assert (local / 'ota-state.json').read_bytes() == before
+    assert capsys.readouterr().err.count('Worker cycle timed out') == 2
+    with lock(local / 'data' / 'worker.lock', timeout=0):
+        pass
+
+
+def test_supervisor_once_timeout_returns_failure_without_mutating_state(installed, monkeypatch):
+    local, _, _, _ = installed
+    worker = local / 'versions' / '0' / 'sync_worker.py'
+    worker.write_text('import time\nif __name__ == "__main__":\n    time.sleep(60)\n')
+    run = subprocess.run
+    def bounded_run(args, **kwargs):
+        if len(args) > 1 and args[1].endswith('sync_worker.py'):
+            kwargs['timeout'] = 0.2
+        return run(args, **kwargs)
+    before = (local / 'ota-state.json').read_bytes()
+    monkeypatch.setattr(ota.subprocess, 'run', bounded_run)
+    assert ota.supervise(local, once=True) == 124
+    assert (local / 'ota-state.json').read_bytes() == before
+
+
 def test_actual_cli_signed_update_preserves_identity_all_databases_and_workflow(installed):
     local, exchange, db, _ = installed
     transcript = local / 'data' / 'synthetic-session.jsonl'

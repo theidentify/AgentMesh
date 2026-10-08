@@ -384,8 +384,15 @@ def supervise(local, interval=60, once=False):
                     '--once', '--managed-cycle', '--ota-version', str(state['active']),
                     '--workflow-config', str(local / 'data' / 'workflow.json')]
             if runtime.get('security_dir'): args += ['--security-dir', runtime['security_dir']]
-            result = subprocess.run(args, cwd=app, timeout=3600)
-            if once: return result.returncode
+            try:
+                result = subprocess.run(args, cwd=app, timeout=3600)
+                returncode = result.returncode
+            except subprocess.TimeoutExpired:
+                # run() kills and waits for the child before raising. Keep the
+                # supervisor alive so release polling and later cycles resume.
+                print('Worker cycle timed out; next polling cycle will retry.', file=sys.stderr)
+                returncode = 124
+            if once: return returncode
             time.sleep(interval)
 
 

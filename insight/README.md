@@ -54,7 +54,7 @@ database supplies sync metadata independently of the memory browser selection.
 | Memory Browser | Paginated `memory_items` and `memory_summaries` from the selected backend. Search content, exact project/scope key, kind, status and scope filters. |
 | Agents | Aggregated `source_sessions` and `observation_events` metadata, plus content-free Hermes session metadata. Zero source-session rows do not hide agents with recorded events. |
 | Pipeline | Exact known OMP ingest and summary cron job IDs, last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
-| Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
+| Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata, plus fixed Mac/Windows completed-cycle ACK projections. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
 
 Metrics reads `cron/usage_audit.jsonl`, `state.db`, and
 `omp-memory/summary-metrics.jsonl`. Isolated smoke is read separately from
@@ -83,6 +83,23 @@ accounting UI without mixing production logs with isolated smoke samples.
   **not proof of a running agent**. No active process/heartbeat probe is configured.
 - Cron results are observed last executions, not guaranteed future success.
 - Receipts prove local packet imports, not two-way convergence or remote ACKs.
+- Sync **Peer Status** independently reads fixed `mac.json` and `windows.json`
+  completed-cycle ACKs under `--home/omp-memory/sync/status`. It remains visible
+  even when the SQLite sync source is unavailable. No arbitrary peer/path input
+  is accepted. Status JSON is bounded to 64 KiB and projected through an allowlist.
+- ACK timestamps require timezone offsets and display in the browser's local
+  timezone. Age is computed at API observation time. Fresh means at most 300 seconds
+  old (an observation threshold, not an asserted worker interval); stale does not
+  imply offline. Future timestamps are flagged; malformed/missing counters remain
+  unknown, not zero. Missing/malformed files and partial reports are explicit.
+- Peer counts, ingestion-error counts, sync totals and last-cycle applied/published/
+  pending/conflict/invalid counters are last reported values, not live DB queries.
+  Summary-cycle counters are separate and unknown if no summary sync occurred.
+  Reported `summary_state` is shown as Summary state without inferring progress.
+  Reported-error presence includes workflow/mirror failures without exposing their contents.
+- A completed-cycle ACK is not proof of current worker liveness, a successful
+  workflow, Syncthing connectivity or exact full convergence. Old zero-error ACKs
+  describe an old observation, not current health.
 - Transport connectivity remains **unknown** without a verified transport probe.
 
 ## Read-only and privacy boundary
@@ -149,7 +166,7 @@ operational and memory information and must not be committed.
 - `libpq_reader.py`: parameterized, read-only PostgreSQL adapter.
 - `metrics.py` and `metrics.html`: portable migration of existing summary accounting/UI.
 - `index.html`: Insight navigation, browser, operational views and shared theme.
-- `test_insight.py`: fixture-based safety and reader tests.
+- `test_insight.py` and `test_peer_status.py`: fixture-based safety and reader tests.
 - `qa.mjs`: real Chromium/CDP acceptance checks.
 
 No database schema, sync algorithm, ingest parser, production cron, provider

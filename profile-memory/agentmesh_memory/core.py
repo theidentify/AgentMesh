@@ -80,6 +80,29 @@ def policy_for(owner, policy=None):
     return result
 
 
+def source_evidence(store, source, quote):
+    if source is None:
+        if quote is not None:
+            raise KnowledgeError('quote requires a source')
+        return []
+    if not isinstance(source, dict) or set(source) != {'text', 'kind', 'locator'}:
+        raise KnowledgeError('invalid source')
+    text = bounded_text(source['text'], 'source text', 32768)
+    locator = bounded_text(source['locator'], 'source locator', 512)
+    if not isinstance(source['kind'], str) or source['kind'] not in SOURCE_KINDS:
+        raise KnowledgeError('invalid source kind')
+    quote = bounded_text(quote, 'evidence quote', 4096)
+    if quote not in text:
+        raise KnowledgeError('quote is not present in source')
+    source_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    path = checked_path(store.root / 'sources' / (source_hash + '.txt'))
+    if not path.exists():
+        with path.open('x', encoding='utf-8') as out:
+            out.write(text)
+    return [{'source_id': 'sha256:' + source_hash, 'kind': source['kind'],
+             'locator': locator, 'quote': quote, 'availability': 'inline'}]
+
+
 class ProfileStore:
     def __init__(self, root, identity):
         self.profile_id = profile_id(identity)
@@ -171,11 +194,19 @@ class MemoryAPI:
 
     def _record(self, owner, ident, revision=None):
         store = self._store(owner)
+        try:
+            current = store.raw(ident)
+        except Conflict:
+            if self.principal != owner:
+                records = [record for record in store.records() if record['id'] == ident]
+                if not records or any(self.principal not in r['policy']['read'] or
+                                      r['status'] != 'active' for r in records):
+                    raise AccessDenied('knowledge not accessible') from None
+            raise
         row = store.raw(ident, revision)
         if not row:
             raise AccessDenied('knowledge not accessible')
         record = json.loads(row['data'])
-        current = store.raw(ident)
         # A historical permissive policy cannot bypass a current revocation.
         current_record = json.loads(current['data']) if current else record
         if self.principal != owner and (current_record['status'] != 'active' or
@@ -201,15 +232,38 @@ class MemoryAPI:
                 result['review_required'] = True
         return result
 
+    def related(self, owner, ident, revision=None):
+        record = self._record(owner, ident, revision)
+        references = [('derived_from', item) for item in record['derived_from']]
+        references += [('supersedes', {'owner': owner, 'id': ident, 'revision': parent})
+                       for parent in record['parents']]
+        results = []
+        for relation, reference in references[:32]:
+            try:
+                knowledge = self.get(reference['owner'], reference['id'], reference['revision'])
+            except KnowledgeError:
+                continue
+            results.append({'relation': relation, 'knowledge': knowledge})
+        return results
+
+    def configure_retrieval(self, *, mode, vector_engine='exact'):
+        from .retrieval import configure
+        return configure(self, mode=mode, vector_engine=vector_engine)
+
+    def search(self, query, **options):
+        from .retrieval import search
+        return search(self, query, **options)
+
     def get(self, owner, ident, revision=None):
         return self._view(self._record(owner, ident, revision))
 
     def evidence(self, owner, ident, revision=None):
         return self.get(owner, ident, revision)['evidence']
 
-    def revise(self, ident, expected_revision, *, content):
+    def revise(self, ident, expected_revision, *, content, source=None, quote=None):
         bounded_text(content, 'content')
-        return self._change(ident, expected_revision, content=content)
+        evidence = source_evidence(self._store(self.principal), source, quote)
+        return self._change(ident, expected_revision, content=content, evidence=evidence)
 
     def set_policy(self, ident, expected_revision, policy):
         return self._change(ident, expected_revision, policy=policy_for(self.principal, policy))
@@ -260,30 +314,12 @@ class MemoryAPI:
         bounded_text(project, 'project', 128)
         if kind not in KINDS:
             raise KnowledgeError('invalid knowledge kind')
-        evidence = []
-        if source is not None:
-            if not isinstance(source, dict) or set(source) != {'text', 'kind', 'locator'}:
-                raise KnowledgeError('invalid source')
-            text = bounded_text(source['text'], 'source text', 32768)
-            locator = bounded_text(source['locator'], 'source locator', 512)
-            if source['kind'] not in SOURCE_KINDS:
-                raise KnowledgeError('invalid source kind')
-            quote = bounded_text(quote, 'evidence quote', 4096)
-            if quote not in text:
-                raise KnowledgeError('quote is not present in source')
-            source_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
-            path = checked_path(store.root / 'sources' / (source_hash + '.txt'))
-            if not path.exists():
-                with path.open('x', encoding='utf-8') as out:
-                    out.write(text)
-            evidence = [{'source_id': 'sha256:' + source_hash, 'kind': source['kind'],
-                         'locator': locator, 'quote': quote, 'availability': 'inline'}]
-        elif quote is not None:
-            raise KnowledgeError('quote requires a source')
+        record_policy = policy_for(owner, policy)
+        evidence = source_evidence(store, source, quote)
         record = {'id': 'urn:uuid:' + str(uuid.uuid4()), 'owner': owner, 'content': content,
                   'kind': kind, 'project': project, 'status': 'active', 'parents': [],
                   'verification': 'unverified', 'evidence': evidence, 'derived_from': [],
-                  'policy': policy_for(owner, policy)}
+                  'policy': record_policy}
         record['revision'] = digest(record)
         store.put(record, owner)
         return self.get(owner, record['id'])

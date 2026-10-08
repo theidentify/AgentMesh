@@ -124,6 +124,50 @@ def test_store_rejects_symlinks_unrelated_directories_and_identity_changes(tmp_p
     assert (unrelated / 'manual.txt').read_text() == 'Keep me.'
 
 
+def test_related_returns_authorized_exact_revision_without_bypassing_new_policy(tmp_path):
+    alpha, beta, _ = pair(tmp_path)
+    original = alpha.remember('Source requirement.', policy=shared_policy())
+    retained = beta.retain('alpha', original['id'], original['revision'], content='Derived task context.')
+    related = beta.related('beta', retained['id'])
+    assert related[0]['relation'] == 'derived_from'
+    assert related[0]['knowledge']['revision'] == original['revision']
+    alpha.set_policy(original['id'], original['revision'], {'read': ['alpha']})
+    assert beta.related('beta', retained['id']) == []
+    assert beta.get('beta', retained['id'])['review_required'] is True
+
+
+def test_corrected_revision_can_have_new_evidence_instead_of_stale_quote(tmp_path):
+    alpha, _, _ = pair(tmp_path)
+    original = alpha.remember('Use provider A.', source={'text': 'Use provider A.', 'kind': 'source',
+                                                       'locator': 'fixture:first'}, quote='Use provider A.')
+    correction = alpha.revise(original['id'], original['revision'], content='Any provider is allowed.',
+                              source={'text': 'Correction: Any provider is allowed.', 'kind': 'user_authored',
+                                      'locator': 'fixture:correction'}, quote='Any provider is allowed.')
+    assert correction['evidence'][0]['quote'] == 'Any provider is allowed.'
+    assert correction['evidence'][0]['locator'] == 'fixture:correction'
+    unsourced = alpha.revise(original['id'], correction['revision'], content='Later unverified interpretation.')
+    assert unsourced['evidence'] == []
+    assert alpha.evidence('alpha', original['id'], original['revision'])[0]['quote'] == 'Use provider A.'
+
+
+def test_private_conflict_does_not_disclose_ancestry_to_denied_profile(tmp_path):
+    alpha, beta, stores = pair(tmp_path)
+    original = alpha.remember('Private original.')
+    alpha.revise(original['id'], original['revision'], content='Private branch one.')
+    from agentmesh_memory.core import digest, AccessDenied, Conflict
+    branch = json.loads(stores['alpha'].raw(original['id'], original['revision'])['data'])
+    branch.pop('revision')
+    branch.update(content='Private branch two.', parents=[original['revision']])
+    branch['revision'] = digest(branch)
+    stores['alpha'].put(branch, 'alpha')
+    with pytest.raises(Conflict):
+        alpha.get('alpha', original['id'])
+    with pytest.raises(AccessDenied):
+        beta.get('alpha', original['id'])
+    with pytest.raises(AccessDenied):
+        beta.get('alpha', original['id'], original['revision'])
+
+
 def api_types():
     assert importlib.util.find_spec('agentmesh_memory.core') is not None, 'profile-owned API missing'
     from agentmesh_memory.core import MemoryAPI, ProfileStore

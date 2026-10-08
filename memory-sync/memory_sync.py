@@ -110,14 +110,29 @@ def status(db):
                       received=c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0])
         result.update({k:0 for k in ('pending','conflict','invalid')})
         for r in c.execute('SELECT kind,count(*) FROM _sync_diagnostics GROUP BY kind'): result[r[0]]=r[1]
+        required = bool(c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone())
+        security = {'format':'agentmesh-security-status-v1','policy':'required' if required else 'legacy',
+                    'pairing':'unknown','display_name':None,'wizard_step':'unknown','next_action':'unknown',
+                    'roundtrip':'pending','roundtrip_packet_uuid':None,'roundtrip_verified_at':None,
+                    'verification':None}
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_verification'").fetchone():
+            record = c.execute('SELECT attempts,failed_attempts,last_success_at,last_failure_at FROM _sync_verification WHERE id=1').fetchone()
+            if record: security['verification'] = dict(record)
+        result['security'] = security
         return result
 
-def capture(db):
+def capture(db, *, security=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
-        return _capture(c)
+        _security_policy(c, security)
+        return _capture(c, security=security)
 
-def _capture(c):
+def _security_policy(c, security=None, exchange=None):
+    # Import does not load cryptography; legacy deployments remain stdlib-only.
+    from signed_packets import require_policy
+    require_policy(c, security, exchange)
+
+def _capture(c, *, security=None):
     config(c)
     current = rows(c)
     old = {(r['table_name'],r['key']):r for r in c.execute('SELECT * FROM _sync_shadow')}
@@ -134,22 +149,36 @@ def _capture(c):
     if changes:
         cfg = config(c)
         packet = {'format':FORMAT,'group':cfg['group_id'],'node':cfg['node'],'uuid':str(uuid.uuid4()),'body':changes,'checksum':digest(changes)}
+        if security is not None: packet = security.sign(packet)
         c.execute('INSERT INTO _sync_outbox(uuid,packet) VALUES(?,?)',(packet['uuid'],canonical(packet)))
     return {'changes':len(changes),'packets':int(bool(changes))}
 
 
-def publish(db, exchange):
+def publish(db, exchange, *, security=None):
     published = 0
     try:
-        with connect(db) as c:
+        with connect(db) as c, c:
+            _security_policy(c, security, exchange)
             cfg = config(c)
             packets = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchall()
-        directory = Path(exchange)/'changes'/cfg['node']
+        namespace = 'signed-changes' if security is not None else 'changes'
+        directory = Path(exchange)/namespace/cfg['node']
+        if security is not None:
+            from signed_packets import no_symlinks
+            directory = no_symlinks(directory)
         directory.mkdir(parents=True, exist_ok=True)
         for ident, text in packets:
             target = directory/(ident+'.json')
+            if security is not None:
+                from signed_packets import no_symlinks
+                no_symlinks(target)
+                if not valid_uuid(ident): raise ValueError('invalid outbox UUID')
             if target.exists():
-                if target.read_bytes() != text.encode('utf-8'): raise ValueError('immutable packet path collision: '+str(target))
+                if security is not None:
+                    from signed_packets import read_local
+                    existing = read_local(target)
+                else: existing = target.read_bytes()
+                if existing != text.encode('utf-8'): raise ValueError('immutable packet path collision: '+str(target))
             else:
                 temp = directory/('.'+ident+'.'+str(uuid.uuid4())+'.tmp')
                 try:
@@ -230,15 +259,22 @@ def _validate(c, p):
                     if typ == 'TEXT' and not isinstance(value,str): raise ValueError('invalid text column')
 
 def _seen(c,p):
+    checksum = _receipt_checksum(p)
     existing = c.execute('SELECT checksum FROM _sync_receipts WHERE uuid=?',(p['uuid'],)).fetchone()
     if existing:
-        if existing[0] != p['checksum']: raise ValueError('packet UUID reused')
+        if existing[0] != checksum: raise ValueError('packet UUID reused')
         return True
     if p['node'] == config(c)['node']:
         own = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?',(p['uuid'],)).fetchone()
         if not own or json.loads(own[0]) != p: raise ValueError('unknown packet claiming local node')
         return True
     return False
+
+def _receipt_checksum(p):
+    if p['format'] != FORMAT:
+        from signed_packets import receipt_digest
+        return receipt_digest(p)
+    return p['checksum']
 
 def _apply(c,p):
     if _seen(c,p): return False
@@ -297,45 +333,74 @@ def _apply(c,p):
         c.execute('INSERT OR REPLACE INTO _sync_shadow VALUES(?,?,?,?)',(t,k,canonical(ch['row']) if ch['row'] is not None else None,ch['revision']))
         c.execute('INSERT INTO _sync_history VALUES(?,?,?)',(ch['revision'],t,k))
     c.execute('UPDATE _sync_config SET importing=0')
-    c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],p['checksum']))
+    c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],_receipt_checksum(p)))
     return True
 
-def receive(db, exchange):
-    capture(db)
+def receive(db, exchange, *, security=None):
+    with connect(db) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        _security_policy(c, security, exchange)
+    capture(db, security=security)
     root=Path(exchange)
     if not root.is_dir(): return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
-    paths = sorted((root/'changes').glob('*/*.json'))
+    namespace = 'signed-changes' if security is not None else 'changes'
+    if security is not None:
+        from signed_packets import no_symlinks
+        no_symlinks(root/namespace)
+    paths = sorted((root/namespace).glob('*/*.json'))
     applied=0
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
     while retry:
         pending=[]; progress=False
         for path in retry:
+            verified_signature = False
             try:
-                p=load_packet(path.read_text(encoding='utf-8'))
+                if security is not None:
+                    from signed_packets import read_local, parse
+                    p = parse(read_local(path))
+                else:
+                    p=load_packet(path.read_text(encoding='utf-8'))
                 with connect(db) as c, c:
                     c.execute('BEGIN IMMEDIATE')
-                    _validate(c,p)
+                    _security_policy(c, security, exchange)
+                    if security is not None:
+                        security.verify(p, config(c)['group_id'], path.parent.name)
+                        verified_signature = True
+                        if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
+                        legacy = {k: p[k] for k in ('group','node','uuid','body')}
+                        legacy.update(format=FORMAT, checksum=digest(p['body']))
+                        _validate(c,legacy)
+                    else: _validate(c,p)
                     if _seen(c,p): changed=False
                     else:
-                        _capture(c)
+                        _capture(c, security=security)
                         changed=_apply(c,p)
                     c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
                 applied+=int(changed); progress |= changed
-            except (OSError,ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict) as e:
+            except (OSError,ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
                 kind='pending' if isinstance(e,Pending) else 'conflict' if isinstance(e,(Conflict,sqlite3.IntegrityError)) else 'invalid'
                 with connect(db) as c, c:
-                    c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,str(e)))
+                    # Signed failures must not leak memory contents into diagnostics/status.
+                    message = type(e).__name__ if security is not None else str(e)
+                    c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,message))
                 if kind=='pending': pending.append(path)
+            finally:
+                if security is not None:
+                    from signed_packets import record_verification
+                    record_verification(db, verified_signature)
         if not progress: break
         retry=pending
     report=status(db)
     return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':False}
 
-def cycle(db, exchange):
-    captured=capture(db)
-    sent=publish(db,exchange)
-    received=receive(db,exchange)
+def cycle(db, exchange, *, security=None):
+    with connect(db) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        _security_policy(c, security, exchange)
+    captured=capture(db, security=security)
+    sent=publish(db,exchange, security=security)
+    received=receive(db,exchange, security=security)
     return {'capture':captured,'publish':sent,'receive':received}
 
 
@@ -350,15 +415,20 @@ def main(argv=None):
     once=sub.add_parser('once'); once.add_argument('db'); once.add_argument('exchange')
     watch=sub.add_parser('watch'); watch.add_argument('db'); watch.add_argument('exchange'); watch.add_argument('--interval',type=float,default=60)
     stat=sub.add_parser('status'); stat.add_argument('db')
+    for command in (once, watch): command.add_argument('--security-dir', help='explicit strict signing and pinned peer trust')
     args=parser.parse_args(argv)
     try:
+        security = None
+        if getattr(args, 'security_dir', None):
+            from signed_packets import Security
+            security = Security(args.security_dir)
         if args.command=='init': report=initialize(args.db,args.node,args.group)
         elif args.command=='status': report=status(args.db)
-        elif args.command=='once': report=cycle(args.db,args.exchange)
+        elif args.command=='once': report=cycle(args.db,args.exchange,security=security)
         else:
             if args.interval<=0: parser.error('interval must be positive')
             while True:
-                try: report=cycle(args.db,args.exchange)
+                try: report=cycle(args.db,args.exchange,security=security)
                 except (OSError,sqlite3.Error,ValueError) as e: report={'error':str(e)}
                 print(canonical(report),flush=True)
                 time.sleep(args.interval)

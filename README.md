@@ -51,6 +51,15 @@ optional and separate from installation: generate a macOS LaunchAgent or Linux
 systemd user unit with `memory-sync/platform_service.py`, inspect it, then
 register it using the documented OS commands.
 
+## Signed worker updates
+
+Opt-in worker OTA uses a separately approved Ed25519 release identity, immutable
+version directories, a shared cycle lock, SQLite-safe private backups and
+health-checked code rollback. Existing installations need a one-time local
+consumer bootstrap; file delivery alone cannot update an old Windows worker.
+See [signed OTA setup and recovery](memory-sync/OTA-UPDATES.md). Native Windows
+execution and production activation are separate, outstanding rollout gates.
+
 ## AgentMesh Insight
 
 `insight/` is the integrated local, read-only workspace for memory and operations.

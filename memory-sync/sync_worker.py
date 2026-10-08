@@ -12,11 +12,23 @@ import memory_sync
 import sqlite_memory
 
 
+from runtime_lock import cycle_locked
+
+
+@cycle_locked
 def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
-             force_legacy_summary=False, progress=None):
+             force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None):
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
+    security = None
+    if security_dir is not None:
+        from signed_packets import Security
+        security = Security(security_dir)
+    # Fail closed before mirror/ingestion/summary can write after signed activation.
+    with memory_sync.connect(database) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        memory_sync._security_policy(c, security, exchange)
     mirror = None
     if postgres_dsn:
         import pg_mirror
@@ -39,7 +51,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         workflow_report = {'ingestion': {'error': type(exc).__name__}}
     if progress:
         progress('Publishing and receiving peer changes')
-    cycle = memory_sync.cycle(database, exchange)
+    cycle = memory_sync.cycle(database, exchange, security=security)
     if settings is not None:
         try:
             if progress:
@@ -51,15 +63,32 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
             if result['status'] == 'committed':
                 if progress:
                     progress('Publishing generated memory and provenance')
-                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange)
+                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange, security=security)
         except Exception as exc:
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)
+    security_report = dict(state['security'])
+    wizard_path = Path(database).parent / 'security-wizard.json'
+    if wizard_path.exists():
+        try:
+            import security_wizard
+            wizard_state = security_wizard.load_state(wizard_path)
+            if wizard_state is not None:
+                projection = security_wizard.resume(database, exchange, security_dir or wizard_state['security_dir'], wizard_path, dry_run=True)
+                security_report.update(projection)
+        except Exception:
+            # No private paths, key material or raw failures in status.
+            security_report.update(pairing='unknown', wizard_step='unknown', next_action='recover_identity_or_receipt', roundtrip='pending')
+    elif security is not None:
+        from signed_packets import read_trust
+        peers = [p for p in read_trust(security.directory)['peers'].values() if p['sender'] != security.public['sender'] and p['group'] == security.public['group']]
+        security_report['pairing'] = 'approved' if any(not p['revoked'] for p in peers) else 'revoked' if peers else 'pending'
     report = {'format': 'agentmesh-status-v1', 'node': state['node'],
               'group': state['group_id'], 'platform': platform.system(),
               'updated_at': datetime.now(timezone.utc).isoformat(),
               'counts': sqlite_memory.status(database)['counts'],
               'sync': state, 'cycle': cycle, 'postgres_mirror': mirror,
+              'security': security_report,
               'workflow': workflow_report}
     directory = exchange / 'status'
     directory.mkdir(exist_ok=True)
@@ -97,9 +126,13 @@ def main(argv=None):
     parser.add_argument('exchange')
     parser.add_argument('--interval', type=float, default=60)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--ota-version', type=int, help='installed consumer active-version fence')
+    parser.add_argument('--managed-cycle', action='store_true',
+                        help='consumer-owned cycle; do not repeat legacy process-start summary')
     parser.add_argument('--force-summary', action='store_true',
                         help='explicitly bypass the summary schedule on the first cycle')
     parser.add_argument('--workflow-config', help='private machine configuration; defaults beside DB')
+    parser.add_argument('--security-dir', help='explicit strict signing and pinned peer trust')
     parser.add_argument('--postgres', action='store_true', help='read-only PostgreSQL mirror using OMP_MEMORY_DSN')
     args = parser.parse_args(argv)
     if args.interval <= 0:
@@ -116,7 +149,8 @@ def main(argv=None):
                     progress('Starting sync cycle')
                     report = run_once(args.database, args.exchange, dsn,
                         workflow_config=args.workflow_config, force_summary=args.force_summary and first,
-                        force_legacy_summary=first, progress=progress)
+                        force_legacy_summary=first and not args.managed_cycle, progress=progress,
+                        security_dir=args.security_dir, _ota_version=args.ota_version)
                     first = False
                 except Exception as exc:
                     report = {'error': type(exc).__name__}

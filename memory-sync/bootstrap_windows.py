@@ -148,6 +148,12 @@ def install(exchange, local_dir, node='windows', progress=None):
         except FileExistsError:
             pass
     result = {'database': str(db), 'exchange': str(exchange), 'app': str(app), **state}
+    runtime_path = data / 'runtime.json'
+    if runtime_path.exists():
+        previous = json.loads(runtime_path.read_text(encoding='utf-8'))
+        # Preserve explicit signed activation across normal restarts; never make a new key.
+        for key in ('security_dir', 'security_state'):
+            if key in previous: result[key] = previous[key]
     (data / 'runtime.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     progress('Ready: local database installed; starting synchronization')
     return result
@@ -178,17 +184,40 @@ def main(argv=None):
     parser.add_argument('--node', choices=('mac', 'windows', 'linux'), default='windows')
     parser.add_argument('--local-dir', default=str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.local/share'))) / 'AgentMesh'))
     parser.add_argument('--once', action='store_true', help='install and sync once, without keeping a watcher open')
+    parser.add_argument('--security-wizard', action='store_true', help='interactive opt-in security setup; pending pairing does not start a worker')
+    parser.add_argument('--wizard-status', action='store_true', help='read-only status for an existing installation')
+    parser.add_argument('--wizard-dry-run', action='store_true', help='read-only prerequisites for an existing installation')
     args = parser.parse_args(argv)
     try:
+        if args.wizard_status or args.wizard_dry_run:
+            local = Path(args.local_dir).expanduser().resolve()
+            sys.path.insert(0, str(local / 'app'))
+            import security_wizard
+            action = 'status' if args.wizard_status else 'resume'
+            return security_wizard.main(['--database', str(local / 'data' / (args.node + '.db')),
+                '--exchange', args.exchange, '--security-dir', str(local / 'identity'),
+                '--state', str(local / 'data' / 'security-wizard.json'), action, '--dry-run'])
         with ConsoleProgress() as progress:
             result = install(args.exchange, args.local_dir, node=args.node, progress=progress)
         print(json.dumps({'installed': True, **result}), flush=True)
+        if args.security_wizard:
+            import security_wizard
+            local = Path(args.local_dir).expanduser().resolve()
+            identity, state = local / 'identity', local / 'data' / 'security-wizard.json'
+            code = security_wizard.main(['--database', result['database'], '--exchange', result['exchange'],
+                '--security-dir', str(identity), '--state', str(state), 'resume', '--interactive'])
+            if code: return code
+            result.update(security_dir=str(identity), security_state=str(state))
+            (local / 'data' / 'runtime.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
+            return 0  # Activation and scheduling remain separate operator decisions.
         import sync_worker
         if args.once:
-            print(json.dumps(sync_worker.run_once(result['database'], result['exchange'])), flush=True)
+            print(json.dumps(sync_worker.run_once(result['database'], result['exchange'], security_dir=result.get('security_dir'))), flush=True)
             return 0
         print('Keep this window open for sync. Ctrl-C stops the worker; Syncthing is separate.', flush=True)
-        return sync_worker.main([result['database'], result['exchange'], '--interval', '60'])
+        worker_args = [result['database'], result['exchange'], '--interval', '60']
+        if result.get('security_dir'): worker_args += ['--security-dir', result['security_dir']]
+        return sync_worker.main(worker_args)
     except Exception as exc:
         print(json.dumps({'error': type(exc).__name__, 'detail': str(exc)}), file=sys.stderr)
         return 1

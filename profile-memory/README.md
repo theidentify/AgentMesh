@@ -21,7 +21,7 @@ Hermes memory provider, create profiles in Hermes, install services, or alter
   Profile defaults and per-query overrides are independent of relation expansion.
 - Provider-neutral embeddings; existing loopback Ollama models are supported.
   Model revision, dimensions and cosine space must match the explicit projection.
-- Authorized JSON knowledge bundles, scoped HMAC channels, transactional receipts,
+- Authorized JSON knowledge bundles, explicit HMAC or opt-in Ed25519 channels, transactional receipts,
   idempotent replay, bounded durable pending packets and visible ancestry conflicts.
 - Receiver mirrors are separate from local authorities. Their indexes are rebuilt
   locally from authorized current objects; sources and vectors are not exchanged.
@@ -113,6 +113,58 @@ Full history is the default. `export --no-history` is only for explicit delta
 exercises: missing ancestry stays pending until dependencies arrive and retry
 commits it. Pending packets are not application ACKs.
 
+### Experimental Ed25519 semantic channels
+
+Signed mode is opt-in and depends on a separately supplied **trusted local**
+identity backend (see [dependencies](DEPENDENCIES.md)). It reuses the existing
+`Security`, `check_self`, `read_trust`, `typed` and `crypto` primitives, not the
+SQL packet signing protocol. Compatibility was verified against committed
+signing/wizard revision `b864e26a8540807e7dc61648154004d65183e171` (see dependencies).
+Final upstream release/wizard readiness and real two-host operator fingerprint
+approval remain activation gates. The prototype creates no production identities
+or trust.
+
+Start with fresh disposable source and mirror workspaces for this trial. Have
+both fixture identities approved through the existing backend using full
+fingerprints and explicit group/node/sender bindings. This CLI does not pair,
+approve, discover peers or infer logical profile ownership from an approved key.
+Supply the trusted local profile with `--profile` and every peer binding explicitly:
+
+```sh
+python profile-memory/agentmesh-memory.py --root /private/node-a --profile alpha \
+  export --recipient beta --id "$KNOWLEDGE_ID" --output /private/exchange/signed.json \
+  --security-dir /private/node-a-security --signed-backend /trusted/signed_packets.py \
+  --peer-profile beta --peer-fingerprint "$BETA_FULL_FINGERPRINT" \
+  --peer-group "$GROUP_UUID" --peer-node linux --peer-sender "$BETA_SENDER_UUID"
+python profile-memory/agentmesh-memory.py --root /private/node-b --profile beta \
+  apply --issuer alpha --input /private/exchange/signed.json \
+  --security-dir /private/node-b-security --signed-backend /trusted/signed_packets.py \
+  --peer-profile alpha --peer-fingerprint "$ALPHA_FULL_FINGERPRINT" \
+  --peer-group "$GROUP_UUID" --peer-node mac --peer-sender "$ALPHA_SENDER_UUID"
+```
+
+`retry --issuer alpha` requires the same receiver-side signed flags. Do not pass
+`--key-file` with signed mode. Incomplete options, unavailable crypto/backend,
+wrong scope and unknown/revoked keys fail closed, without HMAC fallback. The CLI
+never loads code selected by a bundle; `--signed-backend` executes operator-chosen
+local Python and must be a trusted absolute file. Keep identity/trust directories
+outside the exchange. They remain backend-managed and owner-only.
+
+Mode and complete identity/profile scope are durably pinned in the canonical
+SQLite store. A signed mirror cannot accept a later HMAC import/retry, even via
+the old API or another recipient binding; publisher exports are also pinned per
+recipient. Existing incompatible modes or unbound receipts/pending packets are
+refused, not converted. Automated migration, key rotation and rebinding are not
+implemented. `get` and `evidence` continue using knowledge ACLs; they do not need
+a signing key. Node-key revocation blocks new imports, pending retry and duplicate
+receipt authentication, **not** access to already imported knowledge. Knowledge
+policy/object revocation is separate. Signatures do not encrypt content, prove
+semantic truth or provide OS-user sandboxing/network identity.
+
+API callers inject `SignedChannel(...)` as `authenticator=` instead of `key=`
+into `export_bundle`, `apply_bundle` and `retry_pending`; see the exact signature
+contract and JSON trust concurrency limitation in [CONTRACT.md](CONTRACT.md).
+
 Receiver-owned projection and retrieval defaults:
 
 ```sh
@@ -159,7 +211,7 @@ see the precise limitations in [the contract](CONTRACT.md).
 Imported evidence is an inline quote and source digest, not proof that the
 receiver possesses the original source file. Content is unverified data, not an
 instruction to agents. Automatic conflict resolution, production activation,
-key rotation/asymmetric signatures, membership discovery, arbitrary cross-owner
+key rotation, membership discovery, arbitrary cross-owner
 export closure, multimodal extraction, RDF/JSON-LD/SHACL conformance and native
 Hermes write-provider integration remain separate follow-ups.
 

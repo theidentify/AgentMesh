@@ -1,8 +1,9 @@
-"""Versioned semantic mirrors over pre-shared HMAC channels, not asymmetric signatures.
+"""Versioned semantic mirrors with explicit HMAC or injected Ed25519 channels.
 
 Inline quotes attest only to an issuer's assertion; original source files are never
-transferred or fetched. Mirrors retain portable owner identities. Keys must have
-at least 32 bytes; all holders can forge envelopes. No key-management guarantee.
+transferred or fetched. Mirrors retain portable owner identities. Legacy HMAC
+keys require at least 32 bytes; all holders can forge those envelopes. Signed
+identity and trust management belong to the explicitly injected backend.
 
 A bundle carries one owner's records; cross-owner derivations fail closed. Both
 current and historical export/read/evidence policies must permit the recipient.
@@ -15,9 +16,10 @@ packet is not an applied ACK, and blocked objects cannot be re-exported.
 
 Limits: 128 records and 1 MiB per envelope; pending storage is capped at 128
 packets and 1 MiB total. 'conflict' is durable receipt, not a ready/applied ACK.
-Replay returns 'duplicate' plus the original receipt status. No vectors, remote
-source fetching, filename payloads, asymmetric signatures or automatic conflict
-resolution are supported.
+Replay reauthenticates before returning 'duplicate' plus original receipt status.
+Signed mode uses a distinct semantic v2 domain, durable scoped channel binding
+and current backend identity/trust checks. No vectors, remote source fetching,
+filename payloads or automatic conflict resolution are supported.
 """
 import hashlib
 import hmac
@@ -107,25 +109,35 @@ def _bounded(envelope):
     return data
 
 
-def _authenticate(store, bundle, recipient, issuer, key):
-    _key(key)
+def _authenticate(store, bundle, recipient, issuer, key, authenticator=None):
+    _mode(key, authenticator)
     _profile(recipient)
     _profile(issuer)
     if not isinstance(bundle, dict) or set(bundle) != {'format', 'issuer', 'recipient', 'records', 'bundle_id', 'signature'}:
         raise KnowledgeError('invalid envelope schema')
     _bounded(bundle)
-    if bundle['format'] != FORMAT or bundle['issuer'] != issuer or bundle['recipient'] != recipient or store.profile_id != issuer:
+    if bundle['format'] != (authenticator.format if authenticator is not None else FORMAT) or bundle['issuer'] != issuer or bundle['recipient'] != recipient or store.profile_id != issuer:
         raise AccessDenied('channel binding mismatch')
     unsigned = {k: v for k, v in bundle.items() if k != 'signature'}
     payload = {k: v for k, v in unsigned.items() if k != 'bundle_id'}
     _token(bundle['bundle_id'], SHA)
-    _token(bundle['signature'], re.compile(r'[0-9a-f]{64}\Z'))
+    if authenticator is None:
+        _token(bundle['signature'], re.compile(r'[0-9a-f]{64}\Z'))
     if bundle['bundle_id'] != digest(payload):
         raise KnowledgeError('bundle identity mismatch')
-    if not hmac.compare_digest(bundle['signature'], _sign(unsigned, key)):
+    if authenticator is not None:
+        authenticator.verify(unsigned, bundle['signature'])
+    elif not hmac.compare_digest(bundle['signature'], _sign(unsigned, key)):
         raise AccessDenied('channel authentication failed')
 
 FORMAT = 'agentmesh-knowledge-bundle-v1'
+
+
+def _mode(key, authenticator):
+    if authenticator is None:
+        _key(key)
+    elif key is not None:
+        raise KnowledgeError('select exactly one authentication mode')
 
 
 def _sign(envelope, key):
@@ -137,9 +149,9 @@ def _allowed(record, recipient):
         raise AccessDenied('recipient requires read, evidence and export permissions')
 
 
-def export_bundle(api: MemoryAPI, recipient: str, ids: list[str], *, key: bytes, include_history: bool = True) -> dict:
+def export_bundle(api: MemoryAPI, recipient: str, ids: list[str], *, key: bytes | None = None, authenticator=None, include_history: bool = True) -> dict:
     """Export owner-authorized current heads and dependency/ancestry closure."""
-    _key(key)
+    _mode(key, authenticator)
     _profile(recipient)
     _list(ids)
     if not isinstance(include_history, bool):
@@ -151,7 +163,7 @@ def export_bundle(api: MemoryAPI, recipient: str, ids: list[str], *, key: bytes,
         raise AccessDenied('only the owning principal may export')
     records = {}
     with store.connection() as conn:
-        conn.execute('BEGIN')
+        conn.execute('BEGIN IMMEDIATE')
 
         def heads(ident):
             return [json.loads(row['data']) for row in conn.execute(
@@ -194,11 +206,39 @@ def export_bundle(api: MemoryAPI, recipient: str, ids: list[str], *, key: bytes,
 
         for ident in ids:
             visit(ident)
-    envelope = dict(format=FORMAT, issuer=api.principal, recipient=recipient, records=sorted(records.values(), key=lambda r: (r['id'], r['revision'])))
-    envelope['bundle_id'] = digest(envelope)
-    envelope['signature'] = _sign(envelope, key)
-    _bounded(envelope)
+        envelope = dict(format=authenticator.format if authenticator is not None else FORMAT, issuer=api.principal, recipient=recipient, records=sorted(records.values(), key=lambda r: (r['id'], r['revision'])))
+        envelope['bundle_id'] = digest(envelope)
+        envelope['signature'] = authenticator.sign(envelope) if authenticator is not None else _sign(envelope, key)
+        _bounded(envelope)
+        _channel(conn, api.principal, recipient, authenticator, direction='send')
     return envelope
+
+
+def _channel(conn, issuer, recipient, authenticator, *, direction='receive'):
+    """Durable mode/scope; reject implicit migration of unbound legacy state."""
+    expected = canonical({'format': authenticator.format, 'scope': authenticator.scope} if authenticator is not None else {'format': FORMAT})
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='exchange_channels'").fetchone()
+    if exists and direction == 'receive':
+        for binding in conn.execute("SELECT issuer,recipient,binding FROM exchange_channels WHERE direction='receive'"):
+            signed = json.loads(binding['binding'])['format'] != FORMAT
+            if (signed or authenticator is not None) and (binding['issuer'], binding['recipient'], binding['binding']) != (issuer, recipient, expected):
+                raise AccessDenied('signed mirror must remain isolated to its receiver and identity scope')
+    row = conn.execute('SELECT binding FROM exchange_channels WHERE issuer=? AND recipient=? AND direction=?',
+                       (issuer, recipient, direction)).fetchone() if exists else None
+    if row and row['binding'] != expected:
+        raise AccessDenied('persisted channel mode or identity scope mismatch; use a fresh mirror')
+    if row is None and authenticator is not None and direction == 'receive':
+        for name in ('exchange_receipts', 'exchange_pending'):
+            if not conn.execute('SELECT 1 FROM sqlite_master WHERE name=?', (name,)).fetchone():
+                continue
+            old = conn.execute('SELECT 1 FROM ' + name + ' LIMIT 1').fetchone()
+            if old:
+                raise AccessDenied('unbound existing channel state; use a fresh mirror')
+    conn.execute('''CREATE TABLE IF NOT EXISTS exchange_channels (
+        issuer TEXT NOT NULL, recipient TEXT NOT NULL, direction TEXT NOT NULL,
+        binding TEXT NOT NULL, PRIMARY KEY(issuer,recipient,direction))''')
+    if row is None:
+        conn.execute('INSERT INTO exchange_channels VALUES(?,?,?,?)', (issuer, recipient, direction, expected))
 
 
 def _tables(conn):
@@ -218,17 +258,26 @@ def pending(store: ProfileStore) -> list[dict]:
         return [json.loads(r['data']) for r in conn.execute('SELECT data FROM exchange_pending ORDER BY bundle_id')]
 
 
-def retry_pending(store: ProfileStore, *, recipient: str, trusted_issuer: str, key: bytes) -> list[dict]:
+def retry_pending(store: ProfileStore, *, recipient: str, trusted_issuer: str, key: bytes | None = None, authenticator=None) -> list[dict]:
     """Retry the pinned channel only; every retry reauthenticates its envelope."""
-    _key(key)
+    _mode(key, authenticator)
     _profile(recipient)
     _profile(trusted_issuer)
+    with store.connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if authenticator is not None:
+            authenticator.reauthenticate()
+            if (authenticator.principal, authenticator.peer_profile) != (recipient, trusted_issuer):
+                raise AccessDenied('retry signed profile binding mismatch')
+        if store.profile_id != trusted_issuer:
+            raise AccessDenied('retry mirror issuer mismatch')
+        _channel(conn, trusted_issuer, recipient, authenticator)
     results = {}
     remaining = [b for b in pending(store) if b['issuer'] == trusted_issuer and b['recipient'] == recipient]
     while remaining:
         next_pass = []
         for bundle in remaining:
-            result = apply_bundle(store, bundle, recipient=recipient, trusted_issuer=trusted_issuer, key=key)
+            result = apply_bundle(store, bundle, recipient=recipient, trusted_issuer=trusted_issuer, key=key, authenticator=authenticator)
             results[bundle['bundle_id']] = result
             if result['status'] == 'pending':
                 next_pass.append(bundle)
@@ -238,9 +287,9 @@ def retry_pending(store: ProfileStore, *, recipient: str, trusted_issuer: str, k
     return [results[ident] for ident in sorted(results)]
 
 
-def apply_bundle(store: ProfileStore, bundle: dict, *, recipient: str, trusted_issuer: str, key: bytes) -> dict:
+def apply_bundle(store: ProfileStore, bundle: dict, *, recipient: str, trusted_issuer: str, key: bytes | None = None, authenticator=None) -> dict:
     """Authenticate pinned issuer/recipient, validate, and atomically receive."""
-    _authenticate(store, bundle, recipient, trusted_issuer, key)
+    _authenticate(store, bundle, recipient, trusted_issuer, key, authenticator)
     for record in bundle['records']:
         _record(record, trusted_issuer, recipient)
     todo = {(r['id'], r['revision']): r for r in bundle['records']}
@@ -248,6 +297,8 @@ def apply_bundle(store: ProfileStore, bundle: dict, *, recipient: str, trusted_i
         raise KnowledgeError('duplicate record identity')
     with store.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        _authenticate(store, bundle, recipient, trusted_issuer, key, authenticator)
+        _channel(conn, trusted_issuer, recipient, authenticator)
         exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='exchange_receipts'").fetchone()
         receipt = conn.execute('SELECT status FROM exchange_receipts WHERE bundle_id=?', (bundle['bundle_id'],)).fetchone() if exists else None
         if receipt:

@@ -116,6 +116,94 @@ packet. Owner/admin inspection stays available. Objects with pending state canno
 be re-exported. This includes an out-of-order revocation: an older readable head
 is not exposed while its revocation waits for missing ancestry.
 
+## Opt-in signed semantic v2
+
+The revision-record schema and ACL/dependency/pending rules remain v1. Signed
+mode changes the envelope `format` to `agentmesh-knowledge-bundle-v2` and replaces
+the HMAC hex string with this exact `signature` object:
+
+```json
+{"format":"agentmesh-semantic-signature-v2","encoding":"agentmesh-typed-v1","issuer_identity":{"group":"<canonical UUID>","node":"mac","sender":"<canonical UUID>","key_id":"<full lowercase SHA256 fingerprint>"},"recipient_identity":{"group":"<same group UUID>","node":"linux","sender":"<canonical UUID>","key_id":"<full lowercase SHA256 fingerprint>"},"value":"<128 lowercase hex characters: 64-byte Ed25519 signature>"}
+```
+
+No additional signature fields are accepted. Let `unsigned` be the entire
+ID-bearing envelope without `signature`, and `metadata` be the signature object
+without `value`. The signed message is exactly:
+
+```python
+b'AgentMesh/semantic-knowledge/Ed25519/v2\x00' + backend.typed({
+    'envelope': unsigned,
+    'authentication': metadata,
+})
+```
+
+The displayed `\x00` denotes the single NUL byte in the Python domain literal.
+The injective bounded `backend.typed` encoding is **not** RFC 8785/JCS. The
+existing canonical JSON bundle/revision hashes are unchanged. Both logical
+issuer/recipient and every identity/encoding/version field are signed. This is a
+distinct semantic domain, not a SQL change packet or a wrapper around backend SQL
+`Security.sign/verify`. Neither signatures nor HMAC encrypt data.
+
+Construct an operator-trusted adapter:
+
+```python
+from agentmesh_memory.auth import SignedChannel, load_backend
+channel = SignedChannel(
+    backend=load_backend('/absolute/trusted/signed_packets.py'),
+    security_dir='/private/receiver-security', principal='beta',
+    peer_profile='alpha', peer_fingerprint=alpha_full_fingerprint,
+    peer_group=group_uuid, peer_node='mac', peer_sender=alpha_sender_uuid,
+)
+apply_bundle(mirror, bundle, recipient='beta', trusted_issuer='alpha',
+             authenticator=channel)
+retry_pending(mirror, recipient='beta', trusted_issuer='alpha',
+              authenticator=channel)
+```
+
+Publisher adapters use `principal='alpha'` and the explicitly pinned beta profile
+and identity. `export_bundle(..., authenticator=publisher_channel)` uses the same
+hook. Supplying both `key` and `authenticator` is an error. HMAC remains explicit
+`key=...`/`--key-file` v1 compatibility, never an automatic signed fallback.
+The trusted-local authenticator hook exposes `format`, canonical `scope`, logical
+`principal`/`peer_profile`, `sign(unsigned)`, `verify(unsigned, signature)` and
+`reauthenticate()`; incoming packets never instantiate an authenticator or select
+backend code. Backend absence and crypto absence fail closed in signed mode.
+
+`SignedChannel` reuses backend `Security.public`, its actual Ed25519 `.key`,
+`check_self`, validated `read_trust`, `typed` and `crypto`. Both ends require the
+exact peer fingerprint/group/node/sender in current nonrevoked trust; the group
+must also match the local identity. Logical profile ownership is an independent
+operator binding, **not inferred from machine-key approval**. No second key
+provisioning/pairing system or network membership service is introduced.
+
+`exchange_channels` stores canonical mode/full profile-and-identity bindings in
+SQLite, keyed by issuer/recipient/direction. Export pins its selected publisher
+channel inside the same `BEGIN IMMEDIATE` transaction as its ACL/dependency
+snapshot and signature generation. A signed receiver ledger stays isolated to one recipient and full
+channel scope, including through old API calls with another recipient. Mode or
+scope changes, even approved key rotation, are refused. Signed activation refuses
+unbound existing receipts/pending packets rather than automatically converting
+or abandoning them. Use fresh disposable stores; rotation/rebinding/migration
+are not implemented. Raw maintenance SQL remains privileged and can bypass pins.
+
+Every import authenticates before validation and again inside `BEGIN IMMEDIATE`,
+before mutation or returning a replay receipt. Pending retries use the explicitly
+supplied selected channel, reauthenticate even an empty queue and verify each
+persisted envelope again; a revoked-key duplicate is not a success. SQLite
+serializes canonical knowledge/mode writers, but external JSON trust updates are
+**not atomically locked by SQLite**: a concurrent update after the trust read
+cannot be retroactively fenced. Coordinated cross-file trust locking is not
+implemented; this is not a claim of atomic trust revocation with knowledge commit.
+
+Node-key revocation blocks future authentication, including duplicate receipts
+and pending retries. It does not erase imports, revoke their knowledge ACLs or
+make historical quotes independently true. Knowledge policy/object revocation
+remains a separate semantic operation. If a key is revoked with a packet pending,
+its conservative read block remains until an explicit maintenance decision; the
+prototype does not silently discard the pending packet. Profile directories are
+not an OS-user sandbox; no production transport, two-host identity service or
+wizard activation is provided by this integration.
+
 ## Retrieval projections
 
 Keyword search uses current authorized objects and SQLite FTS5/BM25. Semantic

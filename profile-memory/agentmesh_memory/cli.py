@@ -6,6 +6,7 @@ import os
 import secrets
 import sqlite3
 import sys
+from typing import Any
 
 from .core import (MemoryAPI, ProfileStore, KnowledgeError, Unavailable, Conflict,
                    canonical, checked_path, profile_id)
@@ -70,6 +71,32 @@ def write_json(path, value):
     return str(path)
 
 
+def authentication_arguments(command):
+    mode = command.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--key-file', type=Path, help='Explicit legacy HMAC channel')
+    mode.add_argument('--security-dir', type=Path, help='Opt-in Ed25519 identity and trust directory')
+    command.add_argument('--signed-backend', type=Path, help='Absolute trusted local identity backend Python file')
+    for field in ('profile', 'fingerprint', 'group', 'node', 'sender'):
+        command.add_argument('--peer-' + field, help='Explicit trusted operator peer ' + field)
+
+
+def authentication(args, identity, peer) -> dict[str, Any]:
+    fields = ('profile', 'fingerprint', 'group', 'node', 'sender')
+    if args.security_dir is None:
+        if args.signed_backend is not None or any(getattr(args, 'peer_' + f) is not None for f in fields):
+            raise KnowledgeError('signed options require --security-dir; no HMAC fallback')
+        return {'key': read_key(args.key_file)}
+    if args.signed_backend is None or any(getattr(args, 'peer_' + f) is None for f in fields):
+        raise KnowledgeError('signed mode requires --signed-backend and every explicit --peer-* binding')
+    if args.peer_profile != peer:
+        raise KnowledgeError('peer profile must match selected issuer or recipient')
+    from .auth import load_backend, SignedChannel
+    channel = SignedChannel(backend=load_backend(args.signed_backend), security_dir=args.security_dir,
+        principal=identity, peer_profile=args.peer_profile, peer_fingerprint=args.peer_fingerprint,
+        peer_group=args.peer_group, peer_node=args.peer_node, peer_sender=args.peer_sender)
+    return {'authenticator': channel}
+
+
 def parser():
     result = argparse.ArgumentParser(description='[o-A-o] AgentMesh | isolated profile memory prototype')
     result.add_argument('--root', type=Path, required=True, help='Dedicated prototype workspace outside production')
@@ -122,16 +149,16 @@ def parser():
     export = commands.add_parser('export', help='Write an authorized immutable semantic bundle')
     export.add_argument('--recipient', required=True)
     export.add_argument('--id', action='append', required=True)
-    export.add_argument('--key-file', type=Path, required=True)
+    authentication_arguments(export)
     export.add_argument('--output', type=Path, required=True)
     export.add_argument('--no-history', action='store_true')
     apply = commands.add_parser('apply', help='Apply a pinned owner channel to a separate read-only mirror')
     apply.add_argument('--issuer', required=True)
-    apply.add_argument('--key-file', type=Path, required=True)
+    authentication_arguments(apply)
     apply.add_argument('--input', type=Path, required=True)
     retry = commands.add_parser('retry', help='Retry authenticated persisted pending packets to fixed point')
     retry.add_argument('--issuer', required=True)
-    retry.add_argument('--key-file', type=Path, required=True)
+    authentication_arguments(retry)
     status = commands.add_parser('status', help='Show content-free receipt/pending metadata')
     status.add_argument('--issuer')
     return result
@@ -160,7 +187,7 @@ def dispatch(args):
     api = registry(root, identity)
     if args.command == 'export':
         from .exchange import export_bundle
-        bundle = export_bundle(api, args.recipient, args.id, key=read_key(args.key_file), include_history=not args.no_history)
+        bundle = export_bundle(api, args.recipient, args.id, **authentication(args, identity, args.recipient), include_history=not args.no_history)
         output = write_json(args.output, bundle)
         return {'bundle_id': bundle['bundle_id'], 'output': output, 'records': len(bundle['records']),
                 'issuer': bundle['issuer'], 'recipient': bundle['recipient']}
@@ -172,14 +199,14 @@ def dispatch(args):
         mirror_path = checked_path(root / 'mirrors' / identity / issuer)
         if issuer in api.stores and api.stores[issuer].root != mirror_path:
             raise Conflict('refuse shadowing a local authoritative profile with a mirror')
-        bundle, key = read_json(args.input), read_key(args.key_file)
+        bundle, auth = read_json(args.input), authentication(args, identity, issuer)
         mirror = ProfileStore(mirror_path, issuer)
-        return apply_bundle(mirror, bundle, recipient=identity, trusted_issuer=issuer, key=key)
+        return apply_bundle(mirror, bundle, recipient=identity, trusted_issuer=issuer, **auth)
     if args.command == 'retry':
         from .exchange import retry_pending
         issuer = profile_id(args.issuer)
         store = api._store(issuer)
-        return retry_pending(store, recipient=identity, trusted_issuer=issuer, key=read_key(args.key_file))
+        return retry_pending(store, recipient=identity, trusted_issuer=issuer, **authentication(args, identity, issuer))
     if args.command == 'status':
         from .exchange import pending
         from .retrieval import candidates

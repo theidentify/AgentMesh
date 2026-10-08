@@ -12,8 +12,12 @@ import memory_sync
 import sqlite_memory
 
 
+from runtime_lock import cycle_locked
+
+
+@cycle_locked
 def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
-             force_legacy_summary=False, progress=None, security_dir=None):
+             force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None):
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
@@ -122,6 +126,9 @@ def main(argv=None):
     parser.add_argument('exchange')
     parser.add_argument('--interval', type=float, default=60)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--ota-version', type=int, help='installed consumer active-version fence')
+    parser.add_argument('--managed-cycle', action='store_true',
+                        help='consumer-owned cycle; do not repeat legacy process-start summary')
     parser.add_argument('--force-summary', action='store_true',
                         help='explicitly bypass the summary schedule on the first cycle')
     parser.add_argument('--workflow-config', help='private machine configuration; defaults beside DB')
@@ -142,7 +149,8 @@ def main(argv=None):
                     progress('Starting sync cycle')
                     report = run_once(args.database, args.exchange, dsn,
                         workflow_config=args.workflow_config, force_summary=args.force_summary and first,
-                        force_legacy_summary=first, progress=progress, security_dir=args.security_dir)
+                        force_legacy_summary=first and not args.managed_cycle, progress=progress,
+                        security_dir=args.security_dir, _ota_version=args.ota_version)
                     first = False
                 except Exception as exc:
                     report = {'error': type(exc).__name__}

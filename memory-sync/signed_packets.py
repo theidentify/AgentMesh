@@ -106,6 +106,14 @@ def no_symlinks(path):
     path = Path(os.path.abspath(Path(path).expanduser()))
     for part in (path, *path.parents):
         if part.is_symlink(): raise ValueError('symlink path not permitted')
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        # Windows junctions and other reparse points are not necessarily
+        # reported as symlinks by Python 3.10/3.11. Reject all of them.
+        if getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400):
+            raise ValueError('reparse path not permitted')
     return path
 
 

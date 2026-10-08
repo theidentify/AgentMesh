@@ -18,6 +18,7 @@ FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest
          'sqlite_memory.py', 'memory_sync.py', 'signed_packets.py', 'security_wizard.py',
          'SIGNED-SYNC.md', 'SECURITY-WIZARD.md',
          'requirements-security.txt', 'pg_mirror.py', 'sync_worker.py',
+         'runtime_lock.py', 'ota_update.py', 'OTA-UPDATES.md',
          'schema.sql', 'bootstrap_windows.py', 'platform_service.py',
          'START-WINDOWS.cmd', 'README-WINDOWS.md', 'README-SETUP.md',
          'setup_macos.sh', 'setup_linux.sh', 'SYNC.md']

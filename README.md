@@ -26,6 +26,14 @@ The optional PostgreSQL mirror is a migration/staging reader; do not run it
 against an independently writable SQLite authority. Peer edits do not write
 back to PostgreSQL, and a zero-loss reverse migration is not provided.
 
+## Profile-owned memory prototype
+
+`profile-memory/` is a separate opt-in experiment with profile-owned knowledge,
+immutable revisions, permission-aware retention and evidence, keyword/semantic/
+hybrid retrieval and authenticated scoped semantic exchange. It does not activate
+production services, migrate existing databases or change agent profiles.
+See [prototype setup, CLI, demo and trust boundaries](profile-memory/README.md).
+
 ## Setup
 
 Install Python 3.10+ with SQLite FTS5/JSON support and Syncthing separately,

@@ -221,9 +221,9 @@ def peer_status(home, now=None):
             'note':'Completed-cycle ACKs only, not a live process, Syncthing connection or proof of full convergence. Fresh means age at most 5 minutes; stale does not mean offline. Missing or invalid values remain unknown.'}
 
 
-def operations(home, reader, sync_db):
+def operations(home, reader, sync_db, transport=None):
     from datetime import datetime, timezone
-    result = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
+    result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
     try:
         with reader.connect() as c:
             rows = reader.query(c, 'SELECT source_agent,SUM(sessions) AS sessions,SUM(events) AS events,MAX(observed_at) AS observed_at FROM (SELECT source_agent,COUNT(*) AS sessions,0 AS events,MAX(last_seen_at) AS observed_at FROM ' + reader.prefix + 'source_sessions GROUP BY source_agent UNION ALL SELECT source_agent,0 AS sessions,COUNT(*) AS events,MAX(occurred_at) AS observed_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent) observed GROUP BY source_agent ORDER BY source_agent')
@@ -279,6 +279,12 @@ def operations(home, reader, sync_db):
     except Exception:
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
     result['sync']['peers'] = peer_status(home)
+    if transport is None:
+        from syncthing_transport import observe
+        transport = observe(home)
+    result['sync']['transport_status'] = transport
+    result['sync']['transport'] = transport['status']
+    result['sync']['peers']['transport'] = transport['status']
     return redact(result)
 
 

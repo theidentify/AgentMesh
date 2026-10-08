@@ -100,7 +100,40 @@ accounting UI without mixing production logs with isolated smoke samples.
 - A completed-cycle ACK is not proof of current worker liveness, a successful
   workflow, Syncthing connectivity or exact full convergence. Old zero-error ACKs
   describe an old observation, not current health.
-- Transport connectivity remains **unknown** without a verified transport probe.
+- Transport connectivity is a read-only Syncthing REST observation, independent of
+  ACKs and SQLite availability. Overview and Sync share the same observation.
+
+### Syncthing transport observation
+
+Insight discovers the existing `config.xml` in the standard macOS Syncthing,
+Linux state or legacy configuration locations. An optional absolute
+`INSIGHT_SYNCTHING_CONFIG` path selects a private configuration outside Git.
+No key is supplied through the CLI or browser: Insight reads the existing API key
+server-side and never projects it. No pairing, folders, settings or services are changed.
+
+Only the folder whose canonical path equals `--home/omp-memory/sync` is observed,
+and only its paired remote devices are included. Numeric loopback GUI addresses
+are required; DNS names, external origins, credentials in addresses, redirects
+and proxies are not used. TLS uses normal certificate verification. Missing or
+invalid configuration, unauthorized requests and unavailable endpoints remain
+explicitly unknown. Responses are capped at 1 MiB, sockets at two seconds and an
+observation at six seconds. Device IDs, addresses, paths and raw exceptions never
+leave the adapter. Peer names are reduced to Windows or numbered exchange peers.
+
+Read-only endpoints are `GET /rest/system/status` (local identity exclusion),
+`GET /rest/system/connections`, `GET /rest/db/status?folder=...` and
+`GET /rest/db/completion?folder=...&device=...`. See the official Syncthing REST
+endpoint documentation for their semantics. Local pending bytes/items mean data
+needed by this Mac; remote completion and pending values belong to that peer.
+Connected means every configured exchange peer has an explicit current connected
+and unpaused device observation. Missing expected peers remain unknown; explicitly
+disconnected or paused devices report disconnected. Paused remote/local folders,
+disconnected peers and unknown remote sharing state suppress current completion.
+Partial numbers remain null, never zero. File completion is not database
+application, successful workflow execution, convergence or remote recall.
+
+The backend shares a 15-second transport cache across memory backends; the browser
+refetches every 20 seconds and displays the actual transport observation timestamp.
 
 ## Read-only and privacy boundary
 
@@ -166,7 +199,8 @@ operational and memory information and must not be committed.
 - `libpq_reader.py`: parameterized, read-only PostgreSQL adapter.
 - `metrics.py` and `metrics.html`: portable migration of existing summary accounting/UI.
 - `index.html`: Insight navigation, browser, operational views and shared theme.
-- `test_insight.py` and `test_peer_status.py`: fixture-based safety and reader tests.
+- `syncthing_transport.py`: bounded loopback-only GET transport projection for the exact exchange folder.
+- `test_insight.py`, `test_peer_status.py` and `test_syncthing_transport.py`: fixture-based safety and reader tests.
 - `qa.mjs`: real Chromium/CDP acceptance checks.
 
 No database schema, sync algorithm, ingest parser, production cron, provider

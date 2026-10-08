@@ -39,7 +39,9 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None):
     readers['postgres'].label = 'PostgreSQL authority' if primary == 'postgres' else 'PostgreSQL read-only comparison'
     readers['sqlite'].label = 'SQLite authority' if primary == 'sqlite' else 'SQLite staging'
     metrics_cache = Cache(lambda: adapters.metrics(home))
-    ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite)) for key in readers}
+    from syncthing_transport import observe
+    transport_cache = Cache(lambda: observe(home))
+    ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite, transport_cache.get())) for key in readers}
 
     def connections():
         rows = []

@@ -47,8 +47,10 @@ py -3 -m venv "$env:LOCALAPPDATA\AgentMesh\venv"
 
 If pip is unavailable, use the operator's approved package tooling (for example
 `uv pip install --python <worker-python> -r requirements-security.txt`); do not fall
-back to checksums. `cryptography==46.0.7` is the tested pin, not a claim that it is
-the newest release. Review and deliberately test upgrades before changing the pin.
+back to checksums. The `cryptography==50.0.2` pin was selected after checking public
+package/advisory metadata and then exercising the full suite. It is a tested pin,
+not a permanent claim that it is the newest release. Review and deliberately test
+upgrades before changing the pin.
 The private identity is unencrypted raw key material: disk/account protection and
 secure backups are the operator's responsibility. Keep the entire security directory
 outside Syncthing, Git, source trees, snapshots, public exports, and screenshots.

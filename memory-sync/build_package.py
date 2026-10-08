@@ -15,7 +15,8 @@ FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest
          'install_agent_rules.py', 'WORKFLOW.md',
          'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
          'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md',
-         'sqlite_memory.py', 'memory_sync.py', 'pg_mirror.py', 'sync_worker.py',
+         'sqlite_memory.py', 'memory_sync.py', 'signed_packets.py', 'SIGNED-SYNC.md',
+         'requirements-security.txt', 'pg_mirror.py', 'sync_worker.py',
          'schema.sql', 'bootstrap_windows.py', 'platform_service.py',
          'START-WINDOWS.cmd', 'README-WINDOWS.md', 'README-SETUP.md',
          'setup_macos.sh', 'setup_linux.sh', 'SYNC.md']

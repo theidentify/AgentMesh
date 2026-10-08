@@ -13,10 +13,18 @@ import sqlite_memory
 
 
 def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
-             force_legacy_summary=False, progress=None):
+             force_legacy_summary=False, progress=None, security_dir=None):
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
+    security = None
+    if security_dir is not None:
+        from signed_packets import Security
+        security = Security(security_dir)
+    # Fail closed before mirror/ingestion/summary can write after signed activation.
+    with memory_sync.connect(database) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        memory_sync._security_policy(c, security, exchange)
     mirror = None
     if postgres_dsn:
         import pg_mirror
@@ -39,7 +47,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         workflow_report = {'ingestion': {'error': type(exc).__name__}}
     if progress:
         progress('Publishing and receiving peer changes')
-    cycle = memory_sync.cycle(database, exchange)
+    cycle = memory_sync.cycle(database, exchange, security=security)
     if settings is not None:
         try:
             if progress:
@@ -51,7 +59,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
             if result['status'] == 'committed':
                 if progress:
                     progress('Publishing generated memory and provenance')
-                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange)
+                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange, security=security)
         except Exception as exc:
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)
@@ -100,6 +108,7 @@ def main(argv=None):
     parser.add_argument('--force-summary', action='store_true',
                         help='explicitly bypass the summary schedule on the first cycle')
     parser.add_argument('--workflow-config', help='private machine configuration; defaults beside DB')
+    parser.add_argument('--security-dir', help='explicit strict signing and pinned peer trust')
     parser.add_argument('--postgres', action='store_true', help='read-only PostgreSQL mirror using OMP_MEMORY_DSN')
     args = parser.parse_args(argv)
     if args.interval <= 0:
@@ -116,7 +125,7 @@ def main(argv=None):
                     progress('Starting sync cycle')
                     report = run_once(args.database, args.exchange, dsn,
                         workflow_config=args.workflow_config, force_summary=args.force_summary and first,
-                        force_legacy_summary=first, progress=progress)
+                        force_legacy_summary=first, progress=progress, security_dir=args.security_dir)
                     first = False
                 except Exception as exc:
                     report = {'error': type(exc).__name__}

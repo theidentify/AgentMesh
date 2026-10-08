@@ -100,20 +100,28 @@ def main(argv=None):
     dsn = os.environ.get('OMP_MEMORY_DSN') if args.postgres else None
     if args.postgres and not dsn:
         parser.error('--postgres requires OMP_MEMORY_DSN')
+    from terminal_progress import TerminalProgress
     first = True
     try:
         while True:
-            try:
-                report = run_once(args.database, args.exchange, dsn,
-                    workflow_config=args.workflow_config, force_summary=first,
-                    progress=lambda stage: print(__import__("brand").label(stage), file=sys.stderr, flush=True))
-                first = False
-            except Exception as exc:
-                report = {'error': type(exc).__name__}
+            with TerminalProgress() as progress:
+                try:
+                    progress('Starting sync cycle')
+                    report = run_once(args.database, args.exchange, dsn,
+                        workflow_config=args.workflow_config, force_summary=first,
+                        progress=progress)
+                    first = False
+                except Exception as exc:
+                    report = {'error': type(exc).__name__}
+                state = report.get('sync', {})
+                outcome = 'Sync needs attention' if failed(report) else 'Sync completed'
+                progress(f"{outcome} | Pending {state.get('pending', 0)} | Conflicts {state.get('conflict', 0)} | Invalid {state.get('invalid', 0)}")
             print(json.dumps(report, ensure_ascii=False), flush=True)
             if args.once:
                 return int(failed(report))
-            time.sleep(args.interval)
+            with TerminalProgress() as progress:
+                progress.wait(args.interval,
+                    'Last sync needs attention' if failed(report) else 'Last sync succeeded')
     except KeyboardInterrupt:
         return 0
 

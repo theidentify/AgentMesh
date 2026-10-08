@@ -42,6 +42,23 @@ Use `omp`, `codex` or `claude` for `--agent`. Automatic discovery/ingestion of a
 Windows agent sessions is not yet configured. The copied pure parsers are bundled;
 PostgreSQL and psycopg are not required for Windows SQLite ingestion or syncing.
 
+## Console progress
+
+Console messages are in English and use ASCII characters only. Import progress
+uses the verified row count, for example:
+
+```text
+[4/6] Importing memory | [############--------] 60% | 24,000/40,000 rows
+Last sync succeeded | Next sync in 42s
+```
+
+Unknown-duration stages show a spinner and elapsed time, not an estimated
+percentage. Interactive terminals update one line. Redirected output keeps
+plain-text stage/heartbeat messages. Worker JSON on stdout remains parseable;
+human-readable sync progress uses stderr. Existing databases skip the import
+stage. Wait for Syncthing to finish, stop the old worker with Ctrl-C, then run
+START-WINDOWS.cmd again to load a new application version without deleting data.
+
 ## Important boundaries
 
 - This is the AgentMesh SQLite exchange, not a complete Hermes Windows installer.

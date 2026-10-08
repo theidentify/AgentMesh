@@ -166,3 +166,13 @@ def test_progress_heartbeat_displays_current_stage(capsys):
     output = capsys.readouterr().out
     assert 'elapsed' in output
     assert '[5/6] Initializing sync revisions' in output
+
+
+def test_bootstrap_progress_has_real_row_bar(capsys):
+    with load_bootstrap().ConsoleProgress() as progress:
+        progress('[4/6] Importing memory snapshot')
+        progress.rows(30, 100)
+    text = capsys.readouterr().out
+    assert '[######--------------] 30%' in text
+    assert '30/100 rows' in text
+    assert text.isascii()

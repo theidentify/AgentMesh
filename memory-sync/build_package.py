@@ -8,7 +8,7 @@ import tempfile
 import uuid
 import zipfile
 
-FILES = ['brand.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
+FILES = ['brand.py', 'terminal_progress.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
          'recall_memory.py', 'summarize_memory.py', 'claude_summary_provider.py',
          'install_agent_rules.py', 'WORKFLOW.md',
          'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
@@ -65,7 +65,7 @@ def build(snapshot, exchange, group_id):
         # Bootstrap validates the archive hash before touching its database.
         os.replace(archive, exchange / archive.name)
         for name in ['bootstrap_windows.py', 'START-WINDOWS.cmd', 'README-WINDOWS.md',
-                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py',
+                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py', 'terminal_progress.py',
                      'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
                      'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md']:
             staged = temp / name

@@ -5,6 +5,8 @@ import os
 import stat
 import zipfile
 
+from terminal_progress import TerminalProgress
+
 
 def extract_package(archive, app_dir):
     with zipfile.ZipFile(archive) as package:
@@ -108,8 +110,13 @@ def install(exchange, local_dir, node='windows', progress=None):
         try:
             total = sum(manifest['table_counts'].values())
             progress(f'[4/6] Importing {total:,} rows into SQLite')
-            counts = sqlite_memory.import_snapshot(staging, baseline,
-                progress=lambda done: progress(f'[4/6] Imported {done:,}/{total:,} rows'))
+            def imported(done):
+                row_progress = getattr(progress, 'rows', None)
+                if row_progress is not None:
+                    row_progress(done, total)
+                else:
+                    progress(f'[4/6] Imported {done:,}/{total:,} rows')
+            counts = sqlite_memory.import_snapshot(staging, baseline, progress=imported)
             if counts != manifest['table_counts']:
                 raise ValueError('bootstrap table counts mismatch')
             progress('[5/6] Initializing sync revisions and ID allocation')
@@ -145,25 +152,12 @@ def install(exchange, local_dir, node='windows', progress=None):
     progress('Ready: local database installed; starting synchronization')
     return result
 
-class ConsoleProgress:
-    """Display stage and elapsed time, not a fabricated completion percentage."""
+
+class ConsoleProgress(TerminalProgress):
+    """Bootstrap progress on stdout for compatibility with the launcher."""
     def __init__(self, interval=5):
-        import threading
-        import time
-        self.interval = interval
-        self.started = time.monotonic()
-        self.stage = 'Starting'
-        self.stop = threading.Event()
-        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
-
-    def __call__(self, message):
-        self.stage = message
-        print(message, flush=True)
-
-    def _heartbeat(self):
-        import time
-        while not self.stop.wait(self.interval):
-            print(f'  {self.stage} | elapsed {time.monotonic() - self.started:.0f}s', flush=True)
+        import sys
+        super().__init__(stream=sys.stdout, interval=interval)
 
     def __enter__(self):
         print('AgentMesh bootstrap starting - checking the private installation', flush=True)
@@ -171,12 +165,7 @@ class ConsoleProgress:
             print(__import__('brand').banner(), flush=True)
         except ImportError:
             print('[o-A-o] AgentMesh', flush=True)
-        self.thread.start()
-        return self
-
-    def __exit__(self, *args):
-        self.stop.set()
-        self.thread.join()
+        return super().__enter__()
 
 
 def main(argv=None):

@@ -25,3 +25,17 @@ def test_cycle_publishes_operator_status_without_database_paths(tmp_path):
     assert report['sync']['invalid'] == 0
     assert 'database' not in report and str(db) not in json.dumps(report)
     assert result['sync']['conflict'] == 0
+
+
+def test_worker_console_is_english_and_stdout_remains_json(tmp_path, capsys):
+    import sync_worker
+    db = tmp_path / 'local.db'
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    sqlite_memory.init_database(db)
+    memory_sync.initialize(db, 'windows', '00000000-0000-4000-8000-000000000001')
+    assert sync_worker.main([str(db), str(exchange), '--once']) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out)['node'] == 'windows'
+    assert 'Sync completed | Pending 0 | Conflicts 0 | Invalid 0' in output.err
+    assert output.err.isascii()

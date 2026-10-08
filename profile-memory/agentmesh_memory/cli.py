@@ -2,10 +2,13 @@
 import argparse
 import json
 from pathlib import Path
+import os
+import secrets
 import sqlite3
 import sys
 
-from .core import MemoryAPI, ProfileStore, KnowledgeError, Unavailable, canonical, checked_path, profile_id
+from .core import (MemoryAPI, ProfileStore, KnowledgeError, Unavailable, Conflict,
+                   canonical, checked_path, profile_id)
 
 
 def read_json(path):
@@ -39,7 +42,32 @@ def registry(root, principal):
             continue
         identity = profile_id(directory.name)
         stores[identity] = ProfileStore(directory, identity)
+    mirrors = checked_path(root / 'mirrors' / principal)
+    if mirrors.exists():
+        for directory in sorted(mirrors.iterdir()):
+            if not (directory / 'state' / 'profile.json').is_file():
+                continue
+            identity = profile_id(directory.name)
+            if identity in stores:
+                raise Conflict('ambiguous local authority and mirror identity')
+            stores[identity] = ProfileStore(directory, identity)
     return MemoryAPI(stores, principal=principal)
+
+
+def read_key(path):
+    with checked_path(path).open('rb') as source:
+        value = source.read(4097)
+    if not 32 <= len(value) <= 4096:
+        raise KnowledgeError('channel key file must contain 32..4096 raw bytes')
+    return value
+
+
+def write_json(path, value):
+    path = checked_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('x', encoding='utf-8') as target:
+        target.write(canonical(value) + '\n')
+    return str(path)
 
 
 def parser():
@@ -47,6 +75,10 @@ def parser():
     result.add_argument('--root', type=Path, required=True, help='Dedicated prototype workspace outside production')
     result.add_argument('--profile', default='alpha', help='Trusted local application principal, not a network credential')
     commands = result.add_subparsers(dest='command', required=True)
+    demo = commands.add_parser('demo', help='Exercise a new fixture-only two-profile exchange workspace')
+    demo.add_argument('--with-embeddings', action='store_true')
+    demo.add_argument('--model', default='bge-m3:latest')
+    demo.add_argument('--endpoint', default='http://127.0.0.1:11434')
     commands.add_parser('init', help='Initialize one standalone prototype profile')
     remember = commands.add_parser('remember', help='Record validated, unverified knowledge')
     remember.add_argument('--input', type=Path, required=True)
@@ -82,23 +114,90 @@ def parser():
     configure.add_argument('--mode', choices=('keyword', 'semantic', 'hybrid'), required=True)
     configure.add_argument('--engine', choices=('exact', 'hnsw'), default='exact')
     index = commands.add_parser('index', help='Explicitly rebuild an owner-local approved embedding projection')
+    index.add_argument('--issuer', help='Rebuild an authorized receiver-partitioned mirror projection')
     index.add_argument('--model', default='bge-m3:latest')
     index.add_argument('--endpoint', default='http://127.0.0.1:11434')
+    keygen = commands.add_parser('keygen', help='Create a private random HMAC channel key; never overwrite')
+    keygen.add_argument('--output', type=Path, required=True)
+    export = commands.add_parser('export', help='Write an authorized immutable semantic bundle')
+    export.add_argument('--recipient', required=True)
+    export.add_argument('--id', action='append', required=True)
+    export.add_argument('--key-file', type=Path, required=True)
+    export.add_argument('--output', type=Path, required=True)
+    export.add_argument('--no-history', action='store_true')
+    apply = commands.add_parser('apply', help='Apply a pinned owner channel to a separate read-only mirror')
+    apply.add_argument('--issuer', required=True)
+    apply.add_argument('--key-file', type=Path, required=True)
+    apply.add_argument('--input', type=Path, required=True)
+    retry = commands.add_parser('retry', help='Retry authenticated persisted pending packets to fixed point')
+    retry.add_argument('--issuer', required=True)
+    retry.add_argument('--key-file', type=Path, required=True)
+    status = commands.add_parser('status', help='Show content-free receipt/pending metadata')
+    status.add_argument('--issuer')
     return result
 
 
 def dispatch(args):
     root = checked_path(args.root)
     identity = profile_id(args.profile)
+    if args.command == 'demo':
+        from .demo import run
+        provider = None
+        if args.with_embeddings:
+            from .embeddings import OllamaEmbedding
+            provider = OllamaEmbedding(model=args.model, base_url=args.endpoint)
+        return run(root, provider)
     if args.command == 'init':
         store = ProfileStore(root / 'profiles' / identity, identity)
         return {'profile': identity, 'root': str(store.root), 'format': 'agentmesh-profile-v1'}
+    if args.command == 'keygen':
+        path = checked_path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(secrets.token_bytes(32))
+        return {'key_file': str(path), 'bytes': 32, 'authentication': 'pre-shared HMAC; not asymmetric'}
     api = registry(root, identity)
+    if args.command == 'export':
+        from .exchange import export_bundle
+        bundle = export_bundle(api, args.recipient, args.id, key=read_key(args.key_file), include_history=not args.no_history)
+        output = write_json(args.output, bundle)
+        return {'bundle_id': bundle['bundle_id'], 'output': output, 'records': len(bundle['records']),
+                'issuer': bundle['issuer'], 'recipient': bundle['recipient']}
+    if args.command == 'apply':
+        from .exchange import apply_bundle
+        issuer = profile_id(args.issuer)
+        if issuer == identity:
+            raise KnowledgeError('self-channel imports are outside this cross-profile prototype')
+        mirror_path = checked_path(root / 'mirrors' / identity / issuer)
+        if issuer in api.stores and api.stores[issuer].root != mirror_path:
+            raise Conflict('refuse shadowing a local authoritative profile with a mirror')
+        bundle, key = read_json(args.input), read_key(args.key_file)
+        mirror = ProfileStore(mirror_path, issuer)
+        return apply_bundle(mirror, bundle, recipient=identity, trusted_issuer=issuer, key=key)
+    if args.command == 'retry':
+        from .exchange import retry_pending
+        issuer = profile_id(args.issuer)
+        store = api._store(issuer)
+        return retry_pending(store, recipient=identity, trusted_issuer=issuer, key=read_key(args.key_file))
+    if args.command == 'status':
+        from .exchange import pending
+        from .retrieval import candidates
+        owner = args.issuer or identity
+        store = api._store(owner)
+        receipts = {}
+        with store.connection() as conn:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='exchange_receipts'").fetchone()
+            if exists:
+                receipts = {row['status']: row['n'] for row in conn.execute('SELECT status,count(*) n FROM exchange_receipts GROUP BY status')}
+        readable, _ = candidates(api, owners=[owner])
+        return {'profile': identity, 'owner': owner, 'readable_current': len(readable),
+                'pending': len(pending(store)), 'receipts': receipts}
     if args.command == 'configure':
         return api.configure_retrieval(mode=args.mode, vector_engine=args.engine)
     if args.command == 'index':
         from .embeddings import OllamaEmbedding
-        return api.rebuild_index(OllamaEmbedding(model=args.model, base_url=args.endpoint))
+        return api.rebuild_index(OllamaEmbedding(model=args.model, base_url=args.endpoint), owner=args.issuer)
     if args.command == 'remember':
         return api.remember(**read_json(args.input))
     if args.command in ('get', 'evidence', 'related'):

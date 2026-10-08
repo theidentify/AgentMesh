@@ -21,6 +21,48 @@ def successful(root, profile, *args):
     return json.loads(result.stdout)
 
 
+def test_cli_demo_exercises_isolated_exchange_and_refuses_reusing_workspace(tmp_path):
+    root = tmp_path / 'demo'
+    result = successful(root, 'alpha', 'demo')
+    assert result['checks'] and all(result['checks'].values())
+    assert result['retrieval']['keyword-exact']['top1_correct'] is True
+    assert not (root / 'receiver-node' / 'profiles' / 'alpha').exists()
+    assert invoke(root, 'alpha', 'demo').returncode == 1
+
+
+def test_cli_authorized_exchange_uses_separate_mirror_and_replay_receipts(tmp_path):
+    source_root, receiver_root = tmp_path / 'source-node', tmp_path / 'receiver-node'
+    successful(source_root, 'alpha', 'init')
+    successful(receiver_root, 'beta', 'init')
+    key_path = tmp_path / 'channel.key'
+    successful(source_root, 'alpha', 'keygen', '--output', str(key_path))
+    assert len(key_path.read_bytes()) == 32
+    request = tmp_path / 'request.json'
+    request.write_text(json.dumps({'content': 'Portable provider rule.',
+                                  'policy': {'read': ['alpha', 'beta'], 'export': ['beta']}}))
+    original = successful(source_root, 'alpha', 'remember', '--input', str(request))
+    output = tmp_path / 'bundle.json'
+    exported = successful(source_root, 'alpha', 'export', '--recipient', 'beta', '--id', original['id'],
+                          '--key-file', str(key_path), '--output', str(output))
+    assert exported['records'] == 1
+    result = successful(receiver_root, 'beta', 'apply', '--issuer', 'alpha', '--key-file', str(key_path), '--input', str(output))
+    assert result['status'] == 'applied'
+    replay = successful(receiver_root, 'beta', 'apply', '--issuer', 'alpha', '--key-file', str(key_path), '--input', str(output))
+    assert replay['status'] == 'duplicate'
+    readback = successful(receiver_root, 'beta', 'get', '--owner', 'alpha', '--id', original['id'])
+    assert readback['revision'] == original['revision']
+    assert readback['owner'] == 'alpha'
+    status = successful(receiver_root, 'beta', 'status', '--issuer', 'alpha')
+    assert status['pending'] == 0
+    assert status['receipts'] == {'applied': 1}
+    assert successful(receiver_root, 'beta', 'retry', '--issuer', 'alpha', '--key-file', str(key_path)) == []
+    assert not (receiver_root / 'profiles' / 'alpha').exists()
+    assert (receiver_root / 'mirrors' / 'beta' / 'alpha' / 'knowledge' / 'knowledge.sqlite3').exists()
+    assert 'content' not in status
+    again = invoke(source_root, 'alpha', 'keygen', '--output', str(key_path))
+    assert again.returncode == 1
+
+
 def test_cli_builds_real_http_fixture_index_and_switches_profile_default(tmp_path):
     from test_embeddings import server
     root = tmp_path / 'workspace'
@@ -31,6 +73,9 @@ def test_cli_builds_real_http_fixture_index_and_switches_profile_default(tmp_pat
     record = successful(root, 'alpha', 'remember', '--input', str(request))
     with server() as (url, state):
         state['response']['embeddings'] = [[1, 0]]
+        partition = successful(root, 'beta', 'index', '--issuer', 'alpha', '--endpoint', url)
+        assert partition['indexed'] == 1
+        assert (root / 'profiles' / 'alpha' / 'indexes' / 'vectors-beta.sqlite3').exists()
         indexed = successful(root, 'alpha', 'index', '--endpoint', url)
         assert indexed['indexed'] == 1
         successful(root, 'beta', 'configure', '--mode', 'hybrid', '--engine', 'hnsw')

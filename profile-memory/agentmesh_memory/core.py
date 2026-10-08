@@ -173,6 +173,14 @@ class ProfileStore:
         conn.execute('INSERT INTO audit(action,principal,id,revision) VALUES(?,?,?,?)',
                      ('record', principal, record['id'], revision))
 
+    def blocked(self, ident, conn=None):
+        """Authenticated incomplete packets conservatively block foreign reads."""
+        if conn is None:
+            with self.connection() as local:
+                return self.blocked(ident, local)
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='exchange_pending_blocks'").fetchone()
+        return bool(exists and conn.execute('SELECT 1 FROM exchange_pending_blocks WHERE id=? LIMIT 1', (ident,)).fetchone())
+
     def records(self):
         with self.connection() as conn:
             return [json.loads(row['data']) for row in conn.execute(
@@ -194,6 +202,8 @@ class MemoryAPI:
 
     def _record(self, owner, ident, revision=None):
         store = self._store(owner)
+        if self.principal != owner and store.blocked(ident):
+            raise AccessDenied('knowledge not accessible')
         try:
             current = store.raw(ident)
         except Conflict:
@@ -246,9 +256,9 @@ class MemoryAPI:
             results.append({'relation': relation, 'knowledge': knowledge})
         return results
 
-    def rebuild_index(self, provider):
+    def rebuild_index(self, provider, *, owner=None):
         from .retrieval import rebuild
-        return rebuild(self, provider)
+        return rebuild(self, provider, owner=owner)
 
     def configure_retrieval(self, *, mode, vector_engine='exact'):
         from .retrieval import configure

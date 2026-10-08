@@ -106,6 +106,19 @@ def test_semantic_rechecks_current_authorization_after_embedding_query(tmp_path)
     assert beta.search('paraphrase', mode='semantic', provider=provider)['results'] == []
 
 
+def test_receiver_rebuilds_only_authorized_mirror_projection_in_its_own_partition(tmp_path):
+    alpha, beta, stores = setup_pair(tmp_path)
+    allowed = alpha.remember('Provider configurable.', policy=policy())
+    alpha.remember('PRIVATE provider text.', policy={'read': ['alpha'], 'embed': ['local']})
+    provider = FixtureEmbedding()
+    beta.rebuild_index(provider, owner='alpha')
+    assert provider.calls == ['Provider configurable.']
+    assert (stores['alpha'].root / 'indexes' / 'vectors-beta.sqlite3').exists()
+    assert not (stores['alpha'].root / 'indexes' / 'vectors.sqlite3').exists()
+    response = beta.search('paraphrase', mode='semantic', vector_engine='hnsw', provider=provider, owners=['alpha'])
+    assert [r['id'] for r in response['results']] == [allowed['id']]
+
+
 def test_profile_default_is_persisted_and_request_override_does_not_mutate_it(tmp_path):
     alpha, beta, stores = setup_pair(tmp_path)
     original = alpha.remember('Configurable provider.', policy=policy())

@@ -117,9 +117,16 @@ def content_hash(record):
     return hashlib.sha256(record['content'].encode('utf-8')).hexdigest()
 
 
-def rebuild(api, provider):
-    store = api._store(api.principal)
-    records, _ = candidates(api, owners=[api.principal])
+def projection_path(store, principal):
+    profile_id(principal)
+    name = 'vectors.sqlite3' if principal == store.profile_id else 'vectors-' + principal + '.sqlite3'
+    return checked_path(store.root / 'indexes' / name)
+
+
+def rebuild(api, provider, *, owner=None):
+    owner = api.principal if owner is None else profile_id(owner)
+    store = api._store(owner)
+    records, _ = candidates(api, owners=[owner])
     eligible = [records[key] for key in sorted(records) if 'local' in records[key]['policy']['embed']]
     if not eligible:
         raise Unavailable('no active knowledge is approved for local embedding')
@@ -134,7 +141,7 @@ def rebuild(api, provider):
         vectors.extend(rows)
     space = checked_space(provider)
     vectors = validate_vectors(vectors, expected_count=len(eligible), expected_dimension=space['dimension'])
-    path = checked_path(store.root / 'indexes' / 'vectors.sqlite3')
+    path = projection_path(store, api.principal)
     with closing(sqlite3.connect(path, timeout=15)) as conn, conn:
         conn.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         conn.execute('''CREATE TABLE IF NOT EXISTS vectors (
@@ -159,7 +166,10 @@ def rank_semantic(api, records, query, provider, engine, limit):
     rows, space = {}, None
     try:
         for owner in sorted({record['owner'] for record in records.values()}):
-            path = checked_path(api._store(owner).root / 'indexes' / 'vectors.sqlite3')
+            store = api._store(owner)
+            path = projection_path(store, api.principal)
+            if not path.exists():
+                path = projection_path(store, owner)
             if not path.exists():
                 raise Unavailable('current embedding index unavailable; explicitly rebuild')
             with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=15)) as conn:

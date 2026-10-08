@@ -11,7 +11,57 @@ def pair(tmp_path):
 
 
 def shared_policy():
-    return {'read': ['alpha', 'beta'], 'retain': ['beta'], 'export': ['beta'], 'embed': ['local']}
+    return {'read': ['alpha', 'beta'], 'evidence': ['alpha', 'beta'], 'retain': ['beta'], 'export': ['beta'], 'embed': ['local']}
+
+
+def test_content_read_does_not_implicitly_share_source_evidence(tmp_path):
+    alpha, beta, _ = pair(tmp_path)
+    record = alpha.remember('Readable fact.', policy={'read': ['beta']},
+                            source={'text': 'EVIDENCE SECRET', 'kind': 'source', 'locator': 'fixture:private'},
+                            quote='EVIDENCE SECRET')
+    assert beta.get('alpha', record['id'])['content'] == 'Readable fact.'
+    assert beta.evidence('alpha', record['id']) == [{'availability': 'redacted'}]
+    assert alpha.evidence('alpha', record['id'])[0]['quote'] == 'EVIDENCE SECRET'
+    assert record['policy']['evidence'] == ['alpha']
+
+
+@pytest.mark.parametrize('failure', ['stale', 'foreign'])
+def test_rejected_correction_does_not_persist_source_files(tmp_path, failure):
+    alpha, beta, stores = pair(tmp_path)
+    original = alpha.remember('Original content.')
+    alpha.revise(original['id'], original['revision'], content='Current content.')
+    caller = alpha if failure == 'stale' else beta
+    store = stores[caller.principal]
+    before = set((store.root / 'sources').iterdir())
+    from agentmesh_memory.core import Conflict, AccessDenied
+    error = Conflict if failure == 'stale' else AccessDenied
+    with pytest.raises(error):
+        caller.revise(original['id'], original['revision'], content='Rejected content.',
+                      source={'text': 'ORPHAN SOURCE', 'kind': 'source', 'locator': 'fixture:rejected'},
+                      quote='ORPHAN SOURCE')
+    assert set((store.root / 'sources').iterdir()) == before
+
+
+@pytest.mark.parametrize('operation', ['remember', 'revise'])
+def test_failed_ledger_write_cleans_only_new_sources_and_rolls_back(tmp_path, monkeypatch, operation):
+    alpha, _, stores = pair(tmp_path)
+    store = stores['alpha']
+    original = alpha.remember('Original.', source={'text': 'ORIGINAL SOURCE', 'kind': 'source',
+                                                 'locator': 'fixture:original'}, quote='ORIGINAL SOURCE')
+    before = set((store.root / 'sources').iterdir())
+    put = store.put
+    def fail_after_insert(record, principal, conn=None):
+        put(record, principal, conn)
+        raise OSError('fixture ledger failure')
+    monkeypatch.setattr(store, 'put', fail_after_insert)
+    with pytest.raises(OSError, match='fixture ledger failure'):
+        source = {'text': 'NEW SOURCE', 'kind': 'source', 'locator': 'fixture:new'}
+        if operation == 'remember':
+            alpha.remember('Rejected.', source=source, quote='NEW SOURCE')
+        else:
+            alpha.revise(original['id'], original['revision'], content='Rejected.', source=source, quote='NEW SOURCE')
+    assert set((store.root / 'sources').iterdir()) == before
+    assert [(r['id'], r['revision']) for r in store.records()] == [(original['id'], original['revision'])]
 
 
 def test_owner_revision_preserves_history_and_prevents_stale_overwrite(tmp_path):

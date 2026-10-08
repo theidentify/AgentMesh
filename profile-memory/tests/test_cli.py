@@ -39,7 +39,7 @@ def test_cli_authorized_exchange_uses_separate_mirror_and_replay_receipts(tmp_pa
     assert len(key_path.read_bytes()) == 32
     request = tmp_path / 'request.json'
     request.write_text(json.dumps({'content': 'Portable provider rule.',
-                                  'policy': {'read': ['alpha', 'beta'], 'export': ['beta']}}))
+                                  'policy': {'read': ['alpha', 'beta'], 'evidence': ['beta'], 'export': ['beta']}}))
     original = successful(source_root, 'alpha', 'remember', '--input', str(request))
     output = tmp_path / 'bundle.json'
     exported = successful(source_root, 'alpha', 'export', '--recipient', 'beta', '--id', original['id'],
@@ -83,7 +83,7 @@ def test_cli_builds_real_http_fixture_index_and_switches_profile_default(tmp_pat
         assert response['effective_mode'] == 'hybrid'
         assert response['vector_engine'] == 'hnsw'
         assert response['results'][0]['id'] == record['id']
-        assert state['calls'][-1][2]['truncate'] is False
+        assert [call for call in state['calls'] if call[0] == 'POST'][-1][2]['truncate'] is False
     # A keyword override never contacts the unavailable embedding endpoint.
     plain = successful(root, 'beta', 'search', 'provider', '--mode', 'keyword')
     assert plain['effective_mode'] == 'keyword'

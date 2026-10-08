@@ -52,13 +52,26 @@ creates a child and requires an expected head. Concurrent heads remain conflicts
 The public read response also adds derived review/redaction metadata; those
 presentation fields are not part of the signed canonical revision.
 
-The owner is always included in read permission. Evidence defaults to read;
-retain/export default to empty and must be subsets of read. Local embedding
+The owner is always included in read permission. Evidence defaults to the owner
+only; granting content read does not implicitly disclose quotes, locators or
+source hashes to another profile. Retain/export default to empty and must be
+subsets of read. Local embedding
 requires explicit `embed: ["local"]`; no remote-provider egress is implemented.
 A historical permissive revision cannot bypass a stricter current policy.
 Selective retention records an exact origin revision and personal content, then
 requires review when that origin changes, disappears, conflicts or is revoked.
 No automatic rewrite, erasure or refresh of personal memory is promised.
+
+Defaults apply when normalizing newly submitted policies, not as an implicit
+migration of stored records. Earlier prototype workspaces may already contain explicit
+normalized evidence grants inherited from read. Recreate disposable workspaces,
+or have the owner explicitly revise their policies; this change does not erase
+historical grants or silently rewrite immutable revisions.
+
+Source persistence follows ownership and expected-revision validation. Ordinary
+write failures roll back the ledger and remove only source files newly created
+by that write. Existing sources remain untouched. SQLite plus source files are
+not a crash-atomic two-phase commit, and existing orphan files are not swept.
 
 ## Scoped envelope
 
@@ -117,6 +130,26 @@ reader's authorized, locally-embeddable current objects and does not overwrite
 the owner's projection. Retrieval prefers the reader projection when present;
 otherwise an available owner projection may serve authorized candidate IDs.
 A stale or incompatible projection fails explicitly and must be rebuilt.
+
+Rebuild revalidates revision, active status, read authorization and embedding
+approval immediately before every batch, inside a SQLite `BEGIN IMMEDIATE`
+reservation on the source authority/mirror. Canonical policy/revision/pending
+writers cannot commit while that batch is being disclosed to the provider.
+Writers may wait or time out; already authorized in-flight disclosure cannot be
+undone. Once a policy change commits, a later stale/unapproved batch aborts.
+All selected records are revalidated under the same reservation before projection
+publication, so a changed final batch cannot publish a stale rebuild. API instances
+sharing the canonical database use the same SQLite fence; direct filesystem or
+noncanonical writers are outside the trust boundary.
+
+The Ollama adapter checks the installed tag digest before and after each embedding
+request and rejects a changed digest without accepting vectors or pinning their
+dimension. The response contains no independently verifiable model digest. These
+checks do **not** establish immutable model identity under an ABA tag swap
+(A -> B -> A between checks) or a dishonest provider. Model administration must
+keep the tag frozen for the duration of inference/indexing. Strict adversarial
+revision binding needs an immutable server-side reference or coordinated model
+administration; neither is claimed here.
 
 Projection rebuilds are not knowledge writes or index synchronization. HNSW is
 optional, ephemeral and reproducibly seeded; approximate retrieval does not

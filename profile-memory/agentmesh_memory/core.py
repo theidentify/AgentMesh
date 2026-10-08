@@ -67,7 +67,7 @@ def policy_for(owner, policy=None):
         raise KnowledgeError('invalid policy')
     result = {}
     for action in ('read', 'evidence', 'retain', 'export'):
-        values = policy.get(action, policy.get('read', [owner]) if action == 'evidence' else [])
+        values = policy.get(action, [owner] if action == 'evidence' else [])
         if not isinstance(values, list) or len(values) > 64:
             raise KnowledgeError('invalid policy principals')
         result[action] = sorted({profile_id(p) for p in values} | ({owner} if action == 'read' else set()))
@@ -80,7 +80,7 @@ def policy_for(owner, policy=None):
     return result
 
 
-def source_evidence(store, source, quote):
+def source_evidence(store, source, quote, *, created=None):
     if source is None:
         if quote is not None:
             raise KnowledgeError('quote requires a source')
@@ -98,6 +98,8 @@ def source_evidence(store, source, quote):
     path = checked_path(store.root / 'sources' / (source_hash + '.txt'))
     if not path.exists():
         with path.open('x', encoding='utf-8') as out:
+            if created is not None:
+                created.append(path)
             out.write(text)
     return [{'source_id': 'sha256:' + source_hash, 'kind': source['kind'],
              'locator': locator, 'quote': quote, 'availability': 'inline'}]
@@ -142,6 +144,25 @@ class ProfileStore:
             conn.execute('PRAGMA foreign_keys=ON')
             with conn:
                 yield conn
+
+    @contextmanager
+    def source_write(self):
+        """Cleanup newly created sources on ordinary write/commit failures.
+
+        This is not filesystem/SQLite two-phase commit or crash recovery.
+        """
+        created = []
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                yield conn, created
+                conn.commit()
+            except BaseException:
+                # Cleanup before releasing the normal SQLite writer reservation.
+                # Existing source files are never removed by this transaction.
+                for path in created:
+                    checked_path(path).unlink(missing_ok=True)
+                raise
 
     def raw(self, ident, revision=None, conn=None):
         if conn is None:
@@ -276,8 +297,7 @@ class MemoryAPI:
 
     def revise(self, ident, expected_revision, *, content, source=None, quote=None):
         bounded_text(content, 'content')
-        evidence = source_evidence(self._store(self.principal), source, quote)
-        return self._change(ident, expected_revision, content=content, evidence=evidence)
+        return self._change(ident, expected_revision, source_update=(source, quote), content=content)
 
     def set_policy(self, ident, expected_revision, policy):
         return self._change(ident, expected_revision, policy=policy_for(self.principal, policy))
@@ -285,16 +305,17 @@ class MemoryAPI:
     def revoke(self, ident, expected_revision):
         return self._change(ident, expected_revision, status='revoked')
 
-    def _change(self, ident, expected_revision, **changes):
+    def _change(self, ident, expected_revision, *, source_update=None, **changes):
         store = self._store(self.principal)
-        with store.connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+        with store.source_write() as (conn, created):
             row = store.raw(ident, conn=conn)
             if not row or row['owner'] != self.principal:
                 raise AccessDenied('only the owning profile may revise')
             old = json.loads(row['data'])
             if old['revision'] != expected_revision:
                 raise Conflict('stale revision')
+            if source_update is not None:
+                changes['evidence'] = source_evidence(store, *source_update, created=created)
             record = deepcopy(old)
             record.pop('revision')
             record.update(changes)
@@ -329,11 +350,12 @@ class MemoryAPI:
         if kind not in KINDS:
             raise KnowledgeError('invalid knowledge kind')
         record_policy = policy_for(owner, policy)
-        evidence = source_evidence(store, source, quote)
-        record = {'id': 'urn:uuid:' + str(uuid.uuid4()), 'owner': owner, 'content': content,
-                  'kind': kind, 'project': project, 'status': 'active', 'parents': [],
-                  'verification': 'unverified', 'evidence': evidence, 'derived_from': [],
-                  'policy': record_policy}
-        record['revision'] = digest(record)
-        store.put(record, owner)
+        with store.source_write() as (conn, created):
+            evidence = source_evidence(store, source, quote, created=created)
+            record = {'id': 'urn:uuid:' + str(uuid.uuid4()), 'owner': owner, 'content': content,
+                      'kind': kind, 'project': project, 'status': 'active', 'parents': [],
+                      'verification': 'unverified', 'evidence': evidence, 'derived_from': [],
+                      'policy': record_policy}
+            record['revision'] = digest(record)
+            store.put(record, owner, conn)
         return self.get(owner, record['id'])

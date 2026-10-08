@@ -78,8 +78,9 @@ python profile-memory/agentmesh-memory.py --root /private/node-a --profile alpha
   remember --input /private/request.json
 ```
 
-Example non-sensitive request (all unspecified permissions fail closed except
-`evidence`, which defaults to `read`; read always includes the owner):
+Example non-sensitive request (foreign permissions default to denied;
+`evidence` defaults to the owner only, never to all readers; read always includes
+the owner):
 
 ```json
 {"content":"The provider must be configurable.","kind":"requirement","project":"demo","policy":{"read":["alpha","beta"],"evidence":["alpha","beta"],"retain":["beta"],"export":["beta"],"embed":["local"]}}
@@ -142,6 +143,18 @@ read/evidence restriction. Authenticated incomplete packets conservatively block
 foreign reads for their object IDs, including old revisions, until commit;
 owner/admin inspection remains available. Revocation cannot erase copies already
 retained or previously received by another party.
+
+The owner-only evidence default does not rewrite grants already stored in older
+prototype databases. Recreate disposable demo roots or explicitly restrict the
+policy through the owner API before reusing earlier trial data.
+
+Index rebuilds fence each disclosure batch and publication with a SQLite writer
+reservation, rechecking current authorization, revisions and embedding approval.
+Policy/import writes can wait or time out while an already authorized batch is in
+flight; committed withdrawals stop later batches, not content already disclosed.
+Keep the Ollama tag frozen during inference/indexing. Pre/post digest checks reject
+ordinary tag changes but cannot prove immutable identity against an ABA tag swap;
+see the precise limitations in [the contract](CONTRACT.md).
 
 Imported evidence is an inline quote and source digest, not proof that the
 receiver possesses the original source file. Content is unverified data, not an

@@ -1,8 +1,10 @@
 """Provider-neutral embeddings and a local-only Ollama adapter.
 
 No model pull, fallback, remote endpoint or persisted corpus is supported.
-The model digest is pinned at construction and rechecked before each nonempty
-batch. Dimension is None until the first successful embed and then pinned.
+The model digest is pinned at construction and rechecked before and after each
+nonempty batch. These checks detect ordinary tag changes, not an ABA tag swap;
+operator-controlled model tags must remain frozen throughout inference. Dimension
+is None until the first successful, revision-checked embed and then pinned.
 Vectors are fresh L2-normalized float lists. This adapter uses only stdlib.
 
 Bounds: 64 texts/batch, 32768 characters/text, 131072 characters/batch,
@@ -123,5 +125,7 @@ class OllamaEmbedding:
         if not isinstance(data, dict) or data.get('model') != self.model:
             raise ValueError('invalid embedding response model')
         vectors = validate_vectors(data.get('embeddings'), expected_count=len(texts), expected_dimension=self._dimension)
+        if self._installed_revision() != self._revision:
+            raise RuntimeError('installed model revision changed during embedding; discard batch')
         self._dimension = len(vectors[0])
         return vectors

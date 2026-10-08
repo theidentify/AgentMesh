@@ -123,6 +123,17 @@ def projection_path(store, principal):
     return checked_path(store.root / 'indexes' / name)
 
 
+def approved_batch(api, batch):
+    for record in batch:
+        try:
+            current = api._record(record['owner'], record['id'])
+        except (AccessDenied, Conflict) as exc:
+            raise Unavailable('knowledge authorization changed during indexing') from exc
+        if (current['revision'] != record['revision'] or current['status'] != 'active' or
+                'local' not in current['policy']['embed']):
+            raise Unavailable('knowledge revision or embedding approval changed during indexing')
+
+
 def rebuild(api, provider, *, owner=None):
     owner = api.principal if owner is None else profile_id(owner)
     store = api._store(owner)
@@ -134,24 +145,33 @@ def rebuild(api, provider, *, owner=None):
     vectors = []
     for start in range(0, len(eligible), 16):
         batch = eligible[start:start + 16]
-        rows = validate_vectors(provider.embed([record['content'] for record in batch]), expected_count=len(batch))
-        space = checked_space(provider)
-        if not same_space(initial, space):
-            raise Unavailable('embedding identity changed during indexing')
-        vectors.extend(rows)
+        # A SQLite write reservation is the disclosure fence for all canonical
+        # writers, including other API instances/processes and mirror imports.
+        # Revocation can commit between batches, never in a check/send window.
+        with store.connection() as disclosure:
+            disclosure.execute('BEGIN IMMEDIATE')
+            approved_batch(api, batch)
+            rows = validate_vectors(provider.embed([record['content'] for record in batch]), expected_count=len(batch))
+            space = checked_space(provider)
+            if not same_space(initial, space):
+                raise Unavailable('embedding identity changed during indexing')
+            vectors.extend(rows)
     space = checked_space(provider)
     vectors = validate_vectors(vectors, expected_count=len(eligible), expected_dimension=space['dimension'])
     path = projection_path(store, api.principal)
-    with closing(sqlite3.connect(path, timeout=15)) as conn, conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-        conn.execute('''CREATE TABLE IF NOT EXISTS vectors (
-            id TEXT PRIMARY KEY, revision TEXT NOT NULL, content_hash TEXT NOT NULL, vector TEXT NOT NULL)''')
-        conn.execute('DELETE FROM vectors')
-        conn.execute('DELETE FROM metadata')
-        conn.execute('INSERT INTO metadata VALUES(?,?)', ('space', canonical(space)))
-        conn.executemany('INSERT INTO vectors VALUES(?,?,?,?)', [
-            (record['id'], record['revision'], content_hash(record), canonical(vector))
-            for record, vector in zip(eligible, vectors)])
+    with store.connection() as disclosure:
+        disclosure.execute('BEGIN IMMEDIATE')
+        approved_batch(api, eligible)
+        with closing(sqlite3.connect(path, timeout=15)) as conn, conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS vectors (
+                id TEXT PRIMARY KEY, revision TEXT NOT NULL, content_hash TEXT NOT NULL, vector TEXT NOT NULL)''')
+            conn.execute('DELETE FROM vectors')
+            conn.execute('DELETE FROM metadata')
+            conn.execute('INSERT INTO metadata VALUES(?,?)', ('space', canonical(space)))
+            conn.executemany('INSERT INTO vectors VALUES(?,?,?,?)', [
+                (record['id'], record['revision'], content_hash(record), canonical(vector))
+                for record, vector in zip(eligible, vectors)])
     return {'indexed': len(eligible), 'excluded': len(records) - len(eligible), 'space': space,
             'index_version': digest({'space': space, 'revisions': sorted((r['id'], r['revision']) for r in eligible)})}
 

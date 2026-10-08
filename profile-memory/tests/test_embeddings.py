@@ -55,6 +55,7 @@ def test_real_http_embed_pins_digest_and_reports_space():
         assert state['calls'] == [
             ('GET', '/api/tags', None), ('GET', '/api/tags', None),
             ('POST', '/api/embed', {'model': 'bge-m3:latest', 'input': ['fixture one', 'fixture two'], 'truncate': False}),
+            ('GET', '/api/tags', None),
         ]
 
 
@@ -83,6 +84,24 @@ def test_rejects_invalid_timeout_before_network(timeout):
         with pytest.raises(ValueError):
             OllamaEmbedding(timeout=timeout)
         connection.assert_not_called()
+
+
+def test_refuses_tag_change_between_inventory_and_embedding_response():
+    from agentmesh_memory.embeddings import OllamaEmbedding
+    with server() as (url, state):
+        adapter = OllamaEmbedding(base_url=url)
+        request = adapter._request
+        def swap_after_inventory(path, payload=None):
+            result = request(path, payload)
+            if path == '/api/tags':
+                state['digest'] = 'b' * 64
+                state['response']['embeddings'] = [[0, 1]]
+            return result
+        adapter._request = swap_after_inventory
+        with pytest.raises(RuntimeError, match='revision'):
+            adapter.embed(['fixture'])
+        assert adapter.space['revision'] == DIGEST
+        assert adapter.space['dimension'] is None
 
 
 def test_refuses_changed_model_revision_before_post():

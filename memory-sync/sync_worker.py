@@ -12,7 +12,8 @@ import memory_sync
 import sqlite_memory
 
 
-def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False, progress=None):
+def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
+             force_legacy_summary=False, progress=None):
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
@@ -43,7 +44,9 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         try:
             if progress:
                 progress('Checking primary summarization')
-            result = workflow.summarize(database, settings, force=force_summary)
+            # Process startup is not an OS boot. Keep legacy startup behavior only.
+            force = force_summary or (force_legacy_summary and settings.get('summary_backend', 'legacy') == 'legacy')
+            result = workflow.summarize(database, settings, force=force)
             workflow_report['summary'] = result
             if result['status'] == 'committed':
                 if progress:
@@ -78,7 +81,9 @@ def failed(report):
     return bool('error' in report or
                 (report.get('postgres_mirror') or {}).get('error') or
                 (workflow.get('ingestion') or {}).get('error') or
+                (workflow.get('ingestion') or {}).get('errors') or
                 (workflow.get('summary') or {}).get('error') or
+                (workflow.get('summary') or {}).get('status') in ('stale', 'blocked', 'failed') or
                 report.get('sync', {}).get('conflict') or
                 report.get('sync', {}).get('invalid'))
 
@@ -92,6 +97,8 @@ def main(argv=None):
     parser.add_argument('exchange')
     parser.add_argument('--interval', type=float, default=60)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--force-summary', action='store_true',
+                        help='explicitly bypass the summary schedule on the first cycle')
     parser.add_argument('--workflow-config', help='private machine configuration; defaults beside DB')
     parser.add_argument('--postgres', action='store_true', help='read-only PostgreSQL mirror using OMP_MEMORY_DSN')
     args = parser.parse_args(argv)
@@ -108,8 +115,8 @@ def main(argv=None):
                 try:
                     progress('Starting sync cycle')
                     report = run_once(args.database, args.exchange, dsn,
-                        workflow_config=args.workflow_config, force_summary=first,
-                        progress=progress)
+                        workflow_config=args.workflow_config, force_summary=args.force_summary and first,
+                        force_legacy_summary=first, progress=progress)
                     first = False
                 except Exception as exc:
                     report = {'error': type(exc).__name__}

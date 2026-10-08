@@ -16,11 +16,15 @@ bootstrap packaging, and setup entry points for macOS, Linux and Windows are
 implemented. Three independent SQLite peers have been exercised against a
 real read-only memory snapshot, with all eight memory tables compared.
 
-This is **not a production replacement** for the existing PostgreSQL memory
-workflow and does not install every agent application. Actual Windows-host
-and Linux-host installation/service verification remain outstanding. The
-staged PostgreSQL mirror is read-only; peer edits do not write back to PostgreSQL.
-Reasoning, digest jobs and production retrieval callers have not been migrated.
+SQLite-native ingestion, bounded durable-memory summaries, read-only recall,
+and deterministic export are implemented. Backend selection and deployment are
+explicit; checking out this repository does not migrate an existing installation
+or install every agent application. See [SQLite writer](memory-sync/SQLITE-WRITERS.md)
+and [consumer and scheduling](memory-sync/SQLITE-CONSUMERS.md) documentation.
+Actual Windows-host and Linux-host production verification remain outstanding.
+The optional PostgreSQL mirror is a migration/staging reader; do not run it
+against an independently writable SQLite authority. Peer edits do not write
+back to PostgreSQL, and a zero-loss reverse migration is not provided.
 
 ## Setup
 

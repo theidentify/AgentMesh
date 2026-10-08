@@ -47,7 +47,7 @@ class QueryPlan:
     terms: tuple[str, ...]
 
 
-def analyze_query(query, *, project=None):
+def analyze_query(query, *, project=None, task=None):
     normalized = ' '.join(query.split())
     terms = []
     for token in WORD_RE.findall(normalized.lower()):
@@ -56,7 +56,7 @@ def analyze_query(query, *, project=None):
             piece = piece.strip('_- ')
             if len(piece) >= 2 and piece not in STOP_WORDS and piece not in terms:
                 terms.append(piece)
-    return QueryPlan(normalized, project, tuple(sorted(set(t.upper() for t in TASK_RE.findall(normalized)))),
+    return QueryPlan(normalized, project, tuple(sorted(set(t.upper() for t in TASK_RE.findall(normalized)) | ({task.upper()} if task else set()))),
                      tuple(k for k, needles in INTENT_TERMS.items()
                            if any(n in normalized.lower() for n in needles)) or ('status',),
                      tuple(terms[:12]))
@@ -144,7 +144,7 @@ def _match_clause(plan, task_field):
     return '(' + (' OR '.join(clauses) or '0') + ')', params
 
 
-def recall(database, query, *, project=None, limit=12):
+def recall(database, query, *, project=None, task=None, limit=12):
     """Return query, query_plan, ranked results, and referenced event evidence.
 
     Evidence has source_type/source_id (the selected parent), memory_id or
@@ -153,7 +153,7 @@ def recall(database, query, *, project=None, limit=12):
     """
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise ValueError('limit must be a positive integer')
-    plan = analyze_query(query, project=project)
+    plan = analyze_query(query, project=project, task=task)
     if not plan.query:
         raise ValueError('query must not be empty')
     pool = max(limit * 5, 40)
@@ -190,6 +190,12 @@ def recall(database, query, *, project=None, limit=12):
         for row in summaries:
             row['project'] = row['scope_key'] if row['scope'] == 'project' else plan.project
         match, args = _match_clause(plan, 'task_ref')
+        # Quote every token; never expose FTS operators from untrusted query text.
+        # unicode61 normalization complements Thai/literal substring fallback.
+        if plan.terms and c.execute("SELECT 1 FROM sqlite_master WHERE name='events_fts'").fetchone():
+            fts = ' OR '.join('"' + token.replace('"', '""') + '"' for token in plan.terms)
+            match = '(' + match + ' OR id IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ?))'
+            args.append(fts)
         events = [_decode(r) for r in c.execute(
             "SELECT *, 'event' AS source_type, 'session' AS scope, source_session_id AS scope_key, "
             '0.6 AS confidence, occurred_at AS updated_at FROM observation_events '
@@ -211,7 +217,7 @@ def recall(database, query, *, project=None, limit=12):
                                  'ORDER BY e.occurred_at DESC,e.id DESC', (row['id'],))
             elif row['source_type'] == 'summary':
                 meta = row['metadata'] if isinstance(row['metadata'], dict) else {}
-                ids = meta.get('event_ids', [])
+                ids = [*(meta.get('event_ids') or []), *(meta.get('batch_event_ids') or [])]
                 refs = meta.get('source_event_ids', [])
                 ids = [v for v in ids if isinstance(v, int) and not isinstance(v, bool)] if isinstance(ids, list) else []
                 # The sibling summarizer cites integer observation IDs here;
@@ -247,10 +253,11 @@ def main(argv=None):
     parser.add_argument('database')
     parser.add_argument('query')
     parser.add_argument('--project')
+    parser.add_argument('--task')
     parser.add_argument('--limit', type=int, default=12)
     args = parser.parse_args(argv)
     try:
-        result = recall(args.database, args.query, project=args.project, limit=args.limit)
+        result = recall(args.database, args.query, project=args.project, task=args.task, limit=args.limit)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (OSError, ValueError, sqlite3.Error) as exc:

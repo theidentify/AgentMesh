@@ -8,7 +8,9 @@ import tempfile
 import uuid
 import zipfile
 
-FILES = ['brand.py', 'terminal_progress.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
+FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest_scheduler.py',
+         'shared_memory_context.py', 'sqlite_export.py', 'retention_audit.py', 'SQLITE-CONSUMERS.md', 'SQLITE-WRITERS.md',
+         'brand.py', 'terminal_progress.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
          'recall_memory.py', 'summarize_memory.py', 'claude_summary_provider.py',
          'install_agent_rules.py', 'WORKFLOW.md',
          'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',

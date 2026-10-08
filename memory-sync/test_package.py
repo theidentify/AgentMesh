@@ -27,6 +27,8 @@ def test_build_package_preserves_snapshot_and_publishes_only_allowlisted_sources
         assert all(not name.startswith('/') and '..' not in Path(name).parts for name in names)
         assert not any(name.endswith(('.db', '.env')) or 'deployment' in name for name in names)
         assert 'memory_sync.py' in names
+        assert {'bounded_digest.py','bounded_protocol.py','digest_worker.py','digest_scheduler.py',
+                'shared_memory_context.py','sqlite_export.py','retention_audit.py','SQLITE-CONSUMERS.md'} <= set(names)
         manifest = json.loads(package.read('bootstrap-manifest.json'))
         assert manifest['table_counts'] == dict.fromkeys(tables, 0)
     assert json.loads((exchange / 'agentmesh-package.json').read_text()) == result

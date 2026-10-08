@@ -28,10 +28,16 @@ class Cache:
             return self.value
 
 
-def make_server(home, port, sqlite=None, dsn=None):
+def make_server(home, port, sqlite=None, dsn=None, primary=None):
     home = Path(home).expanduser()
     readers = {'sqlite':adapters.MemoryReader(sqlite=sqlite), 'postgres':adapters.MemoryReader(dsn=dsn, backend='postgres')}
-    default = 'postgres' if dsn else 'sqlite'
+    primary = primary or os.environ.get('INSIGHT_PRIMARY_BACKEND', 'postgres')
+    primary = 'postgres' if primary == 'pg' else primary
+    if primary not in ('postgres', 'sqlite'):
+        raise ValueError('invalid primary backend')
+    default = primary if (dsn if primary == 'postgres' else sqlite) else ('postgres' if dsn else 'sqlite')
+    readers['postgres'].label = 'PostgreSQL authority' if primary == 'postgres' else 'PostgreSQL read-only comparison'
+    readers['sqlite'].label = 'SQLite authority' if primary == 'sqlite' else 'SQLite staging'
     metrics_cache = Cache(lambda: adapters.metrics(home))
     ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite)) for key in readers}
 
@@ -39,7 +45,7 @@ def make_server(home, port, sqlite=None, dsn=None):
         rows = []
         for key, reader in readers.items():
             configured = bool(dsn) if key == 'postgres' else bool(sqlite)
-            row = {'id':key,'label':reader.label,'configured':configured,'available':False,'authority':key=='postgres','items':None,'summaries':None}
+            row = {'id':key,'label':reader.label,'configured':configured,'available':False,'authority':key==primary,'items':None,'summaries':None}
             if configured:
                 try:
                     with reader.connect() as c:
@@ -49,7 +55,7 @@ def make_server(home, port, sqlite=None, dsn=None):
                 except Exception:
                     row['error'] = 'Configured backend unavailable'
             rows.append(row)
-        return {'default':default,'rows':rows,'readonly':True}
+        return {'default':default,'primary':primary,'rows':rows,'readonly':True}
 
     connection_cache = Cache(connections)
 

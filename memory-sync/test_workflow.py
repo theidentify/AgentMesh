@@ -42,7 +42,7 @@ def test_worker_ingests_native_peer_and_syncs_recall_evidence(tmp_path):
     assert str(transcript) not in json.dumps(report)
 
 
-def test_failed_provider_is_rate_limited_without_advancing_memory(tmp_path):
+def test_failed_provider_retries_without_advancing_success_clock_or_memory(tmp_path):
     import pytest
     import workflow
     from summarize_memory import SummaryError
@@ -59,8 +59,11 @@ def test_failed_provider_is_rate_limited_without_advancing_memory(tmp_path):
     settings = {'summarize': True, 'summary': {'command': [str(tmp_path / 'missing-provider')]}}
     with pytest.raises(SummaryError):
         workflow.summarize(db, settings)
-    assert workflow.summarize(db, settings)['status'] == 'scheduled'
+    with pytest.raises(SummaryError):
+        workflow.summarize(db, settings)
     with sqlite3.connect(db) as c:
+        assert c.execute('SELECT last_run FROM _agentmesh_worker_state').fetchone()[0] == 0
+        assert c.execute('SELECT lease_until FROM _agentmesh_worker_state').fetchone()[0] == 0
         assert c.execute('SELECT count(*) FROM memory_items').fetchone()[0] == 0
         assert c.execute('SELECT count(*) FROM summary_state').fetchone()[0] == 0
 

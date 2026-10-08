@@ -41,6 +41,14 @@ class InsightTests(unittest.TestCase):
             self.assertNotIn('secret', json.dumps(data))
             self.assertIsNone(data['cron']['window_pending'])
             self.assertFalse(data['cron']['idle_inferred'])
+            sqlite_run = dict(record_type='run',run_id='sqlite-committed',status='committed',llm_api_calls=1,
+                              input_total_tokens=100,input_uncached_tokens=None,actual_cost_usd=None)
+            (home/'omp-memory/summary-metrics.jsonl').write_text(json.dumps(sqlite_run)+'\n')
+            data = adapters.metrics(home)
+            self.assertEqual(data['report']['new_successful_llm']['sample_count'], 1)
+            self.assertEqual(data['report']['new_successful_llm']['input_total_tokens']['total'], 100)
+            self.assertIsNone(data['report']['new_successful_llm']['input_uncached_tokens']['total'])
+            self.assertIsNone(data['report']['new_successful_llm']['actual_cost_usd']['total'])
 
 
 class MemoryTests(unittest.TestCase):
@@ -150,6 +158,25 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(request('/health', headers={'Origin':'https://evil.test'})[0], 403)
             for method in ('POST','PUT','PATCH','DELETE'):
                 self.assertEqual(request('/api/memory', method=method)[0], 405)
+
+    def test_explicit_authority_does_not_promote_staging_by_default(self):
+        import server
+        import threading
+        import urllib.request
+        with tempfile.TemporaryDirectory() as folder:
+            for primary, expected in ((None, 'PostgreSQL authority'), ('sqlite', 'SQLite authority')):
+                app = server.make_server(Path(folder), 0, sqlite=Path(folder)/'absent.db', primary=primary)
+                thread = threading.Thread(target=app.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    result = json.load(urllib.request.urlopen('http://127.0.0.1:'+str(app.server_port)+'/api/connections'))
+                    self.assertEqual(next(r for r in result['rows'] if r['authority'])['label'], expected)
+                    self.assertEqual(result['primary'], primary or 'postgres')
+                finally:
+                    app.shutdown()
+                    app.server_close()
+            with self.assertRaises(ValueError):
+                server.make_server(Path(folder), 0, primary='invalid')
 
     def test_cache_expiry_and_sanitized_failure(self):
         import server

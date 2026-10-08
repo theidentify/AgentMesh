@@ -104,7 +104,7 @@ class MemoryReader:
                 refs = self.query(c, 'SELECT event_id FROM ' + self.prefix + 'memory_sources WHERE memory_id=? ORDER BY event_id LIMIT 21', [item_id])
                 ids = [r['event_id'] for r in refs]
             else:
-                ids = (metadata or {}).get('source_event_ids', [])
+                ids = [*((metadata or {}).get('source_event_ids') or []), *((metadata or {}).get('event_ids') or []), *((metadata or {}).get('batch_event_ids') or [])]
                 # Some summaries store evidence references under source_events.
                 if not ids:
                     ids = [r.get('event_id', r.get('id')) if isinstance(r, dict) else r for r in (metadata or {}).get('source_events', [])]
@@ -179,7 +179,7 @@ def operations(home, reader, sync_db):
             raise RuntimeError('No staging database')
         with sqlite_ro(sync_db) as c:
             config = c.execute('SELECT node FROM _sync_config LIMIT 1').fetchone()
-            sync = {'available':True,'backend':'SQLite staging','node':config['node'] if config else None,'transport':'unknown','receipts':c.execute('SELECT COUNT(*) FROM _sync_receipts').fetchone()[0],'outbox': [dict(r) for r in c.execute('SELECT published,COUNT(*) AS packets FROM _sync_outbox GROUP BY published')],'diagnostics':[dict(r) for r in c.execute('SELECT kind,COUNT(*) AS count FROM _sync_diagnostics GROUP BY kind')],'workers':[],'note':'Receipts confirm local packet import, not peer convergence. Worker timestamps do not prove transport connectivity.'}
+            sync = {'available':True,'backend':('SQLite authority' if reader.label == 'SQLite authority' else 'SQLite staging'),'node':config['node'] if config else None,'transport':'unknown','receipts':c.execute('SELECT COUNT(*) FROM _sync_receipts').fetchone()[0],'outbox': [dict(r) for r in c.execute('SELECT published,COUNT(*) AS packets FROM _sync_outbox GROUP BY published')],'diagnostics':[dict(r) for r in c.execute('SELECT kind,COUNT(*) AS count FROM _sync_diagnostics GROUP BY kind')],'workers':[],'note':'Receipts confirm local packet import, not peer convergence. Worker timestamps do not prove transport connectivity.'}
             try:
                 sync['workers'] = [dict(r) for r in c.execute('SELECT consumer,last_run,lease_until FROM _agentmesh_worker_state ORDER BY consumer LIMIT 30')]
                 sync['worker_metadata_available'] = True

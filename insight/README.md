@@ -37,10 +37,13 @@ library discovery is insufficient. Connection and SQL timeouts are three seconds
 
 `--home` defaults to `HERMES_HOME`, otherwise `~/.hermes`. No SQLite database is
 created when an optional path is absent or invalid. The connection picker keeps
-**PostgreSQL authority** separate from **SQLite staging**; failures never cause
-silent fallback to another backend. PostgreSQL is selected initially when its
-DSN is configured. The staging database supplies sync metadata even when the
-memory browser is inspecting PostgreSQL.
+**authority** separate from **comparison/staging**. Set
+`INSIGHT_PRIMARY_BACKEND=sqlite` explicitly only after a verified local writer and
+caller cutover; SQLite is then authority/default and PostgreSQL is read-only
+comparison. Without that selector PostgreSQL remains authority and SQLite is
+staging. Selecting a backend is not a migration and an unavailable source is
+reported, never repaired by a write or a silent query fallback. The local SQLite
+database supplies sync metadata independently of the memory browser selection.
 
 ## Views and sources
 

@@ -149,10 +149,25 @@ def ingest_file(path, transcript, project=None, agent='omp'):
     if source.is_dir() and str(source) not in sys.path:
         sys.path.insert(0, str(source))
     from omp_memory.parser import parse_omp_lines
-    from omp_memory.codex_parser import parse_codex_lines, read_session_meta
-    from omp_memory.claude_parser import parse_claude_lines
+    from omp_memory.codex_parser import (parse_codex_lines, read_session_meta,
+                                         infer_codex_project, is_reviewer_session)
+    from omp_memory.claude_parser import parse_claude_lines, infer_claude_project
 
     transcript = Path(transcript).expanduser().resolve()
+    if agent not in ('omp', 'codex', 'claude'):
+        raise ValueError('unsupported agent')
+    meta = None
+    if agent == 'codex':
+        meta = read_session_meta(transcript)
+        if meta is None or is_reviewer_session(meta):
+            return {'inserted': 0, 'lines_processed': 0, 'next_offset': 0, 'skipped': True}
+        project = project or infer_codex_project(meta)
+    elif agent == 'claude':
+        project = project or infer_claude_project(transcript)
+    else:
+        workspace = transcript.parent.name
+        project = project or (workspace[len('-Workspaces-'):] if workspace.startswith('-Workspaces-')
+                              else workspace.lstrip('-') or 'unknown')
     stat = transcript.stat()
     identity = f'{stat.st_dev}:{stat.st_ino}'
     with _connect(path) as c, c:

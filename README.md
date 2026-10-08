@@ -47,6 +47,22 @@ optional and separate from installation: generate a macOS LaunchAgent or Linux
 systemd user unit with `memory-sync/platform_service.py`, inspect it, then
 register it using the documented OS commands.
 
+## AgentMesh Insight
+
+`insight/` is the integrated local, read-only workspace for memory and operations.
+It includes Overview, Metrics, Memory Browser, Agents, Pipeline (ingest and
+summary), and Sync views, with explicit PostgreSQL-authority versus SQLite-staging
+connections. It does not change memory, cron jobs, provider configuration or sync
+algorithms, and it does not infer agent or transport liveness from file existence.
+
+```sh
+python3 -u insight/server.py --port 0
+```
+
+The server prints its loopback URL. Optional runtime paths and a PostgreSQL DSN
+are configured outside Git; absent sources are shown as unavailable. See
+[Insight setup, privacy boundaries and verification](insight/README.md).
+
 ## Architecture
 
 Each device owns its local SQLite database. Immutable change packets travel

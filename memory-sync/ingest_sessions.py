@@ -69,6 +69,10 @@ def ingest(database, roots=None, home=None, project=None):
                             continue
                         report['processed'] += 1
                         result = sqlite_memory.ingest_file(database, transcript, project=project, agent=agent)
+                        if result.get('skipped'):
+                            report['processed'] -= 1
+                            report['skipped'] += 1
+                            continue
                         report['inserted'] += result['inserted']
                         # The backend tolerates malformed JSON; surface its newly
                         # consumed errors without re-reading/redacting transcripts.

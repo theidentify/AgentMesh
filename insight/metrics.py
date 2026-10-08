@@ -85,7 +85,7 @@ def report(audit_path, state_path, metrics_path, job_id='6fcf5646d34d'):
             row.update(input_uncached_tokens=session.get('input_tokens'),cache_read_tokens=session.get('cache_read_tokens'),reasoning_tokens=session.get('reasoning_tokens'),llm_api_calls=session.get('api_call_count'),actual_cost_usd=session.get('actual_cost_usd'),model=session.get('model'),session_id=session['id'])
         baseline.append(row)
     runs = list({r['run_id']:r for r in read_jsonl(metrics_path) if r.get('record_type')=='run'}.values())
-    successful=[r for r in runs if r.get('status') in ('dry_run','replay','applied') and (r.get('llm_api_calls') or 0)>0]
+    successful=[r for r in runs if r.get('status') in ('dry_run','replay','applied','committed','validated') and (r.get('llm_api_calls') or 0)>0]
     return {'baseline':aggregate(baseline),'baseline_matched':aggregate([r for r in baseline if r.get('session_id')]),'baseline_matched_sessions':len(matched),'baseline_sessions_available':len(sessions),
             'new_successful_llm':aggregate(successful),'new_latest_llm':successful[-1] if successful else None,
             'baseline_latest':baseline[-1] if baseline else None,'new':aggregate(runs),

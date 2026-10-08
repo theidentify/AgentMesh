@@ -34,6 +34,19 @@ def ingest(database, settings, *, postgres_mirror=False):
 def summarize(database, settings, *, force=False):
     if not settings.get('summarize', False):
         return {'status': 'disabled'}
+    backend = settings.get('summary_backend', 'legacy')
+    if backend not in ('legacy', 'bounded'):
+        raise ValueError('unknown summary backend')
+    if backend == 'bounded':
+        from digest_scheduler import tick
+        from bounded_digest import seed_coverage
+        options = dict(settings.get('summary', {}))
+        if not options.get('root'):
+            raise ValueError('bounded scheduler needs an explicit export root')
+        if settings.get('seed_legacy', False):
+            seed_coverage(database, consumer=options.get('consumer', 'agentmesh/sqlite-summary-v1'),
+                          primary_node=options.get('primary_node', 'mac'))
+        return tick(database, force=force, **options)
     from summarize_memory import DEFAULT_CONSUMER, seed_legacy_coverage, summarize_once
     options = dict(settings.get('summary', {}))
     if not options.get('command'):
@@ -63,11 +76,13 @@ def summarize(database, settings, *, force=False):
         lease = now + options.get('timeout', 300) + 60
         c.execute('UPDATE _agentmesh_worker_state SET lease_until=?,owner=? WHERE consumer=?',
                   (lease, owner, consumer))
+    success = False
     try:
         result = summarize_once(database, **options)
+        success = result.get('status') in ('committed', 'idle')
         return result
     finally:
         with memory_sync.connect(database) as c, c:
-            c.execute('''UPDATE _agentmesh_worker_state SET last_run=?,
+            c.execute('''UPDATE _agentmesh_worker_state SET last_run=CASE WHEN ? THEN ? ELSE last_run END,
                 lease_until=0,owner=NULL WHERE consumer=? AND owner=?''',
-                (time.time(), consumer, owner))
+                (success, time.time(), consumer, owner))

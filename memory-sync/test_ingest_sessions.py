@@ -42,7 +42,9 @@ class IngestSessionsTests(unittest.TestCase):
 
     def test_default_home_discovers_all_three_agents_with_parser_redaction(self):
         for agent, relative in [('omp', '.omp/agent/sessions/nested/a.jsonl'), ('codex', '.codex/sessions/2026/a.jsonl'), ('claude', '.claude/projects/project/a.jsonl')]:
-            self.write(self.home / relative, agent)
+            path = self.write(self.home / relative, agent)
+            if agent == 'codex':
+                path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'main'}}) + '\n' + path.read_text())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             report = self.ingest()
@@ -51,6 +53,24 @@ class IngestSessionsTests(unittest.TestCase):
         self.assertTrue(all('[REDACTED]' in row[1] and 'SECRET' not in row[1] for row in self.rows()))
         self.assertEqual(output.getvalue(), '')
         self.assertNotIn('SECRET', json.dumps(report))
+
+    def test_production_project_inference_and_codex_guards(self):
+        root = self.home / 'native'
+        good = self.write(root / 'codex/a.jsonl', 'codex')
+        meta = {'type': 'session_meta', 'payload': {'id': 'main', 'cwd': str(Path.home() / 'Workspaces/demo/nested')}}
+        good.write_text(json.dumps(meta) + '\n' + good.read_text())
+        self.write(root / 'codex/missing.jsonl', 'codex', ident='missing')
+        review = self.write(root / 'codex/review.jsonl', 'codex', ident='review')
+        review.write_text(json.dumps({'type': 'session_meta', 'payload': {'thread_source': 'guardian_review'}}) + '\n' + review.read_text())
+        claude_dir = '-' + str(Path.home() / 'Workspaces/demo').strip('/').replace('/', '-')
+        self.write(root / 'claude' / claude_dir / 'main.jsonl', 'claude')
+        self.write(root / 'omp/-Workspaces-demo/main.jsonl')
+        report = self.ingest(roots={a: root / a for a in ('codex', 'claude', 'omp')})
+        self.assertEqual(report['inserted'], 3)
+        self.assertEqual(report['skipped'], 2)
+        self.assertEqual({(r[0], r[2]) for r in self.rows()}, {('codex', 'demo-nested'), ('claude', 'demo'), ('omp', 'demo')})
+        with sqlite3.connect(self.db) as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM ingestion_cursors').fetchone()[0], 3)
 
     def test_repeat_skips_cursor_complete_files_and_append_is_incremental(self):
         path = self.write(self.home / 'custom/nested/a.jsonl')
@@ -89,8 +109,9 @@ class IngestSessionsTests(unittest.TestCase):
     def test_invalid_files_report_only_error_classes_and_continue(self):
         root = self.home / 'custom'
         self.write(root / 'healthy.jsonl')
-        (root / 'invalid.jsonl').write_text('SECRET not-json\n', encoding='utf-8')
-        (root / 'bad-shape.jsonl').write_text(json.dumps({'type': 'event_msg', 'payload': 'SECRET'}) + '\n', encoding='utf-8')
+        meta = json.dumps({'type': 'session_meta', 'payload': {'id': 'main'}}) + '\n'
+        (root / 'invalid.jsonl').write_text(meta + 'SECRET not-json\n', encoding='utf-8')
+        (root / 'bad-shape.jsonl').write_text(meta + json.dumps({'type': 'event_msg', 'payload': 'SECRET'}) + '\n', encoding='utf-8')
         report = self.ingest(roots={'codex': root})
         self.assertEqual(report['errors'], 2)
         self.assertEqual(sorted(report['error_classes']), ['AttributeError', 'JSONDecodeError'])

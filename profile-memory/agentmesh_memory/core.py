@@ -246,6 +246,10 @@ class MemoryAPI:
             results.append({'relation': relation, 'knowledge': knowledge})
         return results
 
+    def rebuild_index(self, provider):
+        from .retrieval import rebuild
+        return rebuild(self, provider)
+
     def configure_retrieval(self, *, mode, vector_engine='exact'):
         from .retrieval import configure
         return configure(self, mode=mode, vector_engine=vector_engine)

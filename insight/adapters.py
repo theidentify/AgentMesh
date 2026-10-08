@@ -1,5 +1,7 @@
 """Read-only adapters. Only allowlisted content-free metrics leave this module."""
 import json
+import os
+import stat
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -131,9 +133,97 @@ def unavailable(label):
     return {'available':False,'error':label + ' unavailable or not configured'}
 
 
-def operations(home, reader, sync_db):
+PEER_COUNTS = ('memory_items', 'memory_summaries', 'memory_sources', 'observation_events',
+               'source_sessions', 'ingestion_cursors', 'ingestion_errors', 'summary_state')
+PEER_SYNC = ('received', 'outbox', 'pending', 'conflict', 'invalid')
+
+
+def peer_status(home, now=None):
+    """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
     from datetime import datetime, timezone
-    result = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
+    now = now or datetime.now(timezone.utc)
+    root = Path(home)/'omp-memory/sync/status'
+    rows = []
+    for node, label in (('mac', 'Mac'), ('windows', 'Windows')):
+        row = {'peer':label, 'available':False, 'availability':'missing',
+               'ack_at':None, 'age_seconds':None, 'freshness':'unknown', 'has_error':None, 'partial':False,
+               'counts':dict.fromkeys(PEER_COUNTS), 'sync':dict.fromkeys(PEER_SYNC),
+               'cycle':dict.fromkeys(('applied', 'published', 'pending', 'conflict', 'invalid',
+                                      'summary_applied', 'summary_published'))}
+        rows.append(row)
+        path = root/(node+'.json')
+        try:
+            # No symlinks or files outside the configured home; bound read before JSON parsing.
+            if path.is_symlink() or path.resolve().parent != root.resolve() or not path.resolve().is_relative_to(Path(home).resolve()):
+                raise ValueError('Invalid status location')
+            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
+            with os.fdopen(fd, 'rb') as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise ValueError('Regular status file required')
+                raw = source.read(65537)
+            if len(raw) > 65536:
+                raise ValueError('Status too large')
+            report = json.loads(raw)
+            if not isinstance(report, dict) or report.get('format') != 'agentmesh-status-v1' or report.get('node') != node:
+                raise ValueError('Invalid status format')
+            row.update(available=True, availability='available')
+            value = report.get('updated_at')
+            try:
+                if not isinstance(value, str) or len(value) > 64:
+                    raise ValueError('Invalid timestamp')
+                when = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if when.tzinfo is None:
+                    raise ValueError('Offset required')
+                row['ack_at'] = when.astimezone(timezone.utc).isoformat()
+                row['age_seconds'] = round((now - when).total_seconds(), 1)
+                row['freshness'] = ('future timestamp' if row['age_seconds'] < 0 else
+                                    'fresh' if row['age_seconds'] <= 300 else 'stale')
+            except (TypeError, ValueError, OverflowError):
+                pass
+            def obj(value):
+                return value if isinstance(value, dict) else {}
+            def counter(value):
+                return value if type(value) is int and 0 <= value <= 2**53-1 else None
+            for key, fields in (('counts', PEER_COUNTS), ('sync', PEER_SYNC)):
+                row[key] = {field:counter(obj(report.get(key)).get(field)) for field in fields}
+            cycle = obj(report.get('cycle'))
+            receive, publish = obj(cycle.get('receive')), obj(cycle.get('publish'))
+            row['cycle'].update({key:counter(receive.get(key)) for key in ('applied', 'pending', 'conflict', 'invalid')})
+            row['cycle']['published'] = counter(publish.get('published'))
+            workflow = obj(report.get('workflow'))
+            summary_cycle = obj(workflow.get('summary_sync'))
+            row['cycle']['summary_applied'] = counter(obj(summary_cycle.get('receive')).get('applied'))
+            row['cycle']['summary_published'] = counter(obj(summary_cycle.get('publish')).get('published'))
+            # Project presence only: never send workflow statuses, error messages or payloads.
+            ingestion, summary = obj(workflow.get('ingestion')), obj(workflow.get('summary'))
+            row['has_error'] = bool(report.get('error') or obj(report.get('postgres_mirror')).get('error') or
+                                    ingestion.get('error') or ingestion.get('errors') or summary.get('error') or
+                                    summary.get('status') in ('stale', 'blocked', 'failed') or
+                                    receive.get('unavailable') or publish.get('unavailable') or
+                                    obj(summary_cycle.get('receive')).get('unavailable') or
+                                    obj(summary_cycle.get('publish')).get('unavailable') or
+                                    row['sync']['invalid'] or row['sync']['conflict'] or
+                                    row['counts']['ingestion_errors'] or row['cycle']['invalid'] or row['cycle']['conflict'])
+            row['partial'] = row['ack_at'] is None or any(
+                report.get(key) is not None and not isinstance(report.get(key), dict)
+                for key in ('workflow', 'postgres_mirror')) or any(
+                workflow.get(key) is not None and not isinstance(workflow.get(key), dict)
+                for key in ('ingestion', 'summary', 'summary_sync')) or any(
+                value is None for group in ('counts', 'sync') for value in row[group].values()) or any(
+                row['cycle'][key] is None for key in ('applied', 'published', 'pending', 'conflict', 'invalid'))
+            if row['partial'] and not row['has_error']:
+                row['has_error'] = None
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError, RecursionError):
+            row['availability'] = 'unavailable or malformed'
+    return {'rows':rows, 'transport':'unknown', 'freshness_threshold_seconds':300,
+            'note':'Completed-cycle ACKs only, not a live process, Syncthing connection or proof of full convergence. Fresh means age at most 5 minutes; stale does not mean offline. Missing or invalid values remain unknown.'}
+
+
+def operations(home, reader, sync_db, transport=None):
+    from datetime import datetime, timezone
+    result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
     try:
         with reader.connect() as c:
             rows = reader.query(c, 'SELECT source_agent,SUM(sessions) AS sessions,SUM(events) AS events,MAX(observed_at) AS observed_at FROM (SELECT source_agent,COUNT(*) AS sessions,0 AS events,MAX(last_seen_at) AS observed_at FROM ' + reader.prefix + 'source_sessions GROUP BY source_agent UNION ALL SELECT source_agent,0 AS sessions,COUNT(*) AS events,MAX(occurred_at) AS observed_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent) observed GROUP BY source_agent ORDER BY source_agent')
@@ -188,6 +278,13 @@ def operations(home, reader, sync_db):
         result['sync'] = sync
     except Exception:
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
+    result['sync']['peers'] = peer_status(home)
+    if transport is None:
+        from syncthing_transport import observe
+        transport = observe(home)
+    result['sync']['transport_status'] = transport
+    result['sync']['transport'] = transport['status']
+    result['sync']['peers']['transport'] = transport['status']
     return redact(result)
 
 

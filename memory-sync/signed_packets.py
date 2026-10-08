@@ -117,8 +117,16 @@ def no_symlinks(path):
     return path
 
 
+def windows_private(path, *, provision=False):
+    if os.name == 'nt':
+        import windows_acl
+        windows_acl.apply(no_symlinks(path), provision=provision)
+
+
 def read_local(path, *, private=False):
     path = no_symlinks(path)
+    if private:
+        windows_private(path)
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
     fd = os.open(path, flags)
     with os.fdopen(fd, 'rb') as stream:
@@ -138,6 +146,7 @@ def write_local(path, value, *, exclusive=False):
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as stream:
+            windows_private(temp, provision=True)
             stream.write(wire(value)); stream.flush(); os.fsync(stream.fileno())
         if exclusive:
             os.link(temp, path)  # Atomic no-clobber publication.
@@ -168,6 +177,8 @@ def init_identity(directory, group, node, sender=None):
     directory = no_symlinks(directory)
     # Refuse reuse, including partial initialization; never silently rotate a key.
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    windows_private(directory, provision=True)
+    private_directory(directory)
     key = Private.generate()
     public = key.public_key().public_bytes_raw()
     p = {'format': 'agentmesh-peer-key-v1', 'group': group, 'node': node,
@@ -181,6 +192,7 @@ def private_directory(directory):
     directory = no_symlinks(directory)
     info = directory.stat()
     if not stat.S_ISDIR(info.st_mode): raise ValueError('security directory required')
+    windows_private(directory)
     if os.name != 'nt' and (info.st_uid != os.getuid() or info.st_mode & 0o077):
         raise ValueError('security directory must be owner-only (chmod 700)')
     return directory
@@ -227,6 +239,7 @@ class Security:
     def __init__(self, directory):
         Private, _, _ = crypto()
         self.directory = private_directory(directory)
+        read_trust(self.directory)  # Reject unsafe trust storage before loading any key material.
         raw = parse(read_local(self.directory / 'identity.json', private=True))
         if type(raw) is not dict or set(raw) != PUBLIC_FIELDS | {'private_key'}: raise ValueError('invalid private identity')
         self.public = check_public({k: raw[k] for k in PUBLIC_FIELDS})
@@ -235,6 +248,8 @@ class Security:
         self.check_self()
 
     def check_self(self):
+        private_directory(self.directory)
+        windows_private(self.directory / 'identity.json')
         entry = read_trust(self.directory)['peers'].get(self.public['key_id'])
         if not entry or entry['revoked'] or {k: entry[k] for k in PUBLIC_FIELDS} != self.public:
             raise ValueError('local signing key is not authorized')

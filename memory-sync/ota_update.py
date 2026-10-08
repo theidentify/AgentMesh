@@ -351,7 +351,7 @@ def bootstrap_consumer(local, source):
             raise ValueError('bootstrap worker unhealthy')
         consumer = no_symlinks(local / 'consumer')
         consumer.mkdir(mode=0o700, exist_ok=True)
-        for name in ('ota_update.py', 'runtime_lock.py', 'signed_packets.py', 'build_package.py'):
+        for name in ('ota_update.py', 'runtime_lock.py', 'signed_packets.py', 'windows_acl.py', 'build_package.py'):
             target = no_symlinks(consumer / name)
             data = read_local(source / name)
             if target.exists():

@@ -11,7 +11,10 @@ A persistent random `sender` UUID identifies a machine; `node` still means one o
 `mac`, `windows`, `linux`, the existing allocation slots. A key is explicitly pinned
 to **group UUID + sender UUID + allocation slot**. A public key inside a proposal or
 packet is never authority. The fingerprint is the full lowercase SHA-256 of the raw
-32-byte Ed25519 public key. Compare it over an independent authenticated channel.
+32-byte Ed25519 public key. Confirm the fingerprint **and group UUID, sender UUID,
+allocation slot** over an independent authenticated channel. Never copy proposal
+values into approval expectations: an authentic key fingerprint does not prove
+that the proposal's claimed scope belongs to that key.
 Approvals and revocations are local files, not synchronized trust announcements.
 
 This does NOT implement an arbitrary-node registry or allocation migration. At most
@@ -56,11 +59,27 @@ secure backups are the operator's responsibility. Keep the entire security direc
 outside Syncthing, Git, source trees, snapshots, public exports, and screenshots.
 
 POSIX creation uses directory 700 and files 600; private/trust file reads enforce
-owner identity and no group/other permissions. Symlink paths are refused. Windows
-mode bits do not enforce NTFS ACLs: provision a user-private directory, inspect with
-`icacls <directory>`, and restrict inherited access using the site's account policy.
-No Windows ACL verification is claimed by the local tests. Do not copy a private
-key to another machine; export only its public identity.
+owner identity and no group/other permissions. Symlink/reparse paths are refused.
+Windows uses a fixed, bounded, noninteractive Windows PowerShell 5.1 ACL adapter.
+Paths are passed as environment data to `Get-Acl`/`Set-Acl -LiteralPath`, not embedded
+in scripts; localized `icacls` output is never parsed. Newly created private
+directories/files get a protected DACL with explicit current-user and SYSTEM full
+control only. Existing storage is verified, never silently repaired. The owner
+must be the current account's `S-1-5-21-...` SID; unsupported account SID types fail
+closed. Directory, identity and trust checks reject all other principals (including
+Everyone, Users, Authenticated Users and Administrators), inherited grants, null or
+unprotected DACLs, and unsupported/conditional ACEs. Key loading, signing and strict
+activation fail closed when ACLs cannot be verified. Operator-reviewed remediation
+of existing ACLs is required; initialization never rotates an existing key.
+
+Portable tests exercise documented, valid SDDL fixtures and the machine-SID adapter
+contract. They do **not** establish native Windows provisioning or execution: a
+Windows host test remains required before rollout. Do not copy a private key to
+another machine; export only its public identity. Microsoft references:
+[Get-Acl](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-acl?view=powershell-5.1),
+[Set-Acl](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-acl?view=powershell-5.1),
+[inheritance protection](https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.objectsecurity.setaccessruleprotection),
+and [icacls](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls).
 
 ## Explicit pairing CLI
 

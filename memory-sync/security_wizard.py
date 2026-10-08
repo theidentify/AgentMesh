@@ -23,6 +23,10 @@ ACK_FIELDS = {'format', 'group', 'node', 'sender', 'key_id', 'packet_uuid', 'pac
 STEPS = {'prerequisites': 1, 'identity': 2, 'pairing': 3, 'roundtrip': 4, 'activation': 5, 'active': 6}
 
 
+class ReceiptCollision(ValueError):
+    """A rejected immutable receipt requires a deliberate local recovery action."""
+
+
 def stamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -31,16 +35,29 @@ def backup(database, destination):
     destination = signed.no_symlinks(destination)
     if destination.exists(): raise ValueError('backup path already exists')
     source = signed.no_symlinks(database)
+    new_parent = not destination.parent.exists()
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # Exclusive file creation prevents an existing recovery snapshot being overwritten.
-    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600); os.close(fd)
+    signed.windows_private(destination.parent, provision=new_parent)
+    signed.private_directory(destination.parent)
+    temp = destination.with_name('.' + destination.name + '.' + str(uuid.uuid4()) + '.tmp')
     try:
-        with closing(sqlite3.connect(source.as_uri()+'?mode=ro', uri=True)) as src, closing(sqlite3.connect(destination)) as dst:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try: signed.windows_private(temp, provision=True)
+        finally: os.close(fd)
+        with closing(sqlite3.connect(source.as_uri()+'?mode=ro', uri=True)) as src, closing(sqlite3.connect(temp)) as dst:
             src.backup(dst)
             if dst.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': raise ValueError('invalid backup')
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
+        # Both SQLite handles are closed before publication (including on Windows).
+        with temp.open('r+b') as stream:
+            stream.flush(); os.fsync(stream.fileno())
+        os.link(temp, destination)  # Atomic no-clobber: never expose partial backups.
+        if os.name != 'nt':
+            fd = os.open(destination.parent, os.O_RDONLY)
+            try: os.fsync(fd)
+            finally: os.close(fd)
+    finally:
+        # Also cleans up SystemExit/KeyboardInterrupt, without deleting existing backups.
+        temp.unlink(missing_ok=True)
     return destination
 
 
@@ -112,11 +129,12 @@ def signed_ack(security, packet, receipt_checksum):
     return ack
 
 
-def verify_ack(security, ack, probe, peer):
+def verify_ack(security, ack, probe, peer, *, origin=None):
     _, Public, InvalidSignature = signed.crypto()
     if type(ack) is not dict or set(ack) != ACK_FIELDS or ack['format'] != ACK_FORMAT or ack['result'] != 'isolated_sqlite_probe_committed':
         raise ValueError('invalid signed application receipt')
-    expected = (security.public['group'], peer['node'], peer['sender'], probe['uuid'], probe['digest'], security.public['sender'], security.public['node'])
+    origin = security.public if origin is None else origin
+    expected = (security.public['group'], peer['node'], peer['sender'], probe['uuid'], probe['digest'], origin['sender'], origin['node'])
     actual = tuple(ack[k] for k in ('group', 'node', 'sender', 'packet_uuid', 'packet_digest', 'origin_sender', 'origin_node'))
     if actual != expected: raise ValueError('receipt is for a different peer or challenge')
     trust = signed.read_trust(security.directory)['peers'].get(ack['key_id'])
@@ -149,7 +167,7 @@ def stage_probe(security, exchange):
     return {'uuid': packet['uuid'], 'digest': signed.receipt_digest(packet)}
 
 
-def receive_probes(security, exchange):
+def receive_probes(security, exchange, *, confirm_quarantine_receipts=False):
     import sqlite_memory
     processed = 0
     root = signed.no_symlinks(Path(exchange) / 'pairing' / 'smoke')
@@ -181,16 +199,40 @@ def receive_probes(security, exchange):
             if not destination.exists(): signed.write_local(destination, ack, exclusive=True)
             else:
                 # Keep immutable receipt; never convert a delivered file into trust.
-                old = signed.parse(signed.read_local(destination))
-                if old['packet_digest'] != ack['packet_digest']: raise ValueError('receipt collision')
+                raw = signed.read_local(destination)
+                try:
+                    verify_ack(security, signed.parse(raw),
+                               {'uuid': packet['uuid'], 'digest': signed.receipt_digest(packet)},
+                               security.public, origin=packet)
+                except (ValueError, TypeError, KeyError):
+                    if not confirm_quarantine_receipts:
+                        raise ReceiptCollision('invalid receipt collision; explicit quarantine approval required')
+                    quarantine_receipt(security, destination, raw, packet['uuid'])
+                    signed.write_local(destination, ack, exclusive=True)
             processed += 1
     return processed
 
 
+def quarantine_receipt(security, destination, raw, packet_uuid):
+    # Confirmation is local CLI/operator policy, never a value from the exchange.
+    root = signed.no_symlinks(security.directory / 'receipt-quarantine')
+    new_root = not root.exists()
+    root.mkdir(mode=0o700, exist_ok=True)
+    signed.windows_private(root, provision=new_root)
+    signed.private_directory(root)
+    target = root / (str(uuid.uuid4()) + '.json')
+    signed.write_local(target, {'format': 'agentmesh-receipt-quarantine-v1',
+                               'packet_uuid': packet_uuid, 'receipt_bytes_hex': raw.hex()}, exclusive=True)
+    if signed.read_local(destination) != raw: raise ValueError('receipt changed during quarantine; retry explicitly')
+    destination.unlink()  # Preserved immutable bytes first; republication remains no-clobber.
+
+
 def resume(database, exchange, security_dir, state_path, *, create_identity=False,
-           display_name=None, peer_public=None, confirm_fingerprint=None, publish_proposal=False,
+           display_name=None, peer_public=None, confirm_fingerprint=None, expected_group=None,
+           expected_node=None, expected_sender=None, publish_proposal=False,
            send_probe=False, accept_probes=False, activate=False, confirm_both_peers=False,
-           confirm_legacy_boundary=False, dry_run=False, allow_install_crypto=False):
+           confirm_legacy_boundary=False, dry_run=False, allow_install_crypto=False,
+           confirm_quarantine_receipts=False):
     prerequisites = inspect(database, exchange, security_dir, state_path)
     state = load_state(state_path)
     bindings = {'database': str(signed.no_symlinks(database)), 'exchange': str(signed.no_symlinks(exchange)),
@@ -255,7 +297,9 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
         if confirm_fingerprint is None:
             state['next_action'] = 'confirm_peer_fingerprint_out_of_band'
         else:
-            signed.approve(security_dir, peer, confirm_fingerprint, prerequisites['group'], peer['node'], peer['sender'])
+            if expected_group is None or expected_node is None or expected_sender is None:
+                raise ValueError('independent expected group, node and sender are required for approval')
+            signed.approve(security_dir, peer, confirm_fingerprint, expected_group, expected_node, expected_sender)
             state.update(peer=peer, pairing='approved', step='roundtrip', next_action='send_and_receive_signed_probe')
     peer = state.get('peer')
     if peer:
@@ -264,7 +308,7 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
             state.update(pairing='revoked' if entry else 'unknown', roundtrip=None, step='pairing', next_action='confirm_peer_fingerprint_out_of_band')
     if accept_probes:
         if state['pairing'] != 'approved': raise ValueError('peer must be explicitly approved first')
-        receive_probes(security, exchange)
+        receive_probes(security, exchange, confirm_quarantine_receipts=confirm_quarantine_receipts)
     if send_probe:
         if state['pairing'] != 'approved': raise ValueError('peer must be explicitly approved first')
         if state.get('probe') is None: state['probe'] = stage_probe(security, exchange)
@@ -282,6 +326,7 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
     if activate:
         if not current_roundtrip_verified or state['pairing'] != 'approved' or not confirm_both_peers or not confirm_legacy_boundary:
             raise ValueError('activation requires signed probe receipt and explicit both-peer compatibility/legacy-boundary approval')
+        security.check_self()  # Reverify directory/key/trust ACLs immediately before strict activation.
         # Only operator-confirmed activation writes the production DB latch.
         with sync.connect(database) as c, c:
             c.execute('BEGIN IMMEDIATE')
@@ -312,17 +357,31 @@ def interactive(args):
     print('[3/6] Pairing | Proposals remain untrusted until independently confirmed')
     proposal = input('Publish public-only proposal? Type PUBLISH or Enter to skip: ').strip() == 'PUBLISH'
     peer_file = input('Peer public proposal file, or Enter to stay pending: ').strip()
-    fingerprint = None
+    fingerprint = None; expected_group = None; expected_node = None; expected_sender = None
     if peer_file:
         peer = signed.check_public(signed.parse(signed.read_local(peer_file)))
         print('Proposed scope | Group ' + peer['group'] + ' | Slot ' + peer['node'] + ' | Sender ' + peer['sender'])
+        print('Confirm ALL scope values over an independent authenticated channel. Do NOT copy proposal values as expectations.')
         fingerprint = input('Full peer fingerprint confirmed out of band, or Enter to stay pending: ').strip() or None
+        if fingerprint:
+            expected_group = input('Independently confirmed peer group UUID: ').strip()
+            expected_node = input('Independently confirmed peer allocation slot (mac/windows/linux): ').strip()
+            expected_sender = input('Independently confirmed peer sender UUID: ').strip()
     result = resume(args.database, args.exchange, args.security_dir, args.state, publish_proposal=proposal,
-                    peer_public=peer_file or None, confirm_fingerprint=fingerprint)
+                    peer_public=peer_file or None, confirm_fingerprint=fingerprint,
+                    expected_group=expected_group, expected_node=expected_node, expected_sender=expected_sender)
     if result['pairing'] != 'approved': return result
     print('[4/6] Signed roundtrip | Isolated SQLite probe requires a remote signed committed receipt')
     if input('Send local probe and process approved peer probes? Type PROBE: ').strip() == 'PROBE':
-        result = resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True)
+        try:
+            result = resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
+                            confirm_quarantine_receipts=args.confirm_quarantine_receipts)
+        except ReceiptCollision:
+            print('Invalid colliding receipt rejected. Recovery preserves exact bytes in private local quarantine.')
+            if input('After reviewing the collision, quarantine and republish genuine receipts? Type QUARANTINE: ').strip() != 'QUARANTINE':
+                raise
+            result = resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
+                            confirm_quarantine_receipts=True)
     if result['roundtrip'] != 'verified':
         print('Pending remote application receipt. Peer must approve your fingerprint and resume its probe step.')
         return result
@@ -344,6 +403,10 @@ def main(argv=None):
     parser.add_argument('--interactive', action='store_true'); parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--create-identity', action='store_true'); parser.add_argument('--display-name')
     parser.add_argument('--publish-proposal', action='store_true'); parser.add_argument('--peer-public'); parser.add_argument('--confirm-fingerprint')
+    for name in ('expected-group', 'expected-node', 'expected-sender'):
+        parser.add_argument('--' + name, help='independently confirmed out-of-band value, NOT copied from proposal')
+    parser.add_argument('--confirm-quarantine-receipts', action='store_true',
+                        help='explicitly preserve invalid colliding receipt bytes locally and republish genuine receipts')
     parser.add_argument('--send-probe', action='store_true'); parser.add_argument('--accept-probes', action='store_true')
     parser.add_argument('--activate', action='store_true'); parser.add_argument('--confirm-both-peers', action='store_true')
     parser.add_argument('--confirm-legacy-boundary', action='store_true'); parser.add_argument('--install-crypto', action='store_true')
@@ -356,6 +419,8 @@ def main(argv=None):
             result = resume(args.database, args.exchange, args.security_dir, args.state,
                 create_identity=args.create_identity, display_name=args.display_name, peer_public=args.peer_public,
                 confirm_fingerprint=args.confirm_fingerprint, publish_proposal=args.publish_proposal,
+                expected_group=args.expected_group, expected_node=args.expected_node, expected_sender=args.expected_sender,
+                confirm_quarantine_receipts=args.confirm_quarantine_receipts,
                 send_probe=args.send_probe, accept_probes=args.accept_probes, activate=args.activate,
                 confirm_both_peers=args.confirm_both_peers, confirm_legacy_boundary=args.confirm_legacy_boundary,
                 dry_run=args.dry_run or args.action == 'status', allow_install_crypto=args.install_crypto)

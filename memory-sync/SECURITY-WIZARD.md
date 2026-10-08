@@ -1,7 +1,7 @@
 # Security setup wizard
 
 The CLI wizard is opt-in and resumable. It implements private identity, explicit
-fingerprint pairing, an isolated signed SQLite probe and an operator-approved
+fingerprint-plus-scope pairing, an isolated signed SQLite probe and an operator-approved
 upgrade boundary. It does not install Syncthing/Python, approve peers from exchange
 files, allocate arbitrary node ranges, publish a real package, or start a service.
 Read [SIGNED-SYNC.md](SIGNED-SYNC.md) before activation.
@@ -50,7 +50,11 @@ opts into a bounded (180-second), shell-free pip subprocess; failure does not hi
 behind a stdlib fallback. Python and Syncthing installation remains manual.
 
 An upgrade creates a SQLite backup with the backup API before identity/pairing.
-It never copies a live SQLite/WAL or overwrites a prior backup. The private wizard
+It writes an exclusive private temporary file, validates integrity, closes both
+SQLite handles, fsyncs the file, then publishes atomically without overwriting an
+existing backup. POSIX also fsyncs the parent directory before wizard state is
+written. Interrupted backup work, including SystemExit, leaves no final-looking
+partial backup. It never copies a live SQLite/WAL. The private wizard
 state records scope and progress. A resumed session refuses changed paths, group,
 slot or persistent sender. Once a sender is recorded, a lost identity cannot be
 re-created with `--create-identity`; restore it or plan explicit recovery.
@@ -61,8 +65,8 @@ Scripted/operator resumptions:
 # Explicit initial private identity; the DB's existing slot/group are reused.
 PYTHON security_wizard.py --database DB --exchange EXCHANGE --security-dir KEYS --state STATE resume --create-identity --display-name "Workstation Mac" --publish-proposal
 # View your full fingerprint with signed_packets.py; exchange PUBLIC proposals only.
-# Peer fingerprint must be independently confirmed, not copied blindly from proposal.
-PYTHON security_wizard.py --database DB --exchange EXCHANGE --security-dir KEYS --state STATE resume --peer-public PEER_PUBLIC_JSON --confirm-fingerprint FULL_SHA256
+# Confirm ALL values independently out of band. Do NOT copy the proposal as expectations.
+PYTHON security_wizard.py --database DB --exchange EXCHANGE --security-dir KEYS --state STATE resume --peer-public PEER_PUBLIC_JSON --confirm-fingerprint FULL_SHA256 --expected-group GROUP_UUID --expected-node windows --expected-sender PEER_SENDER_UUID
 # Repeat explicit trust on the peer, then each peer sends/processes probes.
 PYTHON security_wizard.py --database DB --exchange EXCHANGE --security-dir KEYS --state STATE resume --send-probe --accept-probes
 # Resume after the peer's receipt has actually arrived.
@@ -73,7 +77,10 @@ Proposals are public keys under `pairing/proposals/`, never trusted automaticall
 Display names are presentation only, English ASCII, and do not confer authority or
 new ID ranges. The legacy three-slot limitation remains: do not add a second Mac
 writer under a different display name. Each receiving operator approves the full
-fingerprint and group/sender/slot binding. No dashboard trust button is provided.
+fingerprint and group/sender/slot binding. All four values must be independently
+supplied; a fingerprint alone cannot authorize proposal-supplied scope. Interactive
+setup prompts for each value without using the proposal as a default. No dashboard
+trust button is provided.
 
 ## Signed roundtrip evidence
 
@@ -88,6 +95,22 @@ identity, result and commit timestamp with its own domain-separated Ed25519 sign
 The origin verifies this against its explicitly pinned peer and persisted challenge.
 A forged status JSON, unrelated packet receipt, file presence or Syncthing 100% cannot
 mark the roundtrip verified. Lost ACK delivery can be retried without duplicate apply.
+An existing receipt is reused only after its complete signature, approved signer
+role/scope and exact packet binding verify. Even a matching digest alone is rejected.
+Invalid collisions block publication; they are never silently overwritten. Interactive
+installer/wizard setup asks for the exact `QUARANTINE` confirmation only after
+rejecting a collision; Enter leaves it blocked. To recover
+after reviewing a collision, explicitly run the receiving peer's standalone CLI:
+
+```sh
+PYTHON security_wizard.py --database DB --exchange EXCHANGE --security-dir KEYS --state STATE resume --accept-probes --confirm-quarantine-receipts
+```
+
+This preserves the exact colliding bytes in an immutable, random-UUID local record
+under `KEYS/receipt-quarantine/`, then republishes a genuine signed receipt without
+clobbering any new collision. Retain the quarantine for investigation. Run this
+confirmation only for a deliberate recovery with operators serializing receipt
+writes; it is not a worker default or an instruction from exchange contents.
 
 This demonstrates remote protocol/dependency/SQLite probe execution, **not production
 memory recall, Windows ACLs, full migration convergence or all peers' readiness**.
@@ -119,4 +142,7 @@ identity or unsigned worker. Rollback after activation needs coordinated recover
 Private state/backup paths and full trust/key material are not dashboard status.
 Public status is a sanitized projection: display name, slot, policy, pairing state,
 step/next action, prerequisite readiness and authenticated probe state. POSIX private
-files use 600/700; Windows NTFS ACL provisioning must be checked by the operator.
+files use 600/700. Windows provisioning and verification fail closed through the
+SID-based adapter described in SIGNED-SYNC.md; existing broad ACLs require explicit
+operator remediation. Native Windows execution has not been verified by macOS
+fixture tests and remains a separate rollout gate.

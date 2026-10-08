@@ -26,8 +26,10 @@ def paired(peers):
     public_a = a.with_name('public-a.json'); signed.write_local(public_a, sa.public, exclusive=True)
     public_b = b.with_name('public-b.json'); signed.write_local(public_b, sb.public, exclusive=True)
     first = options(peers, 'mac'); second = options(peers, 'windows')
-    assert wizard.resume(**first, peer_public=public_b, confirm_fingerprint=sb.public['key_id'])['pairing'] == 'approved'
-    assert wizard.resume(**second, peer_public=public_a, confirm_fingerprint=sa.public['key_id'])['pairing'] == 'approved'
+    assert wizard.resume(**first, peer_public=public_b, confirm_fingerprint=sb.public['key_id'],
+                         expected_group=sb.public['group'], expected_node=sb.public['node'], expected_sender=sb.public['sender'])['pairing'] == 'approved'
+    assert wizard.resume(**second, peer_public=public_a, confirm_fingerprint=sa.public['key_id'],
+                         expected_group=sa.public['group'], expected_node=sa.public['node'], expected_sender=sa.public['sender'])['pairing'] == 'approved'
     return first, second
 
 

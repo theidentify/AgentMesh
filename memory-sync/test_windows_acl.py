@@ -97,6 +97,7 @@ def test_fixed_powershell_adapter_treats_path_as_data(monkeypatch, tmp_path):
     assert script == acl.SCRIPT and str(path) not in script
     assert kwargs['env']['AGENTMESH_ACL_PATH'] == str(path)
     assert kwargs['env']['AGENTMESH_ACL_OPERATION'] == 'provision'
+    assert kwargs['env']['PSModulePath'] == str(Path(tmp_path) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'Modules')
     assert kwargs['timeout'] == 30 and kwargs['check'] and 'shell' not in kwargs
     assert '-NoProfile' in args and '-NonInteractive' in args
     assert '-LiteralPath' in script and 'SetAccessRuleProtection($true, $false)' in script

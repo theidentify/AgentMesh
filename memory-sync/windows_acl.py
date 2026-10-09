@@ -87,7 +87,11 @@ def apply(path, *, provision=False):
     system_root = os.environ.get('SystemRoot')
     if not system_root or not Path(system_root).is_absolute(): raise ValueError('Windows PowerShell unavailable')
     executable = Path(system_root) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
-    env = dict(os.environ, AGENTMESH_ACL_PATH=str(path), AGENTMESH_ACL_OPERATION='provision' if provision else 'verify')
+    env = {key: value for key, value in os.environ.items() if key.casefold() != 'psmodulepath'}
+    # The caller may be PowerShell 7; its modules cannot load in fixed Windows
+    # PowerShell 5.1. Only search the OS-owned legacy module directory.
+    env.update(AGENTMESH_ACL_PATH=str(path), AGENTMESH_ACL_OPERATION='provision' if provision else 'verify',
+               PSModulePath=str(executable.parent / 'Modules'))
     encoded = base64.b64encode(SCRIPT.encode('utf-16le')).decode('ascii')
     try:
         result = subprocess.run([str(executable), '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],

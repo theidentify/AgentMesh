@@ -36,8 +36,20 @@ def main(argv=None):
     wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     wizard = subs.add_parser('wizard-resume', help='interactive security setup for an existing installation only')
     wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    setup = subs.add_parser('setup-new', help='create a NEW EMPTY installation and isolated sync group')
+    setup.add_argument('--local-dir', required=True, help='new absolute local root; parent must exist')
+    setup.add_argument('--exchange', required=True, help='accepted absolute Syncthing exchange')
+    setup.add_argument('--node', required=True, help='allocation slot: mac, windows or linux')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'setup-new':
+            from install_setup import setup_new
+            report = setup_new(args.local_dir, args.exchange, args.node)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 0 if report['status'] == 'created' else 2
+        if args.action in ('inspect-install', 'wizard-status', 'wizard-resume'):
+            from install_setup import reject_partial
+            reject_partial(args.runtime)
         if args.action == 'wizard-resume':
             from install_inspect import wizard_resume
             report = wizard_resume(args.runtime)

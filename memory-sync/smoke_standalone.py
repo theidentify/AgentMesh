@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import sys
+import uuid
 
 import memory_sync
 import sqlite_memory
@@ -43,6 +45,56 @@ def main():
                                     text=True, capture_output=True, timeout=300 if os.name == 'nt' else 90)
             assert result.returncode == expected, (command, result.returncode, result.stderr)
             return result.stdout
+        assert 'setup-new' in run('--help')
+        # First-run path is frozen-binary-only, separate from two-peer fixtures.
+        new_root = root / 'new-install'
+        new_exchange = root / 'new-exchange'
+        (new_exchange / '.stfolder').mkdir(parents=True)
+        node = 'windows' if os.name == 'nt' else 'mac' if sys.platform == 'darwin' else 'linux'
+        setup = ('setup-new', '--local-dir', new_root, '--exchange', new_exchange, '--node', node)
+        assert json.loads(run(*setup, inputs='\n', expected=2))['status'] == 'pending'
+        assert not new_root.exists()
+        assert not run(*setup, inputs='', expected=1)
+        assert not new_root.exists()
+        created_empty = json.loads(run(*setup, inputs='NEW\n'))
+        assert created_empty['status'] == 'created'
+        assert str(uuid.UUID(created_empty['group'])) == created_empty['group']
+        new_runtime = new_root / 'data' / 'runtime.json'
+        new_db = new_root / 'data' / 'memory.db'
+        assert json.loads(new_runtime.read_text()) == {
+            'database': str(new_db), 'exchange': str(new_exchange), 'node': node,
+            'security_dir': str(new_root / 'identity'),
+            'security_state': str(new_root / 'data' / 'security-wizard.json')}
+        assert json.loads((new_root / 'data' / 'workflow.json').read_text()) == {'ingest': False, 'summarize': False}
+        assert not (new_root / '.setup-pending.json').exists()
+        for directory in (new_root, new_root / 'data'):
+            signed_packets.private_directory(directory)
+        for file in (new_db, new_runtime, new_root / 'data' / 'workflow.json'):
+            signed_packets.read_local(file, private=True)
+        with closing(sqlite3.connect(new_db)) as c:
+            assert c.execute('SELECT node,group_id FROM _sync_config').fetchone() == (node, created_empty['group'])
+            for table in memory_sync.TABLES + ('_sync_history', '_sync_shadow', '_sync_outbox', '_sync_receipts'):
+                assert c.execute('SELECT count(*) FROM ' + table).fetchone()[0] == 0
+            assert not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
+        new_bytes = new_db.read_bytes(), new_runtime.read_bytes()
+        status_empty = json.loads(run('--database', new_db, 'status'))
+        assert status_empty['sync']['node'] == node and not any(status_empty['counts'].values())
+        assert json.loads(run('inspect-install', '--runtime', new_runtime))['identity'] == 'absent'
+        pending_empty = json.loads(run('wizard-status', '--runtime', new_runtime))
+        assert pending_empty['policy'] == 'legacy' and pending_empty['wizard_step'] == 'prerequisites'
+        assert not (new_root / 'identity').exists()
+        assert not (new_root / 'data' / 'security-wizard.json').exists()
+        assert sorted(p.name for p in new_exchange.iterdir()) == ['.stfolder']
+        assert not run(*setup, inputs='NEW\n', expected=1)
+        assert (new_db.read_bytes(), new_runtime.read_bytes()) == new_bytes
+        partial_marker = new_root / '.setup-pending.json'
+        signed_packets.write_local(partial_marker, {'format': 'agentmesh-setup-partial-v1', 'status': 'partial'}, exclusive=True)
+        for command in ('inspect-install', 'wizard-status', 'wizard-resume'):
+            assert not run(command, '--runtime', new_runtime, inputs='CREATE\nForbidden\n', expected=1)
+        assert (new_db.read_bytes(), new_runtime.read_bytes()) == new_bytes
+        assert not (new_root / 'identity').exists()
+        partial_marker.unlink()  # Remove only this smoke fixture's marker.
+        print('native setup-new smoke: confirmed empty isolated group, private paths, no identity/packets/worker/activation; decline/EOF/reuse/partial refused')
         assert 'inspect-install' in run('--help')
         assert json.loads(run('--database', db, 'status'))['sync']['node'] == 'mac'
         assert json.loads(run('--database', db, 'recall', 'example'))['results'] == []

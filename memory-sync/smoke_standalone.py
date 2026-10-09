@@ -34,7 +34,8 @@ def main():
                                       'security_dir': str(identity), 'security_state': str(state)}))
         source_before = db.read_bytes(), runtime.read_bytes()
         env = dict(os.environ)
-        env['PATH'] = str(Path(env['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
+        # os.environ is case-insensitive on Windows; a copied dict is not.
+        env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
         def run(*args, inputs=None, expected=0):
             command = [str(binary), *map(str, args)]
             result = subprocess.run(command, cwd=root, env=env, input=inputs,

@@ -6,6 +6,26 @@ import sys
 import sqlite_memory
 
 
+def test_cli_inspect_install_without_database_is_readonly(tmp_path):
+    import memory_sync
+    local = tmp_path / 'local'
+    data = local / 'data'
+    data.mkdir(parents=True)
+    db = data / 'mac.db'
+    sqlite_memory.init_database(db)
+    memory_sync.initialize(db, 'mac', '00000000-0000-4000-8000-000000000001')
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    runtime = data / 'runtime.json'
+    runtime.write_text(json.dumps({'database': str(db), 'exchange': str(exchange), 'node': 'mac'}))
+    entry = Path(__file__).with_name('agentmesh.py')
+    command = [sys.executable, str(entry), 'inspect-install', '--runtime', str(runtime)]
+    run = subprocess.run(command, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)['status'] == 'ready'
+    assert 'private_key' not in run.stdout
+
+
 def test_shared_cli_recall_is_readonly_and_rejects_missing_database(tmp_path):
     cli = Path(__file__).with_name('agentmesh.py')
     assert cli.exists(), 'shared CLI is missing'

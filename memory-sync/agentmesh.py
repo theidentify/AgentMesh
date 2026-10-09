@@ -11,7 +11,7 @@ import sync_worker
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--database', required=True)
+    parser.add_argument('--database', help='initialized local database; required except for inspect-install')
     parser.add_argument('--exchange')
     parser.add_argument('--config', help='private workflow.json; defaults beside DB')
     subs = parser.add_subparsers(dest='action', required=True)
@@ -30,8 +30,16 @@ def main(argv=None):
         if name == 'watch':
             worker.add_argument('--interval', type=float, default=60)
     subs.add_parser('status', description=__import__('brand').description('Inspect local memory and peer-sync state.'), formatter_class=argparse.RawDescriptionHelpFormatter)
+    inspect = subs.add_parser('inspect-install', help='read-only discovery of an existing installation')
+    inspect.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'inspect-install':
+            from install_inspect import inspect
+            print(json.dumps(inspect(args.runtime), ensure_ascii=False, sort_keys=True))
+            return 0
+        if not args.database:
+            parser.error('--database is required for this action')
         db = Path(args.database).resolve()
         if not db.is_file():
             raise FileNotFoundError('database must already be initialized')

@@ -1,0 +1,65 @@
+name: Standalone RC trial artifacts
+
+on:
+  push:
+    branches: [feat/standalone-app-v020]
+    paths:
+      - '.github/workflows/standalone-trial-artifacts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned native build dependencies
+        run: python -m pip install -r memory-sync/requirements-security.txt pyinstaller==6.16.0 pyinstaller-hooks-contrib==2026.8
+      - name: Build native standalone program
+        run: python memory-sync/standalone_build.py --dist "${{ runner.temp }}/agentmesh-dist" --work "${{ runner.temp }}/agentmesh-build"
+      - name: Verify real executable with disposable installation
+        run: python memory-sync/smoke_standalone.py
+      - name: Package allowlisted RC files and checksums
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, platform, zipfile
+          dist = pathlib.Path(os.environ['RUNNER_TEMP']) / 'agentmesh-dist'
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'agentmesh-rc'
+          out.mkdir()
+          system = platform.system().lower()
+          arch = platform.machine().lower()
+          binary = dist / ('agentmesh.exe' if system == 'windows' else 'agentmesh')
+          files = [binary]
+          if system == 'darwin':
+              files.append(dist / 'Replace-AgentMesh.command')
+          checksums = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+          metadata = {'version': '0.2.0-rc.1', 'source_sha': os.environ['GITHUB_SHA'], 'system': system, 'architecture': arch, 'checksums': checksums, 'distribution': 'unsigned development trial; not a final or trusted-publisher release', 'verification': 'native build and disposable executable smoke passed; actual Windows host unverified', 'scope': 'program files only; no database, keys, runtime, snapshots or deployment secrets'}
+          instructions = 'AgentMesh 0.2.0-rc.1 | development trial\nNo Python or Git required to run the program.\nWindows: extract locally outside Syncthing, then run agentmesh.exe --help.\nThis archive does not automatically install or replace an existing service.\nDo not run setup-new on an existing installation or use it to join the existing group.\nExisting install: use inspect-install --runtime ABSOLUTE_PATH_TO_EXISTING_RUNTIME_JSON.\nIf runtime is missing, stop and request existing-install adoption; do not create a replacement DB or key.\nmacOS: development binary is not Developer ID signed/notarized. Do not disable system security.\nWindows: unsigned executable may show SmartScreen or endpoint-security warnings. Do not disable those controls.\nFor Mac operator replacement, see MAC-REPLACEMENT.md. No private replacement manifest is included.\nNo reboot, automatic signing activation, identity rotation or database restoration is authorized by this archive.\n'
+          archive = out / ('AgentMesh-0.2.0-rc.1-' + system + '-' + arch + '.zip')
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
+              for p in files:
+                  z.write(p, p.name)
+              z.writestr('BUILD.json', json.dumps(metadata, indent=2) + '\n')
+              z.writestr('README.txt', instructions)
+              for name in ('MAC-REPLACEMENT.md', 'STANDALONE-BUILD.md'):
+                  z.write(pathlib.Path('memory-sync') / name, name)
+          checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+          (out / 'SHA256SUMS.txt').write_text(checksum + '  ' + archive.name + '\n')
+          print(json.dumps({'archive': archive.name, 'sha256': checksum, 'source_sha': metadata['source_sha']}))
+      - name: Retain verified trial bundle (not a published release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentmesh-rc-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/agentmesh-rc/*
+          if-no-files-found: error
+          retention-days: 7

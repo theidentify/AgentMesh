@@ -43,8 +43,33 @@ def main(argv=None):
     adoption = subs.add_parser('adopt-install', help='bind existing paths only; requires BIND')
     for key in ('runtime', 'app-root', 'database', 'exchange', 'node', 'security-dir', 'security-state', 'workflow-config'):
         adoption.add_argument('--' + key, required=True)
+    for name in ('worker-run', 'worker-start', 'worker-status', 'worker-stop'):
+        worker = subs.add_parser(name, help='explicit managed worker lifecycle')
+        worker.add_argument('--runtime', required=True)
+        if name in ('worker-run', 'worker-start'):
+            worker.add_argument('--interval', type=float, default=60)
+            worker.add_argument('--legacy-drained', action='store_true', help='acknowledge old worker stopped and preserve unsigned policy')
+        if name == 'worker-run':
+            worker.add_argument('--once', action='store_true')
+            worker.add_argument('--nonce', help=argparse.SUPPRESS)
+            worker.add_argument('--startup-deadline', type=float, help=argparse.SUPPRESS)
+        if name in ('worker-start', 'worker-stop'):
+            worker.add_argument('--timeout', type=float, default=60)
     args = parser.parse_args(argv)
     try:
+        if args.action.startswith('worker-'):
+            import worker_lifecycle as managed
+            if args.action == 'worker-run':
+                return managed.run(args.runtime, once=args.once, interval=args.interval,
+                    legacy_drained=args.legacy_drained, nonce=args.nonce, startup_deadline=args.startup_deadline)
+            if args.action == 'worker-start':
+                report = managed.start(args.runtime, interval=args.interval, legacy_drained=args.legacy_drained, timeout=args.timeout)
+            elif args.action == 'worker-stop':
+                report = managed.stop(args.runtime, timeout=args.timeout)
+            else:
+                report = managed.status(args.runtime)
+            print(json.dumps(report, sort_keys=True))
+            return 0
         if args.action == 'adopt-install':
             from install_adopt import adopt
             report = adopt(**{key: getattr(args, key) for key in ('runtime', 'app_root', 'database', 'exchange', 'node', 'security_dir', 'security_state', 'workflow_config')})

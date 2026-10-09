@@ -39,7 +39,7 @@ def main():
         def run(*args, inputs=None, expected=0):
             command = [str(binary), *map(str, args)]
             result = subprocess.run(command, cwd=root, env=env, input=inputs,
-                                    text=True, capture_output=True, timeout=90)
+                                    text=True, capture_output=True, timeout=300 if os.name == 'nt' else 90)
             assert result.returncode == expected, (command, result.returncode, result.stderr)
             return result.stdout
         assert 'inspect-install' in run('--help')

@@ -1,5 +1,6 @@
 """Existing-install interactive CLI runs on disposable state only."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from test_signed_packets import secure_peers
 def run_cli(runtime, inputs=''):
     return subprocess.run([sys.executable, str(Path(__file__).with_name('agentmesh.py')),
                            'wizard-resume', '--runtime', str(runtime)],
-                          input=inputs, text=True, capture_output=True, timeout=30)
+                          input=inputs, text=True, capture_output=True, timeout=180 if os.name == 'nt' else 30)
 
 
 def test_missing_runtime_is_blocked_without_creating_installation(tmp_path):

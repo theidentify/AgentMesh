@@ -242,7 +242,7 @@ def test_corrupt_and_reused_pid_metadata_never_causes_pid_signals(tmp_path, monk
     monkeypatch.setattr(worker.os, 'kill', observe_only)
     with pytest.raises(TimeoutError, match='acknowledge'):
         worker.stop(args['runtime'], timeout=0.1)
-    assert observed == [(os.getpid(), 0)]
+    assert observed == ([] if os.name == 'nt' else [(os.getpid(), 0)])
     assert json.loads((directory / 'stop.json').read_text()) == {'nonce': record['nonce']}
     assert json.loads((directory / 'process.json').read_text()) == record
     record['nonce'] = 'invalid'

@@ -55,8 +55,29 @@ def main(argv=None):
             worker.add_argument('--startup-deadline', type=float, help=argparse.SUPPRESS)
         if name in ('worker-start', 'worker-stop'):
             worker.add_argument('--timeout', type=float, default=60)
+    replacement = subs.add_parser('mac-replace', help='operator-confirmed Mac replacement; planning is read-only')
+    replacement.add_argument('--manifest', required=True, help='private explicit existing-install manifest')
+    replacement.add_argument('--binary', help='bundled standalone executable; defaults to this frozen executable')
+    replacement.add_argument('--dry-run', action='store_true')
+    replacement.add_argument('--timeout', type=float, default=300)
+    rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
+    rollback.add_argument('--backup', required=True)
+    rollback.add_argument('--timeout', type=float, default=300)
     args = parser.parse_args(argv)
     try:
+        if args.action in ('mac-replace', 'mac-rollback'):
+            import mac_replace
+            if args.action == 'mac-rollback':
+                report = mac_replace.rollback(args.backup, timeout=args.timeout)
+            else:
+                binary = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
+                if binary is None:
+                    raise ValueError('source replacement requires an explicit bundled binary')
+                report = mac_replace.replace(args.manifest, binary, timeout=args.timeout, dry_run=args.dry_run)
+            print(json.dumps(report, sort_keys=True))
+            if report.get('error') or report['status'] == 'recovery_required':
+                return 1
+            return 2 if report['status'] == 'pending' else 0
         if args.action.startswith('worker-'):
             import worker_lifecycle as managed
             if args.action == 'worker-run':

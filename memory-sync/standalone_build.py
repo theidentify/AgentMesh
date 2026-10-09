@@ -12,6 +12,7 @@ import sys
 HIDDEN_MODULES = (
     'brand', 'recall_memory', 'ingest_sessions', 'workflow', 'summarize_memory',
     'sqlite_memory', 'memory_sync', 'sync_worker', 'bounded_digest', 'install_inspect', 'install_setup', 'security_wizard',
+    'install_adopt', 'worker_lifecycle', 'mac_replace',
     'omp_memory.parser', 'omp_memory.codex_parser', 'omp_memory.claude_parser',
     'cryptography.hazmat.primitives.asymmetric.ed25519',
 )
@@ -33,6 +34,27 @@ def build_command(source, dist, work):
             str(source / 'agentmesh.py')]
 
 
+def operator_launcher(dist):
+    """Adjacent relocatable operator entry, never a production-config default."""
+    path = Path(dist) / 'Replace-AgentMesh.command'
+    path.write_text('''#!/bin/zsh
+set -eu
+here="${0:A:h}"
+print 'AgentMesh local development trial | not signed/notarized for distribution'
+print 'A private replacement manifest is required. Planning precedes REPLACE.'
+if (( $# )); then
+  manifest="$1"
+else
+  read 'manifest?Absolute path to private replacement manifest: '
+fi
+"$here/agentmesh" mac-replace --manifest "$manifest" --binary "$here/agentmesh"
+print 'Press Return to close.'
+read ignored
+''', encoding='utf-8')
+    path.chmod(0o700)
+    return path
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dist', type=Path, required=True, help='output directory outside the source tree')
@@ -40,6 +62,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     source = Path(__file__).resolve().parent
     subprocess.run(build_command(source, args.dist, args.work), check=True)
+    if sys.platform == 'darwin':
+        operator_launcher(args.dist)
     print(args.dist.resolve() / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh'))
     return 0
 

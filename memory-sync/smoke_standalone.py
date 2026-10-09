@@ -95,6 +95,65 @@ def main():
         assert not (new_root / 'identity').exists()
         partial_marker.unlink()  # Remove only this smoke fixture's marker.
         print('native setup-new smoke: confirmed empty isolated group, private paths, no identity/packets/worker/activation; decline/EOF/reuse/partial refused')
+        # Independent frozen lifecycle, explicitly started after first-run checks.
+        signed_packets.init_identity(new_root / 'identity', created_empty['group'], node)
+        keys_before = {p.name: p.read_bytes() for p in (new_root / 'identity').iterdir()}
+        runtime_before = new_runtime.read_bytes()
+        before_status = set(new_root.rglob('*'))
+        assert json.loads(run('worker-status', '--runtime', new_runtime))['state'] == 'stopped'
+        assert set(new_root.rglob('*')) == before_status
+        assert not run('worker-run', '--runtime', new_runtime, '--once', expected=1)
+        started = json.loads(run('worker-start', '--runtime', new_runtime, '--legacy-drained', '--interval', '60', '--timeout', '300'))
+        try:
+            assert started['state'] == 'running' and started['cycles'] >= 1
+            assert not run('worker-start', '--runtime', new_runtime, '--legacy-drained', expected=1)
+            assert not run('worker-run', '--runtime', new_runtime, '--legacy-drained', '--once', expected=1)
+            assert json.loads(run('worker-stop', '--runtime', new_runtime, '--timeout', '300'))['state'] == 'stopped'
+            restarted = json.loads(run('worker-start', '--runtime', new_runtime, '--legacy-drained', '--timeout', '300'))
+            assert restarted['nonce'] != started['nonce']
+        finally:
+            run('worker-stop', '--runtime', new_runtime, '--timeout', '300')
+        assert new_runtime.read_bytes() == runtime_before
+        assert {p.name: p.read_bytes() for p in (new_root / 'identity').iterdir()} == keys_before
+        with closing(sqlite3.connect(new_db)) as c:
+            assert not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
+        assert json.loads((new_exchange / 'status' / (node + '.json')).read_text())['security']['policy'] == 'legacy'
+        print('native frozen lifecycle: explicit start, healthy cycle, exclusivity, cooperative stop/restart; pending identity stayed legacy')
+        # Existing-install adoption is distinct from creating or joining a group.
+        adopt_root = root / 'existing-local'
+        adopt_data = adopt_root / 'data'
+        adopt_data.mkdir(parents=True)
+        adopt_db = adopt_data / 'existing.db'
+        sqlite_memory.init_database(adopt_db)
+        memory_sync.initialize(adopt_db, node, '00000000-0000-4000-8000-000000000003')
+        adopt_exchange = root / 'existing-exchange'
+        (adopt_exchange / '.stfolder').mkdir(parents=True)
+        adopt_identity = root / 'existing-custom-identity'
+        adopt_state = root / 'existing-custom-state' / 'wizard.json'
+        signed_packets.init_identity(adopt_identity, '00000000-0000-4000-8000-000000000003', node)
+        security_wizard.resume(adopt_db, adopt_exchange, adopt_identity, adopt_state)
+        adopt_workflow = adopt_data / 'custom-workflow.json'
+        signed_packets.write_local(adopt_workflow, {'ingest': False, 'summarize': False}, exclusive=True)
+        adopt_runtime = adopt_data / 'runtime.json'
+        adopt_args = ('adopt-install', '--runtime', adopt_runtime, '--app-root', adopt_root,
+                      '--database', adopt_db, '--exchange', adopt_exchange, '--node', node,
+                      '--security-dir', adopt_identity, '--security-state', adopt_state,
+                      '--workflow-config', adopt_workflow)
+        existing_bytes = adopt_db.read_bytes(), adopt_state.read_bytes(), adopt_workflow.read_bytes()
+        existing_keys = {p.name: p.read_bytes() for p in adopt_identity.iterdir()}
+        assert json.loads(run(*adopt_args, inputs='\n', expected=2))['status'] == 'pending'
+        assert not adopt_runtime.exists()
+        assert json.loads(run(*adopt_args, inputs='BIND\n'))['status'] == 'bound'
+        assert (adopt_db.read_bytes(), adopt_state.read_bytes(), adopt_workflow.read_bytes()) == existing_bytes
+        assert not run(*adopt_args, inputs='BIND\n', expected=1)
+        run('worker-run', '--runtime', adopt_runtime, '--legacy-drained', '--once')
+        adopted_report = json.loads((adopt_exchange / 'status' / (node + '.json')).read_text())
+        assert adopted_report['security']['policy'] == 'legacy' and adopted_report['security']['pairing'] == 'pending'
+        assert {p.name: p.read_bytes() for p in adopt_identity.iterdir()} == existing_keys
+        assert adopt_state.read_bytes() == existing_bytes[1]
+        with closing(sqlite3.connect(adopt_db)) as c:
+            assert not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
+        print('native frozen adoption: BIND-only path binding, no overwrite, custom workflow/wizard/identity preserved; real legacy cycle')
         assert 'inspect-install' in run('--help')
         assert json.loads(run('--database', db, 'status'))['sync']['node'] == 'mac'
         assert json.loads(run('--database', db, 'recall', 'example'))['results'] == []

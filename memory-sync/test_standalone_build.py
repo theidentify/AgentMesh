@@ -24,6 +24,18 @@ def test_build_command_bundles_runtime_data_and_isolates_output(tmp_path):
     assert '--workpath' in command and str(tmp_path / 'work') in command
     assert '--additional-hooks-dir' in command
     assert (root / 'packaging-hooks' / 'hook-workflow.py').is_file()
+    for module in ('install_adopt', 'worker_lifecycle', 'mac_replace'):
+        assert module in command
+
+
+def test_mac_operator_launcher_is_relocatable_and_has_no_private_defaults(tmp_path):
+    standalone_build.operator_launcher(tmp_path)
+    launcher = tmp_path / 'Replace-AgentMesh.command'
+    text = launcher.read_text()
+    assert 'mac-replace' in text
+    assert 'agentmesh' in text and '--manifest' in text
+    assert '/Users/' not in text
+    assert launcher.stat().st_mode & 0o100
 
 
 def test_build_rejects_output_inside_source(tmp_path):

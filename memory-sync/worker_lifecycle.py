@@ -49,9 +49,39 @@ def metadata(directory, runtime):
     return record
 
 
-def alive(pid):
+def windows_alive(pid):
+    """Query process state without Windows console events or termination."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: PID no longer exists.
+            return False
+        if error == 5:  # Access denied is not evidence that the process exited.
+            return True
+        raise ctypes.WinError(error)
     try:
-        os.kill(pid, 0)  # Observation only. Never signal a metadata PID.
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def alive(pid):
+    if os.name == 'nt':
+        return windows_alive(pid)
+    try:
+        os.kill(pid, 0)  # POSIX observation only. Never signal a metadata PID.
         return True
     except ProcessLookupError:
         return False

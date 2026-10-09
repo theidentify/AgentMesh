@@ -64,13 +64,26 @@ def test_status_never_creates_missing_shm_for_orphan_wal(tmp_path, monkeypatch):
     assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 
+def test_windows_liveness_observes_without_console_signals(monkeypatch):
+    import worker_lifecycle as worker
+    from types import SimpleNamespace
+    observed = []
+    def forbidden(*args):
+        raise AssertionError('Windows signal zero is a console event, not a probe')
+    monkeypatch.setattr(worker, 'os', SimpleNamespace(name='nt', kill=forbidden))
+    monkeypatch.setattr(worker, 'windows_alive', lambda pid: observed.append(pid) or True, raising=False)
+    assert worker.alive(123)
+    assert observed == [123]
+
+
 def test_start_protects_control_directory_before_child_spawn(tmp_path, monkeypatch):
     import worker_lifecycle as worker
     from signed_packets import private_directory
     args = bound(tmp_path, monkeypatch)
     original = worker.subprocess.Popen
     def spawn(*argv, **kwargs):
-        private_directory(Path(args['database']).parent / '.agentmesh-worker')
+        if 'worker-run' in argv[0]:
+            private_directory(Path(args['database']).parent / '.agentmesh-worker')
         return original(*argv, **kwargs)
     monkeypatch.setattr(worker.subprocess, 'Popen', spawn)
     worker.start(args['runtime'], interval=60, legacy_drained=True, timeout=NATIVE_TIMEOUT)

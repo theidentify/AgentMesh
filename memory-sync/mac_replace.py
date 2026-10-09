@@ -433,8 +433,10 @@ def replace(manifest, binary, *, supervisor=None, timeout=300, dry_run=False):
             if recovery is not None:
                 result = _restore(backup, recovery, supervisor, timeout)
             elif drained:
-                if read_local(config['plist']) != old_plist:
-                    raise ValueError('old descriptor changed')
+                if (read_local(config['plist']) != old_plist
+                        or code_descriptor(service['ProgramArguments']) != old_code
+                        or validate(config, runtime) != scope):
+                    raise ValueError('old code or database scope changed; service remains stopped')
                 supervisor.bootstrap(config['plist'])
                 live = supervisor.inspect(service['Label'])
                 if not live['loaded'] or live['arguments'] != service['ProgramArguments']:

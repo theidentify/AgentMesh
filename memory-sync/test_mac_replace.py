@@ -74,6 +74,27 @@ class FakeSupervisor:
             stderr=subprocess.DEVNULL, env={**os.environ, **config.get('EnvironmentVariables', {})})
 
 
+def test_scope_change_during_drain_leaves_old_service_stopped(tmp_path, monkeypatch):
+    import mac_replace
+    manifest, args, plist = fixture_manifest(tmp_path)
+    supervisor = FakeSupervisor(plist)
+    original_drain = supervisor.drain
+    def drain_and_change_scope(label, timeout):
+        original_drain(label, timeout)
+        with closing(sqlite3.connect(args['database'])) as c, c:
+            c.execute("UPDATE _sync_config SET group_id='00000000-0000-4000-8000-000000000002'")
+    supervisor.drain = drain_and_change_scope
+    monkeypatch.setattr('sys.stdin', io.StringIO('REPLACE\n'))
+    try:
+        result = mac_replace.replace(manifest, Path(sys.executable).resolve(), supervisor=supervisor)
+        assert result['status'] == 'recovery_required'
+        assert supervisor.calls == ['drain']
+        assert not supervisor.loaded
+    finally:
+        if supervisor.process:
+            original_drain('org.example.agentmesh', 30)
+
+
 def test_plan_is_readonly_and_rejects_unexpected_service(tmp_path):
     import mac_replace
     manifest, args, plist = fixture_manifest(tmp_path)

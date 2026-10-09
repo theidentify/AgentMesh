@@ -59,3 +59,27 @@ def inspect(runtime_path=None):
     return {'format': 'agentmesh-install-inspect-v1', 'status': 'ready',
             'node': node, 'group': group, 'policy': 'required' if strict else 'legacy',
             'identity': identity_state, 'database': str(db), 'exchange': str(exchange)}
+
+
+def wizard_status(runtime_path=None):
+    """Project the existing wizard status; never enter its mutation path."""
+    runtime = no_symlinks(runtime_path or default_runtime())
+    installation = inspect(runtime)
+    if installation['status'] != 'ready':
+        raise ValueError('existing installation required')
+    config = parse(read_local(runtime))
+    if config['database'] != installation['database'] or config['exchange'] != installation['exchange']:
+        raise ValueError('runtime configuration changed during inspection')
+    local = runtime.parent.parent
+    identity = config.get('security_dir', str(local / 'identity'))
+    state = config.get('security_state', str(runtime.parent / 'security-wizard.json'))
+    if not isinstance(identity, str) or not isinstance(state, str):
+        raise ValueError('invalid security paths')
+    if not Path(identity).is_absolute() or not Path(state).is_absolute():
+        raise ValueError('security paths must be absolute')
+    identity, state = no_symlinks(identity), no_symlinks(state)
+    exchange = Path(installation['exchange'])
+    if any(path == exchange or path.is_relative_to(exchange) for path in (identity, state)):
+        raise ValueError('security state must remain outside exchange')
+    from security_wizard import resume
+    return resume(installation['database'], exchange, identity, state, dry_run=True)

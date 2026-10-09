@@ -26,6 +26,30 @@ def test_cli_inspect_install_without_database_is_readonly(tmp_path):
     assert 'private_key' not in run.stdout
 
 
+def test_cli_wizard_status_uses_existing_runtime_without_creating_identity(tmp_path):
+    import memory_sync
+    data = tmp_path / 'local' / 'data'
+    data.mkdir(parents=True)
+    db = data / 'mac.db'
+    sqlite_memory.init_database(db)
+    memory_sync.initialize(db, 'mac', '00000000-0000-4000-8000-000000000001')
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    runtime = data / 'runtime.json'
+    runtime.write_text(json.dumps({'database': str(db), 'exchange': str(exchange), 'node': 'mac'}))
+    before = db.read_bytes(), runtime.read_bytes()
+    entry = Path(__file__).with_name('agentmesh.py')
+    run = subprocess.run([sys.executable, str(entry), 'wizard-status', '--runtime', str(runtime)],
+                         text=True, capture_output=True)
+    assert run.returncode == 0, run.stderr
+    report = json.loads(run.stdout)
+    assert report['policy'] == 'legacy'
+    assert report['wizard_step'] == 'prerequisites'
+    assert (db.read_bytes(), runtime.read_bytes()) == before
+    assert not (data.parent / 'identity').exists()
+    assert not (data / 'security-wizard.json').exists()
+
+
 def test_shared_cli_recall_is_readonly_and_rejects_missing_database(tmp_path):
     cli = Path(__file__).with_name('agentmesh.py')
     assert cli.exists(), 'shared CLI is missing'

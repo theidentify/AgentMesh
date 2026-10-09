@@ -32,11 +32,14 @@ def main(argv=None):
     subs.add_parser('status', description=__import__('brand').description('Inspect local memory and peer-sync state.'), formatter_class=argparse.RawDescriptionHelpFormatter)
     inspect = subs.add_parser('inspect-install', help='read-only discovery of an existing installation')
     inspect.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    wizard = subs.add_parser('wizard-status', help='read-only security wizard status for an existing installation')
+    wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     args = parser.parse_args(argv)
     try:
-        if args.action == 'inspect-install':
-            from install_inspect import inspect
-            print(json.dumps(inspect(args.runtime), ensure_ascii=False, sort_keys=True))
+        if args.action in ('inspect-install', 'wizard-status'):
+            from install_inspect import inspect, wizard_status
+            report = inspect(args.runtime) if args.action == 'inspect-install' else wizard_status(args.runtime)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 0
         if not args.database:
             parser.error('--database is required for this action')

@@ -37,8 +37,10 @@ def main():
         assert json.loads(run('--database', db, 'status'))['sync']['node'] == 'mac'
         assert json.loads(run('--database', db, 'recall', 'example'))['results'] == []
         assert json.loads(run('inspect-install', '--runtime', runtime))['status'] == 'ready'
+        wizard = json.loads(run('wizard-status', '--runtime', runtime))
+        assert wizard['policy'] == 'legacy' and wizard['wizard_step'] == 'prerequisites'
         assert (db.read_bytes(), runtime.read_bytes()) == source_before
-        print('native standalone smoke: help/status/recall/inspect-install passed')
+        print('native standalone smoke: help/status/recall/inspect-install/wizard-status passed')
 
 
 if __name__ == '__main__':

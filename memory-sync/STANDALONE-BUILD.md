@@ -1,6 +1,6 @@
 # Standalone CLI build (v0.2.0 work in progress)
 
-This is an **early macOS/Windows CLI build path**, not an installer, GUI, signed OTA package or production rollout. It wraps the existing `agentmesh.py` commands (`status`, `recall`, `ingest`, `summarize`, `once`, `watch`) and adds a **read-only** `inspect-install` command. Other commands still require an initialized SQLite database path. Inspection can find the default platform runtime configuration or accept `--runtime /path/to/runtime.json`; it does not create, repair or approve anything. It does not run the security wizard, manage services, install the OTA receiver or update an existing worker. Do not treat a successful build as completion of the v0.2.0 milestone.
+This is an **early macOS/Windows CLI build path**, not an installer, GUI, signed OTA package or production rollout. It wraps the existing `agentmesh.py` commands (`status`, `recall`, `ingest`, `summarize`, `once`, `watch`) and adds **read-only** `inspect-install` and `wizard-status` commands. Other commands still require an initialized SQLite database path. Inspection can find the default platform runtime configuration or accept `--runtime /path/to/runtime.json`; it does not create, repair or approve anything. The wizard status projects the existing state without entering setup. It does not resume an interactive wizard, manage services, install the OTA receiver or update an existing worker. Do not treat a successful build as completion of the v0.2.0 milestone.
 
 On each target OS, build natively from the reviewed release source (do not cross-compile):
 
@@ -19,6 +19,7 @@ Smoke-check with a disposable initialized database before touching a real instal
 /private/agentmesh-dist/agentmesh --database /private/test.db status
 /private/agentmesh-dist/agentmesh --database /private/test.db recall example
 /private/agentmesh-dist/agentmesh inspect-install --runtime /private/installation/data/runtime.json
+/private/agentmesh-dist/agentmesh wizard-status --runtime /private/installation/data/runtime.json
 ```
 
 Build output and scratch data must remain outside the source tree, Syncthing exchange and Git. Never package real databases, identity files, private keys, bootstrap snapshots, credentials or transcripts. The bundled CLI includes the schema and parser modules but does not contain a production database. `inspect-install` returns only a limited status projection; `identity=present_unverified` is not a key/ACL check, and an inspection snapshot must never authorize strict activation or a worker restart. It refuses missing/unsafe runtime paths and a strict database without an identity, rather than creating replacements. The PyInstaller hook override is scoped to the project's own `workflow.py`; the similarly named third-party package's hook otherwise requires unrelated distribution metadata.

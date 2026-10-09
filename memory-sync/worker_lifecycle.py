@@ -180,6 +180,15 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     raise TimeoutError('worker startup did not finish; nonce stop requested')
 
 
+def drained(directory, record, deadline):
+    with lock(directory / 'lifetime.lock', timeout=max(0, deadline - time.monotonic())):
+        pass
+    child = _CHILDREN.pop(record['nonce'], None)
+    if child is not None:
+        child.wait(timeout=max(0.1, deadline - time.monotonic()))
+    return record
+
+
 def stop(runtime, *, timeout=60):
     positive(timeout)
     # Stopping owned execution must remain possible after key revocation.
@@ -192,8 +201,11 @@ def stop(runtime, *, timeout=60):
         raise ValueError('database must remain outside exchange')
     directory = control(config)
     record = metadata(directory, runtime)
-    if record is None or record['state'] in ('stopped', 'failed'):
-        return record or {'state': 'stopped', 'cycles': 0}
+    deadline = time.monotonic() + timeout
+    if record is None:
+        return {'state': 'stopped', 'cycles': 0}
+    if record['state'] in ('stopped', 'failed'):
+        return drained(directory, record, deadline)
     if not alive(record['pid']):
         raise ValueError('stale worker metadata; no process was signalled')
     nonce = record['nonce']
@@ -204,9 +216,6 @@ def stop(runtime, *, timeout=60):
         if current is None or current['nonce'] != nonce:
             raise ValueError('worker ownership changed while stopping')
         if current['state'] in ('stopped', 'failed'):
-            child = _CHILDREN.pop(nonce, None)
-            if child is not None:
-                child.wait(timeout=max(0.1, deadline - time.monotonic()))
-            return current
+            return drained(directory, current, deadline)
         time.sleep(0.1)
     raise TimeoutError('worker did not acknowledge stop; no process was signalled')

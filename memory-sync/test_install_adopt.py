@@ -1,5 +1,6 @@
 """Existing-install adoption must bind paths, never initialize or activate."""
 from contextlib import closing
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -65,3 +66,36 @@ def test_cli_adopts_explicit_existing_paths(tmp_path, monkeypatch, capsys):
         argv += ['--' + key.replace('_', '-'), str(value)]
     assert agentmesh.main(argv) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'bound'
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='POSIX ownership mode; Windows uses native ACLs')
+def test_adoption_requires_user_owned_existing_root(tmp_path, monkeypatch):
+    import install_adopt
+    args = existing(tmp_path)
+    args['app_root'].chmod(0o777)
+    monkeypatch.setattr('sys.stdin', io.StringIO('BIND\n'))
+    with pytest.raises(ValueError, match='owner|writable'):
+        install_adopt.adopt(**args)
+    assert not args['runtime'].exists()
+
+
+@pytest.mark.parametrize('damage', ['explicit_root_partial', 'invalid_group', 'invalid_node'])
+def test_adoption_rejects_partial_or_invalid_authoritative_scope(tmp_path, monkeypatch, damage):
+    import install_adopt
+    from signed_packets import write_local
+    args = existing(tmp_path)
+    if damage == 'explicit_root_partial':
+        args['runtime'] = args['app_root'] / 'nested/data/runtime.json'
+        args['runtime'].parent.mkdir(parents=True)
+        write_local(args['app_root'] / '.setup-pending.json', {'status': 'partial'})
+    else:
+        with closing(sqlite3.connect(args['database'])) as c, c:
+            if damage == 'invalid_group':
+                c.execute("UPDATE _sync_config SET group_id='not-a-uuid'")
+            else:
+                c.execute("UPDATE _sync_config SET node='unknown'")
+                args['node'] = 'unknown'
+    monkeypatch.setattr('sys.stdin', io.StringIO('BIND\n'))
+    with pytest.raises(ValueError, match='partial|invalid database scope'):
+        install_adopt.adopt(**args)
+    assert not args['runtime'].exists()

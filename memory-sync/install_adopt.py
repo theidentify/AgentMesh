@@ -1,10 +1,11 @@
 """Bind an existing installation without changing its database or signing policy."""
 from contextlib import closing
 from pathlib import Path
+import os
 import sqlite3
 import sys
 
-from signed_packets import no_symlinks, parse, read_local, write_local
+from signed_packets import canonical_uuid, no_symlinks, parse, read_local, write_local
 
 
 def absolute(value):
@@ -21,8 +22,15 @@ def validate(config, runtime, *, authoritative=True):
     reject_partial(runtime)
     db, exchange = (absolute(config[k]) for k in ('database', 'exchange'))
     root = absolute(config.get('app_root', runtime.parent.parent))
+    if absolute(root / '.setup-pending.json').exists():
+        raise ValueError('partial first-run installation requires manual review')
     if not root.is_dir() or not runtime.parent.is_dir() or not runtime.is_relative_to(root):
         raise ValueError('existing app root and runtime parent required')
+    if os.name != 'nt':
+        for path in (root, runtime.parent, db):
+            info = path.stat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise ValueError('user-owned state, not writable by others, required')
     paths = [runtime, db, root]
     for key in ('security_dir', 'security_state', 'workflow_config'):
         if config.get(key) is not None:
@@ -41,6 +49,8 @@ def validate(config, runtime, *, authoritative=True):
         if len(rows) != 1:
             raise ValueError('invalid database scope')
         node, group = rows[0]
+        if node not in ('mac', 'windows', 'linux') or not canonical_uuid(group):
+            raise ValueError('invalid database scope')
         strict = bool(c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security' AND type='table'").fetchone())
         binding = c.execute('SELECT sender,group_id,node FROM _sync_security').fetchall() if strict else []
     policy = 'required' if strict else 'legacy'

@@ -161,6 +161,9 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
         raise ValueError('legacy worker must be drained explicitly')
     if status(runtime)['state'] == 'running':
         raise ValueError('worker already running; stop it first')
+    # Protect shared control storage before the child can expose it to status.
+    # Windows native provisioning takes time; an unprotected mkdir is not ready.
+    control(config, create=True)
     nonce = str(uuid.uuid4())
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(command(runtime, interval=interval, legacy_drained=legacy_drained,

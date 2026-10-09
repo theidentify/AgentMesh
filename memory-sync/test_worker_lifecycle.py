@@ -64,6 +64,22 @@ def test_status_never_creates_missing_shm_for_orphan_wal(tmp_path, monkeypatch):
     assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 
+def test_start_protects_control_directory_before_child_spawn(tmp_path, monkeypatch):
+    import worker_lifecycle as worker
+    from signed_packets import private_directory
+    args = bound(tmp_path, monkeypatch)
+    original = worker.subprocess.Popen
+    def spawn(*argv, **kwargs):
+        private_directory(Path(args['database']).parent / '.agentmesh-worker')
+        return original(*argv, **kwargs)
+    monkeypatch.setattr(worker.subprocess, 'Popen', spawn)
+    worker.start(args['runtime'], interval=60, legacy_drained=True, timeout=NATIVE_TIMEOUT)
+    try:
+        assert worker.status(args['runtime'])['cycles'] >= 1
+    finally:
+        worker.stop(args['runtime'], timeout=NATIVE_TIMEOUT)
+
+
 def test_start_exclusive_stop_restart_and_readonly_status(tmp_path, monkeypatch):
     import worker_lifecycle as worker
     args = bound(tmp_path, monkeypatch, identity=True)

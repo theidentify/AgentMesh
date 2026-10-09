@@ -35,7 +35,8 @@ def test_mac_operator_launcher_is_relocatable_and_has_no_private_defaults(tmp_pa
     assert 'mac-replace' in text
     assert 'agentmesh' in text and '--manifest' in text
     assert '/Users/' not in text
-    assert launcher.stat().st_mode & 0o100
+    if __import__('os').name != 'nt':
+        assert launcher.stat().st_mode & 0o100
 
 
 def test_build_rejects_output_inside_source(tmp_path):

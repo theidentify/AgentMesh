@@ -11,7 +11,7 @@ import sys
 
 HIDDEN_MODULES = (
     'brand', 'recall_memory', 'ingest_sessions', 'workflow', 'summarize_memory',
-    'sqlite_memory', 'memory_sync', 'sync_worker', 'bounded_digest', 'install_inspect',
+    'sqlite_memory', 'memory_sync', 'sync_worker', 'bounded_digest', 'install_inspect', 'security_wizard',
     'omp_memory.parser', 'omp_memory.codex_parser', 'omp_memory.claude_parser',
     'cryptography.hazmat.primitives.asymmetric.ed25519',
 )

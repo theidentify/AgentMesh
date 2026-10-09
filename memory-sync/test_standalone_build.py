@@ -18,7 +18,7 @@ def test_build_command_bundles_runtime_data_and_isolates_output(tmp_path):
     assert 'omp_memory.parser' in command
     assert 'omp_memory.codex_parser' in command
     assert 'omp_memory.claude_parser' in command
-    for module in ('brand', 'recall_memory', 'sqlite_memory', 'memory_sync', 'workflow', 'summarize_memory', 'install_inspect'):
+    for module in ('brand', 'recall_memory', 'sqlite_memory', 'memory_sync', 'workflow', 'summarize_memory', 'install_inspect', 'security_wizard'):
         assert module in command
     assert '--distpath' in command and str(tmp_path / 'dist') in command
     assert '--workpath' in command and str(tmp_path / 'work') in command

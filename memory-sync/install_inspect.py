@@ -1,4 +1,4 @@
-"""Read-only discovery of an existing AgentMesh runtime configuration."""
+"""Existing runtime discovery and bounded security-wizard entry points."""
 from contextlib import closing
 import os
 from pathlib import Path
@@ -61,8 +61,8 @@ def inspect(runtime_path=None):
             'identity': identity_state, 'database': str(db), 'exchange': str(exchange)}
 
 
-def wizard_status(runtime_path=None):
-    """Project the existing wizard status; never enter its mutation path."""
+def resolve_wizard(runtime_path=None):
+    """Resolve existing installation paths without inventing a new installation."""
     runtime = no_symlinks(runtime_path or default_runtime())
     installation = inspect(runtime)
     if installation['status'] != 'ready':
@@ -81,5 +81,64 @@ def wizard_status(runtime_path=None):
     exchange = Path(installation['exchange'])
     if any(path == exchange or path.is_relative_to(exchange) for path in (identity, state)):
         raise ValueError('security state must remain outside exchange')
+    return {'database': installation['database'], 'exchange': str(exchange),
+            'security_dir': str(identity), 'state': str(state)}
+
+
+def wizard_status(runtime_path=None):
+    """Project status without entering setup."""
     from security_wizard import resume
-    return resume(installation['database'], exchange, identity, state, dry_run=True)
+    paths = resolve_wizard(runtime_path)
+    return resume(paths['database'], paths['exchange'], paths['security_dir'], paths['state'], dry_run=True)
+
+
+def wizard_resume(runtime_path=None):
+    """Interactive existing-install setup; no bootstrap, dependency or worker path."""
+    from argparse import Namespace
+    from contextlib import redirect_stdout
+    import sys
+    from security_wizard import interactive, load_state
+    from signed_packets import Security
+    runtime = no_symlinks(runtime_path or default_runtime())
+    config_bytes = read_local(runtime)
+    paths = resolve_wizard(runtime)
+    if read_local(runtime) != config_bytes:
+        raise ValueError('runtime configuration changed during resolution')
+    baseline = None
+    fingerprint = None
+
+    def validate_scope():
+        nonlocal baseline, fingerprint
+        if read_local(runtime) != config_bytes or resolve_wizard(runtime) != paths:
+            raise ValueError('runtime configuration changed; resume again after review')
+        # Current SQLite state authorizes mutation, never immutable inspection.
+        with closing(sqlite3.connect(Path(paths['database']).as_uri() + '?mode=ro', uri=True)) as connection:
+            node, group = connection.execute('SELECT node,group_id FROM _sync_config').fetchone()
+            strict = connection.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
+            binding = connection.execute('SELECT sender,group_id,node FROM _sync_security').fetchone() if strict else None
+        scope = node, group
+        if baseline is not None and scope != baseline:
+            raise ValueError('database scope changed; explicit recovery required')
+        baseline = scope
+        state = load_state(paths['state'])
+        bindings = {'database': paths['database'], 'exchange': paths['exchange'],
+                    'security_dir': paths['security_dir'], 'node': node, 'group': group}
+        if state and any(state.get(k) != v for k, v in bindings.items()):
+            raise ValueError('wizard scope changed; explicit recovery required')
+        if strict or Path(paths['security_dir']).exists() or (state and state.get('sender')) or fingerprint:
+            if not Path(paths['security_dir']).is_dir():
+                raise ValueError('persistent identity missing; explicit recovery required')
+            security = Security(paths['security_dir'])
+            if (security.public['node'], security.public['group']) != scope:
+                raise ValueError('identity/database mismatch')
+            if strict and binding != (security.public['sender'], group, node):
+                raise ValueError('strict identity mismatch; explicit recovery required')
+            if state and state.get('sender') and state['sender'] != security.public['sender']:
+                raise ValueError('persistent identity changed; explicit recovery required')
+            if fingerprint is not None and fingerprint != security.public['key_id']:
+                raise ValueError('identity changed while resuming')
+            fingerprint = security.public['key_id']
+
+    validate_scope()
+    with redirect_stdout(sys.stderr):
+        return interactive(Namespace(**paths, confirm_quarantine_receipts=False), validate_scope=validate_scope)

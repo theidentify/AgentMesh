@@ -34,8 +34,17 @@ def main(argv=None):
     inspect.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     wizard = subs.add_parser('wizard-status', help='read-only security wizard status for an existing installation')
     wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    wizard = subs.add_parser('wizard-resume', help='interactive security setup for an existing installation only')
+    wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'wizard-resume':
+            from install_inspect import wizard_resume
+            report = wizard_resume(args.runtime)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            ready = (report['policy'] == 'required' and report['wizard_step'] == 'active'
+                     and report['pairing'] == 'approved' and all(report['prerequisites'].values()))
+            return 0 if ready else 2
         if args.action in ('inspect-install', 'wizard-status'):
             from install_inspect import inspect, wizard_status
             report = inspect(args.runtime) if args.action == 'inspect-install' else wizard_status(args.runtime)

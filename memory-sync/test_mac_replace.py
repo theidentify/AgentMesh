@@ -30,6 +30,20 @@ def test_launchd_inspect_requires_verifiable_argument_boundaries(monkeypatch, ar
             supervisor.inspect('org.example.agentmesh')
 
 
+def planning_binary(tmp_path):
+    """Owned selection for tests that never execute the replacement binary.
+
+    The CI interpreter can be system-owned; production ownership checks stay
+    strict and the real execution rehearsals still use the compiled artifact.
+    """
+    import shutil
+    binary = tmp_path / 'planning-binary'
+    if not binary.exists():
+        shutil.copyfile(Path(sys.executable).resolve(), binary)
+        binary.chmod(0o700)
+    return binary
+
+
 def fixture_manifest(tmp_path):
     args = existing(tmp_path)
     script = args['app_root'] / 'sync_worker.py'
@@ -86,7 +100,7 @@ def test_scope_change_during_drain_leaves_old_service_stopped(tmp_path, monkeypa
     supervisor.drain = drain_and_change_scope
     monkeypatch.setattr('sys.stdin', io.StringIO('REPLACE\n'))
     try:
-        result = mac_replace.replace(manifest, Path(sys.executable).resolve(), supervisor=supervisor)
+        result = mac_replace.replace(manifest, planning_binary(tmp_path), supervisor=supervisor)
         assert result['status'] == 'recovery_required'
         assert supervisor.calls == ['drain']
         assert not supervisor.loaded
@@ -99,7 +113,7 @@ def test_plan_is_readonly_and_rejects_unexpected_service(tmp_path):
     import mac_replace
     manifest, args, plist = fixture_manifest(tmp_path)
     supervisor = FakeSupervisor(plist)
-    binary = Path(sys.executable).resolve()  # Read-only planning never executes it.
+    binary = planning_binary(tmp_path)  # Read-only planning never executes it.
     before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     report = mac_replace.plan(manifest, binary, supervisor=supervisor)
     assert report['status'] == 'planned'
@@ -128,7 +142,7 @@ def test_plan_refuses_unbounded_or_ota_owned_service(tmp_path, unsafe):
         manifest.write_text(json.dumps(config))
         plist.write_bytes(plistlib.dumps(service))
     with pytest.raises(ValueError, match='absolute|OTA'):
-        mac_replace.plan(manifest, Path(sys.executable).resolve(), supervisor=FakeSupervisor(plist))
+        mac_replace.plan(manifest, planning_binary(tmp_path), supervisor=FakeSupervisor(plist))
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='Mac operator rehearsal')
@@ -186,7 +200,7 @@ def test_plan_rejects_existing_runtime_mismatch_before_drain(tmp_path):
     write_local(args['runtime'], wrong)
     supervisor = FakeSupervisor(plist)
     with pytest.raises(ValueError, match='runtime|scope'):
-        mac_replace.plan(manifest, Path(sys.executable).resolve(), supervisor=supervisor)
+        mac_replace.plan(manifest, planning_binary(tmp_path), supervisor=supervisor)
     assert supervisor.calls == []
 
 
@@ -212,7 +226,7 @@ def test_launchd_drain_waits_for_bootloader_descendants_without_signalling_pids(
 def test_declined_replace_and_failed_drain_make_no_installation(tmp_path, monkeypatch):
     import mac_replace
     manifest, args, plist = fixture_manifest(tmp_path)
-    binary = Path(sys.executable).resolve()
+    binary = planning_binary(tmp_path)
     supervisor = FakeSupervisor(plist)
     monkeypatch.setattr('sys.stdin', io.StringIO('\n'))
     assert mac_replace.replace(manifest, binary, supervisor=supervisor)['status'] == 'pending'
@@ -235,7 +249,7 @@ def test_managed_upgrade_plan_accepts_preserved_float_interval(tmp_path, monkeyp
     adopt(**args)
     config = json.loads(manifest.read_text())
     service = plistlib.loads(plist.read_bytes())
-    binary = Path(sys.executable).resolve()
+    binary = planning_binary(tmp_path)
     service['ProgramArguments'] = [str(binary), 'worker-run', '--runtime', str(args['runtime']), '--interval', '60.0', '--legacy-drained']
     plist.write_bytes(plistlib.dumps(service))
     config['expected_args'] = service['ProgramArguments']
@@ -256,7 +270,7 @@ def test_private_roots_cannot_overlap_identity_or_each_other(tmp_path, kind):
         Path(config['install_root']).mkdir(mode=0o700)
     manifest.write_text(json.dumps(config))
     with pytest.raises(ValueError, match='separate|overlap'):
-        mac_replace.plan(manifest, Path(sys.executable).resolve(), supervisor=FakeSupervisor(plist))
+        mac_replace.plan(manifest, planning_binary(tmp_path), supervisor=FakeSupervisor(plist))
 
 
 def test_cli_mac_dry_run_has_no_supervisor_mutations(tmp_path, monkeypatch, capsys):
@@ -265,7 +279,7 @@ def test_cli_mac_dry_run_has_no_supervisor_mutations(tmp_path, monkeypatch, caps
     manifest, args, plist = fixture_manifest(tmp_path)
     supervisor = FakeSupervisor(plist)
     monkeypatch.setattr(mac_replace, 'Launchd', lambda: supervisor)
-    assert agentmesh.main(['mac-replace', '--manifest', str(manifest), '--binary', str(Path(sys.executable).resolve()), '--dry-run']) == 0
+    assert agentmesh.main(['mac-replace', '--manifest', str(manifest), '--binary', str(planning_binary(tmp_path)), '--dry-run']) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'planned'
     assert not supervisor.calls
 

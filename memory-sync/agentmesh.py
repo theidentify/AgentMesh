@@ -40,8 +40,16 @@ def main(argv=None):
     setup.add_argument('--local-dir', required=True, help='new absolute local root; parent must exist')
     setup.add_argument('--exchange', required=True, help='accepted absolute Syncthing exchange')
     setup.add_argument('--node', required=True, help='allocation slot: mac, windows or linux')
+    adoption = subs.add_parser('adopt-install', help='bind existing paths only; requires BIND')
+    for key in ('runtime', 'app-root', 'database', 'exchange', 'node', 'security-dir', 'security-state', 'workflow-config'):
+        adoption.add_argument('--' + key, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.action == 'adopt-install':
+            from install_adopt import adopt
+            report = adopt(**{key: getattr(args, key) for key in ('runtime', 'app_root', 'database', 'exchange', 'node', 'security_dir', 'security_state', 'workflow_config')})
+            print(json.dumps(report, sort_keys=True))
+            return 0 if report['status'] == 'bound' else 2
         if args.action == 'setup-new':
             from install_setup import setup_new
             report = setup_new(args.local_dir, args.exchange, args.node)

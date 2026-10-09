@@ -6,6 +6,44 @@ import sys
 import sqlite_memory
 
 
+def test_worker_errors_show_fixed_acl_reason_without_secret_values(monkeypatch, capsys):
+    import agentmesh
+    import worker_lifecycle
+
+    def fail(*args, **kwargs):
+        raise ValueError('Windows private ACL must be protected')
+
+    monkeypatch.setattr(worker_lifecycle, 'status', fail)
+    assert agentmesh.main(['worker-status', '--runtime', '/unused']) == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error['reason'] == 'Windows private ACL must be protected'
+    assert error['stage'] == 'worker-status'
+
+    def secret_failure(*args, **kwargs):
+        raise ValueError('secret-key-and-private-runtime-value')
+
+    monkeypatch.setattr(worker_lifecycle, 'status', secret_failure)
+    assert agentmesh.main(['worker-status', '--runtime', '/unused']) == 1
+    output = capsys.readouterr().err
+    assert 'secret-key-and-private-runtime-value' not in output
+    assert json.loads(output)['reason'] == 'details withheld; inspect diagnostic stage'
+
+
+def test_worker_status_private_runtime_error_is_actionable_without_reading_secret(tmp_path):
+    runtime = tmp_path / 'runtime.json'
+    runtime.write_text('secret-content-must-not-be-parsed-or-disclosed')
+    runtime.chmod(0o644)
+    process = subprocess.run([sys.executable, str(Path(__file__).with_name('agentmesh.py')),
+                              'worker-status', '--runtime', str(runtime)],
+                             capture_output=True, text=True, timeout=60)
+    assert process.returncode == 1
+    error = json.loads(process.stderr)
+    assert error['error'] == 'ValueError'
+    assert error['reason'] != 'details withheld; inspect diagnostic stage'
+    assert error['stage'] in ('signed_packets.read_local', 'windows_acl.validate', 'windows_acl.apply')
+    assert 'secret-content-must-not-be-parsed-or-disclosed' not in process.stderr
+
+
 def test_cli_inspect_install_without_database_is_readonly(tmp_path):
     import memory_sync
     local = tmp_path / 'local'

@@ -169,7 +169,8 @@ def main(argv=None):
             return int(sync_worker.failed(result))
         return 0
     except Exception as exc:
-        print(json.dumps({'error': type(exc).__name__}), file=sys.stderr)
+        from cli_errors import report as error_report
+        print(json.dumps(error_report(exc, args.action)), file=sys.stderr)
         return 1
 
 

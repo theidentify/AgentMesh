@@ -1,0 +1,33 @@
+name: Standalone CLI native smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'memory-sync/**'
+      - '.github/workflows/standalone-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned build dependencies
+        run: python -m pip install -r memory-sync/requirements-security.txt pyinstaller==6.16.0 pyinstaller-hooks-contrib==2026.8 pytest==8.4.2
+      - name: Test build and inspection contracts
+        run: python -m pytest -q memory-sync/test_standalone_build.py memory-sync/test_install_inspect.py memory-sync/test_agentmesh.py
+      - name: Build native CLI (not a release asset)
+        run: python memory-sync/standalone_build.py --dist "${{ runner.temp }}/agentmesh-dist" --work "${{ runner.temp }}/agentmesh-build"
+      - name: Smoke disposable installation
+        run: python memory-sync/smoke_standalone.py

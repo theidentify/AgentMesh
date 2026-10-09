@@ -3,6 +3,7 @@
 Run after standalone_build.py on each native OS. Never use a production DB.
 """
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -96,7 +97,7 @@ def main():
         assert ready_pending['roundtrip'] == 'verified' and ready_pending['policy'] == 'legacy'
         assert (db.read_bytes(), runtime.read_bytes()) == source_before
         # A strict DB with missing key material must fail before any writes.
-        with sqlite3.connect(db) as c:
+        with closing(sqlite3.connect(db)) as c, c:
             c.execute('CREATE TABLE _sync_security(sender TEXT, group_id TEXT, node TEXT)')
         (identity / 'identity.json').unlink()
         before_block = state.read_bytes()

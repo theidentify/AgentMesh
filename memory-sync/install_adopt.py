@@ -41,8 +41,10 @@ def validate(config, runtime, *, authoritative=True):
         raise ValueError('existing database and accepted exchange required')
     if config.get('workflow_config') and not absolute(config['workflow_config']).is_file():
         raise ValueError('existing workflow configuration required')
-    sidecars = any(db.with_name(db.name + s).exists() for s in ('-wal', '-shm'))
-    uri = db.as_uri() + ('?mode=ro' if authoritative or sidecars else '?mode=ro&immutable=1')
+    # Informational planning/status must not create a missing WAL index. This
+    # snapshot intentionally excludes uncheckpointed WAL; only authoritative
+    # checks below the operator/cycle gate may authorize any mutation.
+    uri = db.as_uri() + ('?mode=ro' if authoritative else '?mode=ro&immutable=1')
     with closing(sqlite3.connect(uri, uri=True)) as c:
         c.execute('PRAGMA query_only=ON')
         rows = c.execute('SELECT node,group_id FROM _sync_config').fetchall()

@@ -47,6 +47,23 @@ def test_managed_cycle_preserves_legacy_despite_pending_identity(tmp_path, monke
         assert not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
 
 
+def test_status_never_creates_missing_shm_for_orphan_wal(tmp_path, monkeypatch):
+    import worker_lifecycle as worker
+    args = bound(tmp_path, monkeypatch)
+    database = args['database']
+    wal = database.with_name(database.name + '-wal')
+    with closing(sqlite3.connect(database)) as c, c:
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute("CREATE TABLE status_readonly_probe(value TEXT)")
+        wal_bytes = wal.read_bytes()
+    wal.write_bytes(wal_bytes)
+    shm = database.with_name(database.name + '-shm')
+    assert not shm.exists()
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    assert worker.status(args['runtime'])['state'] == 'stopped'
+    assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
 def test_start_exclusive_stop_restart_and_readonly_status(tmp_path, monkeypatch):
     import worker_lifecycle as worker
     args = bound(tmp_path, monkeypatch, identity=True)

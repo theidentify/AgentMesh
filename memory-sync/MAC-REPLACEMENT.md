@@ -22,8 +22,10 @@ publish this artifact as a trusted signed download.
   Select the exact existing plist and its complete `ProgramArguments` array.
   Unexpected live commands/owners, partial setup, OTA-owned installation,
   PostgreSQL service options and unsupported service shapes fail closed.
-- Read-only planning uses an informational SQLite snapshot where appropriate.
-  It never authorizes signing or replacement. Current DB scope is checked again
+- Read-only planning/status uses an immutable informational SQLite snapshot,
+  excluding uncheckpointed WAL so an orphan WAL cannot create a missing SHM.
+  It may be stale or fail closed; it never authorizes signing or replacement.
+  Current DB scope is checked again
   after operator confirmation and before draining/changing state.
 
 ## Private manifest

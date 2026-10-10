@@ -15,6 +15,8 @@ program/task/REPLACE gates, ownership and preservation rules, recovery limits,
 and outstanding native/login-host verification. This is a per-user logon
 launcher, not a before-login Windows service or crash supervisor.
 
+Windows builds use a generated onedir spec (`agentmesh.exe`, windowless `agentmeshw.exe`, shared `_internal/`); macOS remains a single onefile binary for `mac-replace`.
+
 ## Read-only diagnostics and safe error details
 
 ```powershell

@@ -61,14 +61,33 @@ def test_build_rejects_missing_entry_or_schema(tmp_path):
         standalone_build.build_command(tmp_path, tmp_path / 'dist', tmp_path / 'work')
 
 
-def test_windowless_logon_entry_is_gui_subsystem_and_built_outside_source(tmp_path):
+def test_windows_onedir_spec_builds_both_entries_into_one_shared_runtime(tmp_path):
     root = Path(__file__).resolve().parent
-    command = standalone_build.windowless_command(root, tmp_path / 'dist', tmp_path / 'work')
-    assert '--noconsole' in command and '--onefile' in command
-    assert command[command.index('--name') + 1] == 'agentmeshw'
-    assert command[-1] == str(root / 'agentmesh_launcher.py')
+    spec, command = standalone_build.windows_build(root, tmp_path / 'dist', tmp_path / 'work')
+    text = spec.read_text()
+    compile(text, str(spec), 'exec')
+    assert "name='agentmesh', console=True" in text and "name='agentmeshw', console=False" in text
+    assert text.count('exclude_binaries=True') == 2 and "COLLECT(cli_exe" in text and 'launcher_exe' in text
+    assert repr(str(root / 'agentmesh_launcher.py')) in text and repr(str(root / 'schema.sql')) in text
+    for module in ('windows_install', 'windows_task', 'worker_lifecycle', 'sync_worker'):
+        assert repr(module) in text
+    assert '--onefile' not in command and command[-1] == str(spec)
     with pytest.raises(ValueError, match='outside source'):
-        standalone_build.windowless_command(root, root / 'dist', tmp_path / 'work')
+        standalone_build.windows_build(root, root / 'dist', tmp_path / 'work')
+
+
+def test_flatten_keeps_dist_paths_and_refuses_overwrite(tmp_path):
+    collected = tmp_path / 'collect' / 'agentmesh'
+    (collected / '_internal').mkdir(parents=True)
+    (collected / 'agentmesh.exe').write_bytes(b'cli')
+    (collected / '_internal' / 'python311.dll').write_bytes(b'runtime')
+    standalone_build.flatten(collected, tmp_path / 'dist')
+    assert (tmp_path / 'dist' / 'agentmesh.exe').read_bytes() == b'cli'
+    assert (tmp_path / 'dist' / '_internal' / 'python311.dll').is_file() and not collected.exists()
+    (collected / 'x').mkdir(parents=True)
+    (tmp_path / 'dist' / 'x').mkdir()
+    with pytest.raises(ValueError, match='already contains'):
+        standalone_build.flatten(collected, tmp_path / 'dist')
 
 
 def test_windows_upgrade_helper_plans_before_replace_and_keeps_legacy_explicit(tmp_path):

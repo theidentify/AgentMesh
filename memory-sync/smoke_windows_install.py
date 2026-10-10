@@ -64,6 +64,11 @@ def main():
             binary = dest / 'agentmesh.exe'
             shutil.copyfile(executable, binary)
             checksums = {'agentmesh.exe': hashlib.sha256(binary.read_bytes()).hexdigest()}
+            # The onedir runtime is required for the copied CLI to run at all.
+            runtime_dir = executable.parent / '_internal'
+            shutil.copytree(runtime_dir, dest / '_internal')
+            for f in sorted(p for p in (dest / '_internal').rglob('*') if p.is_file()):
+                checksums[f.relative_to(dest).as_posix()] = hashlib.sha256(f.read_bytes()).hexdigest()
             if launcher:
                 shutil.copyfile(executable.with_name('agentmeshw.exe'), dest / 'agentmeshw.exe')
                 checksums['agentmeshw.exe'] = hashlib.sha256((dest / 'agentmeshw.exe').read_bytes()).hexdigest()
@@ -106,6 +111,11 @@ def main():
             entry = Path(adapter.read(name)['task']['binding']['actions'][0]['path'])
             assert entry.name == 'agentmeshw.exe' and entry.parent.parent == programs
             assert entry.read_bytes() == executable.with_name('agentmeshw.exe').read_bytes()
+            installed = sorted(f.relative_to(entry.parent).as_posix() for f in (entry.parent / '_internal').rglob('*') if f.is_file())
+            assert installed == sorted(f.relative_to(executable.parent).as_posix() for f in (executable.parent / '_internal').rglob('*') if f.is_file())
+            # The installed onedir copy itself runs, from program storage, without Python on PATH.
+            check = subprocess.run([str(entry.with_name('agentmesh.exe')), '--help'], env=env, capture_output=True, text=True, timeout=120)
+            assert check.returncode == 0 and 'worker-start' in check.stdout, check.stderr
             assert call('rollback', ['--legacy-drained'], 'ROLLBACK\n')['status'] == 'selected'
             assert Path(adapter.read(name)['task']['binding']['actions'][0]['path']).name == 'agentmesh.exe'
             assert call('uninstall', ['--legacy-drained'], 'UNINSTALL\n')['status'] == 'uninstalled'
@@ -124,7 +134,7 @@ def main():
                     raise RuntimeError('uncertain fixture task ownership; cleanup refused')
                 adapter.remove(name, task['sid'], task['xml'])
                 assert adapter.read(name)['task'] is None
-    print('Frozen Windows installation, disabled task readback/removal, rollback, preservation and cleanup passed')
+    print('Frozen Windows onedir installation, disabled task readback/removal, rollback, preservation and cleanup passed')
     return 0
 
 

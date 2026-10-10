@@ -41,7 +41,10 @@ class FakeTasks:
         self.operations.append('remove')
 
 
-def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False):
+ONEDIR = ('_internal/python311.dll', '_internal/base_library.zip', '_internal/cryptography/hazmat/_rust.pyd')
+
+
+def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False, onedir=False):
     directory = parent / (version + '-bundle')
     directory.mkdir()
     binary = directory / 'agentmesh.exe'
@@ -50,6 +53,10 @@ def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False):
     if launcher:
         (directory / 'agentmeshw.exe').write_bytes(b'disposable windowless launcher fixture ' + sha.encode())
         checksums['agentmeshw.exe'] = installer.digest(directory / 'agentmeshw.exe')
+    for name in ONEDIR if onedir else ():
+        (directory / name).parent.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_bytes(b'disposable onedir runtime fixture ' + name.encode() + sha.encode())
+        checksums[name] = installer.digest(directory / name)
     metadata = dict(version=version, source_sha=sha, system='windows', architecture='amd64',
                     checksums=checksums, distribution=installer.DEVELOPMENT,
                     verification='fixture only, no native verification claim',
@@ -463,3 +470,52 @@ def test_launcher_checksum_mismatch_refused(existing, monkeypatch):
     (newer.parent / 'agentmeshw.exe').write_bytes(b'tampered')
     with pytest.raises(ValueError, match='program checksum mismatch'):
         command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)
+
+
+def installed_tree(directory):
+    return {p.relative_to(directory).as_posix() for p in directory.rglob('*') if p.is_file()}
+
+
+def test_onedir_bundle_installs_verified_tree_and_rolls_back_to_flat(existing, monkeypatch):
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.8', 'c' * 40, launcher=True, onedir=True)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)['status'] == 'selected'
+    state = installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')
+    directory = existing['program_root'] / state['active']
+    assert installed_tree(directory) == {'agentmesh.exe', 'agentmeshw.exe', 'BUILD.json', *ONEDIR}
+    for name in ONEDIR:
+        assert (directory / name).read_bytes() == (newer.parent / name).read_bytes()
+    assert task_path(existing)[0] == directory / 'agentmeshw.exe'
+    assert command(existing, monkeypatch, 'rollback', 'ROLLBACK\n', legacy_drained=True)['status'] == 'selected'
+    assert task_path(existing)[0].name == 'agentmesh.exe'
+
+
+def test_onedir_unlisted_runtime_file_blocks_every_operation(existing, monkeypatch):
+    command(existing, monkeypatch)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.8', 'c' * 40, launcher=True, onedir=True)
+    command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)
+    state_path = existing['program_root'] / 'installed.json'
+    active = existing['program_root'] / installer.read_state(existing['program_root'], state_path)['active']
+    (active / '_internal' / 'planted.dll').write_bytes(b'not listed in BUILD.json')
+    with pytest.raises(ValueError, match='installed program directory changed'):
+        installer.read_state(existing['program_root'], state_path)
+
+
+@pytest.mark.parametrize('name', ['_internal/../agentmesh.exe', '../outside.dll', '_internal\\x.dll', '/abs.dll', 'other/x.dll', '_internal//x.dll'])
+def test_bundle_refuses_unsafe_or_foreign_program_paths(existing, monkeypatch, name):
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.8', 'c' * 40, onedir=True)
+    manifest = newer.parent / 'BUILD.json'
+    metadata = json.loads(manifest.read_text())
+    metadata['checksums'][name] = 'e' * 64
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='invalid BUILD.json checksum'):
+        installer.bundle(newer)
+
+
+def test_onedir_uninstall_removes_only_owned_tree(existing, monkeypatch):
+    command(existing, monkeypatch)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.8', 'c' * 40, launcher=True, onedir=True)
+    command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)
+    assert command(existing, monkeypatch, 'uninstall', 'UNINSTALL\n', legacy_drained=True)['status'] == 'uninstalled'
+    assert sorted(p.name for p in existing['program_root'].iterdir()) == ['OWNER.json', 'installed.json', 'installer.lock']

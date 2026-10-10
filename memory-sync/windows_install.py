@@ -20,8 +20,10 @@ import windows_task
 
 FORMAT = 'agentmesh-windows-programs-v1'
 LAUNCHER = 'agentmeshw.exe'
-# rc.5 bundles predate the windowless launcher; both shapes stay verifiable.
-PROGRAM_FILES = ({'agentmesh.exe', 'BUILD.json'}, {'agentmesh.exe', LAUNCHER, 'BUILD.json'})
+# PyInstaller onedir runtime shared by agentmesh.exe and agentmeshw.exe (RC.8+).
+# rc.5-rc.7 flat onefile bundles stay verifiable for rollback.
+RUNTIME = '_internal'
+TOP_LEVEL = {'agentmesh.exe', LAUNCHER, 'BUILD.json'}
 DEVELOPMENT = 'unsigned development trial; not a final or trusted-publisher release'
 
 
@@ -34,6 +36,47 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def program_name(name):
+    """A top-level bundle file, or a relative onedir runtime path under _internal/."""
+    if not isinstance(name, str):
+        return False
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
+        return True
+    parts = name.split('/')
+    # Segments cannot be empty, '.', '..', absolute or contain backslashes.
+    return (len(parts) > 1 and parts[0] == RUNTIME
+            and all(re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9._+-]*', part) for part in parts[1:]))
+
+
+def at(directory, name):
+    return Path(directory).joinpath(*name.split('/'))
+
+
+def valid_files(names):
+    names = set(names)
+    return ({'agentmesh.exe', 'BUILD.json'} <= names
+            and all(n in TOP_LEVEL or (n.startswith(RUNTIME + '/') and program_name(n)) for n in names))
+
+
+def runtime_directories(names):
+    return {'/'.join(n.split('/')[:depth]) for n in names for depth in range(1, n.count('/') + 1)}
+
+
+def tree(directory):
+    """Every file and directory below an owned version; links are never followed."""
+    files, directories = set(), set()
+    for p in Path(directory).rglob('*'):
+        name = p.relative_to(directory).as_posix()
+        if p.is_symlink() or not (p.is_file() or p.is_dir()):
+            raise ValueError('installed program directory changed')
+        (files if p.is_file() else directories).add(name)
+    return files, directories
+
+
+def owned_tree(directory, names):
+    return tree(directory) == (set(names), runtime_directories(names))
 
 
 def identity(path):
@@ -55,12 +98,13 @@ def bundle(binary):
             or not isinstance(metadata['checksums'], dict) or binary.name != 'agentmesh.exe'):
         raise ValueError('invalid development BUILD.json schema')
     for name, checksum in metadata['checksums'].items():
-        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name)
+        if (not program_name(name)
                 or not isinstance(checksum, str) or not re.fullmatch(r'[0-9a-f]{64}', checksum)):
             raise ValueError('invalid BUILD.json checksum')
     files = {'agentmesh.exe': digest(binary), 'BUILD.json': digest(manifest)}
-    if LAUNCHER in metadata['checksums']:
-        files[LAUNCHER] = digest(binary.parent / LAUNCHER)
+    for name in metadata['checksums']:
+        if name == LAUNCHER or name.startswith(RUNTIME + '/'):
+            files[name] = digest(at(binary.parent, name))
     if any(metadata['checksums'].get(name) != files[name] for name in files if name != 'BUILD.json'):
         raise ValueError('program checksum mismatch')
     return dict(key=metadata['version'] + '-' + metadata['source_sha'], binary=str(binary), files=files)
@@ -144,16 +188,16 @@ def read_state(root, state_path):
         raise ValueError('invalid owned version inventory')
     for key, entry in programs.items():
         if (not re.fullmatch(r'0\.2\.0-rc\.[0-9]+-[0-9a-f]{40}', key)
-                or set(entry) != {'identity', 'files'} or set(entry['files']) not in PROGRAM_FILES
+                or set(entry) != {'identity', 'files'} or not valid_files(entry['files'])
                 or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{64}', v) for v in entry['files'].values())):
             raise ValueError('invalid owned program manifest')
         directory = absolute(root / key)
         private_directory(directory)
-        if identity(directory) != entry['identity'] or set(p.name for p in directory.iterdir()) != set(entry['files']):
+        if identity(directory) != entry['identity'] or not owned_tree(directory, entry['files']):
             raise ValueError('installed program directory changed')
         for name, checksum in entry['files'].items():
-            windows_private(absolute(directory / name))
-            if digest(directory / name) != checksum:
+            windows_private(absolute(at(directory, name)))
+            if digest(at(directory, name)) != checksum:
                 raise ValueError('installed program file changed')
         if bundle(directory / 'agentmesh.exe')['key'] != key:
             raise ValueError('installed BUILD.json changed')
@@ -220,9 +264,12 @@ def stage(root, candidate, state, state_path):
     state['pending']['completed_files'] = {}
     save(state_path, state)
     for name, checksum in candidate['files'].items():
-        source = Path(candidate['binary']).parent / name
-        dest = directory / name
-        with source.open('rb') as src, dest.open('xb') as target:
+        source = at(Path(candidate['binary']).parent, name)
+        dest = at(directory, name)
+        for parent in reversed(dest.relative_to(directory).parents[:-1]):
+            if not (directory / parent).exists():
+                protection(directory / parent)
+        with absolute(source).open('rb') as src, dest.open('xb') as target:
             windows_private(dest, provision=True)
             shutil.copyfileobj(src, target)
             target.flush(); os.fsync(target.fileno())
@@ -395,15 +442,17 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                         raise ValueError('task removal not verified')
                 for version, entry in state['programs'].items():
                     directory = absolute(root / version)
-                    if identity(directory) != entry['identity'] or {p.name for p in directory.iterdir()} != set(entry['files']):
+                    if identity(directory) != entry['identity'] or not owned_tree(directory, entry['files']):
                         raise ValueError('uninstall ownership changed')
                     for filename, checksum in entry['files'].items():
-                        p = absolute(directory / filename)
+                        p = absolute(at(directory, filename))
                         if digest(p) != checksum:
                             raise ValueError('uninstall program changed')
                         p.unlink()
                         if p.exists():
                             raise ValueError('uninstall file removal failed')
+                    for name in sorted(runtime_directories(entry['files']), key=lambda n: n.count('/'), reverse=True):
+                        at(directory, name).rmdir()  # Empty by construction; never recursive.
                     directory.rmdir()
                 state.update(status='uninstalled', task=None, pending=None, programs={})
                 save(state_path, state)

@@ -108,6 +108,17 @@ To move an installed RC.5 to RC.6 with autostart already enabled, run
 UPGRADE and REPLACE gates request a cooperative stop, rebind the task to the new
 version, and start and verify the new worker. No sign-out is needed.
 
+## Onedir program layout (RC.8+)
+
+From RC.8 the Windows program is a PyInstaller **onedir** folder: `agentmesh.exe`,
+`agentmeshw.exe` and a shared `_internal/` runtime. Nothing is unpacked at start,
+so the logon chain (launcher, `worker-start`, `worker-run`) no longer waits for a
+onefile extraction that antivirus rescans on every launch. `BUILD.json` lists
+every `_internal/...` file by relative path. The installer copies and hashes the
+whole tree, refuses unlisted, linked or unsafe paths, and uninstall removes only
+the listed files and their now-empty directories. RC.5-RC.7 flat versions stay
+valid in history, so program rollback still works.
+
 ## Upgrade, program rollback, uninstall
 
 All commands accept `--dry-run` and require the same explicit existing runtime.

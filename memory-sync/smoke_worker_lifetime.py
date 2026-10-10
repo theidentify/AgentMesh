@@ -24,6 +24,8 @@ def main():
     binary = (Path(os.environ.get('AGENTMESH_DIST', str(parent / 'agentmesh-dist')))
               / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh')).resolve()
     assert binary.is_file(), f'missing binary: {binary}'
+    # Windows ships onedir (shared _internal, no extraction); macOS stays onefile.
+    onedir = (binary.parent / '_internal').is_dir()
     root = Path(tempfile.mkdtemp(prefix='agentmesh-worker-lifetime-', dir=parent)).resolve()
     extraction = root / 'extraction'
     extraction.mkdir(mode=0o700)
@@ -63,13 +65,19 @@ def main():
                        '--interval', '0.25', '--timeout', '300', starter=True)
         # subprocess.run has waited for the actual onefile starter to exit.
         assert state['state'] == 'running' and state['cycles'] >= 1 and state['last_error'] is None
-        assert any((p / 'base_library.zip').is_file() for p in extraction.glob('_MEI*')), \
-            'starter removed the sole extraction directory while the worker was running'
+        if onedir:
+            assert not list(extraction.glob('_MEI*')), 'onedir program extracted a onefile archive'
+        else:
+            assert any((p / 'base_library.zip').is_file() for p in extraction.glob('_MEI*')), \
+                'starter removed the sole extraction directory while the worker was running'
         if os.name == 'nt':
             assert state['console_attached'] is False, state
         bundle = Path(state['bundle_dir']).resolve()
-        assert bundle.is_relative_to(extraction), state
-        assert (bundle / 'base_library.zip').is_file(), 'worker extraction was removed with starter'
+        if onedir:
+            assert bundle == (binary.parent / '_internal').resolve(), state
+        else:
+            assert bundle.is_relative_to(extraction), state
+        assert (bundle / 'base_library.zip').is_file(), 'worker runtime was removed with starter'
         nonce, pid, initial_cycles = state['nonce'], state['pid'], state['cycles']
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
@@ -98,10 +106,11 @@ def main():
             stopped = invoke('worker-stop', '--runtime', runtime, '--timeout', '300')
             assert stopped['state'] == 'stopped', stopped
     deadline = time.monotonic() + 120
-    while time.monotonic() < deadline and (bundle.exists() or worker_lifecycle.alive(pid)):
+    while time.monotonic() < deadline and ((bundle.exists() and not onedir) or worker_lifecycle.alive(pid)):
         time.sleep(0.1)
     assert not worker_lifecycle.alive(pid), 'drained worker Python process did not exit'
-    assert not bundle.exists(), 'worker onefile extraction did not clean up'
+    if not onedir:
+        assert not bundle.exists(), 'worker onefile extraction did not clean up'
     assert not list(extraction.glob('_MEI*')), 'starter/worker extraction leaked'
     assert all(p.read_bytes() == data for p, data in bound.items())
     assert {p.name: p.read_bytes() for p in identity.iterdir()} == keys_before
@@ -112,7 +121,7 @@ def main():
     status = json.loads((exchange / 'status' / (node + '.json')).read_text())
     assert status['security']['policy'] == 'legacy'
     report = {'platform': os.name, 'starter_exited': True, 'cycles_after_starter_exit': cycles - initial_cycles,
-              'independent_bundle_cleaned': True, 'nonce_stop_drained': True,
+              'independent_bundle_cleaned': not onedir, 'onedir': onedir, 'nonce_stop_drained': True,
               'runtime_workflow_keys_scope_preserved': True, 'frozen_diagnose_passed': True, 'seconds': round(time.monotonic() - started_at, 3)}
     if os.name == 'nt':
         report['worker_console_attached'] = False

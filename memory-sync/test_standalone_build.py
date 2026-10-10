@@ -104,3 +104,12 @@ def test_launcher_runs_adjacent_cli_hidden_with_fresh_extraction(monkeypatch, tm
     assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r']
     assert seen['env']['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
     assert seen['stdin'] is seen['stdout'] is seen['stderr'] is agentmesh_launcher.subprocess.DEVNULL
+
+
+def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
+    standalone_build.windows_launcher(tmp_path)
+    text = (tmp_path / 'Enable-AgentMesh-Autostart.cmd').read_bytes().decode('utf-8')
+    assert text.index('worker-stop') < text.index('windows-autostart')
+    assert text.index('--enable --legacy-drained --dry-run') < text.index('--enable --legacy-drained\r\n')
+    assert 'choice /m' in text and 'Do not close this window' in text
+    assert 'programs\\' not in text  # no version-pinned installed path

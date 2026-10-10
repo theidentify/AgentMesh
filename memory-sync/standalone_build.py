@@ -68,7 +68,7 @@ read ignored
 
 def windows_launcher(dist):
     """Package the reviewed click helpers with native CMD line endings."""
-    for name in ('Install-AgentMesh.cmd', 'Upgrade-AgentMesh.cmd'):
+    for name in ('Install-AgentMesh.cmd', 'Upgrade-AgentMesh.cmd', 'Enable-AgentMesh-Autostart.cmd'):
         source = Path(__file__).with_name(name)
         target = Path(dist) / name
         target.write_bytes(source.read_text(encoding='utf-8').replace('\n', '\r\n').encode('utf-8'))

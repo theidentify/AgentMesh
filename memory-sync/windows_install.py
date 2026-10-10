@@ -13,6 +13,7 @@ import uuid
 
 from install_adopt import absolute, load
 from runtime_lock import lock
+from terminal_progress import Wait, stage as announce
 from signed_packets import parse, private_directory, read_local, windows_private, write_local
 import worker_lifecycle as managed
 import windows_task
@@ -209,6 +210,7 @@ def stage(root, candidate, state, state_path):
     directory = absolute(root / key)
     if directory.exists():
         raise ValueError('unowned version directory refused')
+    announce('Copying and verifying program files for ' + key)
     # Recovery records stay local and private, never in distributed BUILD.json.
     state['status'] = 'recovery_required'
     state['pending'] = {'operation': 'stage', 'key': key, 'files': candidate['files']}
@@ -368,6 +370,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             state['status'] = 'recovery_required'
             state['pending'] = {'operation': 'replace', 'old': state['active'], 'new': key, 'task': state['task']}
             save(state_path, state)
+            announce('Stopping the current worker (cooperative; no process is killed)')
             managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
             restarting = True
         with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
@@ -427,6 +430,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                        '--interval', str(state['interval']), '--timeout', str(timeout)]
             if legacy_drained:
                 command.append('--legacy-drained')
+            announce('Starting the worker from ' + key)
             start_worker(command, timeout + 120)
             health = managed.status(runtime)
             if health['state'] != 'running' or health.get('cycles', 0) < 1 or health.get('last_error'):
@@ -434,12 +438,15 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             nonce = health['nonce']
             first_cycles = health['cycles']
             deadline = time.monotonic() + state['interval'] + timeout
+            wait = Wait('Verifying the new worker completes one more sync cycle', state['interval'] + timeout)
             while time.monotonic() < deadline:
                 health = managed.status(runtime)
                 if health['state'] != 'running' or health.get('nonce') != nonce or health.get('last_error'):
                     raise ValueError('replacement recurring worker health failed')
                 if health['cycles'] > first_cycles:
+                    wait.done('healthy')
                     break
+                wait.tick()
                 time.sleep(0.1)
             else:
                 raise TimeoutError('replacement recurring cycle not verified; recovery retained')
@@ -456,6 +463,7 @@ def change_task(adapter, state, state_path, *, enabled, finish=True):
     state['status'] = 'recovery_required'
     state['pending'] = {'operation': 'task', 'previous': previous, 'transition': state.get('pending')}
     save(state_path, state)
+    announce('Updating the start-at-login task')
     definition = windows_task.binding(state['sid'], state['marker'], task_entry(state, state['active']),
         state['runtime'], state['interval'], state['timeout'], state['legacy_drained'], enabled)
     task = adapter.register(state['task_name'], state['sid'], previous['xml'] if previous else None, definition)

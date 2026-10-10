@@ -338,10 +338,14 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
     return public_status(state, prerequisites)
 
 
-def interactive(args):
+def interactive(args, *, validate_scope=None):
     # CLI only; all approval requires operator typing, never dashboard buttons.
+    def checked_resume(*positional, **options):
+        if validate_scope is not None:
+            validate_scope()
+        return resume(*positional, **options)
     print('[1/6] Prerequisites | Python, cryptography, accepted Syncthing folder')
-    initial = resume(args.database, args.exchange, args.security_dir, args.state, dry_run=True)
+    initial = checked_resume(args.database, args.exchange, args.security_dir, args.state, dry_run=True)
     if not all(initial['prerequisites'].values()):
         print('Pending prerequisites. Install requirements-security.txt with the worker interpreter; resume later.')
         return initial
@@ -350,7 +354,7 @@ def interactive(args):
         print('[2/6] Local identity | Existing OS allocation slot; no arbitrary-node allocation')
         create = input('Create a private persistent identity after SQLite backup? Type CREATE: ').strip() == 'CREATE'
         if create: name = input('English ASCII display name: ').strip()
-    result = resume(args.database, args.exchange, args.security_dir, args.state, create_identity=create, display_name=name)
+    result = checked_resume(args.database, args.exchange, args.security_dir, args.state, create_identity=create, display_name=name)
     if not Path(args.security_dir).exists(): return result
     security = signed.Security(args.security_dir)
     print('Local fingerprint (full SHA-256): ' + security.public['key_id'])
@@ -367,20 +371,20 @@ def interactive(args):
             expected_group = input('Independently confirmed peer group UUID: ').strip()
             expected_node = input('Independently confirmed peer allocation slot (mac/windows/linux): ').strip()
             expected_sender = input('Independently confirmed peer sender UUID: ').strip()
-    result = resume(args.database, args.exchange, args.security_dir, args.state, publish_proposal=proposal,
+    result = checked_resume(args.database, args.exchange, args.security_dir, args.state, publish_proposal=proposal,
                     peer_public=peer_file or None, confirm_fingerprint=fingerprint,
                     expected_group=expected_group, expected_node=expected_node, expected_sender=expected_sender)
     if result['pairing'] != 'approved': return result
     print('[4/6] Signed roundtrip | Isolated SQLite probe requires a remote signed committed receipt')
     if input('Send local probe and process approved peer probes? Type PROBE: ').strip() == 'PROBE':
         try:
-            result = resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
+            result = checked_resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
                             confirm_quarantine_receipts=args.confirm_quarantine_receipts)
         except ReceiptCollision:
             print('Invalid colliding receipt rejected. Recovery preserves exact bytes in private local quarantine.')
             if input('After reviewing the collision, quarantine and republish genuine receipts? Type QUARANTINE: ').strip() != 'QUARANTINE':
                 raise
-            result = resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
+            result = checked_resume(args.database, args.exchange, args.security_dir, args.state, send_probe=True, accept_probes=True,
                             confirm_quarantine_receipts=True)
     if result['roundtrip'] != 'verified':
         print('Pending remote application receipt. Peer must approve your fingerprint and resume its probe step.')
@@ -390,7 +394,7 @@ def interactive(args):
     boundary = input('Every legacy packet applied on all peers and writers paused? Type DRAINED: ').strip() == 'DRAINED'
     activate = input('Enable REQUIRED policy on this database? Type ACTIVATE: ').strip() == 'ACTIVATE'
     if activate:
-        result = resume(args.database, args.exchange, args.security_dir, args.state,
+        result = checked_resume(args.database, args.exchange, args.security_dir, args.state,
                         activate=True, confirm_both_peers=both, confirm_legacy_boundary=boundary)
     print('[6/6] ' + ('Required policy configured; restart with the same identity.' if result['policy'] == 'required' else 'Legacy policy preserved; activation is still pending.'))
     return result

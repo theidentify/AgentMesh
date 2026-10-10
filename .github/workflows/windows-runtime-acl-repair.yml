@@ -1,0 +1,20 @@
+name: Windows runtime ACL repair verification
+on:
+  push:
+    branches: [feat/standalone-app-v020]
+    paths:
+      - 'memory-sync/support/**'
+      - '.github/workflows/windows-runtime-acl-repair.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise confirmed single-file repair and ACL-only rollback
+        run: python memory-sync/support/verify_runtime_acl_repair.py

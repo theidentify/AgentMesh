@@ -1,7 +1,6 @@
 """Portable ACL policy tests, NOT evidence of native Windows execution."""
-import base64
-import json
 import re
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,37 +80,84 @@ def test_native_adapter_requires_real_windows():
     with pytest.raises(ValueError, match='requires Windows'): acl.apply(Path(__file__))
 
 
-def test_fixed_powershell_adapter_treats_path_as_data(monkeypatch, tmp_path):
+def test_native_adapter_treats_path_as_data(monkeypatch, tmp_path):
     # Patch only the adapter's OS boundary, not global os.name / pathlib behavior.
-    monkeypatch.setattr(acl, 'os', SimpleNamespace(name='nt', environ={'SystemRoot': str(tmp_path)}))
+    monkeypatch.setattr(acl, 'os', SimpleNamespace(name='nt'))
     path = tmp_path / "apostrophe' ; $path [literal].json"
     path.write_text('public test data')
     calls = []
-    def run(args, **kwargs):
-        calls.append((args, kwargs))
-        return SimpleNamespace(stdout=json.dumps(report()), returncode=0)
-    monkeypatch.setattr(acl.subprocess, 'run', run)
+    def native(target, provision):
+        calls.append((target, provision))
+        return report()
+    monkeypatch.setattr(acl, 'native_report', native)
     acl.apply(path, provision=True)
-    args, kwargs = calls[0]
-    script = base64.b64decode(args[-1]).decode('utf-16le')
-    assert script == acl.SCRIPT and str(path) not in script
-    assert kwargs['env']['AGENTMESH_ACL_PATH'] == str(path)
-    assert kwargs['env']['AGENTMESH_ACL_OPERATION'] == 'provision'
-    assert kwargs['timeout'] == 30 and kwargs['check'] and 'shell' not in kwargs
-    assert '-NoProfile' in args and '-NonInteractive' in args
-    assert '-LiteralPath' in script and 'SetAccessRuleProtection($true, $false)' in script
+    assert calls == [(str(path), True)]
+    assert not hasattr(acl, 'subprocess')
 
 
-@pytest.mark.parametrize('failure', ['command', 'invalid-json', 'broad-acl'])
+@pytest.mark.parametrize('failure', ['os', 'decode', 'broad-acl'])
 def test_native_adapter_failure_is_not_fallback(monkeypatch, tmp_path, failure):
-    monkeypatch.setattr(acl, 'os', SimpleNamespace(name='nt', environ={'SystemRoot': str(tmp_path)}))
-    def run(*args, **kwargs):
-        if failure == 'command': raise OSError('not available')
+    monkeypatch.setattr(acl, 'os', SimpleNamespace(name='nt'))
+    def native(*args):
+        if failure == 'os': raise OSError('not available')
+        if failure == 'decode': return {**report(), 'rules': acl.parse_acl(b'\x02\x00\x08\x00\x01\x00\x00\x00')}
         value = report()
         value['rules'].append({'sid': 'S-1-1-0', 'type': 0, 'flags': 0, 'mask': 0x120089})
-        return SimpleNamespace(stdout='not json' if failure == 'invalid-json' else json.dumps(value))
-    monkeypatch.setattr(acl.subprocess, 'run', run)
+        return value
+    monkeypatch.setattr(acl, 'native_report', native)
     with pytest.raises(ValueError): acl.apply(tmp_path / 'file')
+
+
+def sid_bytes(sid):
+    parts = [int(part) for part in sid.split('-')[2:]]
+    return bytes([1, len(parts) - 1]) + parts[0].to_bytes(6, 'big') + struct.pack('<%dI' % (len(parts) - 1), *parts[1:])
+
+
+def ace_bytes(sid, kind=0, flags=0, mask=0x1f01ff):
+    body = struct.pack('<I', mask) + sid_bytes(sid)
+    return struct.pack('<BBH', kind, flags, 4 + len(body)) + body
+
+
+def acl_bytes(*aces, revision=2):
+    body = b''.join(aces)
+    return struct.pack('<BBHHH', revision, 0, 8 + len(body), len(aces), 0) + body
+
+
+@pytest.mark.parametrize('sid', [USER, acl.SYSTEM, 'S-1-1-0', 'S-1-5-32-545'])
+def test_sid_decoder_round_trips_binary_form(sid):
+    data = sid_bytes(sid)
+    assert acl.parse_sid(data + b'trailing') == (sid, len(data))
+
+
+@pytest.mark.parametrize('directory', [False, True])
+def test_acl_decoder_matches_restrictive_policy_report(directory):
+    flags = 3 if directory else 0
+    rules = acl.parse_acl(acl_bytes(ace_bytes(USER, flags=flags), ace_bytes(acl.SYSTEM, flags=flags)))
+    assert rules == report(directory)['rules']
+    value = {**report(directory), 'rules': rules}
+    assert acl.validate(value, directory=directory) == value
+
+
+def test_acl_decoder_keeps_signed_mask_projection():
+    assert acl.parse_acl(acl_bytes(ace_bytes(USER, mask=0x80000000)))[0]['mask'] == -0x80000000
+
+
+@pytest.mark.parametrize('data', [
+    b'', acl_bytes(revision=1), acl_bytes(ace_bytes(USER))[:-1],
+    acl_bytes(ace_bytes(USER, kind=5)), acl_bytes(ace_bytes(USER, kind=9)),
+    struct.pack('<BBHHH', 2, 0, 12, 1, 0) + struct.pack('<BBH', 0, 0, 4),
+    struct.pack('<BBHHH', 2, 0, 8, 1, 0),
+    acl_bytes(ace_bytes(USER)[:8] + b'\x02' + ace_bytes(USER)[9:]),
+])
+def test_malformed_or_unsupported_acl_is_closed(data):
+    with pytest.raises(ValueError): acl.parse_acl(data)
+
+
+def test_provisioning_descriptor_grants_only_user_and_system():
+    assert acl.provision_sddl(USER, False) == f'O:{USER}D:P(A;;FA;;;{USER})(A;;FA;;;SY)'
+    assert acl.provision_sddl(USER, True) == f'O:{USER}D:P(A;OICI;FA;;;{USER})(A;OICI;FA;;;SY)'
+    for sid in ('S-1-1-0', USER + ')(A;;FA;;;WD', None):
+        with pytest.raises(ValueError): acl.provision_sddl(sid, False)
 
 
 @pytest.mark.parametrize('target', ['directory', 'identity.json', 'trust.json'])

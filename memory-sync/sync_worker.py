@@ -17,7 +17,10 @@ from runtime_lock import cycle_locked
 
 @cycle_locked
 def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
-             force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None):
+             force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None,
+             security_state=None, preflight=None):
+    if preflight is not None:
+        preflight()  # Inside cycle lock, before any ingestion or policy writes.
     exchange = Path(exchange)
     if not (exchange / '.stfolder').exists():
         raise ValueError('exchange is not an accepted Syncthing folder')
@@ -68,7 +71,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)
     security_report = dict(state['security'])
-    wizard_path = Path(database).parent / 'security-wizard.json'
+    wizard_path = Path(security_state) if security_state is not None else Path(database).parent / 'security-wizard.json'
     if wizard_path.exists():
         try:
             import security_wizard

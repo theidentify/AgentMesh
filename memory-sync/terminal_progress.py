@@ -86,3 +86,44 @@ class TerminalProgress:
             self.thread.join()
         if self.tty:
             print(file=self.stream, flush=True)
+
+
+_STDERR = object()
+
+
+def _console(stream):
+    # Only an interactive console gets wait feedback: captured stderr carries
+    # machine-readable error JSON, and windowless processes may have no stream.
+    stream = sys.stderr if stream is _STDERR else stream
+    try:
+        return stream if stream is not None and stream.isatty() else None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def stage(message, *, stream=_STDERR):
+    console = _console(stream)
+    if console is not None:
+        print(message + '...', file=console, flush=True)
+
+
+class Wait:
+    """Line-based elapsed feedback for a bounded wait, e.g. a cooperative stop."""
+    def __init__(self, label, timeout, *, stream=_STDERR, every=5.0):
+        self.console = _console(stream)
+        self.label, self.timeout, self.every = label, timeout, every
+        self.started = self.last = time.monotonic()
+        self.write(f'{label} (up to {timeout:.0f}s)...')
+
+    def write(self, text):
+        if self.console is not None:
+            print(text, file=self.console, flush=True)
+
+    def tick(self):
+        now = time.monotonic()
+        if now - self.last >= self.every:
+            self.last = now
+            self.write(f'  ...{int(now - self.started)}s / {self.timeout:.0f}s')
+
+    def done(self, result='done'):
+        self.write(f'{self.label}: {result} ({int(time.monotonic() - self.started)}s)')

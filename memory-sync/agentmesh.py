@@ -11,7 +11,7 @@ import sync_worker
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--database', required=True)
+    parser.add_argument('--database', help='initialized local database; required except for inspect-install')
     parser.add_argument('--exchange')
     parser.add_argument('--config', help='private workflow.json; defaults beside DB')
     subs = parser.add_subparsers(dest='action', required=True)
@@ -30,8 +30,134 @@ def main(argv=None):
         if name == 'watch':
             worker.add_argument('--interval', type=float, default=60)
     subs.add_parser('status', description=__import__('brand').description('Inspect local memory and peer-sync state.'), formatter_class=argparse.RawDescriptionHelpFormatter)
+    diagnostics = subs.add_parser('diagnose', help='read-only staged, redacted worker diagnostics')
+    diagnostics.add_argument('--runtime', required=True, help='existing runtime.json; never creates or repairs state')
+    diagnostics.add_argument('--json', action='store_true', help='machine-readable redacted report instead of human-readable output')
+    inspect = subs.add_parser('inspect-install', help='read-only discovery of an existing installation')
+    inspect.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    wizard = subs.add_parser('wizard-status', help='read-only security wizard status for an existing installation')
+    wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    wizard = subs.add_parser('wizard-resume', help='interactive security setup for an existing installation only')
+    wizard.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
+    setup = subs.add_parser('setup-new', help='create a NEW EMPTY installation and isolated sync group')
+    setup.add_argument('--local-dir', required=True, help='new absolute local root; parent must exist')
+    setup.add_argument('--exchange', required=True, help='accepted absolute Syncthing exchange')
+    setup.add_argument('--node', required=True, help='allocation slot: mac, windows or linux')
+    adoption = subs.add_parser('adopt-install', help='bind existing paths only; requires BIND')
+    for key in ('runtime', 'app-root', 'database', 'exchange', 'node', 'security-dir', 'security-state', 'workflow-config'):
+        adoption.add_argument('--' + key, required=True)
+    for name in ('worker-run', 'worker-start', 'worker-status', 'worker-stop'):
+        worker = subs.add_parser(name, help='explicit managed worker lifecycle')
+        worker.add_argument('--runtime', required=True)
+        if name in ('worker-run', 'worker-start'):
+            worker.add_argument('--interval', type=float, default=60)
+            worker.add_argument('--legacy-drained', action='store_true', help='acknowledge old worker stopped and preserve unsigned policy')
+        if name == 'worker-run':
+            worker.add_argument('--once', action='store_true')
+            worker.add_argument('--nonce', help=argparse.SUPPRESS)
+            worker.add_argument('--startup-deadline', type=float, help=argparse.SUPPRESS)
+        if name in ('worker-start', 'worker-stop'):
+            worker.add_argument('--timeout', type=float, default=60)
+    replacement = subs.add_parser('mac-replace', help='operator-confirmed Mac replacement; planning is read-only')
+    replacement.add_argument('--manifest', required=True, help='private explicit existing-install manifest')
+    replacement.add_argument('--binary', help='bundled standalone executable; defaults to this frozen executable')
+    replacement.add_argument('--dry-run', action='store_true')
+    replacement.add_argument('--timeout', type=float, default=300)
+    rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
+    rollback.add_argument('--backup', required=True)
+    rollback.add_argument('--timeout', type=float, default=300)
+    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart'):
+        installer = subs.add_parser(name, help='Windows existing-install program lifecycle; explicit confirmation required')
+        installer.add_argument('--runtime', required=True, help='absolute existing runtime; never creates or rewrites it')
+        installer.add_argument('--program-root', help='separate protected program root; defaults to LOCALAPPDATA/AgentMesh/programs')
+        installer.add_argument('--installed-state', help='owned program-root/installed.json')
+        installer.add_argument('--task-name', help='explicit AgentMesh- task name; owned binding still required')
+        installer.add_argument('--dry-run', action='store_true', help='read-only planning; no prompts or writes')
+        installer.add_argument('--legacy-drained', action='store_true', help='explicit operator approval that prior legacy worker was drained')
+        installer.add_argument('--unmanaged-drained', action='store_true', help='explicit approval that prior unmanaged/source workers exited; an idle cycle lock is not proof')
+        installer.add_argument('--interval', type=float, default=60)
+        installer.add_argument('--timeout', type=float, default=60)
+        if name in ('windows-install', 'windows-upgrade'):
+            installer.add_argument('--binary', help='adjacent BUILD.json required; defaults to current frozen executable')
+        if name == 'windows-upgrade':
+            installer.add_argument('--replace', action='store_true', help='separate REPLACE gate for cooperative stop and healthy restart')
+        if name == 'windows-autostart':
+            selection = installer.add_mutually_exclusive_group(required=True)
+            selection.add_argument('--enable', action='store_true')
+            selection.add_argument('--disable', action='store_true')
     args = parser.parse_args(argv)
     try:
+        if args.action.startswith('windows-'):
+            import windows_install
+            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name')}
+            for key in ('enable', 'disable', 'replace'):
+                values[key] = getattr(args, key, False)
+            if args.action in ('windows-install', 'windows-upgrade'):
+                values['binary'] = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
+                if values['binary'] is None:
+                    raise ValueError('source installation requires explicit bundled binary')
+            report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            print(json.dumps(report, sort_keys=True))
+            return 2 if report['status'] in ('pending', 'staged') else 0
+        if args.action == 'diagnose':
+            from worker_diagnostics import diagnose, render
+            progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)
+            report = diagnose(args.runtime, progress=progress)
+            print(json.dumps(report, sort_keys=True) if args.json else render(report))
+            return 0 if report['status'] == 'ok' else 1
+        if args.action in ('mac-replace', 'mac-rollback'):
+            import mac_replace
+            if args.action == 'mac-rollback':
+                report = mac_replace.rollback(args.backup, timeout=args.timeout)
+            else:
+                binary = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
+                if binary is None:
+                    raise ValueError('source replacement requires an explicit bundled binary')
+                report = mac_replace.replace(args.manifest, binary, timeout=args.timeout, dry_run=args.dry_run)
+            print(json.dumps(report, sort_keys=True))
+            if report.get('error') or report['status'] == 'recovery_required':
+                return 1
+            return 2 if report['status'] == 'pending' else 0
+        if args.action.startswith('worker-'):
+            import worker_lifecycle as managed
+            if args.action == 'worker-run':
+                return managed.run(args.runtime, once=args.once, interval=args.interval,
+                    legacy_drained=args.legacy_drained, nonce=args.nonce, startup_deadline=args.startup_deadline)
+            if args.action == 'worker-start':
+                report = managed.start(args.runtime, interval=args.interval, legacy_drained=args.legacy_drained, timeout=args.timeout)
+            elif args.action == 'worker-stop':
+                report = managed.stop(args.runtime, timeout=args.timeout)
+            else:
+                report = managed.status(args.runtime)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        if args.action == 'adopt-install':
+            from install_adopt import adopt
+            report = adopt(**{key: getattr(args, key) for key in ('runtime', 'app_root', 'database', 'exchange', 'node', 'security_dir', 'security_state', 'workflow_config')})
+            print(json.dumps(report, sort_keys=True))
+            return 0 if report['status'] == 'bound' else 2
+        if args.action == 'setup-new':
+            from install_setup import setup_new
+            report = setup_new(args.local_dir, args.exchange, args.node)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 0 if report['status'] == 'created' else 2
+        if args.action in ('inspect-install', 'wizard-status', 'wizard-resume'):
+            from install_setup import reject_partial
+            reject_partial(args.runtime)
+        if args.action == 'wizard-resume':
+            from install_inspect import wizard_resume
+            report = wizard_resume(args.runtime)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            ready = (report['policy'] == 'required' and report['wizard_step'] == 'active'
+                     and report['pairing'] == 'approved' and all(report['prerequisites'].values()))
+            return 0 if ready else 2
+        if args.action in ('inspect-install', 'wizard-status'):
+            from install_inspect import inspect, wizard_status
+            report = inspect(args.runtime) if args.action == 'inspect-install' else wizard_status(args.runtime)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 0
+        if not args.database:
+            parser.error('--database is required for this action')
         db = Path(args.database).resolve()
         if not db.is_file():
             raise FileNotFoundError('database must already be initialized')
@@ -83,7 +209,8 @@ def main(argv=None):
             return int(sync_worker.failed(result))
         return 0
     except Exception as exc:
-        print(json.dumps({'error': type(exc).__name__}), file=sys.stderr)
+        from cli_errors import report as error_report
+        print(json.dumps(error_report(exc, args.action)), file=sys.stderr)
         return 1
 
 

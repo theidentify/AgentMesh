@@ -4,6 +4,36 @@ This is a **native macOS/Windows CLI build path and Mac-first operator replaceme
 
 `adopt-install` now binds existing DB/exchange/workflow/security paths only after BIND. `worker-run`, `worker-start`, `worker-status` and `worker-stop` provide an explicit managed lifecycle using the selected runtime and authoritative DB policy. On macOS, the build also produces `Replace-AgentMesh.command`; `mac-replace` and `mac-rollback` provide operator-confirmed replacement and code/service recovery without automatic DB restoration. See [Mac operator replacement](MAC-REPLACEMENT.md) for the required private manifest, drain/backup/confirmation gates and limitations. This does not close the full v0.2.0 milestone or activate signing, join a baseline, enable PostgreSQL or install a Windows service.
 
+## Supported platforms and packaging format
+
+The deliverable is a **command-line program**, not a desktop GUI. Each archive bundles
+its own Python 3.11 runtime, SQLite and pinned dependencies (PyInstaller 6.16.0,
+pyinstaller-hooks-contrib 2026.8, cryptography 50.0.2); no Python or Git install is used.
+
+| Platform | CPU | Format | Built and CI-tested on | Verified on a real host |
+|---|---|---|---|---|
+| macOS | Apple silicon (arm64) | single-file executable (`agentmesh`) | GitHub `macos-15` | macOS 26.3 (downloaded RC.8, read-only diagnose) |
+| Windows | x86-64 (amd64) | onedir folder (`agentmesh.exe`, `agentmeshw.exe`, `_internal\`) from RC.8; single files in RC.5-RC.7 | GitHub `windows-2025` | Windows 10 22H2, build 19045 (RC.5-RC.7 install, upgrade and logon start) |
+
+Intel Macs, Windows on ARM, Linux and older OS versions are **not built or tested**;
+treat them as unsupported until a native build and host check exist. Binaries are
+unsigned development trials: macOS builds are ad-hoc signed, not Developer ID
+signed or notarized; Windows builds have no Authenticode signature and can trigger
+SmartScreen or antivirus prompts. Never disable those controls.
+
+## Windows existing-install program installation
+
+Windows RC.5 adds `windows-install`, `windows-upgrade`, `windows-rollback`,
+`windows-uninstall`, and explicitly opt-in `windows-autostart`. The click helper
+`Install-AgentMesh.cmd` plans first and installs program files only after INSTALL;
+it does not enable login startup or replace a running worker. See
+[Windows existing-install installation](WINDOWS-INSTALLATION.md) for separate
+program/task/REPLACE gates, ownership and preservation rules, recovery limits,
+and outstanding native/login-host verification. This is a per-user logon
+launcher, not a before-login Windows service or crash supervisor.
+
+Windows builds use a generated onedir spec (`agentmesh.exe`, windowless `agentmeshw.exe`, shared `_internal/`); macOS remains a single onefile binary for `mac-replace`.
+
 ## Read-only diagnostics and safe error details
 
 ```powershell

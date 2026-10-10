@@ -66,8 +66,39 @@ def main(argv=None):
     rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
     rollback.add_argument('--backup', required=True)
     rollback.add_argument('--timeout', type=float, default=300)
+    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart'):
+        installer = subs.add_parser(name, help='Windows existing-install program lifecycle; explicit confirmation required')
+        installer.add_argument('--runtime', required=True, help='absolute existing runtime; never creates or rewrites it')
+        installer.add_argument('--program-root', help='separate protected program root; defaults to LOCALAPPDATA/AgentMesh/programs')
+        installer.add_argument('--installed-state', help='owned program-root/installed.json')
+        installer.add_argument('--task-name', help='explicit AgentMesh- task name; owned binding still required')
+        installer.add_argument('--dry-run', action='store_true', help='read-only planning; no prompts or writes')
+        installer.add_argument('--legacy-drained', action='store_true', help='explicit operator approval that prior legacy worker was drained')
+        installer.add_argument('--unmanaged-drained', action='store_true', help='explicit approval that prior unmanaged/source workers exited; an idle cycle lock is not proof')
+        installer.add_argument('--interval', type=float, default=60)
+        installer.add_argument('--timeout', type=float, default=60)
+        if name in ('windows-install', 'windows-upgrade'):
+            installer.add_argument('--binary', help='adjacent BUILD.json required; defaults to current frozen executable')
+        if name == 'windows-upgrade':
+            installer.add_argument('--replace', action='store_true', help='separate REPLACE gate for cooperative stop and healthy restart')
+        if name == 'windows-autostart':
+            selection = installer.add_mutually_exclusive_group(required=True)
+            selection.add_argument('--enable', action='store_true')
+            selection.add_argument('--disable', action='store_true')
     args = parser.parse_args(argv)
     try:
+        if args.action.startswith('windows-'):
+            import windows_install
+            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name')}
+            for key in ('enable', 'disable', 'replace'):
+                values[key] = getattr(args, key, False)
+            if args.action in ('windows-install', 'windows-upgrade'):
+                values['binary'] = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
+                if values['binary'] is None:
+                    raise ValueError('source installation requires explicit bundled binary')
+            report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            print(json.dumps(report, sort_keys=True))
+            return 2 if report['status'] in ('pending', 'staged') else 0
         if args.action == 'diagnose':
             from worker_diagnostics import diagnose, render
             progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)

@@ -47,18 +47,83 @@ SAFE_REASONS = frozenset({
     'Windows PowerShell unavailable',
     'Windows private ACL could not be verified',
 })
+WINDOWS_REASONS = frozenset({
+    'OS PowerShell unavailable',
+    'Scheduled Task binding is not owned',
+    'Scheduled Task changed during confirmation',
+    'Scheduled Task could not be verified',
+    'Scheduled Task readback mismatch',
+    'Scheduled Task removal readback mismatch',
+    'Windows installation requires native Windows',
+    'Windows runtime node required',
+    'binding inputs changed during confirmation',
+    'binding inputs changed while draining',
+    'existing installed-state required',
+    'existing runtime required',
+    'existing program-root parent required',
+    'explicit prior legacy-worker drain approval required',
+    'explicit prior unmanaged-worker drain approval required',
+    'explicit program root required',
+    'foreign Scheduled Task refused',
+    'foreign or changed Scheduled Task refused',
+    'installation ownership or recovery status uncertain',
+    'installed BUILD.json changed',
+    'installed bundle verification failed',
+    'installed program changed while draining',
+    'installed program directory changed',
+    'installed program file changed',
+    'installed program readback mismatch',
+    'installed runtime or database scope changed',
+    'installed-state changed during confirmation',
+    'installed-state must be the owned root installed.json',
+    'installed-state readback failed',
+    'invalid BUILD.json checksum',
+    'invalid development BUILD.json schema',
+    'invalid owned program manifest',
+    'invalid owned task name',
+    'invalid owned version inventory',
+    'live replacement is upgrade-only',
+    'no previous owned program available',
+    'operator confirmation required',
+    'paths, program, configuration or scope changed during confirmation',
+    'program checksum mismatch',
+    'program root exists; use upgrade only for owned intact storage',
+    'program root overlaps existing state or exchange',
+    'regular program file required',
+    'replacement healthy cycle not verified',
+    'replacement recurring cycle not verified; recovery retained',
+    'replacement recurring worker health failed',
+    'runtime/database preservation failed',
+    'same revision has different program bytes',
+    'select exactly one of enable or disable',
+    'source bundle must be local and outside target/exchange',
+    'task SID changed',
+    'task binding readback failed',
+    'task name changed',
+    'task removal not verified',
+    'uninstall file removal failed',
+    'uninstall ownership changed',
+    'uninstall program changed',
+    'unowned program-root entries require review',
+    'unowned version directory refused',
+    'unsupported user SID',
+    'worker changed while draining',
+    'worker must be proven stopped; stale or running refused',
+})
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
-                           'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics'})
+                           'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
+                           'windows_install', 'windows_task'})
 
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
-    if action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart')
+    if not is_windows and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
-    known = message in SAFE_REASONS
+    known = message in SAFE_REASONS or (is_windows and message in WINDOWS_REASONS)
     result['reason'] = message if known else 'details withheld; inspect diagnostic stage'
     code, hint = DETAILS.get(message, (
         'GUARD_REFUSED' if known else 'UNCLASSIFIED_ERROR',
@@ -66,6 +131,8 @@ def report(exc, action):
         'Run diagnose with the same executable/runtime; share code and stage. Private input values are withheld.'))
     if not known and result['error'] in SYSTEM_ERRORS:
         code, hint = SYSTEM_ERRORS[type(exc).__name__]
+    if is_windows:
+        hint = 'Retain installed-state and program files for operator review; do not retry blindly or restore the database.'
     result.update(code=code, next_action=hint)
     for key in ('errno', 'winerror', 'sqlite_errorcode'):
         value = getattr(exc, key, None)

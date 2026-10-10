@@ -43,6 +43,11 @@ def main():
             command = [str(binary), *map(str, args)]
             result = subprocess.run(command, cwd=root, env=env, input=inputs,
                                     text=True, capture_output=True, timeout=300 if os.name == 'nt' else 90)
+            if result.returncode != expected and args[0] == 'worker-start':
+                # The starter only sees the child exit; its sanitized record has the cause.
+                status = subprocess.run([str(binary), 'worker-status', *map(str, args[1:3])], cwd=root, env=env,
+                                        text=True, capture_output=True, timeout=60)
+                raise AssertionError((command, result.returncode, result.stderr, 'worker-status', status.stdout))
             assert result.returncode == expected, (command, result.returncode, result.stderr)
             return result.stdout
         assert 'setup-new' in run('--help')
@@ -111,6 +116,18 @@ def main():
             assert json.loads(run('worker-stop', '--runtime', new_runtime, '--timeout', '300'))['state'] == 'stopped'
             restarted = json.loads(run('worker-start', '--runtime', new_runtime, '--legacy-drained', '--timeout', '300'))
             assert restarted['nonce'] != started['nonce']
+            if os.name == 'nt':
+                # The windowless logon entry starts the same healthy worker and prints nothing.
+                assert json.loads(run('worker-stop', '--runtime', new_runtime, '--timeout', '300'))['state'] == 'stopped'
+                launched = subprocess.run([str(binary.with_name('agentmeshw.exe')), 'worker-start', '--runtime', str(new_runtime),
+                                           '--legacy-drained', '--timeout', '300'], cwd=root, env=env,
+                                          capture_output=True, text=True, timeout=400)
+                windowless = json.loads(run('worker-status', '--runtime', new_runtime))
+                assert launched.returncode == 0 and not launched.stdout, (launched.returncode, windowless)
+                assert windowless['state'] == 'running' and windowless['cycles'] >= 1 and windowless['nonce'] != restarted['nonce']
+                assert windowless['console_attached'] is False
+                assert subprocess.run([str(binary.with_name('agentmeshw.exe')), 'worker-run', '--runtime', str(new_runtime)],
+                                      env=env, timeout=60).returncode == 2  # launcher refuses anything but worker-start
         finally:
             run('worker-stop', '--runtime', new_runtime, '--timeout', '300')
         assert new_runtime.read_bytes() == runtime_before

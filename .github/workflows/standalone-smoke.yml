@@ -18,17 +18,31 @@ jobs:
       matrix:
         os: [macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
+    # Healthy Windows runs take ~3 min; fail fast instead of hanging for the 6 h default.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: memory-sync/requirements-security.txt
       - name: Install pinned build dependencies
         run: python -m pip install -r memory-sync/requirements-security.txt pyinstaller==6.16.0 pyinstaller-hooks-contrib==2026.8 pytest==8.4.2
       - name: Test build and inspection contracts
-        run: python -m pytest -q memory-sync/test_native_windows_acl.py memory-sync/test_standalone_build.py memory-sync/test_install_setup.py memory-sync/test_install_inspect.py memory-sync/test_agentmesh.py memory-sync/test_install_adopt.py memory-sync/test_worker_lifecycle.py memory-sync/test_wizard_resume.py::test_declined_create_leaves_existing_installation_pending memory-sync/test_wizard_resume.py::test_custom_security_paths_preserve_identity_and_pending_state
+        run: python -m pytest -q --durations=20 memory-sync/test_native_windows_acl.py memory-sync/test_standalone_build.py memory-sync/test_install_setup.py memory-sync/test_install_inspect.py memory-sync/test_agentmesh.py memory-sync/test_install_adopt.py memory-sync/test_worker_lifecycle.py memory-sync/test_wizard_resume.py::test_declined_create_leaves_existing_installation_pending memory-sync/test_wizard_resume.py::test_custom_security_paths_preserve_identity_and_pending_state
+      - name: Verify Windows program lifecycle and disposable native tasks
+        if: runner.os == 'Windows'
+        env:
+          AGENTMESH_NATIVE_TASK_FIXTURE_ROOT: ${{ runner.temp }}
+        run: python -m pytest -q --durations=20 --basetemp "${{ runner.temp }}/agentmesh-install-source-fixtures" memory-sync/test_windows_install.py memory-sync/test_native_windows_task.py
       - name: Build native CLI (not a release asset)
         run: python memory-sync/standalone_build.py --dist "${{ runner.temp }}/agentmesh-dist" --work "${{ runner.temp }}/agentmesh-build"
+      - name: Verify frozen Windows existing-install lifecycle
+        if: runner.os == 'Windows'
+        env:
+          AGENTMESH_NATIVE_TASK_FIXTURE_ROOT: ${{ runner.temp }}
+        run: python memory-sync/smoke_windows_install.py
       - name: Smoke disposable installation
         run: python memory-sync/smoke_standalone.py
       - name: Verify independent background worker lifetime

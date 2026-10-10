@@ -281,3 +281,47 @@ def test_waiting_real_cycle_revalidates_runtime_after_lock_drain(tmp_path, monke
     finally:
         if process is not None:
             process.communicate(timeout=NATIVE_TIMEOUT)
+
+
+def test_start_deadline_stop_records_its_reason_and_plain_stop_stays_compatible(tmp_path, monkeypatch):
+    import worker_lifecycle as worker
+    args = bound(tmp_path, monkeypatch)
+    config, _ = worker.load(args['runtime'], authoritative=False)
+    directory = worker.control(config, create=True)
+    nonce = str(__import__('uuid').uuid4())
+    from signed_packets import write_local
+    # Older workers only accept {'nonce'}; worker-stop keeps writing exactly that.
+    write_local(directory / 'stop.json', {'nonce': nonce})
+    assert worker.stop_requested(directory, nonce) is True
+    assert worker.stop_reason(directory, nonce) is None
+    write_local(directory / 'stop.json', {'nonce': nonce, 'reason': 'startup deadline exceeded'})
+    assert worker.stop_requested(directory, nonce) is True
+    assert worker.stop_reason(directory, nonce) == 'startup deadline exceeded'
+    write_local(directory / 'stop.json', {'nonce': nonce, 'reason': 'anything else'})
+    with pytest.raises(ValueError, match='corrupt stop request'):
+        worker.stop_requested(directory, nonce)
+
+
+def test_worker_records_why_it_stopped(tmp_path, monkeypatch):
+    import worker_lifecycle as worker
+    args = bound(tmp_path, monkeypatch)
+    config, _ = worker.load(args['runtime'], authoritative=False)
+    directory = worker.control(config, create=True)
+    nonce = str(__import__('uuid').uuid4())
+    from signed_packets import write_local
+    write_local(directory / 'stop.json', {'nonce': nonce, 'reason': 'startup deadline exceeded'})
+    assert worker.run(args['runtime'], legacy_drained=True, nonce=nonce) == 0
+    record = worker.status(args['runtime'])
+    assert record['state'] == 'stopped' and record['stop_reason'] == 'startup deadline exceeded'
+
+
+def test_launcher_gives_logon_starts_a_long_startup_deadline(monkeypatch, tmp_path):
+    import agentmesh_launcher
+    seen = {}
+    class Done:
+        returncode = 0
+    monkeypatch.setattr(agentmesh_launcher.subprocess, 'run', lambda command, **kw: seen.update(command=command) or Done())
+    monkeypatch.setattr(agentmesh_launcher.sys, 'executable', str(tmp_path / 'agentmeshw.exe'))
+    agentmesh_launcher.main(['worker-start', '--runtime', 'r', '--interval', '60', '--timeout', '60', '--legacy-drained'])
+    assert seen['command'][-2:] == ['--timeout', str(agentmesh_launcher.LOGON_TIMEOUT)]  # argparse: last value wins
+    assert agentmesh_launcher.LOGON_TIMEOUT >= 600

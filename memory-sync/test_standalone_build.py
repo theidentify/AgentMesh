@@ -121,7 +121,8 @@ def test_launcher_runs_adjacent_cli_hidden_with_fresh_extraction(monkeypatch, tm
     monkeypatch.setattr(agentmesh_launcher.subprocess, 'run', run)
     monkeypatch.setattr(agentmesh_launcher.sys, 'executable', str(tmp_path / 'agentmeshw.exe'))
     assert agentmesh_launcher.main(['worker-start', '--runtime', 'r']) == 7
-    assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r']
+    assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r',
+                               '--timeout', str(agentmesh_launcher.LOGON_TIMEOUT)]
     assert seen['env']['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
     assert seen['stdin'] is seen['stdout'] is seen['stderr'] is agentmesh_launcher.subprocess.DEVNULL
 

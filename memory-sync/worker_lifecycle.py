@@ -100,14 +100,31 @@ def status(runtime):
     return record
 
 
-def stop_requested(directory, nonce):
+# Fixed public reasons only. worker-stop keeps writing exactly {'nonce'}, which
+# older workers require; a reason is added only when worker-start stops its own
+# just-started worker of the same version.
+STOP_REASONS = frozenset({'startup deadline exceeded'})
+
+
+def _stop_request(directory):
     path = directory / 'stop.json'
     if not path.exists():
-        return False
+        return None
     value = parse(read_local(path, private=True))
-    if not isinstance(value, dict) or set(value) != {'nonce'}:
+    if (not isinstance(value, dict) or set(value) not in ({'nonce'}, {'nonce', 'reason'})
+            or value.get('reason', next(iter(STOP_REASONS))) not in STOP_REASONS):
         raise ValueError('corrupt stop request')
-    return value['nonce'] == nonce
+    return value
+
+
+def stop_requested(directory, nonce):
+    value = _stop_request(directory)
+    return value is not None and value['nonce'] == nonce
+
+
+def stop_reason(directory, nonce):
+    value = _stop_request(directory)
+    return value.get('reason') if value is not None and value['nonce'] == nonce else None
 
 
 def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, startup_deadline=None):
@@ -172,6 +189,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 deadline = time.monotonic() + interval
                 while time.monotonic() < deadline and not stop_requested(directory, nonce):
                     time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+            if not result and stop_requested(directory, nonce):
+                record['stop_reason'] = stop_reason(directory, nonce)
         except Exception as exc:
             result = 1
             record['last_error'] = type(exc).__name__
@@ -234,7 +253,7 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
                 raise ValueError('worker failed before a healthy cycle')
             time.sleep(0.1)
         directory = control(config)
-        write_local(directory / 'stop.json', {'nonce': nonce})
+        write_local(directory / 'stop.json', {'nonce': nonce, 'reason': 'startup deadline exceeded'})
         raise TimeoutError('worker startup did not finish; nonce stop requested')
 
 

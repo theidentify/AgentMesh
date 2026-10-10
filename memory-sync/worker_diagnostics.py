@@ -103,7 +103,8 @@ def observe_worker(directory, runtime):
                                     'present_or_access_denied' if observation else 'not_probed'),
             'last_error_detail': recorded_error(record.get('last_error_detail')) if last_error is not None else None,
             'console_attached': record.get('console_attached')
-                if type(record.get('console_attached')) is bool else None}
+                if type(record.get('console_attached')) is bool else None,
+            'stop_reason': record.get('stop_reason') if record.get('stop_reason') in worker.STOP_REASONS else None}
 
 
 def diagnose(runtime, *, progress=None):
@@ -157,6 +158,15 @@ def diagnose(runtime, *, progress=None):
         if observation['state'] == 'stale':
             result['checks'][-1].update(status='warning', error=error_report(
                 ValueError('stale worker metadata; no process was signalled'), 'diagnose'))
+            result['status'] = 'attention'
+        elif observation['state'] == 'stopped' and observation.get('reported_state') == 'stopped':
+            # A worker that ran and stopped means memory is not syncing right now.
+            reason = observation.get('stop_reason')
+            result['checks'][-1].update(status='warning', error={
+                'code': 'WORKER_NOT_RUNNING',
+                'reason': 'worker is not running' + (' (' + reason + ')' if reason else ''),
+                'stage': 'worker',
+                'next_action': 'Start it with worker-start (use a long --timeout after a cold boot) or sign in again if start at login is on.'})
             result['status'] = 'attention'
         elif observation['state'] == 'failed' or observation.get('last_error') is not None:
             result['checks'][-1].update(status='warning', error={

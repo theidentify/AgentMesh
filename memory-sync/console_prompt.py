@@ -9,6 +9,8 @@ import os
 import sys
 import time
 
+from terminal_progress import columns
+
 CANCELLED = 'Cancelled. Nothing was changed.'
 IDLE = 300  # an abandoned prompt cancels itself instead of waiting forever
 
@@ -140,9 +142,17 @@ class ConsolePrompt:
     def show(self, text):
         print(text, file=self.stream, flush=True)
 
+    def room(self):
+        return max(10, columns(self.stream) - 1)
+
     def _line(self, text, visible, final=False):
-        """Redraw one line; `visible` is its printed length without color codes."""
-        self.stream.write('\r' + text + ' ' * max(0, self.width - visible) + ('\n' if final else ''))
+        """Redraw one line; `visible` is its printed length without color codes.
+
+        Callers keep `visible` within room() so carriage return never meets a
+        wrapped row; padding never extends past the terminal width either.
+        """
+        pad = max(0, min(self.width, self.room()) - visible)
+        self.stream.write('\r' + text + ' ' * pad + ('\n' if final else ''))
         self.stream.flush()
         self.width = 0 if final else visible
 
@@ -157,15 +167,16 @@ class ConsolePrompt:
                 self.show('')
             return answer.strip().lower() in ('y', 'yes')
         labels, choice = (yes_label, 'Cancel'), 1
+        self.show(question + '  (arrow keys or y/n, then Enter; Enter alone cancels)')
         color, marker = self._color(), '❯' if getattr(self.stream, 'encoding', '').lower().replace('-', '') == 'utf8' else '>'
         def render(final=False):
-            parts, visible = [], len(question) + 2
+            parts, visible = [], 2 + 2 * (len(labels) - 1)
             for index, label in enumerate(labels):
                 chosen = index == choice
                 plain = (marker + ' ' if chosen else '  ') + label
-                visible += len(plain) + 3
+                visible += len(plain)
                 parts.append(f'{BOLD}{plain}{RESET}' if chosen and color else plain)
-            self._line(question + '  ' + '   '.join(parts) + '   ', visible, final)
+            self._line('  ' + '  '.join(parts), min(visible, self.room()), final)
         try:
             with keys:
                 render()
@@ -214,6 +225,10 @@ class ConsolePrompt:
         def render(final=False):
             ok = word.startswith(typed.strip().upper())
             ghost = word[len(typed.strip()):] if ok and not final else ''
+            if 4 + len(typed) + len(ghost) > self.room():  # long input: show its tail, uncoloured
+                tail = typed[-max(1, self.room() - 7):]
+                self._line('  > ...' + tail, 7 + len(tail), final)
+                return
             if color:
                 text = '  > ' + (GREEN if ok else RED) + typed + RESET + (DIM + ghost + RESET if ghost else '')
             else:

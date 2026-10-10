@@ -1,7 +1,9 @@
 """ASCII-only human progress; keep machine-readable output separate."""
 import math
 import os
+import shutil
 import sys
+import unicodedata
 import threading
 import time
 
@@ -117,6 +119,28 @@ def glyphs(console, *, environ=None, nt=None):
     return UNICODE if encoding == 'utf8' and capable else ASCII
 
 
+def display_width(text):
+    """Terminal cells: wide East Asian characters take two, combining marks none."""
+    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in text)
+
+
+def fit(text, width, ellipsis):
+    if display_width(text) <= width:
+        return text
+    room = max(0, width - display_width(ellipsis))
+    while text and display_width(text) > room:
+        text = text[:-1]
+    return text.rstrip() + ellipsis
+
+
+def columns(console):
+    """Width of the console stream itself; stdout may be redirected (e.g. >nul)."""
+    try:
+        return os.get_terminal_size(console.fileno()).columns
+    except (AttributeError, OSError, ValueError):
+        return shutil.get_terminal_size((80, 24)).columns
+
+
 class Wait:
     """One self-updating console line for a stage, then a kept final status line.
 
@@ -141,15 +165,21 @@ class Wait:
     def elapsed(self):
         return int(time.monotonic() - self.started)
 
-    def write(self, text, final=False):
+    def write(self, head, label, tail, final=False):
+        """Keep the whole line within width-1 so carriage return never meets a wrapped row."""
         with self.lock:
-            self.console.write('\r' + text + ' ' * max(0, self.width - len(text)) + ('\n' if final else ''))
+            room = max(10, columns(self.console) - 1)
+            ellipsis = '\u2026' if self.ok != ASCII[1] else '...'
+            text = head + fit(label, max(1, room - display_width(head) - display_width(tail)), ellipsis) + tail
+            text = fit(text, room, ellipsis)
+            pad = max(0, min(self.width, room) - display_width(text))
+            self.console.write('\r' + text + ' ' * pad + ('\n' if final else ''))
             self.console.flush()
-            self.width = 0 if final else len(text)
+            self.width = 0 if final else display_width(text)
 
     def render(self, frame):
         limit = f' / {self.timeout:.0f}s' if self.timeout else ''
-        self.write(f'{self.spinner[frame % len(self.spinner)]} {self.label}  {self.elapsed()}s{limit}')
+        self.write(self.spinner[frame % len(self.spinner)] + ' ', self.label, f'  {self.elapsed()}s{limit}')
 
     def _spin(self, interval):
         frame = 0
@@ -166,7 +196,7 @@ class Wait:
         self.stop.set()
         if self.thread is not None:
             self.thread.join()
-        self.write(f'{symbol} {text} ({self.elapsed()}s)', final=True)
+        self.write(symbol + ' ', text, f' ({self.elapsed()}s)', final=True)
 
     def tick(self):
         """Kept for callers' poll loops; the spinner thread renders on its own."""

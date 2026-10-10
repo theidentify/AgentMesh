@@ -31,6 +31,28 @@ result dialog at the end; it is never used by the logon launcher, scripts or `--
 Rollback and uninstall stay console-only. Progress is a single line per stage that
 updates in place and ends with a kept `[OK]`/`✔` or `[FAIL]`/`✖` line.
 
+## Finishing an interrupted upgrade (RC.10+)
+
+After you confirm, Ctrl+C is ignored until the operation finishes (the installer and
+its `worker-start` child), so an upgrade cannot be split by an interrupt. If an older
+release was interrupted and `installed.json` says `recovery_required`, every
+`windows-*` command refuses until it is resolved. `windows-recover` rolls forward
+only this case:
+
+- the pending transaction is an upgrade in its `start` phase and the new version is
+  already selected and intact (onedir, RC.8+);
+- the start-at-login task matches the recorded binding;
+- the running worker comes from that version's `_internal` folder, has no error and
+  completes one more sync cycle.
+
+It then marks the upgrade complete. It never stops or starts the worker, and changes
+nothing else. Any other pending state is refused for manual review. Do not edit
+`installed.json` by hand.
+
+```powershell
+.\agentmesh.exe windows-recover --runtime "$env:LOCALAPPDATA\AgentMesh\data\runtime.json"
+```
+
 ## Install program files only
 
 Extract the development ZIP locally **outside Syncthing**. Keep `agentmesh.exe`

@@ -586,3 +586,88 @@ def test_plan_summary_shown_once_with_steps_time_and_rollback(existing, monkeypa
                  'Rollback:       windows-rollback returns to 0.2.0-rc.5 (aaaaaaa)'):
         assert step in text, step
 
+
+
+def interrupted_start(existing, monkeypatch):
+    """Reproduce the host state: upgrade --replace interrupted while worker-start ran."""
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.9', 'e' * 40, launcher=True, onedir=True)
+    def interrupted(command_line, timeout):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(installer, 'start_worker', interrupted)
+    monkeypatch.setattr(installer, 'uninterruptible', __import__('contextlib').nullcontext)
+    with pytest.raises(KeyboardInterrupt):
+        command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=newer, replace=True, legacy_drained=True)
+    state_path = existing['program_root'] / 'installed.json'
+    state = json.loads(state_path.read_bytes())
+    assert state['status'] == 'recovery_required' and state['pending']['phase'] == 'start'
+    return state
+
+
+def healthy_worker(monkeypatch, bundle_dir, advancing=True, last_error=None, state='running'):
+    """Worker status that completes a new cycle on every read unless `advancing` is False."""
+    counter = __import__('itertools').count(3)
+    def status(runtime):
+        return {'state': state, 'cycles': next(counter) if advancing else 3, 'last_error': last_error,
+                'nonce': 'n', 'bundle_dir': str(bundle_dir)}
+    monkeypatch.setattr(installer.managed, 'status', status)
+
+
+def test_recover_rolls_forward_an_interrupted_start_with_a_healthy_new_worker(existing, monkeypatch):
+    state = interrupted_start(existing, monkeypatch)
+    root = existing['program_root']
+    healthy_worker(monkeypatch, root / state['active'] / '_internal')
+    monkeypatch.setattr(installer.time, 'sleep', lambda seconds: None)
+    before_task = copy.deepcopy(existing['adapter'].tasks)
+    result = command(existing, monkeypatch, 'recover', 'Y\n')
+    assert result == {'status': 'recovered', 'version': state['active'], 'worker_changed': False}
+    after = installer.read_state(root, root / 'installed.json')
+    assert after['status'] == 'ready' and after['pending'] is None and after['active'] == state['active']
+    assert state['pending']['old'] in after['history']
+    assert existing['adapter'].tasks == before_task  # no task, worker or program change
+
+
+@pytest.mark.parametrize('problem', ['stopped', 'error', 'old-program', 'no-new-cycle'])
+def test_recover_refuses_unless_the_selected_version_is_proven_healthy(existing, monkeypatch, problem):
+    state = interrupted_start(existing, monkeypatch)
+    root = existing['program_root']
+    bundle = root / (state['pending']['old'] if problem == 'old-program' else state['active']) / '_internal'
+    healthy_worker(monkeypatch, bundle, advancing=problem != 'no-new-cycle',
+                   last_error='CycleFailed' if problem == 'error' else None,
+                   state='stopped' if problem == 'stopped' else 'running')
+    clock = iter(range(0, 10_000, 50))
+    monkeypatch.setattr(installer.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(installer.time, 'sleep', lambda seconds: None)
+    with pytest.raises((ValueError, TimeoutError)):
+        command(existing, monkeypatch, 'recover', 'Y\n')
+    assert json.loads((root / 'installed.json').read_bytes())['status'] == 'recovery_required'
+
+
+def test_recover_refuses_other_pending_shapes_and_ready_installs(existing, monkeypatch):
+    command(existing, monkeypatch)
+    with pytest.raises(ValueError, match='nothing to recover|ownership or recovery status'):
+        command(existing, monkeypatch, 'recover', 'Y\n')
+    state_path = existing['program_root'] / 'installed.json'
+    state = installer.read_state(existing['program_root'], state_path)
+    state.update(status='recovery_required', pending={'operation': 'uninstall', 'programs': state['programs'], 'task': None})
+    installer.save(state_path, state)
+    with pytest.raises(ValueError, match='manual review'):
+        command(existing, monkeypatch, 'recover', 'Y\n')
+    for action in ('upgrade', 'rollback', 'uninstall'):  # everything else still fails closed
+        with pytest.raises(ValueError):
+            command(existing, monkeypatch, action, 'Y\n', binary=existing['binary'], legacy_drained=True)
+
+
+def test_after_approval_ctrl_c_is_ignored_for_the_whole_transaction(existing, monkeypatch):
+    events = []
+    @__import__('contextlib').contextmanager
+    def guard():
+        events.append('ignore')
+        yield
+        events.append('restore')
+    monkeypatch.setattr(installer, 'uninterruptible', guard)
+    assert command(existing, monkeypatch, answer='NO\n')['status'] == 'cancelled'
+    assert events == []  # declining never enters the guarded section
+    assert command(existing, monkeypatch)['status'] == 'installed'
+    assert events == ['ignore', 'restore']

@@ -123,3 +123,20 @@ def test_gui_dialog_shows_summary_defaults_to_no_and_reports_result(answer, expe
     assert flags & g.MB_DEFBUTTON2 and flags & g.MB_YESNO  # No is the default button
     g.result(True, 'Upgraded to rc.9; worker healthy')
     assert user32.calls[1][0] == 'Upgraded to rc.9; worker healthy' and user32.calls[1][2] & g.MB_ICONINFORMATION
+
+
+def visible(frame):
+    import re
+    return len(re.sub(r'\x1b\[[0-9;]*m', '', frame))
+
+
+@pytest.mark.parametrize('width', [30, 40, 60])
+def test_prompt_lines_fit_narrow_terminals(width, monkeypatch):
+    monkeypatch.setattr(cp, 'columns', lambda stream: width)
+    p, out = prompt('left', 'right', 'enter', vt=True)
+    p.decide('Finish the interrupted upgrade to 0.2.0-rc.9?', 'Finish upgrade')
+    q, out2 = prompt(*'x' * 80, 'enter', 'esc', vt=True)
+    q.typed('UNINSTALL', 'remove the program files and start-at-login task')
+    for text in (out.getvalue(), out2.getvalue()):
+        frames = [f for line in text.split('\n') for f in line.split('\r')[1:]]
+        assert frames and all(visible(f) <= width - 1 for f in frames), max(map(visible, frames))

@@ -66,7 +66,7 @@ def main(argv=None):
     rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
     rollback.add_argument('--backup', required=True)
     rollback.add_argument('--timeout', type=float, default=300)
-    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart'):
+    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover'):
         installer = subs.add_parser(name, help='Windows existing-install program lifecycle; explicit confirmation required')
         installer.add_argument('--runtime', required=True, help='absolute existing runtime; never creates or rewrites it')
         installer.add_argument('--program-root', help='separate protected program root; defaults to LOCALAPPDATA/AgentMesh/programs')
@@ -119,7 +119,8 @@ def main(argv=None):
                 version = windows_install.short(report.get('version')) if report.get('version') else ''
                 done = {'installed': 'Program installed: ' + version, 'selected': 'Now using ' + version,
                         'enabled': 'Start at login enabled', 'disabled': 'Start at login turned off',
-                        'uninstalled': 'Program removed; your data was kept', 'unchanged': 'Already up to date'}
+                        'uninstalled': 'Program removed; your data was kept', 'unchanged': 'Already up to date',
+                        'recovered': 'Interrupted upgrade finished: now using ' + version}
                 prompt.result(True, done.get(report['status'], report['status'])
                               + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
             return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
@@ -232,6 +233,12 @@ def main(argv=None):
         if args.action == 'once':
             return int(sync_worker.failed(result))
         return 0
+    except KeyboardInterrupt:
+        # Before approval nothing has changed; afterwards Ctrl+C is ignored, so
+        # reaching here means no transaction was started by this command.
+        print('\nInterrupted. Run diagnose to check the worker; windows-recover finishes an interrupted upgrade.',
+              file=sys.stderr)
+        return 130
     except Exception as exc:
         from cli_errors import report as error_report
         print(json.dumps(error_report(exc, args.action)), file=sys.stderr)

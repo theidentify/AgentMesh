@@ -111,3 +111,35 @@ def test_progress_is_silent_when_stderr_is_captured_or_missing():
     assert stream.getvalue() == ''
     with terminal_progress.Wait('Waiting', 5, stream=None) as wait:
         wait.tick()
+
+
+import pytest
+
+
+@pytest.mark.parametrize('columns', [40, 60, 80])
+def test_every_frame_fits_the_terminal_so_carriage_return_never_wraps(columns, monkeypatch):
+    import terminal_progress as tp
+    monkeypatch.setattr(tp, 'columns', lambda console: columns)
+    stream = Console()
+    with tp.Wait('Starting the worker and waiting for its first sync cycle', 60, done='Worker running',
+                 stream=stream, interval=0.01, symbols=tp.UNICODE):
+        __import__('time').sleep(0.05)
+    frames = stream.getvalue().replace('\n', '').split('\r')[1:]
+    assert frames and all(tp.display_width(f) <= columns - 1 for f in frames), max(map(tp.display_width, frames))
+    assert any(f.rstrip().endswith('0s / 60s') for f in frames[:-1])  # elapsed suffix kept, label shortened
+    if columns < 70:
+        assert '…' in frames[0]
+
+
+def test_resize_shrinks_padding_and_wide_characters_count_double(monkeypatch):
+    import terminal_progress as tp
+    widths = iter([80, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])
+    monkeypatch.setattr(tp, 'columns', lambda console: next(widths, 30))
+    stream = Console()
+    wait = tp.Wait('Waiting for the worker to finish its current cycle and stop', 120, stream=stream,
+                   interval=0.01, symbols=tp.ASCII)
+    __import__('time').sleep(0.05)
+    wait.done('Worker stopped')
+    frames = stream.getvalue().replace('\n', '').split('\r')[1:]
+    assert all(tp.display_width(f) <= 29 for f in frames[1:])
+    assert tp.display_width('工作') == 4 and tp.fit('工作工作', 5, '...') == '工...'

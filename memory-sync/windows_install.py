@@ -129,7 +129,8 @@ ACTIONS = {
 
 
 ROUTINE = {'install': ('Install now?', 'Install now'), 'upgrade': ('Upgrade now?', 'Upgrade now'),
-           'enable': ('Enable start at login?', 'Enable'), 'disable': ('Turn off start at login?', 'Turn off')}
+           'enable': ('Enable start at login?', 'Enable'), 'disable': ('Turn off start at login?', 'Turn off'),
+           'recover': ('Finish the interrupted upgrade?', 'Finish upgrade')}
 
 
 def short(key):
@@ -164,6 +165,11 @@ def describe(plan, *, current=None, previous=None, replace=False, enable=False):
         steps = (['Start the worker from ' + version + ' each time you sign in (not now)'] if enable
                  else ['Stop starting the worker at sign-in (a running worker keeps running)'])
         duration = 'a few seconds'
+    elif action == 'recover':
+        title = 'Finish the interrupted upgrade to ' + version
+        steps = ['Check the running worker is ' + version + ' and healthy (nothing is stopped or started)',
+                 'Wait for one more sync cycle', 'Mark the upgrade complete']
+        duration = 'up to about 2 minutes'
     elif action == 'rollback':
         title = 'Roll back ' + version + ' -> ' + short(previous)
         steps = ['Switch back to ' + short(previous) + ' (the worker must already be stopped; it is not started)']
@@ -180,13 +186,14 @@ def describe(plan, *, current=None, previous=None, replace=False, enable=False):
               '  Expected time:  ' + duration]
     if action in ('upgrade', 'install') and current:
         lines += ['  Rollback:       windows-rollback returns to ' + short(current)]
-    lines += ['  Policy:         ' + plan['policy'] + '  |  Publisher: not verified (unsigned trial; checksums only)', '']
+    lines += ['  Policy:         ' + plan['policy'] + '  |  Publisher: not verified (unsigned trial; checksums only)',
+              '  Once you confirm, Ctrl+C is ignored until it finishes.', '']
     return '\n'.join(lines)
 
 
 def approve(prompt, action, token, *, yes, confirm_word, enable):
     """Routine actions: one select (or --yes). Destructive: typed word (or --yes --confirm WORD)."""
-    routine = action in ('install', 'upgrade', 'autostart')
+    routine = action in ('install', 'upgrade', 'autostart', 'recover')
     if yes:
         if not routine and (confirm_word or '').strip().upper() != token:
             raise ValueError('destructive action requires matching --confirm word')
@@ -243,14 +250,15 @@ def preservation(config, runtime):
     return result
 
 
-def read_state(root, state_path):
+def read_state(root, state_path, *, recovering=False):
     private_directory(root)
     marker = parse(read_local(root / 'OWNER.json', private=True))
     state = parse(read_local(state_path, private=True))
     if (not isinstance(state, dict) or state.get('format') != FORMAT or marker != {'format': FORMAT, 'owner': state.get('owner')}
             or state.get('root') != str(root) or state.get('root_identity') != identity(root)
             or state.get('marker') != FORMAT + ':OWNED:' + str(state.get('owner'))
-            or state.get('status') != 'ready' or str(uuid.UUID(state['owner'])) != state['owner']):
+            or state.get('status') != ('recovery_required' if recovering else 'ready')
+            or str(uuid.UUID(state['owner'])) != state['owner']):
         raise ValueError('installation ownership or recovery status uncertain')
     if state_path != root / 'installed.json':
         raise ValueError('installed-state must be the owned root installed.json')
@@ -363,7 +371,74 @@ def stage(root, candidate, state, state_path):
 
 def start_worker(command, timeout):
     # Narrow launch seam: fixtures replace this, never the global subprocess.
-    subprocess.run(command, check=True, timeout=timeout)
+    # Its own process group: a console Ctrl+C cannot reach the starter.
+    options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
+               else {'start_new_session': True})
+    subprocess.run(command, check=True, timeout=timeout, **options)
+
+
+@contextmanager
+def uninterruptible():
+    """After approval Ctrl+C must not split a transaction (left recovery_required).
+
+    Windows: SetConsoleCtrlHandler(NULL, TRUE), inherited by child processes.
+    POSIX: SIGINT ignored in this process; the ignore disposition survives exec.
+    """
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.SetConsoleCtrlHandler(None, True)
+        try:
+            yield
+        finally:
+            kernel32.SetConsoleCtrlHandler(None, False)
+        return
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def recoverable(state):
+    """Only an upgrade interrupted after the new binding, before commit, rolls forward."""
+    pending = state.get('pending') or {}
+    if not (pending.get('operation') == 'upgrade' and pending.get('phase') == 'start'
+            and pending.get('new') == state['active'] and pending.get('new') in state['programs']
+            and (pending.get('old') == state['active'] or pending.get('old') in state['history'])
+            and any(name.startswith(RUNTIME + '/') for name in state['programs'][state['active']]['files'])):
+        raise ValueError('recovery shape not supported; manual review required')
+
+
+def finish_interrupted_start(state, state_path, root, runtime, timeout):
+    """Commit only when the selected onedir version is proven running and cycling."""
+    expected = absolute(root / state['active'] / RUNTIME)
+    health = managed.status(runtime)
+    if health.get('state') != 'running' or health.get('last_error') or health.get('cycles', 0) < 1:
+        raise ValueError('recovery requires a healthy running worker')
+    if not health.get('bundle_dir') or Path(health['bundle_dir']).resolve() != expected.resolve():
+        raise ValueError('running worker is not the selected version')
+    nonce, first = health.get('nonce'), health['cycles']
+    deadline = time.monotonic() + state['interval'] + timeout
+    with Wait('Confirming the running worker completes another sync cycle', state['interval'] + timeout,
+              done='Running worker healthy'):
+        while True:
+            health = managed.status(runtime)
+            if health.get('state') != 'running' or health.get('nonce') != nonce or health.get('last_error'):
+                raise ValueError('recovery requires a healthy running worker')
+            if health['cycles'] > first:
+                break
+            if time.monotonic() > deadline:
+                raise TimeoutError('no further healthy cycle; recovery state retained')
+            time.sleep(0.1)
+    state.update(status='ready', pending=None)
+    save(state_path, state)
+    return {'status': 'recovered', 'version': state['active'], 'worker_changed': False}
 
 
 def run(action, *, runtime, program_root=None, installed_state=None, binary=None,
@@ -399,7 +474,10 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
     candidate = bundle(binary) if action in ('install', 'upgrade') else None
     if candidate and (Path(candidate['binary']).is_relative_to(Path(config['exchange'])) or root.is_relative_to(Path(candidate['binary']).parent)):
         raise ValueError('source bundle must be local and outside target/exchange')
-    state = None if fresh else read_state(root, state_path)
+    recovering = action == 'recover'
+    state = None if fresh else read_state(root, state_path, recovering=recovering)
+    if recovering:
+        recoverable(state)
     if state and (state['runtime'] != str(runtime) or state['scope'] != scope
                   or state['runtime_hash'] != digest(runtime) or state['database_identity'] != identity(config['database'])):
         raise ValueError('installed runtime or database scope changed')
@@ -422,7 +500,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             'publisher': 'checksum consistency only; not trusted publisher identity'}
     if dry_run:
         return plan
-    token = {'install': 'INSTALL', 'upgrade': 'UPGRADE', 'rollback': 'ROLLBACK',
+    token = {'install': 'INSTALL', 'upgrade': 'UPGRADE', 'rollback': 'ROLLBACK', 'recover': 'RECOVER',
              'uninstall': 'UNINSTALL', 'autostart': 'ENABLE' if enable else 'DISABLE'}[action]
     if prompt is None:
         import console_prompt
@@ -436,153 +514,162 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
         prompt.show('Cancelled. Nothing was changed.')
         return {'status': 'cancelled'}
 
-    def revalidate():
-        if (identity(root.parent) != parent_identity or validate_root(root, config, runtime) != root
-                or load(runtime) != (config, scope) or preservation(config, runtime) != baseline
-                or (candidate is not None and bundle(binary) != candidate)):
-            raise ValueError('paths, program, configuration or scope changed during confirmation')
-        if adapter.read(name) != report:
-            raise ValueError('Scheduled Task changed during confirmation')
-        if state is not None and read_state(root, state_path) != state:
-            raise ValueError('installed-state changed during confirmation')
+    prompt.show('Working. Ctrl+C is ignored until this finishes.')
 
-    revalidate()
-    if fresh:
-        # Exclusive claim, no cleanup of a concurrent installer's root.
-        protection(root)
-        owner = str(uuid.uuid4())
-        state = dict(format=FORMAT, owner=owner, root=str(root), root_identity=identity(root), status='ready',
-                     runtime=str(runtime), runtime_hash=digest(runtime), database_identity=identity(config['database']),
-                     scope=scope, sid=report['sid'], task_name=name, task=None,
-                     marker=FORMAT + ':OWNED:' + owner, programs={}, active=None, history=[],
-                     interval=interval, timeout=timeout, legacy_drained=False, pending=None)
-        write_local(root / 'OWNER.json', {'format': FORMAT, 'owner': owner}, exclusive=True)
-        save(state_path, state)
-        fd = os.open(root / 'installer.lock', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
-        windows_private(root / 'installer.lock', provision=True)
-    else:
-        windows_private(root / 'installer.lock')
-    if state is None:
-        raise ValueError('existing installed-state required')
-    with lock(root / 'installer.lock', timeout=0):
-        if not fresh:
-            revalidate()
-        if action in ('install', 'upgrade'):
-            if candidate is None:
-                raise ValueError('invalid development BUILD.json schema')
-            key = stage(root, candidate, state, state_path)
-            if action == 'install':
-                state['active'] = key
-                save(state_path, state)
-                return {'status': 'installed', 'version': key, 'installed_state': str(state_path), 'autostart': False, 'worker_changed': False}
-            if key == state['active'] and not replace:
-                return {'status': 'unchanged'}
-            # Staging ran while a healthy worker continued; the single approval
-            # above covered the binding too, so re-check nothing moved meanwhile.
-            baseline_after = read_state(root, state_path)
-            if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
-                    or bundle(binary) != candidate or adapter.read(name) != report or baseline_after != state):
-                raise ValueError('binding inputs changed during confirmation')
+    def apply():
+        nonlocal state
+        def revalidate():
+            if (identity(root.parent) != parent_identity or validate_root(root, config, runtime) != root
+                    or load(runtime) != (config, scope) or preservation(config, runtime) != baseline
+                    or (candidate is not None and bundle(binary) != candidate)):
+                raise ValueError('paths, program, configuration or scope changed during confirmation')
+            if adapter.read(name) != report:
+                raise ValueError('Scheduled Task changed during confirmation')
+            if state is not None and read_state(root, state_path, recovering=recovering) != state:
+                raise ValueError('installed-state changed during confirmation')
+
+        revalidate()
+        if fresh:
+            # Exclusive claim, no cleanup of a concurrent installer's root.
+            protection(root)
+            owner = str(uuid.uuid4())
+            state = dict(format=FORMAT, owner=owner, root=str(root), root_identity=identity(root), status='ready',
+                         runtime=str(runtime), runtime_hash=digest(runtime), database_identity=identity(config['database']),
+                         scope=scope, sid=report['sid'], task_name=name, task=None,
+                         marker=FORMAT + ':OWNED:' + owner, programs={}, active=None, history=[],
+                         interval=interval, timeout=timeout, legacy_drained=False, pending=None)
+            write_local(root / 'OWNER.json', {'format': FORMAT, 'owner': owner}, exclusive=True)
+            save(state_path, state)
+            fd = os.open(root / 'installer.lock', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(fd)
+            windows_private(root / 'installer.lock', provision=True)
         else:
-            key = state['history'][-1] if action == 'rollback' else state['active']
-        if action == 'autostart' and disable:
-            # Disable only the logon launcher; it does not stop a running worker.
-            return change_task(adapter, state, state_path, enabled=False)
-        restarting = False
-        if replace:
-            if action != 'upgrade':
-                raise ValueError('live replacement is upgrade-only')
-            if scope['policy'] == 'legacy' and not legacy_drained:
-                raise ValueError('explicit prior legacy-worker drain approval required')
-            state['status'] = 'recovery_required'
-            state['pending'] = {'operation': 'replace', 'old': state['active'], 'new': key, 'task': state['task']}
-            save(state_path, state)
-            managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
-            restarting = True
-        with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
-            if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
-                    or identity(root) != state['root_identity'] or adapter.read(name) != report
-                    or parse(read_local(state_path, private=True)) != state):
-                raise ValueError('binding inputs changed while draining')
-            directory = absolute(root / key)
-            for filename, checksum in state['programs'][key]['files'].items():
-                if digest(directory / filename) != checksum:
-                    raise ValueError('installed program changed while draining')
-            if action == 'autostart':
-                state['interval'], state['timeout'], state['legacy_drained'] = interval, timeout, legacy_drained
-                result = change_task(adapter, state, state_path, enabled=True)
-            elif action == 'uninstall':
-                state['status'] = 'recovery_required'
-                state['pending'] = {'operation': 'uninstall', 'task': state['task'], 'programs': state['programs']}
-                save(state_path, state)
-                if state['task'] is not None:
-                    adapter.remove(name, state['sid'], state['task']['xml'])
-                    if adapter.read(name)['task'] is not None:
-                        raise ValueError('task removal not verified')
-                for version, entry in state['programs'].items():
-                    directory = absolute(root / version)
-                    if identity(directory) != entry['identity'] or not owned_tree(directory, entry['files']):
-                        raise ValueError('uninstall ownership changed')
-                    for filename, checksum in entry['files'].items():
-                        p = absolute(at(directory, filename))
-                        if digest(p) != checksum:
-                            raise ValueError('uninstall program changed')
-                        p.unlink()
-                        if p.exists():
-                            raise ValueError('uninstall file removal failed')
-                    for name in sorted(runtime_directories(entry['files']), key=lambda n: n.count('/'), reverse=True):
-                        at(directory, name).rmdir()  # Empty by construction; never recursive.
-                    directory.rmdir()
-                state.update(status='uninstalled', task=None, pending=None, programs={})
-                save(state_path, state)
-                return {'status': 'uninstalled', 'data_preserved': True, 'recovery': str(state_path)}
+            windows_private(root / 'installer.lock')
+        if state is None:
+            raise ValueError('existing installed-state required')
+        with lock(root / 'installer.lock', timeout=0):
+            if not fresh:
+                revalidate()
+            if recovering:
+                return finish_interrupted_start(state, state_path, root, runtime, timeout)
+            if action in ('install', 'upgrade'):
+                if candidate is None:
+                    raise ValueError('invalid development BUILD.json schema')
+                key = stage(root, candidate, state, state_path)
+                if action == 'install':
+                    state['active'] = key
+                    save(state_path, state)
+                    return {'status': 'installed', 'version': key, 'installed_state': str(state_path), 'autostart': False, 'worker_changed': False}
+                if key == state['active'] and not replace:
+                    return {'status': 'unchanged'}
+                # Staging ran while a healthy worker continued; the single approval
+                # above covered the binding too, so re-check nothing moved meanwhile.
+                baseline_after = read_state(root, state_path)
+                if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
+                        or bundle(binary) != candidate or adapter.read(name) != report or baseline_after != state):
+                    raise ValueError('binding inputs changed during confirmation')
             else:
-                old = state['active']
-                transition = {'operation': action, 'old': old, 'new': key, 'task': state['task']}
+                key = state['history'][-1] if action == 'rollback' else state['active']
+            if action == 'autostart' and disable:
+                # Disable only the logon launcher; it does not stop a running worker.
+                return change_task(adapter, state, state_path, enabled=False)
+            restarting = False
+            if replace:
+                if action != 'upgrade':
+                    raise ValueError('live replacement is upgrade-only')
+                if scope['policy'] == 'legacy' and not legacy_drained:
+                    raise ValueError('explicit prior legacy-worker drain approval required')
                 state['status'] = 'recovery_required'
-                state['pending'] = transition
+                state['pending'] = {'operation': 'replace', 'old': state['active'], 'new': key, 'task': state['task']}
                 save(state_path, state)
-                state['active'] = key
-                if state['task'] is not None:
-                    change_task(adapter, state, state_path, enabled=state['task']['binding']['enabled'], finish=False)
-                if action == 'rollback':
-                    state['history'].pop()
-                elif old != key:
-                    state['history'].append(old)
-                state['status'] = 'recovery_required' if restarting else 'ready'
-                state['pending'] = {**transition, 'phase': 'start'} if restarting else None
-                save(state_path, state)
-                result = {'status': 'selected', 'version': key, 'worker_changed': False}
-        if restarting:
-            command = [str(root / key / 'agentmesh.exe'), 'worker-start', '--runtime', str(runtime),
-                       '--interval', str(state['interval']), '--timeout', str(timeout)]
-            if legacy_drained:
-                command.append('--legacy-drained')
-            start_worker(command, timeout + 120)
-            health = managed.status(runtime)
-            if health['state'] != 'running' or health.get('cycles', 0) < 1 or health.get('last_error'):
-                raise ValueError('replacement healthy cycle not verified')
-            nonce = health['nonce']
-            first_cycles = health['cycles']
-            deadline = time.monotonic() + state['interval'] + timeout
-            with Wait('Confirming the new worker completes another sync cycle', state['interval'] + timeout,
-                      done='New worker healthy'):
-                while time.monotonic() < deadline:
-                    health = managed.status(runtime)
-                    if health['state'] != 'running' or health.get('nonce') != nonce or health.get('last_error'):
-                        raise ValueError('replacement recurring worker health failed')
-                    if health['cycles'] > first_cycles:
-                        break
-                    time.sleep(0.1)
+                managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
+                restarting = True
+            with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
+                if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
+                        or identity(root) != state['root_identity'] or adapter.read(name) != report
+                        or parse(read_local(state_path, private=True)) != state):
+                    raise ValueError('binding inputs changed while draining')
+                directory = absolute(root / key)
+                for filename, checksum in state['programs'][key]['files'].items():
+                    if digest(directory / filename) != checksum:
+                        raise ValueError('installed program changed while draining')
+                if action == 'autostart':
+                    state['interval'], state['timeout'], state['legacy_drained'] = interval, timeout, legacy_drained
+                    result = change_task(adapter, state, state_path, enabled=True)
+                elif action == 'uninstall':
+                    state['status'] = 'recovery_required'
+                    state['pending'] = {'operation': 'uninstall', 'task': state['task'], 'programs': state['programs']}
+                    save(state_path, state)
+                    if state['task'] is not None:
+                        adapter.remove(name, state['sid'], state['task']['xml'])
+                        if adapter.read(name)['task'] is not None:
+                            raise ValueError('task removal not verified')
+                    for version, entry in state['programs'].items():
+                        directory = absolute(root / version)
+                        if identity(directory) != entry['identity'] or not owned_tree(directory, entry['files']):
+                            raise ValueError('uninstall ownership changed')
+                        for filename, checksum in entry['files'].items():
+                            p = absolute(at(directory, filename))
+                            if digest(p) != checksum:
+                                raise ValueError('uninstall program changed')
+                            p.unlink()
+                            if p.exists():
+                                raise ValueError('uninstall file removal failed')
+                        for folder in sorted(runtime_directories(entry['files']), key=lambda n: n.count('/'), reverse=True):
+                            at(directory, folder).rmdir()  # Empty by construction; never recursive.
+                        directory.rmdir()
+                    state.update(status='uninstalled', task=None, pending=None, programs={})
+                    save(state_path, state)
+                    return {'status': 'uninstalled', 'data_preserved': True, 'recovery': str(state_path)}
                 else:
-                    raise TimeoutError('replacement recurring cycle not verified; recovery retained')
-            state.update(status='ready', pending=None)
-            save(state_path, state)
-            result['worker_changed'] = True
-        if digest(runtime) != state['runtime_hash'] or identity(config['database']) != state['database_identity']:
-            raise ValueError('runtime/database preservation failed')
-        return result
+                    old = state['active']
+                    transition = {'operation': action, 'old': old, 'new': key, 'task': state['task']}
+                    state['status'] = 'recovery_required'
+                    state['pending'] = transition
+                    save(state_path, state)
+                    state['active'] = key
+                    if state['task'] is not None:
+                        change_task(adapter, state, state_path, enabled=state['task']['binding']['enabled'], finish=False)
+                    if action == 'rollback':
+                        state['history'].pop()
+                    elif old != key:
+                        state['history'].append(old)
+                    state['status'] = 'recovery_required' if restarting else 'ready'
+                    state['pending'] = {**transition, 'phase': 'start'} if restarting else None
+                    save(state_path, state)
+                    result = {'status': 'selected', 'version': key, 'worker_changed': False}
+            if restarting:
+                command = [str(root / key / 'agentmesh.exe'), 'worker-start', '--runtime', str(runtime),
+                           '--interval', str(state['interval']), '--timeout', str(timeout)]
+                if legacy_drained:
+                    command.append('--legacy-drained')
+                start_worker(command, timeout + 120)
+                health = managed.status(runtime)
+                if health['state'] != 'running' or health.get('cycles', 0) < 1 or health.get('last_error'):
+                    raise ValueError('replacement healthy cycle not verified')
+                nonce = health['nonce']
+                first_cycles = health['cycles']
+                deadline = time.monotonic() + state['interval'] + timeout
+                with Wait('Confirming the new worker completes another sync cycle', state['interval'] + timeout,
+                          done='New worker healthy'):
+                    while time.monotonic() < deadline:
+                        health = managed.status(runtime)
+                        if health['state'] != 'running' or health.get('nonce') != nonce or health.get('last_error'):
+                            raise ValueError('replacement recurring worker health failed')
+                        if health['cycles'] > first_cycles:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise TimeoutError('replacement recurring cycle not verified; recovery retained')
+                state.update(status='ready', pending=None)
+                save(state_path, state)
+                result['worker_changed'] = True
+            if digest(runtime) != state['runtime_hash'] or identity(config['database']) != state['database_identity']:
+                raise ValueError('runtime/database preservation failed')
+            return result
+
+    with uninterruptible():
+        return apply()
 
 
 def change_task(adapter, state, state_path, *, enabled, finish=True):

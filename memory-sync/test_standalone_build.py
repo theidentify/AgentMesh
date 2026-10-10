@@ -44,8 +44,9 @@ def test_windows_click_helper_plans_before_install_and_has_no_implicit_start(tmp
     content = helper.read_bytes()
     assert b'\r\n' in content and b'\n' not in content.replace(b'\r\n', b'')
     text = content.decode('utf-8')
-    assert text.count('"%~dp0agentmesh.exe" windows-install --runtime ') == 2
-    assert text.index('--dry-run') < text.index('if errorlevel 1 goto finish')
+    # One call: the CLI shows its plan once and asks before writing anything.
+    assert text.count('"%~dp0agentmesh.exe" windows-install --runtime ') == 1 and '--dry-run' not in text
+    assert text.index('if errorlevel 2') < text.index('if errorlevel 1 goto finish')
     assert 'windows-autostart' not in text and 'worker-start' not in text and 'worker-stop' not in text
     assert '%LOCALAPPDATA%\\AgentMesh\\data\\runtime.json' in text
 
@@ -95,8 +96,8 @@ def test_windows_upgrade_helper_plans_before_replace_and_keeps_legacy_explicit(t
     content = (tmp_path / 'Upgrade-AgentMesh.cmd').read_bytes()
     assert b'\n' not in content.replace(b'\r\n', b'')
     text = content.decode('utf-8')
-    assert text.count('"%~dp0agentmesh.exe" windows-upgrade --runtime ') == 2
-    assert text.index('--dry-run') < text.index('if errorlevel 1 goto finish')
+    assert text.count('"%~dp0agentmesh.exe" windows-upgrade --runtime ') == 1 and '--dry-run' not in text
+    assert text.index('if errorlevel 2') < text.index('if errorlevel 1 goto finish')
     assert '--replace --legacy-drained' in text and 'windows-autostart' not in text and 'setup-new' not in text
 
 
@@ -120,7 +121,8 @@ def test_launcher_runs_adjacent_cli_hidden_with_fresh_extraction(monkeypatch, tm
     monkeypatch.setattr(agentmesh_launcher.subprocess, 'run', run)
     monkeypatch.setattr(agentmesh_launcher.sys, 'executable', str(tmp_path / 'agentmeshw.exe'))
     assert agentmesh_launcher.main(['worker-start', '--runtime', 'r']) == 7
-    assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r']
+    assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r',
+                               '--timeout', str(agentmesh_launcher.LOGON_TIMEOUT)]
     assert seen['env']['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
     assert seen['stdin'] is seen['stdout'] is seen['stderr'] is agentmesh_launcher.subprocess.DEVNULL
 
@@ -129,6 +131,6 @@ def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
     standalone_build.windows_launcher(tmp_path)
     text = (tmp_path / 'Enable-AgentMesh-Autostart.cmd').read_bytes().decode('utf-8')
     assert text.index('worker-stop') < text.index('windows-autostart')
-    assert text.index('--enable --legacy-drained --dry-run') < text.index('--enable --legacy-drained\r\n')
+    assert text.count('windows-autostart') == 1 and '--dry-run' not in text and '--enable --legacy-drained' in text
     assert 'choice /m' in text and 'Do not close this window' in text
     assert 'programs\\' not in text  # no version-pinned installed path

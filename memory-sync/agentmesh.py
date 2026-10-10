@@ -66,7 +66,7 @@ def main(argv=None):
     rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
     rollback.add_argument('--backup', required=True)
     rollback.add_argument('--timeout', type=float, default=300)
-    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart'):
+    for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover'):
         installer = subs.add_parser(name, help='Windows existing-install program lifecycle; explicit confirmation required')
         installer.add_argument('--runtime', required=True, help='absolute existing runtime; never creates or rewrites it')
         installer.add_argument('--program-root', help='separate protected program root; defaults to LOCALAPPDATA/AgentMesh/programs')
@@ -77,6 +77,10 @@ def main(argv=None):
         installer.add_argument('--unmanaged-drained', action='store_true', help='explicit approval that prior unmanaged/source workers exited; an idle cycle lock is not proof')
         installer.add_argument('--interval', type=float, default=60)
         installer.add_argument('--timeout', type=float, default=60)
+        installer.add_argument('-y', '--yes', action='store_true', help='skip the prompt (required when not interactive)')
+        installer.add_argument('--confirm', dest='confirm_word', metavar='WORD',
+                               help='with --yes, name the destructive action (ROLLBACK or UNINSTALL)')
+        installer.add_argument('--gui', action='store_true', help='native Windows dialogs for double-clicked helpers')
         if name in ('windows-install', 'windows-upgrade'):
             installer.add_argument('--binary', help='adjacent BUILD.json required; defaults to current frozen executable')
         if name == 'windows-upgrade':
@@ -88,17 +92,40 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.action.startswith('windows-'):
+            import console_prompt
             import windows_install
-            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name')}
+            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name', 'yes', 'confirm_word')}
             for key in ('enable', 'disable', 'replace'):
                 values[key] = getattr(args, key, False)
+            # Dialogs only for double-clicked helpers on a real Windows console.
+            gui = args.gui and os.name == 'nt' and not args.yes and not args.dry_run
+            prompt = values['prompt'] = console_prompt.GuiPrompt() if gui else console_prompt.ConsolePrompt()
+            gui = gui and prompt.interactive()
             if args.action in ('windows-install', 'windows-upgrade'):
                 values['binary'] = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
                 if values['binary'] is None:
                     raise ValueError('source installation requires explicit bundled binary')
-            report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            verb = {'windows-install': 'Install', 'windows-upgrade': 'Upgrade', 'windows-autostart': 'Start-at-login change',
+                    'windows-recover': 'Recovery', 'windows-rollback': 'Rollback', 'windows-uninstall': 'Uninstall'}[args.action]
+            try:
+                report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            except Exception as exc:
+                if gui:
+                    from cli_errors import report as error_report
+                    detail = error_report(exc, args.action)
+                    prompt.result(False, verb + ' failed', detail.get('reason', '') + '\n\n' + detail.get('next_action', ''),
+                                  'Code: ' + str(detail.get('code', '')) + '\nStage: ' + str(detail.get('stage', '')))
+                raise
             print(json.dumps(report, sort_keys=True))
-            return 2 if report['status'] in ('pending', 'staged') else 0
+            if gui and report['status'] not in ('cancelled', 'planned'):
+                version = windows_install.short(report.get('version')) if report.get('version') else ''
+                done = {'installed': 'Program installed: ' + version, 'selected': 'Now using ' + version + '.',
+                        'enabled': 'AgentMesh will start at sign-in.', 'disabled': 'AgentMesh will no longer start at sign-in.',
+                        'uninstalled': 'Program removed; your data was kept.', 'unchanged': 'Already up to date.',
+                        'recovered': 'The interrupted upgrade is finished: now using ' + version + '.'}
+                prompt.result(True, verb + ' complete', done.get(report['status'], report['status'])
+                              + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
+            return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
         if args.action == 'diagnose':
             from worker_diagnostics import diagnose, render
             progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)
@@ -208,6 +235,12 @@ def main(argv=None):
         if args.action == 'once':
             return int(sync_worker.failed(result))
         return 0
+    except KeyboardInterrupt:
+        # Before approval nothing has changed; afterwards Ctrl+C is ignored, so
+        # reaching here means no transaction was started by this command.
+        print('\nInterrupted. Run diagnose to check the worker; windows-recover finishes an interrupted upgrade.',
+              file=sys.stderr)
+        return 130
     except Exception as exc:
         from cli_errors import report as error_report
         print(json.dumps(error_report(exc, args.action)), file=sys.stderr)

@@ -9,6 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 
+# A cold boot can take minutes before the first sync cycle completes; a short
+# deadline made worker-start stop the worker it had just started (rc.11).
+LOGON_TIMEOUT = 900
+
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
@@ -18,7 +22,9 @@ def main(argv=None):
     env = dict(os.environ)
     # agentmesh.exe is another onefile program: never let it reuse this extraction.
     env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
-    return subprocess.run([str(cli), *argv], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    # argparse keeps the last --timeout, so this overrides the task's value
+    # without changing the registered (owned, read-back) task definition.
+    return subprocess.run([str(cli), *argv, '--timeout', str(LOGON_TIMEOUT)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, env=env,
                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).returncode
 

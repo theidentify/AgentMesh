@@ -12,6 +12,50 @@ recurring sync on the operator's host remain a separately approved host gate.
 The task's `Hidden` setting controls task visibility, not console suppression.
 No reboot or production restart is requested by these instructions.
 
+## Confirmations (RC.9+)
+
+Each command prints one plan (from -> to version, numbered steps, expected time,
+rollback) and asks **once**. This replaces the earlier per-step typed words; the
+historical INSTALL/UPGRADE/BIND/REPLACE/ENABLE/DISABLE gates below now mean that
+single decision.
+
+| Command | Interactive console | Script / CI (not a console) |
+|---|---|---|
+| `windows-install`, `windows-upgrade`, `windows-autostart` | one-line select `Upgrade now` / `Cancel` (arrow keys, `y`/`n`, Enter; default **Cancel**); `[y/N]` where keys are unavailable | refused unless `--yes` |
+| `windows-rollback`, `windows-uninstall` | type the word (`ROLLBACK`, `UNINSTALL`), case-insensitive, with live match colouring; 3 attempts with a "Did you mean" hint | refused unless `--yes --confirm ROLLBACK` (or `UNINSTALL`) |
+
+Esc, Ctrl+C, Enter on an empty word, or 5 minutes without input cancel with
+`Cancelled. Nothing was changed.` and exit code 2. `--gui` (used by the click
+helpers) shows the same plan in a native task dialog with labelled buttons
+(`Upgrade now` / `Cancel`, `Install` / `Cancel`, `Turn on` / `Cancel`), **Cancel** as the
+default, a "Show details" section, and a result dialog at the end. Without Common
+Controls v6 it falls back to a Yes/No message box (No is the default), then to the
+console select; it is never used by the logon launcher, scripts or `--yes`.
+Rollback and uninstall stay console-only. Progress is a single line per stage that
+updates in place and ends with a kept `[OK]`/`✔` or `[FAIL]`/`✖` line.
+
+## Finishing an interrupted upgrade (RC.10+)
+
+After you confirm, Ctrl+C is ignored until the operation finishes (the installer and
+its `worker-start` child), so an upgrade cannot be split by an interrupt. If an older
+release was interrupted and `installed.json` says `recovery_required`, every
+`windows-*` command refuses until it is resolved. `windows-recover` rolls forward
+only this case:
+
+- the pending transaction is an upgrade in its `start` phase and the new version is
+  already selected and intact (onedir, RC.8+);
+- the start-at-login task matches the recorded binding;
+- the running worker comes from that version's `_internal` folder, has no error and
+  completes one more sync cycle.
+
+It then marks the upgrade complete. It never stops or starts the worker, and changes
+nothing else. Any other pending state is refused for manual review. Do not edit
+`installed.json` by hand.
+
+```powershell
+.\agentmesh.exe windows-recover --runtime "$env:LOCALAPPDATA\AgentMesh\data\runtime.json"
+```
+
 ## Install program files only
 
 Extract the development ZIP locally **outside Syncthing**. Keep `agentmesh.exe`

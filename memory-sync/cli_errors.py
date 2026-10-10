@@ -60,6 +60,12 @@ WINDOWS_REASONS = frozenset({
     'binding inputs changed while draining',
     'existing installed-state required',
     'existing runtime required',
+    'recovery shape not supported; manual review required',
+    'recovery requires a healthy running worker',
+    'running worker is not the selected version',
+    'no further healthy cycle; recovery state retained',
+    'destructive action requires matching --confirm word',
+    'interactive confirmation unavailable; pass --yes',
     'existing program-root parent required',
     'explicit prior legacy-worker drain approval required',
     'explicit prior unmanaged-worker drain approval required',
@@ -119,7 +125,7 @@ TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packet
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
-    is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart')
+    is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
     if not is_windows and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)

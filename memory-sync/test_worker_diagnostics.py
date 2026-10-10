@@ -172,3 +172,19 @@ def test_package_manifest_identity_is_checked_without_echoing_untrusted_values(t
     write_local(manifest, data)
     with pytest.raises(ValueError, match='invalid package metadata'):
         diagnostics.program_info()
+
+
+@pytest.mark.parametrize('reason', [None, 'startup deadline exceeded', 'not-an-allowed-reason'])
+def test_stopped_worker_is_flagged_with_its_recorded_stop_reason(tmp_path, monkeypatch, reason):
+    args = bound(tmp_path, monkeypatch)
+    record = stale_record(args)
+    record.update(state='stopped', cycles=1, stop_reason=reason)
+    config, _ = worker.load(args['runtime'], authoritative=False)
+    write_local(worker.control(config) / 'process.json', record)
+    report = diagnostics.diagnose(args['runtime'])
+    assert report['status'] == 'attention'
+    check = report['checks'][-1]
+    assert check['status'] == 'warning' and check['error']['code'] == 'WORKER_NOT_RUNNING'
+    assert report['worker']['stop_reason'] == (reason if reason == 'startup deadline exceeded' else None)
+    text = diagnostics.render(report)
+    assert 'not running' in text and 'not-an-allowed-reason' not in json.dumps(report) + text

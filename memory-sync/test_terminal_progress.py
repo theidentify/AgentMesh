@@ -52,38 +52,94 @@ def test_wait_displays_next_sync_countdown_without_busy_animation():
 
 
 class Console(io.StringIO):
+    encoding = 'utf-8'
+
     def isatty(self):
         return True
 
 
-def test_wait_reports_start_periodic_elapsed_and_finish_on_a_console(monkeypatch):
+def test_live_line_updates_in_place_then_keeps_final_status():
     import terminal_progress
-    clock = [100.0]
-    monkeypatch.setattr(terminal_progress.time, 'monotonic', lambda: clock[0])
     stream = Console()
-    wait = terminal_progress.Wait('Waiting for worker to stop', 120, stream=stream, every=5)
-    for clock[0] in (101.0, 104.0, 105.5, 108.0, 111.0):
-        wait.tick()
-    wait.done('stopped')
-    lines = stream.getvalue().splitlines()
-    assert lines[0] == 'Waiting for worker to stop (up to 120s)...'
-    assert lines[1:3] == ['  ...5s / 120s', '  ...11s / 120s']
-    assert lines[3] == 'Waiting for worker to stop: stopped (11s)'
-    assert stream.getvalue().isascii()
+    with terminal_progress.Wait('Waiting for the worker to stop', 120, done='Worker stopped',
+                                stream=stream, interval=0.01, symbols=terminal_progress.UNICODE):
+        __import__('time').sleep(0.08)
+    text = stream.getvalue()
+    frames, final = text[:-1].split('\r')[1:-1], text.split('\r')[-1]
+    assert len(frames) >= 3 and '\n' not in text[:-1]  # one line, rewritten in place
+    assert frames[0].startswith('⠋ Waiting for the worker to stop  0s / 120s')
+    assert final.startswith('✔ Worker stopped (0s)') and final.endswith('\n')
+    assert len(final.rstrip('\n')) >= len(frames[-1])  # padding clears the previous frame
 
 
-def test_wait_and_stage_are_silent_when_stderr_is_captured():
+def test_failure_marks_stage_and_ends_the_line_before_errors():
+    import terminal_progress
+    stream = Console()
+    try:
+        with terminal_progress.Wait('Starting worker', 60, stream=stream, interval=0.01, symbols=terminal_progress.ASCII):
+            raise TimeoutError('fixture')
+    except TimeoutError:
+        pass
+    assert stream.getvalue().split('\r')[-1].startswith('[FAIL] Starting worker (0s)')
+    assert stream.getvalue().endswith('\n') and stream.getvalue().isascii()
+
+
+def test_done_is_idempotent_and_step_has_no_limit():
+    import terminal_progress
+    stream = Console()
+    wait = terminal_progress.step('Updating the start-at-login task', 'Start-at-login task updated', stream=stream)
+    wait.done(); wait.done(); wait.fail()
+    assert stream.getvalue().count('\n') == 1 and ' / ' not in stream.getvalue()
+
+
+def test_glyphs_fall_back_to_ascii_where_braille_may_not_render():
+    import terminal_progress as tp
+    utf8, cp = Console(), type('C', (), {'encoding': 'cp437'})()
+    assert tp.glyphs(utf8, environ={}, nt=False) == tp.UNICODE
+    assert tp.glyphs(utf8, environ={}, nt=True) == tp.ASCII  # classic conhost
+    assert tp.glyphs(utf8, environ={'WT_SESSION': 'x'}, nt=True) == tp.UNICODE
+    assert tp.glyphs(cp, environ={'WT_SESSION': 'x'}, nt=True) == tp.ASCII
+
+
+def test_progress_is_silent_when_stderr_is_captured_or_missing():
     import terminal_progress
     stream = io.StringIO()
-    wait = terminal_progress.Wait('Waiting', 60, stream=stream, every=0)
-    wait.tick(); wait.done()
-    terminal_progress.stage('Stopping worker', stream=stream)
+    with terminal_progress.Wait('Waiting', 60, stream=stream):
+        pass
+    with terminal_progress.step('Copying', stream=stream):
+        pass
     assert stream.getvalue() == ''
+    with terminal_progress.Wait('Waiting', 5, stream=None) as wait:
+        wait.tick()
 
 
-def test_stage_and_missing_stream_are_safe():
-    import terminal_progress
+import pytest
+
+
+@pytest.mark.parametrize('columns', [40, 60, 80])
+def test_every_frame_fits_the_terminal_so_carriage_return_never_wraps(columns, monkeypatch):
+    import terminal_progress as tp
+    monkeypatch.setattr(tp, 'columns', lambda console: columns)
     stream = Console()
-    terminal_progress.stage('Updating logon task', stream=stream)
-    assert stream.getvalue() == 'Updating logon task...\n'
-    terminal_progress.Wait('Waiting', 5, stream=None).tick()  # windowless: sys.stderr may be None
+    with tp.Wait('Starting the worker and waiting for its first sync cycle', 60, done='Worker running',
+                 stream=stream, interval=0.01, symbols=tp.UNICODE):
+        __import__('time').sleep(0.05)
+    frames = stream.getvalue().replace('\n', '').split('\r')[1:]
+    assert frames and all(tp.display_width(f) <= columns - 1 for f in frames), max(map(tp.display_width, frames))
+    assert any(f.rstrip().endswith('0s / 60s') for f in frames[:-1])  # elapsed suffix kept, label shortened
+    if columns < 70:
+        assert '…' in frames[0]
+
+
+def test_resize_shrinks_padding_and_wide_characters_count_double(monkeypatch):
+    import terminal_progress as tp
+    widths = iter([80, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])
+    monkeypatch.setattr(tp, 'columns', lambda console: next(widths, 30))
+    stream = Console()
+    wait = tp.Wait('Waiting for the worker to finish its current cycle and stop', 120, stream=stream,
+                   interval=0.01, symbols=tp.ASCII)
+    __import__('time').sleep(0.05)
+    wait.done('Worker stopped')
+    frames = stream.getvalue().replace('\n', '').split('\r')[1:]
+    assert all(tp.display_width(f) <= 29 for f in frames[1:])
+    assert tp.display_width('工作') == 4 and tp.fit('工作工作', 5, '...') == '工...'

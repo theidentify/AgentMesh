@@ -35,6 +35,8 @@ def main():
     executable = Path(os.environ['RUNNER_TEMP']) / 'agentmesh-dist/agentmesh.exe'
     if not executable.is_file():
         raise ValueError('native frozen executable required')
+    # TaskDialogIndirect needs Common Controls v6 from the embedded manifest.
+    assert b'Microsoft.Windows.Common-Controls' in executable.read_bytes(), 'agentmesh.exe lacks the Common Controls v6 manifest'
     import memory_sync
     import sqlite_memory
     from signed_packets import init_identity, write_local

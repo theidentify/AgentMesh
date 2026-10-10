@@ -255,34 +255,111 @@ class ConsolePrompt:
 
 
 class GuiPrompt(ConsolePrompt):
-    """Native Yes/No dialog for double-clicked helpers; No is the default button.
+    """Native dialogs for double-clicked helpers; Cancel is always the default.
 
-    Destructive typed words stay in the console. Only used with --gui on an
-    interactive Windows console, never by the logon launcher or scripts.
+    Chain: TaskDialogIndirect (Common Controls v6, labelled buttons) -> MessageBoxW
+    (Yes/No, natural wording) -> console select. Never raises because a dialog
+    is unavailable. Destructive typed words stay in the console. Only used with
+    --gui on an interactive Windows console, never by the logon launcher or scripts.
     """
+    IDCANCEL, IDYES, IDCLOSE, PROCEED = 2, 6, 8, 1001
     MB_YESNO, MB_ICONQUESTION, MB_DEFBUTTON2, MB_SETFOREGROUND, MB_TOPMOST = 0x4, 0x20, 0x100, 0x10000, 0x40000
-    MB_OK, MB_ICONERROR, MB_ICONINFORMATION, IDYES = 0x0, 0x10, 0x40, 6
+    MB_OK, MB_ICONERROR, MB_ICONINFORMATION = 0x0, 0x10, 0x40
+    TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT = 0x8, 0x1000000
+    TDCBF_CANCEL_BUTTON, TDCBF_CLOSE_BUTTON = 0x8, 0x20
+    TD_ERROR_ICON, TD_INFORMATION_ICON, TD_SHIELD_ICON = 0xFFFE, 0xFFFD, 0xFFFC
 
-    def __init__(self, *args, user32=None, **kwargs):
+    def __init__(self, *args, user32=None, comctl32=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.user32 = user32
-        self.text = ''
-
-    def _box(self, text, title, flags):
-        if self.user32 is None:
-            import ctypes
-            self.user32 = ctypes.WinDLL('user32', use_last_error=True)
-        return self.user32.MessageBoxW(None, text, title, flags | self.MB_SETFOREGROUND | self.MB_TOPMOST)
+        self.user32, self.comctl32 = user32, comctl32
+        self.text, self.info = '', None
 
     def show(self, text):
         super().show(text)
-        self.text = text  # the latest summary becomes the dialog body
+        self.text = text
+
+    def remember(self, info):
+        """Structured plan: instruction, content lines, details lines, button label."""
+        self.info = info
+
+    # -- native boundaries (replaced by fakes in tests) --
+    def _user32(self):
+        if self.user32 is None:
+            import ctypes
+            self.user32 = ctypes.WinDLL('user32', use_last_error=True)
+        return self.user32
+
+    def _task_dialog(self, instruction, content, details, buttons, default, icon, common):
+        """Returns the pressed button id, or None when TaskDialog is unavailable."""
+        try:
+            if self.comctl32 is not None:
+                return self.comctl32.task_dialog(instruction, content, details, buttons, default, icon, common)
+            import ctypes
+            from ctypes import wintypes
+
+            class Button(ctypes.Structure):
+                _pack_ = 1
+                _fields_ = [('nButtonID', ctypes.c_int), ('pszButtonText', wintypes.LPCWSTR)]
+
+            class Config(ctypes.Structure):
+                _pack_ = 1  # commctrl.h declares these under pshpack1
+                _fields_ = [('cbSize', wintypes.UINT), ('hwndParent', wintypes.HWND), ('hInstance', wintypes.HINSTANCE),
+                            ('dwFlags', ctypes.c_int), ('dwCommonButtons', ctypes.c_int),
+                            ('pszWindowTitle', wintypes.LPCWSTR), ('pszMainIcon', ctypes.c_void_p),
+                            ('pszMainInstruction', wintypes.LPCWSTR), ('pszContent', wintypes.LPCWSTR),
+                            ('cButtons', wintypes.UINT), ('pButtons', ctypes.POINTER(Button)),
+                            ('nDefaultButton', ctypes.c_int), ('cRadioButtons', wintypes.UINT),
+                            ('pRadioButtons', ctypes.c_void_p), ('nDefaultRadioButton', ctypes.c_int),
+                            ('pszVerificationText', wintypes.LPCWSTR), ('pszExpandedInformation', wintypes.LPCWSTR),
+                            ('pszExpandedControlText', wintypes.LPCWSTR), ('pszCollapsedControlText', wintypes.LPCWSTR),
+                            ('pszFooterIcon', ctypes.c_void_p), ('pszFooter', wintypes.LPCWSTR),
+                            ('pfCallback', ctypes.c_void_p), ('lpCallbackData', ctypes.c_void_p), ('cxWidth', wintypes.UINT)]
+
+            comctl32 = ctypes.WinDLL('comctl32', use_last_error=True)
+            function = comctl32.TaskDialogIndirect  # AttributeError without Common Controls v6
+            array = (Button * len(buttons))(*[Button(i, label) for i, label in buttons]) if buttons else None
+            config = Config(cbSize=ctypes.sizeof(Config), dwFlags=self.TDF_ALLOW_DIALOG_CANCELLATION | self.TDF_SIZE_TO_CONTENT,
+                            dwCommonButtons=common, pszWindowTitle='AgentMesh', pszMainIcon=icon,
+                            pszMainInstruction=instruction, pszContent=content,
+                            cButtons=len(buttons), pButtons=array, nDefaultButton=default,
+                            pszExpandedInformation=details or None,
+                            pszExpandedControlText='Hide details' if details else None,
+                            pszCollapsedControlText='Show details' if details else None,
+                            pszFooterIcon=self.TD_SHIELD_ICON,
+                            pszFooter='Unsigned development build: checksums verified, publisher not verified.')
+            pressed = ctypes.c_int(0)
+            if function(ctypes.byref(config), ctypes.byref(pressed), None, None) != 0:
+                return None
+            return pressed.value
+        except Exception:
+            return None
+
+    def _box(self, text, flags):
+        try:
+            return self._user32().MessageBoxW(None, text, 'AgentMesh', flags | self.MB_SETFOREGROUND | self.MB_TOPMOST)
+        except Exception:
+            return None
+
+    def _plan(self, question, yes_label):
+        info = self.info or {}
+        return (info.get('instruction') or question, '\n'.join(info.get('content') or [self.text.strip()]),
+                '\n'.join(info.get('details') or []), info.get('button') or yes_label)
 
     def decide(self, question, yes_label):
-        body = self.text.strip() + '\n\n' + question + '\n\nYes = ' + yes_label + '    No = Cancel'
-        approved = self._box(body, 'AgentMesh', self.MB_YESNO | self.MB_ICONQUESTION | self.MB_DEFBUTTON2) == self.IDYES
-        self._line(question + '  ' + (yes_label if approved else 'Cancel') + ' (dialog)', 0, final=True)
+        instruction, content, details, label = self._plan(question, yes_label)
+        pressed = self._task_dialog(instruction, content, details, [(self.PROCEED, label)],
+                                    self.IDCANCEL, self.TD_SHIELD_ICON, self.TDCBF_CANCEL_BUTTON)
+        if pressed is None:
+            answer = self._box(instruction + '\n\n' + content, self.MB_YESNO | self.MB_ICONQUESTION | self.MB_DEFBUTTON2)
+            if answer is None:
+                return super().decide(question, yes_label)  # no dialog at all: console select
+            pressed = self.PROCEED if answer == self.IDYES else self.IDCANCEL
+        approved = pressed == self.PROCEED
+        self._line('Confirmed in dialog: ' + label if approved else 'Cancelled in dialog', 0, final=True)
         return approved
 
-    def result(self, ok, text):
-        self._box(text, 'AgentMesh', self.MB_OK | (self.MB_ICONINFORMATION if ok else self.MB_ICONERROR))
+    def result(self, ok, instruction, content, details=''):
+        icon = self.TD_INFORMATION_ICON if ok else self.TD_ERROR_ICON
+        if self._task_dialog(instruction, content, details, [], self.IDCLOSE, icon, self.TDCBF_CLOSE_BUTTON) is None:
+            self._box(instruction + '\n\n' + content + ('\n\n' + details if details else ''),
+                      self.MB_OK | (self.MB_ICONINFORMATION if ok else self.MB_ICONERROR))

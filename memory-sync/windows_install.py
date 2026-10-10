@@ -180,6 +180,22 @@ def describe(plan, *, current=None, previous=None, replace=False, enable=False):
         steps = ['Remove the start-at-login task' if task else 'No start-at-login task to remove',
                  'Remove the installed program files', 'Keep the database, identity, runtime and settings']
         duration = 'a few seconds'
+    instruction = {'install': 'Install AgentMesh ' + version + '?', 'upgrade': 'Upgrade AgentMesh to ' + version + '?',
+                   'autostart': ('Start AgentMesh at sign-in?' if enable else 'Stop starting AgentMesh at sign-in?'),
+                   'recover': 'Finish the interrupted upgrade to ' + version + '?',
+                   'rollback': 'Roll back AgentMesh to ' + short(previous) + '?',
+                   'uninstall': 'Uninstall the AgentMesh program?'}[action]
+    content = (['From ' + short(current) + ' to ' + version] if action == 'upgrade' else [])
+    content += ['\u2022 ' + step for step in steps] + ['', 'Takes ' + duration + '.']
+    if action in ('upgrade', 'install') and current:
+        content += ['You can roll back to ' + short(current) + '.']
+    details = ['Worker now: ' + plan['worker'], 'Start at login: ' + ('on' if plan['autostart'] else 'off'),
+               'Task: ' + plan['task_name'], 'Program folder: ' + plan['program_root'], 'Policy: ' + plan['policy'],
+               'Publisher: not verified (unsigned trial; checksums only)',
+               'Once you confirm, Ctrl+C is ignored until it finishes.']
+    button = {'install': 'Install', 'upgrade': 'Upgrade now', 'recover': 'Finish upgrade',
+              'autostart': 'Turn on' if enable else 'Turn off'}.get(action)
+    info = {'instruction': instruction, 'content': content, 'details': details, 'button': button}
     lines = ['', 'AgentMesh ' + action + ' plan: ' + title]
     lines += [f'  {n}. {step}' for n, step in enumerate(steps, 1)]
     lines += ['  Worker now:     ' + plan['worker'], '  Start at login: ' + ('on' if plan['autostart'] else 'off'),
@@ -188,7 +204,7 @@ def describe(plan, *, current=None, previous=None, replace=False, enable=False):
         lines += ['  Rollback:       windows-rollback returns to ' + short(current)]
     lines += ['  Policy:         ' + plan['policy'] + '  |  Publisher: not verified (unsigned trial; checksums only)',
               '  Once you confirm, Ctrl+C is ignored until it finishes.', '']
-    return '\n'.join(lines)
+    return '\n'.join(lines), info
 
 
 def approve(prompt, action, token, *, yes, confirm_word, enable):
@@ -506,10 +522,13 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
         import console_prompt
         prompt = console_prompt.ConsolePrompt()
     if not yes:
-        prompt.show(describe({**plan, 'task_exists': report['task'] is not None},
-                             current=state['active'] if state else None,
-                             previous=state['history'][-1] if state and state['history'] else None,
-                             replace=replace, enable=enable))
+        text, info = describe({**plan, 'task_exists': report['task'] is not None},
+                              current=state['active'] if state else None,
+                              previous=state['history'][-1] if state and state['history'] else None,
+                              replace=replace, enable=enable)
+        prompt.show(text)
+        if hasattr(prompt, 'remember'):
+            prompt.remember(info)  # the same plan, structured for a native dialog
     if not approve(prompt, action, token, yes=yes, confirm_word=confirm_word, enable=enable):
         prompt.show('Cancelled. Nothing was changed.')
         return {'status': 'cancelled'}

@@ -105,23 +105,25 @@ def main(argv=None):
                 values['binary'] = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
                 if values['binary'] is None:
                     raise ValueError('source installation requires explicit bundled binary')
+            verb = {'windows-install': 'Install', 'windows-upgrade': 'Upgrade', 'windows-autostart': 'Start-at-login change',
+                    'windows-recover': 'Recovery', 'windows-rollback': 'Rollback', 'windows-uninstall': 'Uninstall'}[args.action]
             try:
                 report = windows_install.run(args.action.removeprefix('windows-'), **values)
             except Exception as exc:
                 if gui:
                     from cli_errors import report as error_report
                     detail = error_report(exc, args.action)
-                    prompt.result(False, 'AgentMesh did not finish.\n\n' + detail.get('reason', '') + '\nCode: '
-                                  + detail.get('code', '') + '\n\n' + detail.get('next_action', ''))
+                    prompt.result(False, verb + ' failed', detail.get('reason', '') + '\n\n' + detail.get('next_action', ''),
+                                  'Code: ' + str(detail.get('code', '')) + '\nStage: ' + str(detail.get('stage', '')))
                 raise
             print(json.dumps(report, sort_keys=True))
             if gui and report['status'] not in ('cancelled', 'planned'):
                 version = windows_install.short(report.get('version')) if report.get('version') else ''
-                done = {'installed': 'Program installed: ' + version, 'selected': 'Now using ' + version,
-                        'enabled': 'Start at login enabled', 'disabled': 'Start at login turned off',
-                        'uninstalled': 'Program removed; your data was kept', 'unchanged': 'Already up to date',
-                        'recovered': 'Interrupted upgrade finished: now using ' + version}
-                prompt.result(True, done.get(report['status'], report['status'])
+                done = {'installed': 'Program installed: ' + version, 'selected': 'Now using ' + version + '.',
+                        'enabled': 'AgentMesh will start at sign-in.', 'disabled': 'AgentMesh will no longer start at sign-in.',
+                        'uninstalled': 'Program removed; your data was kept.', 'unchanged': 'Already up to date.',
+                        'recovered': 'The interrupted upgrade is finished: now using ' + version + '.'}
+                prompt.result(True, verb + ' complete', done.get(report['status'], report['status'])
                               + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
             return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
         if args.action == 'diagnose':

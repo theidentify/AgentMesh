@@ -26,8 +26,11 @@ single decision.
 
 Esc, Ctrl+C, Enter on an empty word, or 5 minutes without input cancel with
 `Cancelled. Nothing was changed.` and exit code 2. `--gui` (used by the click
-helpers) shows the same plan in a native Yes/No dialog with **No** as the default and a
-result dialog at the end; it is never used by the logon launcher, scripts or `--yes`.
+helpers) shows the same plan in a native task dialog with labelled buttons
+(`Upgrade now` / `Cancel`, `Install` / `Cancel`, `Turn on` / `Cancel`), **Cancel** as the
+default, a "Show details" section, and a result dialog at the end. Without Common
+Controls v6 it falls back to a Yes/No message box (No is the default), then to the
+console select; it is never used by the logon launcher, scripts or `--yes`.
 Rollback and uninstall stay console-only. Progress is a single line per stage that
 updates in place and ends with a kept `[OK]`/`✔` or `[FAIL]`/`✖` line.
 

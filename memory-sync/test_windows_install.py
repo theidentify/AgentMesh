@@ -671,3 +671,21 @@ def test_after_approval_ctrl_c_is_ignored_for_the_whole_transaction(existing, mo
     assert events == []  # declining never enters the guarded section
     assert command(existing, monkeypatch)['status'] == 'installed'
     assert events == ['ignore', 'restore']
+
+
+def test_dialog_receives_the_same_plan_with_labelled_button(existing, monkeypatch):
+    class Remembering(Answers):
+        def remember(self, info):
+            self.info = info
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.11', 'f' * 40, launcher=True, onedir=True)
+    prompt = Remembering('NO\n')
+    command(existing, monkeypatch, 'upgrade', binary=newer, replace=True, legacy_drained=True, prompt=prompt)
+    info = prompt.info
+    assert info['instruction'] == 'Upgrade AgentMesh to 0.2.0-rc.11 (fffffff)?' and info['button'] == 'Upgrade now'
+    assert info['content'][0] == 'From 0.2.0-rc.5 (aaaaaaa) to 0.2.0-rc.11 (fffffff)'
+    assert '• Start the worker from 0.2.0-rc.11 (fffffff)' in info['content']
+    assert info['content'][-1] == 'You can roll back to 0.2.0-rc.5 (aaaaaaa).'
+    assert any(line.startswith('Task: AgentMesh-') for line in info['details'])
+    assert not any('Yes =' in line for line in info['content'] + info['details'])

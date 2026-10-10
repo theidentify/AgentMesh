@@ -104,25 +104,83 @@ def test_not_interactive_when_either_stream_is_redirected():
 
 
 class User32:
-    def __init__(self, answer):
-        self.answer, self.calls = answer, []
+    def __init__(self, answer=None, fail=False):
+        self.answer, self.fail, self.calls = answer, fail, []
 
     def MessageBoxW(self, owner, text, title, flags):
+        if self.fail:
+            raise OSError('no desktop')
         self.calls.append((text, title, flags))
         return self.answer
 
 
-@pytest.mark.parametrize('answer,expected', [(6, True), (7, False), (0, False)])
-def test_gui_dialog_shows_summary_defaults_to_no_and_reports_result(answer, expected):
-    user32 = User32(answer)
-    g = cp.GuiPrompt(stdin=Console(), stream=Console(), user32=user32)
-    g.show('AgentMesh upgrade plan\n  From: rc.8\n  To: rc.9')
+class Comctl32:
+    """Fake TaskDialogIndirect: None means unavailable (no Common Controls v6)."""
+    def __init__(self, pressed):
+        self.pressed, self.calls = pressed, []
+
+    def task_dialog(self, instruction, content, details, buttons, default, icon, common):
+        self.calls.append(dict(instruction=instruction, content=content, details=details, buttons=buttons,
+                               default=default, icon=icon, common=common))
+        return self.pressed
+
+
+PLAN = {'instruction': 'Upgrade AgentMesh to 0.2.0-rc.11 (abc1234)?',
+        'content': ['From 0.2.0-rc.10 (3d5b785) to 0.2.0-rc.11 (abc1234)', '\u2022 Copy and verify', '', 'Takes 1-3 minutes.',
+                    'You can roll back to 0.2.0-rc.10 (3d5b785).'],
+        'details': ['Policy: legacy', 'Task: AgentMesh-x'], 'button': 'Upgrade now'}
+
+
+def gui(pressed=None, answer=None, user32_fail=False, keys=()):
+    out = Console()
+    g = cp.GuiPrompt(stdin=Console(), stream=out, keys=Keys(*keys), vt=False,
+                     user32=User32(answer, fail=user32_fail), comctl32=Comctl32(pressed))
+    g.show('console plan text')
+    g.remember(PLAN)
+    return g, out
+
+
+@pytest.mark.parametrize('pressed,expected,line', [(1001, True, 'Confirmed in dialog: Upgrade now'),
+                                                   (2, False, 'Cancelled in dialog')])
+def test_task_dialog_has_labelled_buttons_and_cancel_is_default(pressed, expected, line):
+    g, out = gui(pressed=pressed)
     assert g.decide('Upgrade now?', 'Upgrade now') is expected
-    text, title, flags = user32.calls[0]
-    assert 'From: rc.8' in text and 'Upgrade now?' in text and title == 'AgentMesh'
-    assert flags & g.MB_DEFBUTTON2 and flags & g.MB_YESNO  # No is the default button
-    g.result(True, 'Upgraded to rc.9; worker healthy')
-    assert user32.calls[1][0] == 'Upgraded to rc.9; worker healthy' and user32.calls[1][2] & g.MB_ICONINFORMATION
+    call = g.comctl32.calls[0]
+    assert call['instruction'] == PLAN['instruction'] and call['buttons'] == [(1001, 'Upgrade now')]
+    assert call['default'] == g.IDCANCEL and call['common'] == g.TDCBF_CANCEL_BUTTON
+    assert 'Yes =' not in call['content'] and 'You can roll back to 0.2.0-rc.10' in call['content']
+    assert call['details'] == 'Policy: legacy\nTask: AgentMesh-x'
+    assert out.getvalue().split('\r')[-1].strip() == line
+    assert g.user32.calls == []  # no MessageBox when TaskDialog works
+
+
+@pytest.mark.parametrize('answer,expected', [(6, True), (7, False), (0, False)])
+def test_without_task_dialog_messagebox_reads_naturally_and_defaults_to_no(answer, expected):
+    g, _ = gui(pressed=None, answer=answer)
+    assert g.decide('Upgrade now?', 'Upgrade now') is expected
+    text, title, flags = g.user32.calls[0]
+    assert text.startswith('Upgrade AgentMesh to 0.2.0-rc.11 (abc1234)?') and 'Yes =' not in text
+    assert flags & g.MB_DEFBUTTON2 and flags & g.MB_YESNO and title == 'AgentMesh'
+
+
+@pytest.mark.parametrize('keys,expected', [(('enter',), False), (('left', 'enter'), True)])
+def test_without_any_dialog_the_console_select_takes_over(keys, expected):
+    g, out = gui(pressed=None, user32_fail=True, keys=keys)
+    assert g.decide('Upgrade now?', 'Upgrade now') is expected
+    assert 'Cancel' in out.getvalue()
+
+
+def test_result_dialog_uses_close_button_and_falls_back():
+    g, _ = gui(pressed=8)  # IDCLOSE
+    g.result(True, 'Upgrade complete', 'Now using 0.2.0-rc.11.\nWorker restarted and healthy.')
+    call = g.comctl32.calls[-1]
+    assert call['buttons'] == [] and call['common'] == g.TDCBF_CLOSE_BUTTON and call['icon'] == g.TD_INFORMATION_ICON
+    g, _ = gui(pressed=None, answer=1)
+    g.result(False, 'Upgrade failed', 'program checksum mismatch', 'Code: GUARD_REFUSED')
+    text, _, flags = g.user32.calls[-1]
+    assert text.startswith('Upgrade failed') and 'GUARD_REFUSED' in text and flags & g.MB_ICONERROR
+    g, _ = gui(pressed=None, user32_fail=True)
+    g.result(True, 'Upgrade complete', 'ok')  # neither dialog available: no exception
 
 
 def visible(frame):

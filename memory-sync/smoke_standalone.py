@@ -43,6 +43,11 @@ def main():
             command = [str(binary), *map(str, args)]
             result = subprocess.run(command, cwd=root, env=env, input=inputs,
                                     text=True, capture_output=True, timeout=300 if os.name == 'nt' else 90)
+            if result.returncode != expected and args[0] == 'worker-start':
+                # The starter only sees the child exit; its sanitized record has the cause.
+                status = subprocess.run([str(binary), 'worker-status', *map(str, args[1:3])], cwd=root, env=env,
+                                        text=True, capture_output=True, timeout=60)
+                raise AssertionError((command, result.returncode, result.stderr, 'worker-status', status.stdout))
             assert result.returncode == expected, (command, result.returncode, result.stderr)
             return result.stdout
         assert 'setup-new' in run('--help')

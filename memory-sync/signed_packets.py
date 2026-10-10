@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import stat
 import struct
+import time
 import uuid
 
 FORMAT = 'agentmesh-signed-changes-v2'
@@ -139,6 +140,19 @@ def read_local(path, *, private=False):
     return data
 
 
+def replace(source, target, *, attempts=50):
+    # Windows refuses to replace a file another process holds open without
+    # FILE_SHARE_DELETE (ERROR_ACCESS_DENIED/ERROR_SHARING_VIOLATION). Status
+    # readers hold process.json only briefly; persistent denial still raises.
+    for attempt in range(attempts):
+        try:
+            return os.replace(source, target)
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32) or attempt == attempts - 1:
+                raise
+            time.sleep(0.02)
+
+
 def write_local(path, value, *, exclusive=False):
     path = no_symlinks(path)
     # Security files are local, never under the exchange. Caller creates parent.
@@ -151,7 +165,7 @@ def write_local(path, value, *, exclusive=False):
         if exclusive:
             os.link(temp, path)  # Atomic no-clobber publication.
         else:
-            os.replace(temp, path)
+            replace(temp, path)
         if os.name != 'nt':
             fd = os.open(path.parent, os.O_RDONLY)
             try: os.fsync(fd)

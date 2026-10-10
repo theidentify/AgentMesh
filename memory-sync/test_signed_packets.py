@@ -347,3 +347,34 @@ def test_verification_telemetry_records_actual_attempts_not_delivery(secure_peer
     assert rejected['last_failure_at'] is not None and rejected['last_success_at'] == success_at
     with sync.connect(b) as c:
         assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1
+
+
+def sharing_violation():
+    error = PermissionError(13, 'Access is denied')
+    error.winerror = 5  # A reader briefly holds the target without FILE_SHARE_DELETE.
+    return error
+
+
+def test_write_local_retries_transient_windows_replace_denial(tmp_path, monkeypatch):
+    original, calls = signed.os.replace, []
+    def contended(source, target):
+        calls.append(target)
+        if len(calls) < 3:
+            raise sharing_violation()
+        original(source, target)
+    monkeypatch.setattr(signed.os, 'replace', contended)
+    monkeypatch.setattr(signed.time, 'sleep', lambda seconds: None)
+    signed.write_local(tmp_path / 'process.json', {'state': 'running'})
+    assert len(calls) == 3
+    assert signed.parse(signed.read_local(tmp_path / 'process.json')) == {'state': 'running'}
+    assert [p.name for p in tmp_path.iterdir()] == ['process.json']
+
+
+def test_write_local_persistent_denial_is_bounded_and_leaves_no_temp(tmp_path, monkeypatch):
+    def denied(source, target):
+        raise sharing_violation()
+    monkeypatch.setattr(signed.os, 'replace', denied)
+    monkeypatch.setattr(signed.time, 'sleep', lambda seconds: None)
+    with pytest.raises(PermissionError):
+        signed.write_local(tmp_path / 'process.json', {'state': 'running'})
+    assert list(tmp_path.iterdir()) == []

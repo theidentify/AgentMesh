@@ -16,7 +16,7 @@ try {
     $service.Connect()
     $folder = $service.GetFolder('\')
     # Task Scheduler may return an account name for a SID it was given, and
-    # omit a zero delay; both are read back in their registered form.
+    # omit a zero delay or return unset strings as null; read back registered form.
     function AsSid($u) {
         if ([string]::IsNullOrEmpty($u) -or $u -match '^S-1-') { return $u }
         return ([System.Security.Principal.NTAccount]$u).Translate([System.Security.Principal.SecurityIdentifier]).Value
@@ -29,13 +29,13 @@ try {
         $d = $t.Definition
         $triggers = @(); foreach ($x in $d.Triggers) {
             $delay = $x.Delay; if ([string]::IsNullOrEmpty($delay)) { $delay = 'PT0S' }
-            $triggers += @{type=[int]$x.Type; user=(AsSid $x.UserId); enabled=[bool]$x.Enabled; delay=$delay; start=$x.StartBoundary; end=$x.EndBoundary; repeat=$x.Repetition.Interval; duration=$x.Repetition.Duration; stop=[bool]$x.Repetition.StopAtDurationEnd}
+            $triggers += @{type=[int]$x.Type; user=(AsSid $x.UserId); enabled=[bool]$x.Enabled; delay=$delay; start=[string]$x.StartBoundary; end=[string]$x.EndBoundary; repeat=[string]$x.Repetition.Interval; duration=[string]$x.Repetition.Duration; stop=[bool]$x.Repetition.StopAtDurationEnd}
         }
         $actions = @(); foreach ($x in $d.Actions) {
             $actions += @{type=[int]$x.Type; path=$x.Path; arguments=$x.Arguments; directory=$x.WorkingDirectory}
         }
         $s = $d.Settings
-        return @{sid=$sid; xml=$t.Xml; binding=@{marker=$d.RegistrationInfo.Description; user=(AsSid $d.Principal.UserId); logon=[int]$d.Principal.LogonType; level=[int]$d.Principal.RunLevel; enabled=[bool]$s.Enabled; hidden=[bool]$s.Hidden; multiple=[int]$s.MultipleInstances; terminate=[bool]$s.AllowHardTerminate; restart=$s.RestartInterval; restart_count=[int]$s.RestartCount; battery_start=[bool]$s.DisallowStartIfOnBatteries; battery_stop=[bool]$s.StopIfGoingOnBatteries; limit=$s.ExecutionTimeLimit; demand=[bool]$s.AllowDemandStart; available=[bool]$s.StartWhenAvailable; idle=[bool]$s.RunOnlyIfIdle; network=[bool]$s.RunOnlyIfNetworkAvailable; wake=[bool]$s.WakeToRun; triggers=@($triggers); actions=@($actions)}}
+        return @{sid=$sid; xml=$t.Xml; binding=@{marker=$d.RegistrationInfo.Description; user=(AsSid $d.Principal.UserId); logon=[int]$d.Principal.LogonType; level=[int]$d.Principal.RunLevel; enabled=[bool]$s.Enabled; hidden=[bool]$s.Hidden; multiple=[int]$s.MultipleInstances; terminate=[bool]$s.AllowHardTerminate; restart=[string]$s.RestartInterval; restart_count=[int]$s.RestartCount; battery_start=[bool]$s.DisallowStartIfOnBatteries; battery_stop=[bool]$s.StopIfGoingOnBatteries; limit=$s.ExecutionTimeLimit; demand=[bool]$s.AllowDemandStart; available=[bool]$s.StartWhenAvailable; idle=[bool]$s.RunOnlyIfIdle; network=[bool]$s.RunOnlyIfNetworkAvailable; wake=[bool]$s.WakeToRun; triggers=@($triggers); actions=@($actions)}}
     }
     $before = ReadTask
     if ($p.operation -ne 'read') {

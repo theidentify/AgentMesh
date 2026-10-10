@@ -59,3 +59,48 @@ def test_build_rejects_output_inside_source(tmp_path):
 def test_build_rejects_missing_entry_or_schema(tmp_path):
     with pytest.raises(ValueError, match='source'):
         standalone_build.build_command(tmp_path, tmp_path / 'dist', tmp_path / 'work')
+
+
+def test_windowless_logon_entry_is_gui_subsystem_and_built_outside_source(tmp_path):
+    root = Path(__file__).resolve().parent
+    command = standalone_build.windowless_command(root, tmp_path / 'dist', tmp_path / 'work')
+    assert '--noconsole' in command and '--onefile' in command
+    assert command[command.index('--name') + 1] == 'agentmeshw'
+    assert command[-1] == str(root / 'agentmesh_launcher.py')
+    with pytest.raises(ValueError, match='outside source'):
+        standalone_build.windowless_command(root, root / 'dist', tmp_path / 'work')
+
+
+def test_windows_upgrade_helper_plans_before_replace_and_keeps_legacy_explicit(tmp_path):
+    standalone_build.windows_launcher(tmp_path)
+    content = (tmp_path / 'Upgrade-AgentMesh.cmd').read_bytes()
+    assert b'\n' not in content.replace(b'\r\n', b'')
+    text = content.decode('utf-8')
+    assert text.count('"%~dp0agentmesh.exe" windows-upgrade --runtime ') == 2
+    assert text.index('--dry-run') < text.index('if errorlevel 1 goto finish')
+    assert '--replace --legacy-drained' in text and 'windows-autostart' not in text and 'setup-new' not in text
+
+
+def test_launcher_refuses_anything_but_worker_start(monkeypatch):
+    import agentmesh_launcher
+    calls = []
+    monkeypatch.setattr(agentmesh_launcher.subprocess, 'run', lambda *a, **k: calls.append((a, k)))
+    assert agentmesh_launcher.main([]) == 2
+    assert agentmesh_launcher.main(['worker-run', '--runtime', 'x']) == 2
+    assert calls == []
+
+
+def test_launcher_runs_adjacent_cli_hidden_with_fresh_extraction(monkeypatch, tmp_path):
+    import agentmesh_launcher
+    seen = {}
+    class Done:
+        returncode = 7
+    def run(command, **kwargs):
+        seen.update(command=command, **kwargs)
+        return Done()
+    monkeypatch.setattr(agentmesh_launcher.subprocess, 'run', run)
+    monkeypatch.setattr(agentmesh_launcher.sys, 'executable', str(tmp_path / 'agentmeshw.exe'))
+    assert agentmesh_launcher.main(['worker-start', '--runtime', 'r']) == 7
+    assert seen['command'] == [str(tmp_path / 'agentmesh.exe'), 'worker-start', '--runtime', 'r']
+    assert seen['env']['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
+    assert seen['stdin'] is seen['stdout'] is seen['stderr'] is agentmesh_launcher.subprocess.DEVNULL

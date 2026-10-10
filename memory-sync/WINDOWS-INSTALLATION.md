@@ -94,6 +94,20 @@ changed task is refused, never overwritten. Every register/remove operation is
 followed by exact-target readback. `--task-name AgentMesh-...` can explicitly
 select a name, but cannot bypass ownership, SID, or snapshot verification.
 
+## Windowless logon entry (RC.6+)
+
+From RC.6 the bundle also ships `agentmeshw.exe`, a GUI-subsystem launcher, so
+Windows allocates no console at logon. It accepts only `worker-start`, runs the
+adjacent console `agentmesh.exe` with `CREATE_NO_WINDOW`, and returns its exit
+code; the worker lifecycle is unchanged. The logon task targets `agentmeshw.exe`
+for versions that include it and `agentmesh.exe` for older versions, so program
+rollback to RC.5 restores the previous (console) task entry.
+
+To move an installed RC.5 to RC.6 with autostart already enabled, run
+`Upgrade-AgentMesh.cmd` from the extracted RC.6 folder: it plans first, then the
+UPGRADE and REPLACE gates request a cooperative stop, rebind the task to the new
+version, and start and verify the new worker. No sign-out is needed.
+
 ## Upgrade, program rollback, uninstall
 
 All commands accept `--dry-run` and require the same explicit existing runtime.

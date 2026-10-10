@@ -58,13 +58,17 @@ def main():
                                  security_dir=str(app / 'identity'), workflow_config=str(app / 'data/workflow.json')))
         preserved = {p: (p.stat().st_dev, p.stat().st_ino, p.read_bytes()) for p in app.rglob('*') if p.is_file()}
         source_sha = os.environ['GITHUB_SHA']
-        def bundle(version):
+        def bundle(version, launcher=False):
             dest = root / version
             dest.mkdir()
             binary = dest / 'agentmesh.exe'
             shutil.copyfile(executable, binary)
+            checksums = {'agentmesh.exe': hashlib.sha256(binary.read_bytes()).hexdigest()}
+            if launcher:
+                shutil.copyfile(executable.with_name('agentmeshw.exe'), dest / 'agentmeshw.exe')
+                checksums['agentmeshw.exe'] = hashlib.sha256((dest / 'agentmeshw.exe').read_bytes()).hexdigest()
             metadata = dict(version=version, source_sha=source_sha, system='windows', architecture='amd64',
-                            checksums={'agentmesh.exe': hashlib.sha256(binary.read_bytes()).hexdigest()},
+                            checksums=checksums,
                             distribution=DEVELOPMENT, verification='disposable fixture of the current CI executable',
                             scope='program files only; no database, keys, runtime, snapshots or deployment secrets')
             (dest / 'BUILD.json').write_text(json.dumps(metadata))
@@ -95,9 +99,15 @@ def main():
             assert call('autostart', ['--disable'], 'DISABLE\n')['status'] == 'disabled'
             task = adapter.read(name)['task']
             assert task is not None and not task['binding']['enabled']
-            next_binary = bundle('0.2.0-rc.6')
+            assert Path(task['binding']['actions'][0]['path']).name == 'agentmesh.exe'  # launcher-less bundle
+            next_binary = bundle('0.2.0-rc.6', launcher=True)
             assert call('upgrade', ['--binary', str(next_binary), '--legacy-drained'], 'UPGRADE\nBIND\n')['status'] == 'selected'
+            # Real COM readback of the windowless logon entry, still disabled and never run.
+            entry = Path(adapter.read(name)['task']['binding']['actions'][0]['path'])
+            assert entry.name == 'agentmeshw.exe' and entry.parent.parent == programs
+            assert entry.read_bytes() == executable.with_name('agentmeshw.exe').read_bytes()
             assert call('rollback', ['--legacy-drained'], 'ROLLBACK\n')['status'] == 'selected'
+            assert Path(adapter.read(name)['task']['binding']['actions'][0]['path']).name == 'agentmesh.exe'
             assert call('uninstall', ['--legacy-drained'], 'UNINSTALL\n')['status'] == 'uninstalled'
             assert adapter.read(name)['task'] is None
             assert all((p.stat().st_dev, p.stat().st_ino, p.read_bytes()) == value for p, value in preserved.items())

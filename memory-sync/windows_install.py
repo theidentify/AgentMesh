@@ -18,6 +18,9 @@ import worker_lifecycle as managed
 import windows_task
 
 FORMAT = 'agentmesh-windows-programs-v1'
+LAUNCHER = 'agentmeshw.exe'
+# rc.5 bundles predate the windowless launcher; both shapes stay verifiable.
+PROGRAM_FILES = ({'agentmesh.exe', 'BUILD.json'}, {'agentmesh.exe', LAUNCHER, 'BUILD.json'})
 DEVELOPMENT = 'unsigned development trial; not a final or trusted-publisher release'
 
 
@@ -54,10 +57,18 @@ def bundle(binary):
         if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name)
                 or not isinstance(checksum, str) or not re.fullmatch(r'[0-9a-f]{64}', checksum)):
             raise ValueError('invalid BUILD.json checksum')
-    if metadata['checksums'].get(binary.name) != digest(binary):
+    files = {'agentmesh.exe': digest(binary), 'BUILD.json': digest(manifest)}
+    if LAUNCHER in metadata['checksums']:
+        files[LAUNCHER] = digest(binary.parent / LAUNCHER)
+    if any(metadata['checksums'].get(name) != files[name] for name in files if name != 'BUILD.json'):
         raise ValueError('program checksum mismatch')
-    return dict(key=metadata['version'] + '-' + metadata['source_sha'], binary=str(binary),
-                files={'agentmesh.exe': digest(binary), 'BUILD.json': digest(manifest)})
+    return dict(key=metadata['version'] + '-' + metadata['source_sha'], binary=str(binary), files=files)
+
+
+def task_entry(state, key):
+    """Logon task entry: the windowless launcher when that version ships one."""
+    name = LAUNCHER if LAUNCHER in state['programs'][key]['files'] else 'agentmesh.exe'
+    return Path(state['root']) / key / name
 
 
 def confirm(word):
@@ -132,7 +143,7 @@ def read_state(root, state_path):
         raise ValueError('invalid owned version inventory')
     for key, entry in programs.items():
         if (not re.fullmatch(r'0\.2\.0-rc\.[0-9]+-[0-9a-f]{40}', key)
-                or set(entry) != {'identity', 'files'} or set(entry['files']) != {'agentmesh.exe', 'BUILD.json'}
+                or set(entry) != {'identity', 'files'} or set(entry['files']) not in PROGRAM_FILES
                 or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{64}', v) for v in entry['files'].values())):
             raise ValueError('invalid owned program manifest')
         directory = absolute(root / key)
@@ -158,7 +169,7 @@ def task_owned(report, state):
     if task is not None:
         b = task['binding']
         selected = state['active']
-        definition = windows_task.binding(state['sid'], state['marker'], Path(state['root']) / selected / 'agentmesh.exe',
+        definition = windows_task.binding(state['sid'], state['marker'], task_entry(state, selected),
             state['runtime'], state['interval'], state['timeout'], state['legacy_drained'], b['enabled'])
         if b != definition or task['sid'] != state['sid']:
             raise ValueError('Scheduled Task binding is not owned')
@@ -445,7 +456,7 @@ def change_task(adapter, state, state_path, *, enabled, finish=True):
     state['status'] = 'recovery_required'
     state['pending'] = {'operation': 'task', 'previous': previous, 'transition': state.get('pending')}
     save(state_path, state)
-    definition = windows_task.binding(state['sid'], state['marker'], Path(state['root']) / state['active'] / 'agentmesh.exe',
+    definition = windows_task.binding(state['sid'], state['marker'], task_entry(state, state['active']),
         state['runtime'], state['interval'], state['timeout'], state['legacy_drained'], enabled)
     task = adapter.register(state['task_name'], state['sid'], previous['xml'] if previous else None, definition)
     report = adapter.read(state['task_name'])

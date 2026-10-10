@@ -41,13 +41,17 @@ class FakeTasks:
         self.operations.append('remove')
 
 
-def package(parent, version='0.2.0-rc.5', sha='a' * 40):
+def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False):
     directory = parent / (version + '-bundle')
     directory.mkdir()
     binary = directory / 'agentmesh.exe'
     binary.write_bytes(b'disposable binary fixture ' + sha.encode())
+    checksums = {'agentmesh.exe': installer.digest(binary)}
+    if launcher:
+        (directory / 'agentmeshw.exe').write_bytes(b'disposable windowless launcher fixture ' + sha.encode())
+        checksums['agentmeshw.exe'] = installer.digest(directory / 'agentmeshw.exe')
     metadata = dict(version=version, source_sha=sha, system='windows', architecture='amd64',
-                    checksums={'agentmesh.exe': installer.digest(binary)}, distribution=installer.DEVELOPMENT,
+                    checksums=checksums, distribution=installer.DEVELOPMENT,
                     verification='fixture only, no native verification claim',
                     scope='program files only; no database, keys, runtime, snapshots or deployment secrets')
     (directory / 'BUILD.json').write_text(json.dumps(metadata))
@@ -429,3 +433,33 @@ def test_failed_start_keeps_previous_exact_task_and_does_not_self_duplicate_hist
     assert retained['history'] == ([original['active']] if newer else [])
     if newer:
         assert retained['task'] != original['task']
+
+
+def task_path(existing):
+    task = existing['adapter'].tasks[installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')['task_name']]
+    return Path(task['binding']['actions'][0]['path']), task['binding']['actions'][0]['arguments']
+
+
+def test_logon_task_uses_windowless_launcher_when_bundled_and_rollback_keeps_console_entry(existing, monkeypatch):
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    path, arguments = task_path(existing)
+    assert path.name == 'agentmesh.exe' and '--legacy-drained' in arguments  # rc.5-shaped bundle has no launcher
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40, launcher=True)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)['status'] == 'selected'
+    state = installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')
+    assert set(state['programs'][state['active']]['files']) == {'agentmesh.exe', 'agentmeshw.exe', 'BUILD.json'}
+    path, arguments = task_path(existing)
+    assert path == existing['program_root'] / state['active'] / 'agentmeshw.exe'
+    assert path.read_bytes() == (newer.parent / 'agentmeshw.exe').read_bytes()
+    assert arguments.startswith('worker-start ') and '--legacy-drained' in arguments
+    assert command(existing, monkeypatch, 'rollback', 'ROLLBACK\n', legacy_drained=True)['status'] == 'selected'
+    assert task_path(existing)[0].name == 'agentmesh.exe'
+
+
+def test_launcher_checksum_mismatch_refused(existing, monkeypatch):
+    command(existing, monkeypatch)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40, launcher=True)
+    (newer.parent / 'agentmeshw.exe').write_bytes(b'tampered')
+    with pytest.raises(ValueError, match='program checksum mismatch'):
+        command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)

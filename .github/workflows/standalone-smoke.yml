@@ -31,6 +31,8 @@ jobs:
         run: python memory-sync/standalone_build.py --dist "${{ runner.temp }}/agentmesh-dist" --work "${{ runner.temp }}/agentmesh-build"
       - name: Smoke disposable installation
         run: python memory-sync/smoke_standalone.py
+      - name: Verify independent background worker lifetime
+        run: python memory-sync/smoke_worker_lifetime.py
       - name: Rehearse Mac replacement with real binary and fake launchd
         if: runner.os == 'macOS'
         env:

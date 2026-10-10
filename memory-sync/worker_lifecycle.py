@@ -129,6 +129,15 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
         record = {'format': 'agentmesh-worker-v1', 'runtime': str(runtime),
                   'pid': os.getpid(), 'nonce': nonce, 'state': 'running',
                   'cycles': 0, 'last_error': None, 'updated_at': time.time()}
+        if getattr(sys, 'frozen', False):
+            # Local diagnostics only; never projected into exchange peer status.
+            record['bundle_dir'] = getattr(sys, '_MEIPASS')
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            console = ctypes.WinDLL('kernel32', use_last_error=True).GetConsoleWindow
+            console.restype = wintypes.HWND
+            record['console_attached'] = bool(console())
         def save():
             record['updated_at'] = time.time()
             write_local(directory / 'process.json', record)
@@ -196,9 +205,15 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     control(config, create=True)
     nonce = str(uuid.uuid4())
     deadline = time.monotonic() + timeout
+    env = dict(os.environ)
+    if getattr(sys, 'frozen', False):
+        # This worker outlives the launcher: give it its own onefile extraction.
+        env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
     process = subprocess.Popen(command(runtime, interval=interval, legacy_drained=legacy_drained,
         nonce=nonce, startup_deadline=deadline), stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != 'nt')
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+        creationflags=flags, start_new_session=os.name != 'nt')
     _CHILDREN[nonce] = process
     while time.monotonic() < deadline:
         record = status(runtime)

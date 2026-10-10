@@ -128,7 +128,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
             raise TimeoutError('startup deadline expired')
         record = {'format': 'agentmesh-worker-v1', 'runtime': str(runtime),
                   'pid': os.getpid(), 'nonce': nonce, 'state': 'running',
-                  'cycles': 0, 'last_error': None, 'updated_at': time.time()}
+                  'cycles': 0, 'last_error': None, 'last_error_detail': None, 'updated_at': time.time()}
         if getattr(sys, 'frozen', False):
             # Local diagnostics only; never projected into exchange peer status.
             record['bundle_dir'] = getattr(sys, '_MEIPASS')
@@ -162,6 +162,10 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 result = int(sync_worker.failed(report))
                 record['cycles'] += 1
                 record['last_error'] = 'CycleFailed' if result else None
+                # Keep only fixed public diagnostics, never the full cycle report.
+                record['last_error_detail'] = ({'error': 'CycleFailed',
+                    'code': 'WORKER_CYCLE_FAILED', 'reason': 'worker recorded a cycle failure',
+                    'stage': 'sync_worker.run_once'} if result else None)
                 save()
                 if once or result:
                     break
@@ -171,6 +175,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
         except Exception as exc:
             result = 1
             record['last_error'] = type(exc).__name__
+            from cli_errors import report as error_report
+            record['last_error_detail'] = error_report(exc, 'worker-run')
         finally:
             record['state'] = 'failed' if result else 'stopped'
             save()

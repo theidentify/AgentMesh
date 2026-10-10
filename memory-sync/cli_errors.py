@@ -19,6 +19,11 @@ SAFE_REASONS = frozenset({
     'legacy worker must be drained explicitly',
     'legacy worker must be drained explicitly; acknowledge unsigned policy',
     'invalid worker nonce', 'startup deadline expired',
+    'database must remain outside exchange',
+    'stale worker metadata; no process was signalled',
+    'worker ownership changed while stopping',
+    'worker did not acknowledge stop; no process was signalled',
+    'invalid package metadata', 'package manifest does not match executable',
     'runtime configuration changed; restart after review',
     'database scope or signing key changed',
     'worker already running; stop it first',
@@ -42,16 +47,30 @@ SAFE_REASONS = frozenset({
     'Windows PowerShell unavailable',
     'Windows private ACL could not be verified',
 })
+from worker_error_details import DETAILS, SYSTEM_ERRORS
+SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
-                           'windows_acl', 'install_setup', 'runtime_lock'})
+                           'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics'})
 
 
 def report(exc, action):
-    result = {'error': type(exc).__name__}
-    if action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop'):
+    result: dict[str, object] = {'error': type(exc).__name__}
+    if action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
-    result['reason'] = message if message in SAFE_REASONS else 'details withheld; inspect diagnostic stage'
+    known = message in SAFE_REASONS
+    result['reason'] = message if known else 'details withheld; inspect diagnostic stage'
+    code, hint = DETAILS.get(message, (
+        'GUARD_REFUSED' if known else 'UNCLASSIFIED_ERROR',
+        'Review this guard and diagnostic target; do not bypass it.' if known else
+        'Run diagnose with the same executable/runtime; share code and stage. Private input values are withheld.'))
+    if not known and result['error'] in SYSTEM_ERRORS:
+        code, hint = SYSTEM_ERRORS[type(exc).__name__]
+    result.update(code=code, next_action=hint)
+    for key in ('errno', 'winerror', 'sqlite_errorcode'):
+        value = getattr(exc, key, None)
+        if type(value) is int:
+            result[key] = value
     result['stage'] = action
     frame = exc.__traceback__
     while frame is not None:

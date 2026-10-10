@@ -84,6 +84,14 @@ def main():
         else:
             raise AssertionError('worker did not complete two additional independent cycles')
         cycles = current['cycles']
+        diagnostic = invoke('diagnose', '--runtime', runtime, '--json')
+        assert diagnostic['status'] == 'ok' and diagnostic['read_only'] is True, diagnostic
+        assert diagnostic['program']['mode'] == 'standalone', diagnostic
+        assert diagnostic['worker']['state'] == 'running', diagnostic
+        assert (diagnostic['worker']['nonce'], diagnostic['worker']['pid']) == (nonce, pid)
+        assert diagnostic['worker']['last_error'] is None
+        assert str(runtime) not in json.dumps(diagnostic)
+        assert all(p.read_bytes() == data for p, data in bound.items())
     finally:
         # Nonce-cooperative stop only; no PID signalling, deletion or forced kill.
         if runtime.exists():
@@ -105,7 +113,7 @@ def main():
     assert status['security']['policy'] == 'legacy'
     report = {'platform': os.name, 'starter_exited': True, 'cycles_after_starter_exit': cycles - initial_cycles,
               'independent_bundle_cleaned': True, 'nonce_stop_drained': True,
-              'runtime_workflow_keys_scope_preserved': True, 'seconds': round(time.monotonic() - started_at, 3)}
+              'runtime_workflow_keys_scope_preserved': True, 'frozen_diagnose_passed': True, 'seconds': round(time.monotonic() - started_at, 3)}
     if os.name == 'nt':
         report['worker_console_attached'] = False
     shutil.rmtree(root)

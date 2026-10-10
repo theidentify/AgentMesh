@@ -30,6 +30,9 @@ def main(argv=None):
         if name == 'watch':
             worker.add_argument('--interval', type=float, default=60)
     subs.add_parser('status', description=__import__('brand').description('Inspect local memory and peer-sync state.'), formatter_class=argparse.RawDescriptionHelpFormatter)
+    diagnostics = subs.add_parser('diagnose', help='read-only staged, redacted worker diagnostics')
+    diagnostics.add_argument('--runtime', required=True, help='existing runtime.json; never creates or repairs state')
+    diagnostics.add_argument('--json', action='store_true', help='machine-readable redacted report instead of human-readable output')
     inspect = subs.add_parser('inspect-install', help='read-only discovery of an existing installation')
     inspect.add_argument('--runtime', help='existing runtime.json; default is the platform installation path')
     wizard = subs.add_parser('wizard-status', help='read-only security wizard status for an existing installation')
@@ -65,6 +68,12 @@ def main(argv=None):
     rollback.add_argument('--timeout', type=float, default=300)
     args = parser.parse_args(argv)
     try:
+        if args.action == 'diagnose':
+            from worker_diagnostics import diagnose, render
+            progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)
+            report = diagnose(args.runtime, progress=progress)
+            print(json.dumps(report, sort_keys=True) if args.json else render(report))
+            return 0 if report['status'] == 'ok' else 1
         if args.action in ('mac-replace', 'mac-rollback'):
             import mac_replace
             if args.action == 'mac-rollback':

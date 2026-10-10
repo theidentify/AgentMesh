@@ -4,6 +4,19 @@ This is a **native macOS/Windows CLI build path and Mac-first operator replaceme
 
 `adopt-install` now binds existing DB/exchange/workflow/security paths only after BIND. `worker-run`, `worker-start`, `worker-status` and `worker-stop` provide an explicit managed lifecycle using the selected runtime and authoritative DB policy. On macOS, the build also produces `Replace-AgentMesh.command`; `mac-replace` and `mac-rollback` provide operator-confirmed replacement and code/service recovery without automatic DB restoration. See [Mac operator replacement](MAC-REPLACEMENT.md) for the required private manifest, drain/backup/confirmation gates and limitations. This does not close the full v0.2.0 milestone or activate signing, join a baseline, enable PostgreSQL or install a Windows service.
 
+## Read-only diagnostics and safe error details
+
+```powershell
+.\agentmesh.exe diagnose --runtime "$env:LOCALAPPDATA\AgentMesh\data\runtime.json"
+.\agentmesh.exe diagnose --runtime "$env:LOCALAPPDATA\AgentMesh\data\runtime.json" --json
+```
+
+`diagnose` shows program/package identity (when an adjacent BUILD.json is available), runtime validation, installation scope, worker-control permissions and worker state as separate timed checks. Human mode prints progress to stderr before each check; `--json` keeps stdout machine-readable. A failed dependency skips later checks rather than hiding the first failure. Exit **0** means completed observations without warnings/errors (a stopped worker can be normal); exit **1** means attention is required, not that a repair occurred. Windows trial bundles include a double-click `Diagnose-AgentMesh.cmd` using the human-readable mode.
+
+Worker errors retain `error`, `reason` and trusted `stage` and add stable `code`, `next_action` and numeric OS/SQLite error codes when available. Known refusal messages, including stale process metadata, are explicitly allowlisted; arbitrary exception messages, paths, runtime contents, keys, tokens and source text are not printed. An unrecognized recorded worker error is shown as `RecordedWorkerError`, not its potentially private payload. Program metadata accepts only version/commit/checksum fields and verifies the executing binary against the adjacent manifest; this is **not** publisher-signature verification. Without that manifest, the version is explicitly unavailable, never guessed from a folder name.
+
+Diagnosis never creates a control directory, WAL/SHM, key or wizard state, changes ACLs, stops/restarts a worker or repairs stale metadata. It uses immutable SQLite scope inspection: uncheckpointed WAL is excluded and this result cannot authorize activation or drain. `state=stale` means a record claimed running but its PID was observed absent; a present/inaccessible PID is not an ownership proof. Timestamp age is the record age, not proof of a successful sync or peer convergence. Do not kill a metadata-selected PID, delete worker state, rerun setup-new or relax permissions based on this report. No startup latency or Windows installer/service behavior is changed by diagnostics.
+
 ## Managed background worker lifetime
 
 A frozen `worker-start` gives its child an independent PyInstaller extraction (`PYINSTALLER_RESET_ENVIRONMENT=1`); it must not reuse the starter's `_MEI` directory after the starter exits. Windows creation uses `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`, with redirected standard handles; `DETACHED_PROCESS` alone is insufficient because the onefile bootloader's inner console-subsystem process creates a console again. POSIX uses a new session. This separates console/process lifetime, **not** Windows service installation, startup-at-login, job-object policy or survival of logout/reboot. Foreground `worker-run` retains its foreground behavior. Local private worker metadata includes the frozen `bundle_dir` and, on Windows, `console_attached` for diagnosis; these fields are not peer-status exchange fields.

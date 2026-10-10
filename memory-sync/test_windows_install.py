@@ -519,3 +519,41 @@ def test_onedir_uninstall_removes_only_owned_tree(existing, monkeypatch):
     command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)
     assert command(existing, monkeypatch, 'uninstall', 'UNINSTALL\n', legacy_drained=True)['status'] == 'uninstalled'
     assert sorted(p.name for p in existing['program_root'].iterdir()) == ['OWNER.json', 'installed.json', 'installer.lock']
+
+
+class TypedConsole(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_confirmation_is_case_insensitive_and_describes_the_action(monkeypatch, capsys):
+    monkeypatch.setattr('sys.stdin', io.StringIO('  replace \n'))
+    assert installer.confirm('REPLACE') is True
+    prompt = capsys.readouterr().err
+    assert 'Type REPLACE to stop the worker, switch to the new version and start it again' in prompt
+    assert 'no automatic worker start' not in prompt
+
+
+def test_console_typo_reprompts_but_scripts_get_one_attempt(monkeypatch, capsys):
+    monkeypatch.setattr('sys.stdin', TypedConsole('UPGRDAE\nupgrade\n'))
+    assert installer.confirm('UPGRADE') is True
+    assert '"UPGRDAE" does not match UPGRADE' in capsys.readouterr().err
+    monkeypatch.setattr('sys.stdin', io.StringIO('UPGRDAE\nUPGRADE\n'))
+    assert installer.confirm('UPGRADE') is False  # redirected input: no retry
+
+
+def test_console_enter_or_no_cancels_without_reprompt(monkeypatch):
+    for answer in ('\n', 'no\n', 'N\n'):
+        monkeypatch.setattr('sys.stdin', TypedConsole(answer + 'INSTALL\n'))
+        assert installer.confirm('INSTALL') is False
+    monkeypatch.setattr('sys.stdin', TypedConsole('x\ny\nz\nINSTALL\n'))
+    assert installer.confirm('INSTALL') is False  # bounded retries
+
+
+def test_plan_is_printed_once_as_a_readable_summary(existing, monkeypatch, capsys):
+    command(existing, monkeypatch)
+    err = capsys.readouterr().err
+    assert err.count('AgentMesh install plan') == 1
+    assert '{"' not in err  # no raw JSON before the prompt
+    for text in ('Version:', '0.2.0-rc.5-aaaaaaaaaaaa', 'Worker:', 'stopped', 'Start at login:', 'off', 'Policy:', 'legacy'):
+        assert text in err

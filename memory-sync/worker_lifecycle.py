@@ -224,20 +224,18 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
         creationflags=flags, start_new_session=os.name != 'nt')
     _CHILDREN[nonce] = process
     from terminal_progress import Wait
-    wait = Wait('Starting worker; waiting for its first healthy sync cycle', timeout)
-    while time.monotonic() < deadline:
-        record = status(runtime)
-        if record.get('nonce') == nonce and record['state'] == 'running' and record['cycles'] > 0 and not record['last_error']:
-            wait.done('running')
-            return record
-        wait.tick()
-        if process.poll() is not None:
-            _CHILDREN.pop(nonce, None)
-            raise ValueError('worker failed before a healthy cycle')
-        time.sleep(0.1)
-    directory = control(config)
-    write_local(directory / 'stop.json', {'nonce': nonce})
-    raise TimeoutError('worker startup did not finish; nonce stop requested')
+    with Wait('Starting the worker and waiting for its first sync cycle', timeout, done='Worker running'):
+        while time.monotonic() < deadline:
+            record = status(runtime)
+            if record.get('nonce') == nonce and record['state'] == 'running' and record['cycles'] > 0 and not record['last_error']:
+                return record
+            if process.poll() is not None:
+                _CHILDREN.pop(nonce, None)
+                raise ValueError('worker failed before a healthy cycle')
+            time.sleep(0.1)
+        directory = control(config)
+        write_local(directory / 'stop.json', {'nonce': nonce})
+        raise TimeoutError('worker startup did not finish; nonce stop requested')
 
 
 def drained(directory, record, deadline):
@@ -272,14 +270,12 @@ def stop(runtime, *, timeout=60):
     write_local(directory / 'stop.json', {'nonce': nonce})
     deadline = time.monotonic() + timeout
     from terminal_progress import Wait
-    wait = Wait('Asking the worker to stop after its current cycle', timeout)
-    while time.monotonic() < deadline:
-        current = metadata(directory, runtime)
-        if current is None or current['nonce'] != nonce:
-            raise ValueError('worker ownership changed while stopping')
-        if current['state'] in ('stopped', 'failed'):
-            wait.done(current['state'])
-            return drained(directory, current, deadline)
-        wait.tick()
-        time.sleep(0.1)
-    raise TimeoutError('worker did not acknowledge stop; no process was signalled')
+    with Wait('Waiting for the worker to finish its current cycle and stop', timeout, done='Worker stopped'):
+        while time.monotonic() < deadline:
+            current = metadata(directory, runtime)
+            if current is None or current['nonce'] != nonce:
+                raise ValueError('worker ownership changed while stopping')
+            if current['state'] in ('stopped', 'failed'):
+                return drained(directory, current, deadline)
+            time.sleep(0.1)
+        raise TimeoutError('worker did not acknowledge stop; no process was signalled')

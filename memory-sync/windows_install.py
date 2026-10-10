@@ -13,7 +13,7 @@ import uuid
 
 from install_adopt import absolute, load
 from runtime_lock import lock
-from terminal_progress import Wait, stage as announce
+from terminal_progress import Wait, step
 from signed_packets import parse, private_directory, read_local, windows_private, write_local
 import worker_lifecycle as managed
 import windows_task
@@ -116,12 +116,48 @@ def task_entry(state, key):
     return Path(state['root']) / key / name
 
 
-def confirm(word):
-    print('Type ' + word + ' to confirm (no automatic worker start):', file=sys.stderr, flush=True)
-    answer = sys.stdin.readline()
-    if not answer:
-        raise EOFError('operator confirmation required')
-    return answer.rstrip('\r\n') == word
+ACTIONS = {
+    'INSTALL': 'copy the program files (the worker is not stopped or started)',
+    'UPGRADE': 'copy the new program files (the worker keeps running)',
+    'BIND': 'switch to the new version (the worker must already be stopped; it is not started)',
+    'REPLACE': 'stop the worker, switch to the new version and start it again',
+    'ROLLBACK': 'switch back to the previous version (the worker is not started)',
+    'UNINSTALL': 'remove the program files and start-at-login task (your data is kept)',
+    'ENABLE': 'start the worker automatically at sign-in (it is not started now)',
+    'DISABLE': 'stop starting the worker at sign-in (a running worker keeps running)',
+}
+
+
+def confirm(word, *, attempts=3):
+    """Typed gate. Case-insensitive; a console typo re-prompts, scripts get one try."""
+    try:
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        interactive = False
+    for attempt in range(attempts if interactive else 1):
+        print('Type ' + word + ' to ' + ACTIONS[word] + ', or press Enter to cancel:', file=sys.stderr, flush=True)
+        answer = sys.stdin.readline()
+        if not answer:
+            raise EOFError('operator confirmation required')
+        answer = answer.strip()
+        if answer.upper() == word:
+            return True
+        if not answer or answer.lower() in ('n', 'no', 'cancel'):
+            return False
+        if interactive and attempt < attempts - 1:
+            print('"' + answer + '" does not match ' + word + '. Try again.', file=sys.stderr, flush=True)
+    return False
+
+
+def summary(plan, current=None):
+    """Human-readable plan shown once before the first prompt (stdout JSON is unchanged)."""
+    rows = [('Version', plan['version'] + (f'  (installed: {current})' if current and current != plan['version'] else '')),
+            ('Program folder', plan['program_root']),
+            ('Worker', plan['worker']),
+            ('Start at login', ('on' if plan['autostart'] else 'off') + '  (' + plan['task_name'] + ')'),
+            ('Policy', plan['policy']),
+            ('Publisher', 'not verified (unsigned development trial; checksums only)')]
+    return '\n'.join(['', 'AgentMesh ' + plan['operation'] + ' plan'] + [f'  {k + ":":<16}{v}' for k, v in rows] + [''])
 
 
 def protection(path):
@@ -254,32 +290,32 @@ def stage(root, candidate, state, state_path):
     directory = absolute(root / key)
     if directory.exists():
         raise ValueError('unowned version directory refused')
-    announce('Copying and verifying program files for ' + key)
-    # Recovery records stay local and private, never in distributed BUILD.json.
-    state['status'] = 'recovery_required'
-    state['pending'] = {'operation': 'stage', 'key': key, 'files': candidate['files']}
-    save(state_path, state)
-    protection(directory)
-    state['pending']['directory_identity'] = identity(directory)
-    state['pending']['completed_files'] = {}
-    save(state_path, state)
-    for name, checksum in candidate['files'].items():
-        source = at(Path(candidate['binary']).parent, name)
-        dest = at(directory, name)
-        for parent in reversed(dest.relative_to(directory).parents[:-1]):
-            if not (directory / parent).exists():
-                protection(directory / parent)
-        with absolute(source).open('rb') as src, dest.open('xb') as target:
-            windows_private(dest, provision=True)
-            shutil.copyfileobj(src, target)
-            target.flush(); os.fsync(target.fileno())
-        windows_private(dest)
-        if digest(dest) != checksum:
-            raise ValueError('installed program readback mismatch')
-        state['pending']['completed_files'][name] = {'identity': identity(dest), 'sha256': checksum}
+    with step('Copying and verifying program files', 'Program files copied and verified'):
+        # Recovery records stay local and private, never in distributed BUILD.json.
+        state['status'] = 'recovery_required'
+        state['pending'] = {'operation': 'stage', 'key': key, 'files': candidate['files']}
         save(state_path, state)
-    if bundle(directory / 'agentmesh.exe') != {**candidate, 'binary': str(directory / 'agentmesh.exe')}:
-        raise ValueError('installed bundle verification failed')
+        protection(directory)
+        state['pending']['directory_identity'] = identity(directory)
+        state['pending']['completed_files'] = {}
+        save(state_path, state)
+        for name, checksum in candidate['files'].items():
+            source = at(Path(candidate['binary']).parent, name)
+            dest = at(directory, name)
+            for parent in reversed(dest.relative_to(directory).parents[:-1]):
+                if not (directory / parent).exists():
+                    protection(directory / parent)
+            with absolute(source).open('rb') as src, dest.open('xb') as target:
+                windows_private(dest, provision=True)
+                shutil.copyfileobj(src, target)
+                target.flush(); os.fsync(target.fileno())
+            windows_private(dest)
+            if digest(dest) != checksum:
+                raise ValueError('installed program readback mismatch')
+            state['pending']['completed_files'][name] = {'identity': identity(dest), 'sha256': checksum}
+            save(state_path, state)
+        if bundle(directory / 'agentmesh.exe') != {**candidate, 'binary': str(directory / 'agentmesh.exe')}:
+            raise ValueError('installed bundle verification failed')
     state['programs'][key] = {'identity': identity(directory), 'files': candidate['files']}
     state['pending'] = None
     state['status'] = 'ready'
@@ -347,7 +383,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             'publisher': 'checksum consistency only; not trusted publisher identity'}
     if dry_run:
         return plan
-    print(json.dumps(plan, sort_keys=True), file=sys.stderr)
+    print(summary(plan, state['active'] if state else None), file=sys.stderr, flush=True)
     token = {'install': 'INSTALL', 'upgrade': 'UPGRADE', 'rollback': 'ROLLBACK',
              'uninstall': 'UNINSTALL', 'autostart': 'ENABLE' if enable else 'DISABLE'}[action]
     if not confirm(token):
@@ -417,7 +453,6 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             state['status'] = 'recovery_required'
             state['pending'] = {'operation': 'replace', 'old': state['active'], 'new': key, 'task': state['task']}
             save(state_path, state)
-            announce('Stopping the current worker (cooperative; no process is killed)')
             managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
             restarting = True
         with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
@@ -479,7 +514,6 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                        '--interval', str(state['interval']), '--timeout', str(timeout)]
             if legacy_drained:
                 command.append('--legacy-drained')
-            announce('Starting the worker from ' + key)
             start_worker(command, timeout + 120)
             health = managed.status(runtime)
             if health['state'] != 'running' or health.get('cycles', 0) < 1 or health.get('last_error'):
@@ -487,18 +521,17 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             nonce = health['nonce']
             first_cycles = health['cycles']
             deadline = time.monotonic() + state['interval'] + timeout
-            wait = Wait('Verifying the new worker completes one more sync cycle', state['interval'] + timeout)
-            while time.monotonic() < deadline:
-                health = managed.status(runtime)
-                if health['state'] != 'running' or health.get('nonce') != nonce or health.get('last_error'):
-                    raise ValueError('replacement recurring worker health failed')
-                if health['cycles'] > first_cycles:
-                    wait.done('healthy')
-                    break
-                wait.tick()
-                time.sleep(0.1)
-            else:
-                raise TimeoutError('replacement recurring cycle not verified; recovery retained')
+            with Wait('Confirming the new worker completes another sync cycle', state['interval'] + timeout,
+                      done='New worker healthy'):
+                while time.monotonic() < deadline:
+                    health = managed.status(runtime)
+                    if health['state'] != 'running' or health.get('nonce') != nonce or health.get('last_error'):
+                        raise ValueError('replacement recurring worker health failed')
+                    if health['cycles'] > first_cycles:
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise TimeoutError('replacement recurring cycle not verified; recovery retained')
             state.update(status='ready', pending=None)
             save(state_path, state)
             result['worker_changed'] = True
@@ -512,13 +545,13 @@ def change_task(adapter, state, state_path, *, enabled, finish=True):
     state['status'] = 'recovery_required'
     state['pending'] = {'operation': 'task', 'previous': previous, 'transition': state.get('pending')}
     save(state_path, state)
-    announce('Updating the start-at-login task')
     definition = windows_task.binding(state['sid'], state['marker'], task_entry(state, state['active']),
         state['runtime'], state['interval'], state['timeout'], state['legacy_drained'], enabled)
-    task = adapter.register(state['task_name'], state['sid'], previous['xml'] if previous else None, definition)
-    report = adapter.read(state['task_name'])
-    if report != {'sid': state['sid'], 'task': task} or task['binding'] != definition or task['sid'] != state['sid']:
-        raise ValueError('task binding readback failed')
+    with step('Updating the start-at-login task', 'Start-at-login task ' + ('enabled' if enabled else 'disabled')):
+        task = adapter.register(state['task_name'], state['sid'], previous['xml'] if previous else None, definition)
+        report = adapter.read(state['task_name'])
+        if report != {'sid': state['sid'], 'task': task} or task['binding'] != definition or task['sid'] != state['sid']:
+            raise ValueError('task binding readback failed')
     state['task'] = task
     if finish:
         state.update(status='ready', pending=None)

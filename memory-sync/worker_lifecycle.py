@@ -209,7 +209,9 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     if getattr(sys, 'frozen', False):
         # This worker outlives the launcher: give it its own onefile extraction.
         env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
-    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
+    # NO_WINDOW is inherited by the onefile bootloader's inner process;
+    # DETACHED_PROCESS alone lets that console-subsystem child open a new console.
+    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
     process = subprocess.Popen(command(runtime, interval=interval, legacy_drained=legacy_drained,
         nonce=nonce, startup_deadline=deadline), stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,

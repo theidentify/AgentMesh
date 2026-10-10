@@ -46,10 +46,10 @@ jobs:
               assert error['stage'] in ('signed_packets.read_local', 'windows_acl.validate', 'windows_acl.apply')
               assert 'fixture-secret-not-for-logs' not in result.stderr
               print(json.dumps(error))
-      - name: Verify real executable with disposable installation
-        run: python memory-sync/smoke_standalone.py
       - name: Verify worker extraction and detached console lifetime
         run: python memory-sync/smoke_worker_lifetime.py
+      - name: Verify real executable with disposable installation
+        run: python memory-sync/smoke_standalone.py
       - name: Package allowlisted RC files and checksums
         shell: python
         run: |

@@ -15,6 +15,12 @@ try {
     $service = New-Object -ComObject 'Schedule.Service'
     $service.Connect()
     $folder = $service.GetFolder('\')
+    # Task Scheduler may return an account name for a SID it was given, and
+    # omit a zero delay; both are read back in their registered form.
+    function AsSid($u) {
+        if ([string]::IsNullOrEmpty($u) -or $u -match '^S-1-') { return $u }
+        return ([System.Security.Principal.NTAccount]$u).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    }
     function ReadTask {
         try { $t = $folder.GetTask($p.name) } catch {
             if ($_.Exception.HResult -eq -2147024894) { return $null }
@@ -22,13 +28,14 @@ try {
         }
         $d = $t.Definition
         $triggers = @(); foreach ($x in $d.Triggers) {
-            $triggers += @{type=[int]$x.Type; user=$x.UserId; enabled=[bool]$x.Enabled; delay=$x.Delay; start=$x.StartBoundary; end=$x.EndBoundary; repeat=$x.Repetition.Interval; duration=$x.Repetition.Duration; stop=[bool]$x.Repetition.StopAtDurationEnd}
+            $delay = $x.Delay; if ([string]::IsNullOrEmpty($delay)) { $delay = 'PT0S' }
+            $triggers += @{type=[int]$x.Type; user=(AsSid $x.UserId); enabled=[bool]$x.Enabled; delay=$delay; start=$x.StartBoundary; end=$x.EndBoundary; repeat=$x.Repetition.Interval; duration=$x.Repetition.Duration; stop=[bool]$x.Repetition.StopAtDurationEnd}
         }
         $actions = @(); foreach ($x in $d.Actions) {
             $actions += @{type=[int]$x.Type; path=$x.Path; arguments=$x.Arguments; directory=$x.WorkingDirectory}
         }
         $s = $d.Settings
-        return @{sid=$sid; xml=$t.Xml; binding=@{marker=$d.RegistrationInfo.Description; user=$d.Principal.UserId; logon=[int]$d.Principal.LogonType; level=[int]$d.Principal.RunLevel; enabled=[bool]$s.Enabled; hidden=[bool]$s.Hidden; multiple=[int]$s.MultipleInstances; terminate=[bool]$s.AllowHardTerminate; restart=$s.RestartInterval; restart_count=[int]$s.RestartCount; battery_start=[bool]$s.DisallowStartIfOnBatteries; battery_stop=[bool]$s.StopIfGoingOnBatteries; limit=$s.ExecutionTimeLimit; demand=[bool]$s.AllowDemandStart; available=[bool]$s.StartWhenAvailable; idle=[bool]$s.RunOnlyIfIdle; network=[bool]$s.RunOnlyIfNetworkAvailable; wake=[bool]$s.WakeToRun; triggers=@($triggers); actions=@($actions)}}
+        return @{sid=$sid; xml=$t.Xml; binding=@{marker=$d.RegistrationInfo.Description; user=(AsSid $d.Principal.UserId); logon=[int]$d.Principal.LogonType; level=[int]$d.Principal.RunLevel; enabled=[bool]$s.Enabled; hidden=[bool]$s.Hidden; multiple=[int]$s.MultipleInstances; terminate=[bool]$s.AllowHardTerminate; restart=$s.RestartInterval; restart_count=[int]$s.RestartCount; battery_start=[bool]$s.DisallowStartIfOnBatteries; battery_stop=[bool]$s.StopIfGoingOnBatteries; limit=$s.ExecutionTimeLimit; demand=[bool]$s.AllowDemandStart; available=[bool]$s.StartWhenAvailable; idle=[bool]$s.RunOnlyIfIdle; network=[bool]$s.RunOnlyIfNetworkAvailable; wake=[bool]$s.WakeToRun; triggers=@($triggers); actions=@($actions)}}
     }
     $before = ReadTask
     if ($p.operation -ne 'read') {
@@ -84,6 +91,15 @@ def binding(sid, marker, binary, runtime, interval, timeout, legacy_drained, ena
                 actions=[dict(type=0, path=str(binary), arguments=arguments(runtime, interval, timeout, legacy_drained), directory=str(Path(binary).parent))])
 
 
+def mismatched(expected, actual, prefix=''):
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return {f for k in expected.keys() | actual.keys()
+                for f in mismatched(expected.get(k), actual.get(k), prefix + k + '.')}
+    if isinstance(expected, list) and isinstance(actual, list) and len(expected) == len(actual):
+        return {f for e, a in zip(expected, actual) for f in mismatched(e, a, prefix)}
+    return set() if expected == actual else {prefix.rstrip('.') or 'binding'}
+
+
 class TaskAdapter:
     def __init__(self):
         if os.name != 'nt':
@@ -117,7 +133,12 @@ class TaskAdapter:
         self.call(name, 'register', sid=sid, expected=expected, definition=definition)
         result = self.read(name)  # Independent exact-target readback, not API success.
         if result['sid'] != sid or result['task'] is None or result['task']['binding'] != definition:
-            raise ValueError('Scheduled Task readback mismatch')
+            error = ValueError('Scheduled Task readback mismatch')
+            if result['task'] is not None:
+                # Field names only; values may hold paths or account identifiers.
+                actual = result['task']['binding']
+                error.add_note('mismatched fields: ' + ','.join(sorted(mismatched(definition, actual))))
+            raise error
         return result['task']
 
     def remove(self, name, sid, expected):

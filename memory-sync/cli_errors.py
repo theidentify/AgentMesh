@@ -59,6 +59,7 @@ WINDOWS_REASONS = frozenset({
     'binding inputs changed during confirmation',
     'binding inputs changed while draining',
     'existing installed-state required',
+    'existing runtime required',
     'existing program-root parent required',
     'explicit prior legacy-worker drain approval required',
     'explicit prior unmanaged-worker drain approval required',

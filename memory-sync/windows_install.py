@@ -227,12 +227,20 @@ def stage(root, candidate, state, state_path):
     return key
 
 
+def start_worker(command, timeout):
+    # Narrow launch seam: fixtures replace this, never the global subprocess.
+    subprocess.run(command, check=True, timeout=timeout)
+
+
 def run(action, *, runtime, program_root=None, installed_state=None, binary=None,
         dry_run=False, enable=False, disable=False, interval=60, timeout=60,
         legacy_drained=False, unmanaged_drained=False, replace=False, task_name=None, adapter=None):
     # Only an explicitly injected OS boundary permits POSIX focused fixtures.
     adapter = windows_task.TaskAdapter() if adapter is None else adapter
     runtime = absolute(runtime)
+    if not runtime.is_file():
+        # Checked before the native ACL probe, which cannot describe absence.
+        raise FileNotFoundError('existing runtime required')
     config, scope = load(runtime, authoritative=False)
     if scope['node'] != 'windows':
         raise ValueError('Windows runtime node required')
@@ -408,7 +416,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                        '--interval', str(state['interval']), '--timeout', str(timeout)]
             if legacy_drained:
                 command.append('--legacy-drained')
-            subprocess.run(command, check=True, timeout=timeout + 120)
+            start_worker(command, timeout + 120)
             health = managed.status(runtime)
             if health['state'] != 'running' or health.get('cycles', 0) < 1 or health.get('last_error'):
                 raise ValueError('replacement healthy cycle not verified')

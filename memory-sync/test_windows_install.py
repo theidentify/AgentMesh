@@ -334,7 +334,7 @@ def test_replace_stop_timeout_retains_descriptor_and_never_launches_new_binary(e
     monkeypatch.setattr(installer.managed, 'stop', stop)
     def forbidden(*args, **kwargs):
         pytest.fail('replacement launched before proven cooperative stop')
-    monkeypatch.setattr(installer.subprocess, 'run', forbidden)
+    monkeypatch.setattr(installer, 'start_worker', forbidden)
     with pytest.raises(TimeoutError, match='cooperative'):
         command(existing, monkeypatch, 'upgrade', 'UPGRADE\nREPLACE\n', binary=next_binary, replace=True, legacy_drained=True)
     state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
@@ -419,7 +419,7 @@ def test_failed_start_keeps_previous_exact_task_and_does_not_self_duplicate_hist
     candidate = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40) if newer else existing['binary']
     def launch(*args, **kwargs):
         raise OSError('fixture executable launch failed')
-    monkeypatch.setattr(installer.subprocess, 'run', launch)
+    monkeypatch.setattr(installer, 'start_worker', launch)
     with pytest.raises(OSError, match='launch failed'):
         command(existing, monkeypatch, 'upgrade', 'UPGRADE\nREPLACE\n', binary=candidate, replace=True, legacy_drained=True)
     retained = json.loads(state_path.read_bytes())

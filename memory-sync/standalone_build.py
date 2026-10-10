@@ -12,7 +12,7 @@ import sys
 HIDDEN_MODULES = (
     'brand', 'recall_memory', 'ingest_sessions', 'workflow', 'summarize_memory',
     'sqlite_memory', 'memory_sync', 'sync_worker', 'bounded_digest', 'install_inspect', 'install_setup', 'security_wizard',
-    'install_adopt', 'worker_lifecycle', 'worker_diagnostics', 'worker_error_details', 'mac_replace',
+    'install_adopt', 'worker_lifecycle', 'worker_diagnostics', 'worker_error_details', 'mac_replace', 'windows_install', 'windows_task',
     'omp_memory.parser', 'omp_memory.codex_parser', 'omp_memory.claude_parser',
     'cryptography.hazmat.primitives.asymmetric.ed25519',
 )
@@ -55,6 +55,14 @@ read ignored
     return path
 
 
+def windows_launcher(dist):
+    """Package the reviewed click helper with native CMD line endings."""
+    source = Path(__file__).with_name('Install-AgentMesh.cmd')
+    target = Path(dist) / source.name
+    target.write_bytes(source.read_text(encoding='utf-8').replace('\n', '\r\n').encode('utf-8'))
+    return target
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dist', type=Path, required=True, help='output directory outside the source tree')
@@ -64,6 +72,8 @@ def main(argv=None):
     subprocess.run(build_command(source, args.dist, args.work), check=True)
     if sys.platform == 'darwin':
         operator_launcher(args.dist)
+    elif os.name == 'nt':
+        windows_launcher(args.dist)
     print(args.dist.resolve() / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh'))
     return 0
 

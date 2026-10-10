@@ -4,6 +4,17 @@ This is a **native macOS/Windows CLI build path and Mac-first operator replaceme
 
 `adopt-install` now binds existing DB/exchange/workflow/security paths only after BIND. `worker-run`, `worker-start`, `worker-status` and `worker-stop` provide an explicit managed lifecycle using the selected runtime and authoritative DB policy. On macOS, the build also produces `Replace-AgentMesh.command`; `mac-replace` and `mac-rollback` provide operator-confirmed replacement and code/service recovery without automatic DB restoration. See [Mac operator replacement](MAC-REPLACEMENT.md) for the required private manifest, drain/backup/confirmation gates and limitations. This does not close the full v0.2.0 milestone or activate signing, join a baseline, enable PostgreSQL or install a Windows service.
 
+## Windows existing-install program installation
+
+Windows RC.5 adds `windows-install`, `windows-upgrade`, `windows-rollback`,
+`windows-uninstall`, and explicitly opt-in `windows-autostart`. The click helper
+`Install-AgentMesh.cmd` plans first and installs program files only after INSTALL;
+it does not enable login startup or replace a running worker. See
+[Windows existing-install installation](WINDOWS-INSTALLATION.md) for separate
+program/task/REPLACE gates, ownership and preservation rules, recovery limits,
+and outstanding native/login-host verification. This is a per-user logon
+launcher, not a before-login Windows service or crash supervisor.
+
 ## Read-only diagnostics and safe error details
 
 ```powershell

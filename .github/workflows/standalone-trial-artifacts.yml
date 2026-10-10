@@ -2,9 +2,10 @@ name: Standalone RC trial artifacts
 
 on:
   push:
-    branches: [feat/standalone-app-v020]
+    branches: [feat/standalone-app-v020, feat/windows-install-v020]
     paths:
       - '.github/workflows/standalone-trial-artifacts.yml'
+      - 'memory-sync/**'
   workflow_dispatch:
 
 permissions:
@@ -27,6 +28,11 @@ jobs:
         run: python -m pip install -r memory-sync/requirements-security.txt pyinstaller==6.16.0 pyinstaller-hooks-contrib==2026.8 pytest==8.4.2
       - name: Verify redacted worker diagnostics
         run: python -m pytest -q memory-sync/test_worker_diagnostics.py memory-sync/test_agentmesh.py
+      - name: Verify Windows program lifecycle and disposable native tasks
+        if: runner.os == 'Windows'
+        env:
+          AGENTMESH_NATIVE_TASK_FIXTURE_ROOT: ${{ runner.temp }}
+        run: python -m pytest -q --basetemp "${{ runner.temp }}/agentmesh-install-source-fixtures" memory-sync/test_windows_install.py memory-sync/test_native_windows_task.py
       - name: Build native standalone program
         run: python memory-sync/standalone_build.py --dist "${{ runner.temp }}/agentmesh-dist" --work "${{ runner.temp }}/agentmesh-build"
       - name: Verify frozen private-file failure explains its stage
@@ -48,6 +54,11 @@ jobs:
               print(json.dumps(error))
       - name: Verify worker extraction and detached console lifetime
         run: python memory-sync/smoke_worker_lifetime.py
+      - name: Verify frozen Windows existing-install lifecycle
+        if: runner.os == 'Windows'
+        env:
+          AGENTMESH_NATIVE_TASK_FIXTURE_ROOT: ${{ runner.temp }}
+        run: python memory-sync/smoke_windows_install.py
       - name: Verify real executable with disposable installation
         run: python memory-sync/smoke_standalone.py
       - name: Package allowlisted RC files and checksums
@@ -63,20 +74,21 @@ jobs:
           files = [binary]
           if system == 'windows':
               diagnostic = dist / 'Diagnose-AgentMesh.cmd'
-              diagnostic.write_bytes(b'@echo off\r\ncd /d "%~dp0"\r\necho AgentMesh RC.4 - read-only worker diagnostics\r\n"%~dp0agentmesh.exe" diagnose --runtime "%LOCALAPPDATA%\\AgentMesh\\data\\runtime.json"\r\necho.\r\npause\r\n')
+              diagnostic.write_bytes(b'@echo off\r\ncd /d "%~dp0"\r\necho AgentMesh RC.5 - read-only worker diagnostics\r\n"%~dp0agentmesh.exe" diagnose --runtime "%LOCALAPPDATA%\\AgentMesh\\data\\runtime.json"\r\necho.\r\npause\r\n')
               files.append(diagnostic)
+              files.append(dist / 'Install-AgentMesh.cmd')
           if system == 'darwin':
               files.append(dist / 'Replace-AgentMesh.command')
           checksums = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
-          metadata = {'version': '0.2.0-rc.4', 'source_sha': os.environ['GITHUB_SHA'], 'system': system, 'architecture': arch, 'checksums': checksums, 'distribution': 'unsigned development trial; not a final or trusted-publisher release', 'verification': 'native build, disposable executable smoke and independent worker lifetime/cleanup proof passed; RC.4 actual-host upgrade unverified', 'scope': 'program files only; no database, keys, runtime, snapshots or deployment secrets'}
-          instructions = 'AgentMesh 0.2.0-rc.4 | development trial\nNo Python or Git required to run the program.\nWindows: extract locally outside Syncthing, then run agentmesh.exe --help.\nThis archive does not automatically install or replace an existing service.\nDo not run setup-new on an existing installation or use it to join the existing group.\nExisting install: use inspect-install --runtime ABSOLUTE_PATH_TO_EXISTING_RUNTIME_JSON.\nIf runtime is missing, stop and request existing-install adoption; do not create a replacement DB or key.\nmacOS: development binary is not Developer ID signed/notarized. Do not disable system security.\nWindows: unsigned executable may show SmartScreen or endpoint-security warnings. Do not disable those controls.\nFor Mac operator replacement, see MAC-REPLACEMENT.md. No private replacement manifest is included.\nNo reboot, automatic signing activation, identity rotation or database restoration is authorized by this archive.\n'
-          archive = out / ('AgentMesh-0.2.0-rc.4-' + system + '-' + arch + '.zip')
+          metadata = {'version': '0.2.0-rc.5', 'source_sha': os.environ['GITHUB_SHA'], 'system': system, 'architecture': arch, 'checksums': checksums, 'distribution': 'unsigned development trial; not a final or trusted-publisher release', 'verification': ('native build, disposable frozen Windows installation and disabled task readback/removal passed; actual login and host upgrade unverified' if system == 'windows' else 'native build, executable smoke and independent worker lifetime/cleanup passed; actual host upgrade unverified'), 'scope': 'program files only; no database, keys, runtime, snapshots or deployment secrets'}
+          instructions = 'AgentMesh 0.2.0-rc.5 | development trial\nNo Python or Git required to run the program.\nWindows: extract locally outside Syncthing, then run agentmesh.exe --help.\nThis archive does not automatically install or replace an existing service.\nWindows existing-install program files: use Install-AgentMesh.cmd after reviewing WINDOWS-INSTALLATION.md; autostart and live replacement require separate approvals.\nDo not run setup-new on an existing installation or use it to join the existing group.\nExisting install: use inspect-install --runtime ABSOLUTE_PATH_TO_EXISTING_RUNTIME_JSON.\nIf runtime is missing, stop and request existing-install adoption; do not create a replacement DB or key.\nmacOS: development binary is not Developer ID signed/notarized. Do not disable system security.\nWindows: unsigned executable may show SmartScreen or endpoint-security warnings. Do not disable those controls.\nFor Mac operator replacement, see MAC-REPLACEMENT.md. No private replacement manifest is included.\nNo reboot, automatic signing activation, identity rotation or database restoration is authorized by this archive.\n'
+          archive = out / ('AgentMesh-0.2.0-rc.5-' + system + '-' + arch + '.zip')
           with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
               for p in files:
                   z.write(p, p.name)
               z.writestr('BUILD.json', json.dumps(metadata, indent=2) + '\n')
               z.writestr('README.txt', instructions)
-              for name in ('MAC-REPLACEMENT.md', 'STANDALONE-BUILD.md'):
+              for name in ('MAC-REPLACEMENT.md', 'WINDOWS-INSTALLATION.md', 'STANDALONE-BUILD.md'):
                   z.write(pathlib.Path('memory-sync') / name, name)
           checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
           (out / 'SHA256SUMS.txt').write_text(checksum + '  ' + archive.name + '\n')

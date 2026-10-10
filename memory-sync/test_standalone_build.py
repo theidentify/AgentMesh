@@ -24,7 +24,7 @@ def test_build_command_bundles_runtime_data_and_isolates_output(tmp_path):
     assert '--workpath' in command and str(tmp_path / 'work') in command
     assert '--additional-hooks-dir' in command
     assert (root / 'packaging-hooks' / 'hook-workflow.py').is_file()
-    for module in ('install_adopt', 'worker_lifecycle', 'mac_replace'):
+    for module in ('install_adopt', 'worker_lifecycle', 'mac_replace', 'windows_install', 'windows_task'):
         assert module in command
 
 
@@ -37,6 +37,17 @@ def test_mac_operator_launcher_is_relocatable_and_has_no_private_defaults(tmp_pa
     assert '/Users/' not in text
     if __import__('os').name != 'nt':
         assert launcher.stat().st_mode & 0o100
+
+
+def test_windows_click_helper_plans_before_install_and_has_no_implicit_start(tmp_path):
+    helper = standalone_build.windows_launcher(tmp_path)
+    content = helper.read_bytes()
+    assert b'\r\n' in content and b'\n' not in content.replace(b'\r\n', b'')
+    text = content.decode('utf-8')
+    assert text.count('"%~dp0agentmesh.exe" windows-install --runtime ') == 2
+    assert text.index('--dry-run') < text.index('if errorlevel 1 goto finish')
+    assert 'windows-autostart' not in text and 'worker-start' not in text and 'worker-stop' not in text
+    assert '%LOCALAPPDATA%\\AgentMesh\\data\\runtime.json' in text
 
 
 def test_build_rejects_output_inside_source(tmp_path):

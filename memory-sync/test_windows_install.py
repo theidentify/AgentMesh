@@ -97,8 +97,33 @@ def snapshot(root):
             for p in root.rglob('*') if p.is_file()}
 
 
+class Answers:
+    """Scripted operator: each prompt consumes one line; EOF or NO cancels."""
+    YES = {'INSTALL', 'UPGRADE', 'ENABLE', 'DISABLE', 'BIND', 'REPLACE', 'Y', 'YES'}
+
+    def __init__(self, text):
+        self.lines, self.shown, self.asked = text.splitlines(), [], []
+
+    def interactive(self):
+        return True
+
+    def show(self, text):
+        self.shown.append(text)
+
+    def _next(self):
+        return self.lines.pop(0).strip().upper() if self.lines else ''
+
+    def decide(self, question, label):
+        self.asked.append(question)
+        return self._next() in self.YES
+
+    def typed(self, word, action):
+        self.asked.append(word)
+        return self._next() == word
+
+
 def command(args, monkeypatch, action='install', answer='INSTALL\n', **options):
-    monkeypatch.setattr('sys.stdin', io.StringIO(answer))
+    options.setdefault('prompt', Answers(answer))
     return installer.run(action, **{**args, **options})
 
 
@@ -114,25 +139,10 @@ def test_install_preserves_existing_all_bytes_and_never_starts_or_registers(exis
     assert not (existing['runtime'].parent / '.agentmesh-worker').exists()
 
 
-@pytest.mark.parametrize('answer', ['NO\n', ''])
-def test_decline_eof_and_dry_run_zero_writes(existing, monkeypatch, answer):
-    root = existing['runtime'].parent.parent.parent
-    before = snapshot(root)
-    assert installer.run('install', **existing, dry_run=True)['status'] == 'planned'
-    monkeypatch.setattr('sys.stdin', io.StringIO(answer))
-    if answer:
-        assert installer.run('install', **existing)['status'] == 'pending'
-    else:
-        with pytest.raises(EOFError):
-            installer.run('install', **existing)
-    assert snapshot(root) == before
-    assert not existing['program_root'].exists()
-
-
 @pytest.mark.parametrize('damage', ['runtime', 'binary', 'scope', 'exchange', 'task'])
 def test_prompt_time_revalidation(existing, monkeypatch, damage):
-    class Input:
-        def readline(self):
+    class Damaging(Answers):
+        def decide(self, question, label):
             if damage == 'runtime':
                 write_local(existing['runtime'], {'secret': 'changed'})
             elif damage == 'binary':
@@ -148,10 +158,10 @@ def test_prompt_time_revalidation(existing, monkeypatch, damage):
             else:
                 name = 'AgentMesh-' + __import__('hashlib').sha256(str(existing['runtime']).encode()).hexdigest()[:24]
                 existing['adapter'].tasks[name] = {'foreign': True}
-            return 'INSTALL\n'
-    monkeypatch.setattr('sys.stdin', Input())
-    with pytest.raises((ValueError, KeyError)):
-        installer.run('install', **existing)
+            return True  # the operator approves, but the inputs moved meanwhile
+    with pytest.raises((ValueError, KeyError)) as error:
+        installer.run('install', **existing, prompt=Damaging(''))
+    assert 'pass --yes' not in str(error.value)
     assert not existing['program_root'].exists()
     assert existing['adapter'].operations == []
 
@@ -215,19 +225,6 @@ def test_opt_in_task_upgrade_rollback_uninstall_preserves_db_identity(existing, 
     after = snapshot(existing['runtime'].parent.parent)
     assert all(after[k] == v for k, v in initial.items())
     assert json.loads((existing['program_root'] / 'installed.json').read_bytes())['status'] == 'uninstalled'
-
-
-def test_upgrade_stages_while_running_without_implicit_replacement(existing, monkeypatch):
-    command(existing, monkeypatch)
-    monkeypatch.setattr(installer.managed, 'status', lambda runtime: {'state': 'running', 'cycles': 3})
-    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
-    before = snapshot(existing['runtime'].parent.parent)
-    result = command(existing, monkeypatch, 'upgrade', 'UPGRADE\nNO\n', binary=newer)
-    assert result['status'] == 'staged' and not result['worker_changed']
-    assert snapshot(existing['runtime'].parent.parent) == before
-    with pytest.raises(ValueError, match='proven stopped'):
-        command(existing, monkeypatch, 'upgrade', 'UPGRADE\nBIND\n', binary=newer, legacy_drained=True)
-    assert not existing['adapter'].operations
 
 
 @pytest.mark.parametrize('damage', ['extra', 'binary', 'task', 'runtime', 'db_identity'])
@@ -302,24 +299,6 @@ def test_cli_cannot_bypass_windows_gate(existing, capsys):
     assert not existing['program_root'].exists()
 
 
-def test_orphan_wal_dry_run_decline_and_eof_have_no_side_effects(existing, monkeypatch):
-    config = json.loads(existing['runtime'].read_bytes())
-    db = Path(config['database'])
-    with closing(sqlite3.connect(db)) as c, c:
-        c.execute('PRAGMA journal_mode=WAL')
-        c.execute('CREATE TABLE installer_informational_probe(value TEXT)')
-        wal = db.with_name(db.name + '-wal').read_bytes()
-    db.with_name(db.name + '-wal').write_bytes(wal)
-    assert not db.with_name(db.name + '-shm').exists()
-    before = snapshot(existing['runtime'].parent.parent)
-    assert installer.run('install', **existing, dry_run=True)['status'] == 'planned'
-    assert command(existing, monkeypatch, answer='NO\n')['status'] == 'pending'
-    with pytest.raises(EOFError):
-        command(existing, monkeypatch, answer='')
-    assert snapshot(existing['runtime'].parent.parent) == before
-    assert not db.with_name(db.name + '-shm').exists()
-
-
 def test_strict_scope_preserves_identity_trust_and_policy(existing, monkeypatch):
     from signed_packets import Security
     config = json.loads(existing['runtime'].read_bytes())
@@ -380,24 +359,6 @@ def test_installer_public_errors_are_specific_but_secret_safe():
     unknown = report(ValueError('secret runtime body or token'), 'windows-install')
     assert 'secret runtime body or token' not in json.dumps(unknown)
     assert report(ValueError('foreign Scheduled Task refused'), 'status') == {'error': 'ValueError'}
-
-
-def test_same_selected_version_requires_replace_gate_and_cooperative_stop(existing, monkeypatch):
-    command(existing, monkeypatch)
-    called = []
-    def stop(runtime, timeout):
-        called.append(runtime)
-        raise TimeoutError('fixture stop acknowledged no exit yet')
-    monkeypatch.setattr(installer.managed, 'stop', stop)
-    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\nNO\n', replace=True,
-                   legacy_drained=True)['status'] == 'staged'
-    assert called == []
-    with pytest.raises(TimeoutError, match='no exit yet'):
-        command(existing, monkeypatch, 'upgrade', 'UPGRADE\nREPLACE\n', replace=True, legacy_drained=True)
-    assert called == [existing['runtime']]
-    state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
-    assert state['pending']['operation'] == 'replace'
-    assert state['pending']['old'] == state['pending']['new']
 
 
 @pytest.mark.parametrize('action,options,answer', [
@@ -521,39 +482,107 @@ def test_onedir_uninstall_removes_only_owned_tree(existing, monkeypatch):
     assert sorted(p.name for p in existing['program_root'].iterdir()) == ['OWNER.json', 'installed.json', 'installer.lock']
 
 
-class TypedConsole(io.StringIO):
-    def isatty(self):
-        return True
+@pytest.mark.parametrize('answer', ['NO\n', ''])
+def test_decline_eof_and_dry_run_zero_writes(existing, monkeypatch, answer):
+    root = existing['runtime'].parent.parent.parent
+    before = snapshot(root)
+    assert installer.run('install', **existing, dry_run=True)['status'] == 'planned'
+    prompt = Answers(answer)
+    assert command(existing, monkeypatch, answer=answer, prompt=prompt)['status'] == 'cancelled'
+    assert prompt.shown[-1] == 'Cancelled. Nothing was changed.'
+    assert snapshot(root) == before
+    assert not existing['program_root'].exists()
 
 
-def test_confirmation_is_case_insensitive_and_describes_the_action(monkeypatch, capsys):
-    monkeypatch.setattr('sys.stdin', io.StringIO('  replace \n'))
-    assert installer.confirm('REPLACE') is True
-    prompt = capsys.readouterr().err
-    assert 'Type REPLACE to stop the worker, switch to the new version and start it again' in prompt
-    assert 'no automatic worker start' not in prompt
+def test_non_interactive_run_refuses_without_yes_and_writes_nothing(existing, monkeypatch):
+    import console_prompt
+    root = existing['runtime'].parent.parent.parent
+    before = snapshot(root)
+    scripted = console_prompt.ConsolePrompt(stdin=io.StringIO('INSTALL\n'), stream=io.StringIO())
+    with pytest.raises(ValueError, match='pass --yes'):
+        installer.run('install', **existing, prompt=scripted)
+    assert snapshot(root) == before and not existing['program_root'].exists()
+    assert installer.run('install', **existing, prompt=scripted, yes=True)['status'] == 'installed'
 
 
-def test_console_typo_reprompts_but_scripts_get_one_attempt(monkeypatch, capsys):
-    monkeypatch.setattr('sys.stdin', TypedConsole('UPGRDAE\nupgrade\n'))
-    assert installer.confirm('UPGRADE') is True
-    assert '"UPGRDAE" does not match UPGRADE' in capsys.readouterr().err
-    monkeypatch.setattr('sys.stdin', io.StringIO('UPGRDAE\nUPGRADE\n'))
-    assert installer.confirm('UPGRADE') is False  # redirected input: no retry
-
-
-def test_console_enter_or_no_cancels_without_reprompt(monkeypatch):
-    for answer in ('\n', 'no\n', 'N\n'):
-        monkeypatch.setattr('sys.stdin', TypedConsole(answer + 'INSTALL\n'))
-        assert installer.confirm('INSTALL') is False
-    monkeypatch.setattr('sys.stdin', TypedConsole('x\ny\nz\nINSTALL\n'))
-    assert installer.confirm('INSTALL') is False  # bounded retries
-
-
-def test_plan_is_printed_once_as_a_readable_summary(existing, monkeypatch, capsys):
+def test_destructive_actions_need_the_named_word_even_with_yes(existing, monkeypatch):
     command(existing, monkeypatch)
-    err = capsys.readouterr().err
-    assert err.count('AgentMesh install plan') == 1
-    assert '{"' not in err  # no raw JSON before the prompt
-    for text in ('Version:', '0.2.0-rc.5-aaaaaaaaaaaa', 'Worker:', 'stopped', 'Start at login:', 'off', 'Policy:', 'legacy'):
-        assert text in err
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
+    command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=newer, legacy_drained=True)
+    for word in (None, 'UPGRADE', 'ROLLBAK'):
+        with pytest.raises(ValueError, match='matching --confirm'):
+            installer.run('rollback', **existing, yes=True, confirm_word=word, legacy_drained=True)
+    assert installer.run('rollback', **existing, yes=True, confirm_word=' rollback ', legacy_drained=True)['status'] == 'selected'
+    prompt = Answers('ROLLBACK\n')
+    assert command(existing, monkeypatch, 'uninstall', prompt=prompt, legacy_drained=True)['status'] == 'cancelled'
+    assert prompt.asked == ['UNINSTALL']  # typed word, not a select
+
+
+def test_upgrade_is_one_decision_and_staging_precedes_the_stopped_check(existing, monkeypatch):
+    command(existing, monkeypatch)
+    monkeypatch.setattr(installer.managed, 'status', lambda runtime: {'state': 'running', 'cycles': 3})
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
+    before = snapshot(existing['runtime'].parent.parent)
+    prompt = Answers('NO\n')
+    assert command(existing, monkeypatch, 'upgrade', binary=newer, prompt=prompt)['status'] == 'cancelled'
+    assert prompt.asked == ['Upgrade now?']
+    state_path = existing['program_root'] / 'installed.json'
+    assert len(installer.read_state(existing['program_root'], state_path)['programs']) == 1
+    prompt = Answers('UPGRADE\n')
+    with pytest.raises(ValueError, match='proven stopped'):
+        command(existing, monkeypatch, 'upgrade', binary=newer, prompt=prompt, legacy_drained=True)
+    assert prompt.asked == ['Upgrade now?']  # no second BIND/REPLACE prompt
+    assert snapshot(existing['runtime'].parent.parent) == before
+    assert not existing['adapter'].operations
+
+
+def test_orphan_wal_dry_run_decline_and_eof_have_no_side_effects(existing, monkeypatch):
+    config = json.loads(existing['runtime'].read_bytes())
+    db = Path(config['database'])
+    with closing(sqlite3.connect(db)) as c, c:
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute('CREATE TABLE installer_informational_probe(value TEXT)')
+        wal = db.with_name(db.name + '-wal').read_bytes()
+    db.with_name(db.name + '-wal').write_bytes(wal)
+    assert not db.with_name(db.name + '-shm').exists()
+    before = snapshot(existing['runtime'].parent.parent)
+    assert installer.run('install', **existing, dry_run=True)['status'] == 'planned'
+    assert command(existing, monkeypatch, answer='NO\n')['status'] == 'cancelled'
+    assert command(existing, monkeypatch, answer='')['status'] == 'cancelled'
+    assert snapshot(existing['runtime'].parent.parent) == before
+    assert not db.with_name(db.name + '-shm').exists()
+
+
+def test_same_selected_version_replace_stops_cooperatively_only_after_approval(existing, monkeypatch):
+    command(existing, monkeypatch)
+    called = []
+    def stop(runtime, timeout):
+        called.append(runtime)
+        raise TimeoutError('fixture stop acknowledged no exit yet')
+    monkeypatch.setattr(installer.managed, 'stop', stop)
+    assert command(existing, monkeypatch, 'upgrade', 'NO\n', replace=True, legacy_drained=True)['status'] == 'cancelled'
+    assert called == []
+    with pytest.raises(TimeoutError, match='no exit yet'):
+        command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', replace=True, legacy_drained=True)
+    assert called == [existing['runtime']]
+    state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
+    assert state['pending']['operation'] == 'replace'
+    assert state['pending']['old'] == state['pending']['new']
+
+
+def test_plan_summary_shown_once_with_steps_time_and_rollback(existing, monkeypatch):
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40, launcher=True)
+    prompt = Answers('NO\n')
+    command(existing, monkeypatch, 'upgrade', binary=newer, replace=True, legacy_drained=True, prompt=prompt)
+    plan = [text for text in prompt.shown if 'plan:' in text]
+    assert len(plan) == 1 and '{"' not in plan[0]
+    text = plan[0]
+    assert 'AgentMesh upgrade plan: Upgrade 0.2.0-rc.5 (aaaaaaa) -> 0.2.0-rc.6 (bbbbbbb)' in text
+    for step in ('1. Copy and verify the new program files', '2. Ask the current worker to stop',
+                 '3. Point start at login to 0.2.0-rc.6', '4. Start the worker from 0.2.0-rc.6',
+                 '5. Confirm it completes two sync cycles', 'Expected time:  usually 1-3 minutes',
+                 'Rollback:       windows-rollback returns to 0.2.0-rc.5 (aaaaaaa)'):
+        assert step in text, step
+

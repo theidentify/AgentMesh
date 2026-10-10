@@ -95,19 +95,20 @@ def main():
             return json.loads(result.stdout) if result.stdout.strip() else None
         try:
             assert call('install', ['--dry-run'])['status'] == 'planned'
-            assert call('install', answer='NO\n', expected=2)['status'] == 'pending'
-            call('install', expected=1)  # EOF
+            # Piped stdin is not interactive: without --yes nothing is written.
+            call('install', answer='INSTALL\n', expected=1)
+            call('install', expected=1)
             assert not programs.exists()
             assert all((p.stat().st_dev, p.stat().st_ino, p.read_bytes()) == value for p, value in preserved.items())
-            assert call('install', answer='INSTALL\n')['status'] == 'installed'
+            assert call('install', ['--yes'])['status'] == 'installed'
             # Disabled registration exercises actual COM readback without login
             # activation or a real worker. Task Running is never worker health.
-            assert call('autostart', ['--disable'], 'DISABLE\n')['status'] == 'disabled'
+            assert call('autostart', ['--disable', '--yes'])['status'] == 'disabled'
             task = adapter.read(name)['task']
             assert task is not None and not task['binding']['enabled']
             assert Path(task['binding']['actions'][0]['path']).name == 'agentmesh.exe'  # launcher-less bundle
             next_binary = bundle('0.2.0-rc.6', launcher=True)
-            assert call('upgrade', ['--binary', str(next_binary), '--legacy-drained'], 'UPGRADE\nBIND\n')['status'] == 'selected'
+            assert call('upgrade', ['--binary', str(next_binary), '--legacy-drained', '--yes'])['status'] == 'selected'
             # Real COM readback of the windowless logon entry, still disabled and never run.
             entry = Path(adapter.read(name)['task']['binding']['actions'][0]['path'])
             assert entry.name == 'agentmeshw.exe' and entry.parent.parent == programs
@@ -117,9 +118,10 @@ def main():
             # The installed onedir copy itself runs, from program storage, without Python on PATH.
             check = subprocess.run([str(entry.with_name('agentmesh.exe')), '--help'], env=env, capture_output=True, text=True, timeout=120)
             assert check.returncode == 0 and 'worker-start' in check.stdout, check.stderr
-            assert call('rollback', ['--legacy-drained'], 'ROLLBACK\n')['status'] == 'selected'
+            assert call('rollback', ['--legacy-drained', '--yes'], expected=1) is None  # destructive needs --confirm
+            assert call('rollback', ['--legacy-drained', '--yes', '--confirm', 'ROLLBACK'])['status'] == 'selected'
             assert Path(adapter.read(name)['task']['binding']['actions'][0]['path']).name == 'agentmesh.exe'
-            assert call('uninstall', ['--legacy-drained'], 'UNINSTALL\n')['status'] == 'uninstalled'
+            assert call('uninstall', ['--legacy-drained', '--yes', '--confirm', 'uninstall'])['status'] == 'uninstalled'
             assert adapter.read(name)['task'] is None
             assert all((p.stat().st_dev, p.stat().st_ino, p.read_bytes()) == value for p, value in preserved.items())
             with closing(sqlite3.connect(db)) as c:

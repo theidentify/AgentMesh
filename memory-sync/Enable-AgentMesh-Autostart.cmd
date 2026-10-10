@@ -14,7 +14,7 @@ if errorlevel 2 goto finish
 if errorlevel 1 goto finish
 echo.
 echo Step 2 of 2: enable start at login (legacy unsigned policy is kept as-is).
-"%~dp0agentmesh.exe" windows-autostart --runtime "%RT%" --enable --legacy-drained >nul
+"%~dp0agentmesh.exe" windows-autostart --runtime "%RT%" --enable --legacy-drained --gui >nul
 if errorlevel 2 (echo Cancelled. Start at login was not changed; sign out and in, or run worker-start, to resume sync.& goto finish)
 if errorlevel 1 goto finish
 echo.

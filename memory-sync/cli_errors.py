@@ -60,6 +60,8 @@ WINDOWS_REASONS = frozenset({
     'binding inputs changed while draining',
     'existing installed-state required',
     'existing runtime required',
+    'destructive action requires matching --confirm word',
+    'interactive confirmation unavailable; pass --yes',
     'existing program-root parent required',
     'explicit prior legacy-worker drain approval required',
     'explicit prior unmanaged-worker drain approval required',

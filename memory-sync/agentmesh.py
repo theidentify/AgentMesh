@@ -77,6 +77,10 @@ def main(argv=None):
         installer.add_argument('--unmanaged-drained', action='store_true', help='explicit approval that prior unmanaged/source workers exited; an idle cycle lock is not proof')
         installer.add_argument('--interval', type=float, default=60)
         installer.add_argument('--timeout', type=float, default=60)
+        installer.add_argument('-y', '--yes', action='store_true', help='skip the prompt (required when not interactive)')
+        installer.add_argument('--confirm', dest='confirm_word', metavar='WORD',
+                               help='with --yes, name the destructive action (ROLLBACK or UNINSTALL)')
+        installer.add_argument('--gui', action='store_true', help='native Windows dialogs for double-clicked helpers')
         if name in ('windows-install', 'windows-upgrade'):
             installer.add_argument('--binary', help='adjacent BUILD.json required; defaults to current frozen executable')
         if name == 'windows-upgrade':
@@ -88,17 +92,37 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.action.startswith('windows-'):
+            import console_prompt
             import windows_install
-            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name')}
+            values = {key: getattr(args, key) for key in ('runtime', 'program_root', 'installed_state', 'dry_run', 'interval', 'timeout', 'legacy_drained', 'unmanaged_drained', 'task_name', 'yes', 'confirm_word')}
             for key in ('enable', 'disable', 'replace'):
                 values[key] = getattr(args, key, False)
+            # Dialogs only for double-clicked helpers on a real Windows console.
+            gui = args.gui and os.name == 'nt' and not args.yes and not args.dry_run
+            prompt = values['prompt'] = console_prompt.GuiPrompt() if gui else console_prompt.ConsolePrompt()
+            gui = gui and prompt.interactive()
             if args.action in ('windows-install', 'windows-upgrade'):
                 values['binary'] = args.binary or (sys.executable if getattr(sys, 'frozen', False) else None)
                 if values['binary'] is None:
                     raise ValueError('source installation requires explicit bundled binary')
-            report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            try:
+                report = windows_install.run(args.action.removeprefix('windows-'), **values)
+            except Exception as exc:
+                if gui:
+                    from cli_errors import report as error_report
+                    detail = error_report(exc, args.action)
+                    prompt.result(False, 'AgentMesh did not finish.\n\n' + detail.get('reason', '') + '\nCode: '
+                                  + detail.get('code', '') + '\n\n' + detail.get('next_action', ''))
+                raise
             print(json.dumps(report, sort_keys=True))
-            return 2 if report['status'] in ('pending', 'staged') else 0
+            if gui and report['status'] not in ('cancelled', 'planned'):
+                version = windows_install.short(report.get('version')) if report.get('version') else ''
+                done = {'installed': 'Program installed: ' + version, 'selected': 'Now using ' + version,
+                        'enabled': 'Start at login enabled', 'disabled': 'Start at login turned off',
+                        'uninstalled': 'Program removed; your data was kept', 'unchanged': 'Already up to date'}
+                prompt.result(True, done.get(report['status'], report['status'])
+                              + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
+            return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
         if args.action == 'diagnose':
             from worker_diagnostics import diagnose, render
             progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)

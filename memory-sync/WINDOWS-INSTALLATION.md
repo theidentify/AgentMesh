@@ -12,6 +12,25 @@ recurring sync on the operator's host remain a separately approved host gate.
 The task's `Hidden` setting controls task visibility, not console suppression.
 No reboot or production restart is requested by these instructions.
 
+## Confirmations (RC.9+)
+
+Each command prints one plan (from -> to version, numbered steps, expected time,
+rollback) and asks **once**. This replaces the earlier per-step typed words; the
+historical INSTALL/UPGRADE/BIND/REPLACE/ENABLE/DISABLE gates below now mean that
+single decision.
+
+| Command | Interactive console | Script / CI (not a console) |
+|---|---|---|
+| `windows-install`, `windows-upgrade`, `windows-autostart` | one-line select `Upgrade now` / `Cancel` (arrow keys, `y`/`n`, Enter; default **Cancel**); `[y/N]` where keys are unavailable | refused unless `--yes` |
+| `windows-rollback`, `windows-uninstall` | type the word (`ROLLBACK`, `UNINSTALL`), case-insensitive, with live match colouring; 3 attempts with a "Did you mean" hint | refused unless `--yes --confirm ROLLBACK` (or `UNINSTALL`) |
+
+Esc, Ctrl+C, Enter on an empty word, or 5 minutes without input cancel with
+`Cancelled. Nothing was changed.` and exit code 2. `--gui` (used by the click
+helpers) shows the same plan in a native Yes/No dialog with **No** as the default and a
+result dialog at the end; it is never used by the logon launcher, scripts or `--yes`.
+Rollback and uninstall stay console-only. Progress is a single line per stage that
+updates in place and ends with a kept `[OK]`/`✔` or `[FAIL]`/`✖` line.
+
 ## Install program files only
 
 Extract the development ZIP locally **outside Syncthing**. Keep `agentmesh.exe`

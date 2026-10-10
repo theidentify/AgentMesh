@@ -128,36 +128,74 @@ ACTIONS = {
 }
 
 
-def confirm(word, *, attempts=3):
-    """Typed gate. Case-insensitive; a console typo re-prompts, scripts get one try."""
-    try:
-        interactive = sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        interactive = False
-    for attempt in range(attempts if interactive else 1):
-        print('Type ' + word + ' to ' + ACTIONS[word] + ', or press Enter to cancel:', file=sys.stderr, flush=True)
-        answer = sys.stdin.readline()
-        if not answer:
-            raise EOFError('operator confirmation required')
-        answer = answer.strip()
-        if answer.upper() == word:
-            return True
-        if not answer or answer.lower() in ('n', 'no', 'cancel'):
-            return False
-        if interactive and attempt < attempts - 1:
-            print('"' + answer + '" does not match ' + word + '. Try again.', file=sys.stderr, flush=True)
-    return False
+ROUTINE = {'install': ('Install now?', 'Install now'), 'upgrade': ('Upgrade now?', 'Upgrade now'),
+           'enable': ('Enable start at login?', 'Enable'), 'disable': ('Turn off start at login?', 'Turn off')}
 
 
-def summary(plan, current=None):
-    """Human-readable plan shown once before the first prompt (stdout JSON is unchanged)."""
-    rows = [('Version', plan['version'] + (f'  (installed: {current})' if current and current != plan['version'] else '')),
-            ('Program folder', plan['program_root']),
-            ('Worker', plan['worker']),
-            ('Start at login', ('on' if plan['autostart'] else 'off') + '  (' + plan['task_name'] + ')'),
-            ('Policy', plan['policy']),
-            ('Publisher', 'not verified (unsigned development trial; checksums only)')]
-    return '\n'.join(['', 'AgentMesh ' + plan['operation'] + ' plan'] + [f'  {k + ":":<16}{v}' for k, v in rows] + [''])
+def short(key):
+    """'0.2.0-rc.8-<sha>' -> '0.2.0-rc.8 (830536f)' for people; keys stay exact in state."""
+    if not key:
+        return 'none'
+    version, _, sha = key.rpartition('-')
+    return f'{version} ({sha[:7]})' if version else key
+
+
+def describe(plan, *, current=None, previous=None, replace=False, enable=False):
+    """The one summary shown before the single decision; stdout JSON is unchanged."""
+    action, task = plan['operation'], plan['autostart'] or plan['task_exists']
+    version = short(plan['version'])
+    if action == 'install':
+        title, steps, duration = 'Install ' + version, ['Copy and verify the program files',
+            'Nothing else changes: the worker keeps running and start at login stays as it is'], 'about a minute'
+    elif action == 'upgrade':
+        title = 'Upgrade ' + short(current) + ' -> ' + version
+        steps = ['Copy and verify the new program files (the worker keeps running)']
+        if replace:
+            steps += ['Ask the current worker to stop after its sync cycle (no process is killed)']
+        else:
+            steps += ['Switch the selected version (the worker must already be stopped; it is not started)']
+        if task:
+            steps += ['Point start at login to ' + version]
+        if replace:
+            steps += ['Start the worker from ' + version, 'Confirm it completes two sync cycles']
+        duration = 'usually 1-3 minutes (up to about 5)' if replace else 'about a minute'
+    elif action == 'autostart':
+        title = ('Enable' if enable else 'Turn off') + ' start at login'
+        steps = (['Start the worker from ' + version + ' each time you sign in (not now)'] if enable
+                 else ['Stop starting the worker at sign-in (a running worker keeps running)'])
+        duration = 'a few seconds'
+    elif action == 'rollback':
+        title = 'Roll back ' + version + ' -> ' + short(previous)
+        steps = ['Switch back to ' + short(previous) + ' (the worker must already be stopped; it is not started)']
+        steps += ['Point start at login to ' + short(previous)] if task else []
+        duration = 'a few seconds'
+    else:
+        title = 'Uninstall the AgentMesh program'
+        steps = ['Remove the start-at-login task' if task else 'No start-at-login task to remove',
+                 'Remove the installed program files', 'Keep the database, identity, runtime and settings']
+        duration = 'a few seconds'
+    lines = ['', 'AgentMesh ' + action + ' plan: ' + title]
+    lines += [f'  {n}. {step}' for n, step in enumerate(steps, 1)]
+    lines += ['  Worker now:     ' + plan['worker'], '  Start at login: ' + ('on' if plan['autostart'] else 'off'),
+              '  Expected time:  ' + duration]
+    if action in ('upgrade', 'install') and current:
+        lines += ['  Rollback:       windows-rollback returns to ' + short(current)]
+    lines += ['  Policy:         ' + plan['policy'] + '  |  Publisher: not verified (unsigned trial; checksums only)', '']
+    return '\n'.join(lines)
+
+
+def approve(prompt, action, token, *, yes, confirm_word, enable):
+    """Routine actions: one select (or --yes). Destructive: typed word (or --yes --confirm WORD)."""
+    routine = action in ('install', 'upgrade', 'autostart')
+    if yes:
+        if not routine and (confirm_word or '').strip().upper() != token:
+            raise ValueError('destructive action requires matching --confirm word')
+        return True
+    if not prompt.interactive():
+        raise ValueError('interactive confirmation unavailable; pass --yes')
+    if routine:
+        return prompt.decide(*ROUTINE['enable' if enable else 'disable'] if action == 'autostart' else ROUTINE[action])
+    return prompt.typed(token, ACTIONS[token])
 
 
 def protection(path):
@@ -330,7 +368,8 @@ def start_worker(command, timeout):
 
 def run(action, *, runtime, program_root=None, installed_state=None, binary=None,
         dry_run=False, enable=False, disable=False, interval=60, timeout=60,
-        legacy_drained=False, unmanaged_drained=False, replace=False, task_name=None, adapter=None):
+        legacy_drained=False, unmanaged_drained=False, replace=False, task_name=None, adapter=None,
+        yes=False, confirm_word=None, prompt=None):
     # Only an explicitly injected OS boundary permits POSIX focused fixtures.
     adapter = windows_task.TaskAdapter() if adapter is None else adapter
     runtime = absolute(runtime)
@@ -383,11 +422,19 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             'publisher': 'checksum consistency only; not trusted publisher identity'}
     if dry_run:
         return plan
-    print(summary(plan, state['active'] if state else None), file=sys.stderr, flush=True)
     token = {'install': 'INSTALL', 'upgrade': 'UPGRADE', 'rollback': 'ROLLBACK',
              'uninstall': 'UNINSTALL', 'autostart': 'ENABLE' if enable else 'DISABLE'}[action]
-    if not confirm(token):
-        return {'status': 'pending'}
+    if prompt is None:
+        import console_prompt
+        prompt = console_prompt.ConsolePrompt()
+    if not yes:
+        prompt.show(describe({**plan, 'task_exists': report['task'] is not None},
+                             current=state['active'] if state else None,
+                             previous=state['history'][-1] if state and state['history'] else None,
+                             replace=replace, enable=enable))
+    if not approve(prompt, action, token, yes=yes, confirm_word=confirm_word, enable=enable):
+        prompt.show('Cancelled. Nothing was changed.')
+        return {'status': 'cancelled'}
 
     def revalidate():
         if (identity(root.parent) != parent_identity or validate_root(root, config, runtime) != root
@@ -428,13 +475,11 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             if action == 'install':
                 state['active'] = key
                 save(state_path, state)
-                return {'status': 'installed', 'installed_state': str(state_path), 'autostart': False, 'worker_changed': False}
+                return {'status': 'installed', 'version': key, 'installed_state': str(state_path), 'autostart': False, 'worker_changed': False}
             if key == state['active'] and not replace:
                 return {'status': 'unchanged'}
-            # Staging can proceed while a healthy worker continues. Selecting the
-            # next binding is a distinct approval, never an implicit replacement.
-            if not confirm('REPLACE' if replace else 'BIND'):
-                return {'status': 'staged', 'installed_state': str(state_path), 'worker_changed': False}
+            # Staging ran while a healthy worker continued; the single approval
+            # above covered the binding too, so re-check nothing moved meanwhile.
             baseline_after = read_state(root, state_path)
             if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
                     or bundle(binary) != candidate or adapter.read(name) != report or baseline_after != state):

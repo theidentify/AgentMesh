@@ -21,19 +21,27 @@ import worker_lifecycle
 def main():
     started_at = time.monotonic()
     parent = Path(os.environ.get('RUNNER_TEMP') or tempfile.gettempdir()).resolve()
-    binary = (Path(os.environ.get('AGENTMESH_DIST', str(parent / 'agentmesh-dist')))
-              / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh')).resolve()
-    assert binary.is_file(), f'missing binary: {binary}'
+    built = (Path(os.environ.get('AGENTMESH_DIST', str(parent / 'agentmesh-dist')))
+             / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh')).resolve()
+    assert built.is_file(), f'missing binary: {built}'
     # Windows ships onedir (shared _internal, no extraction); macOS stays onefile.
-    onedir = (binary.parent / '_internal').is_dir()
-    root = Path(tempfile.mkdtemp(prefix='agentmesh-worker-lifetime-', dir=parent)).resolve()
-    extraction = root / 'extraction'
+    onedir = (built.parent / '_internal').is_dir()
+    # Spaces in every path: program, runtime, database, exchange and temp.
+    root = Path(tempfile.mkdtemp(prefix='agentmesh worker lifetime ', dir=parent)).resolve()
+    program = root / 'Program Files Copy'
+    program.mkdir()
+    binary = program / built.name
+    shutil.copy2(built, binary)
+    if onedir:
+        shutil.copytree(built.parent / '_internal', program / '_internal')
+    extraction = root / 'temp extraction'
     extraction.mkdir(mode=0o700)
-    local = root / 'app'
-    exchange = root / 'exchange'
+    local = root / 'local app'
+    exchange = root / 'sync exchange'
     (exchange / '.stfolder').mkdir(parents=True)
     runtime = local / 'data' / 'runtime.json'
     db = local / 'data' / 'memory.db'
+    assert all(' ' in str(p) for p in (binary, runtime, db, exchange, extraction))
     env = dict(os.environ)
     for name in ('TMPDIR', 'TMP', 'TEMP'):
         for key in list(env):
@@ -120,7 +128,7 @@ def main():
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone()
     status = json.loads((exchange / 'status' / (node + '.json')).read_text())
     assert status['security']['policy'] == 'legacy'
-    report = {'platform': os.name, 'starter_exited': True, 'cycles_after_starter_exit': cycles - initial_cycles,
+    report = {'platform': os.name, 'paths_with_spaces': True, 'starter_exited': True, 'cycles_after_starter_exit': cycles - initial_cycles,
               'independent_bundle_cleaned': not onedir, 'onedir': onedir, 'nonce_stop_drained': True,
               'runtime_workflow_keys_scope_preserved': True, 'frozen_diagnose_passed': True, 'seconds': round(time.monotonic() - started_at, 3)}
     if os.name == 'nt':

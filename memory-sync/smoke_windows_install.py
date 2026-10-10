@@ -13,7 +13,8 @@ import uuid
 
 @contextmanager
 def retained_fixture(parent):
-    root = Path(tempfile.mkdtemp(prefix='agentmesh-install-fixture-', dir=parent))
+    # Spaces in the fixture root put spaces in program root, runtime, exchange and task paths.
+    root = Path(tempfile.mkdtemp(prefix='agentmesh install fixture ', dir=parent))
     try:
         yield root
     except BaseException:

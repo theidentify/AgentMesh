@@ -129,6 +129,28 @@ policy, valid newer data, independent ingestion/digest cron and source files
 are not reverted. Source-level API tests inject launchd only; testing that
 boundary does not prove the user's actual launchd/Gatekeeper host trial.
 
+## Uninstall while keeping data
+
+Uninstalling removes the **program and its background service only**. The database
+(including `-wal`/`-shm`), runtime, workflow, identity/trust, wizard state, recovery
+backups and the Syncthing exchange are kept by default and must not be deleted to
+uninstall.
+
+- **Return to the previous worker** (undo a replacement): use `mac-rollback --backup
+  <recovery directory>` as above. It restores the old LaunchAgent and leaves data alone.
+- **Stop the standalone service entirely:**
+  1. `launchctl bootout gui/$(id -u)/<label>` for the exact label you replaced
+     (for example `org.agentmesh.sync`), then confirm with
+     `agentmesh diagnose --runtime <runtime>` that the worker is no longer running.
+     For a worker started with `worker-start` instead of launchd, use `worker-stop`.
+  2. Move the plist out of `~/Library/LaunchAgents` into a private folder instead of
+     deleting it, so it can be restored with `launchctl bootstrap gui/$(id -u) <plist>`.
+  3. Optionally delete program versions you no longer use: only directories under
+     the manifest's `install_root` named by a SHA-256 that no plist references.
+     Never delete `install_root` itself while a plist still points into it.
+- **Reinstall later:** restore the plist and bootstrap it, or run `mac-replace` again
+  with the same private manifest. Existing data and identity are reused, never recreated.
+
 ## Managed lifecycle and adoption without service replacement
 
 `adopt-install` requires explicit `--runtime`, `--app-root`, `--database`,

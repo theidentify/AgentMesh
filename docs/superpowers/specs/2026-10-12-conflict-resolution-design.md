@@ -248,3 +248,19 @@ Implementation gates: (1) formalize wire/coverage invariants and model tests, (2
 4. Confirm operator-managed all-peer protocol activation and explicit worker resume, and choose closure/packet limits. There is no reliable capability census in the existing packet protocol.
 
 These are product/protocol choices for implementation review. The design study itself is complete; no sync code has been changed.
+
+## Maintainer decisions (2026-10-12)
+
+All four recommendations are approved:
+
+1. Ancestor-aware full-state closure with strict evidence retention (not the
+   immediate-parent sketch).
+2. Same-lineage resolution first (including delete/update); natural-key, unique and
+   FK repairs are refused until a separate multi-row planner is designed.
+3. Strict revocation: evidence from a revoked key that this peer never committed is
+   refused; recovery after revocation needs a separate design.
+4. Operator-managed all-peer protocol activation; emission stays disabled until
+   activated; the managed worker is resumed explicitly after resolution.
+
+Proceed with an implementation plan and implement it gate by gate (gates 1–4), with
+a review checkpoint after each gate.

@@ -277,7 +277,7 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
         if display_name is None or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', display_name): raise ValueError('display name must be 1-64 English ASCII characters')
         signed.init_identity(security_dir, prerequisites['group'], prerequisites['node'])
         state['display_name'] = display_name
-    security = signed.Security(security_dir, unlock=unlock)  # unlock is asked only for a protected key
+    security = signed.Security(security_dir, unlock=unlock, os_unlock=True)  # unlock is asked only for a protected key
     if (security.public['group'], security.public['node']) != (prerequisites['group'], prerequisites['node']): raise ValueError('identity/database mismatch')
     if prerequisites['policy'] == 'required':
         with sync.connect(database) as c:

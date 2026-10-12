@@ -351,3 +351,77 @@ def test_ota_release_keys_never_reach_os_unlock(tmp_path):
     signed.write_local(device / 'identity.json', json.loads((directory / 'release-private.json').read_text()))
     with pytest.raises(ValueError, match='invalid private identity'):
         ou.enable(device, ask=lambda prompt: PASS, backend=FakeBackend())
+
+def test_worker_and_memory_sync_opt_into_os_unlock(tmp_path, monkeypatch):
+    import sync_worker, memory_sync, sqlite_memory
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    db = tmp_path / 'mac.db'
+    sqlite_memory.init_database(db)
+    memory_sync.initialize(db, 'mac', GROUP)
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    sync_worker.run_once(db, exchange, security_dir=directory)   # unlocked through the OS: no refusal
+    backend.items.clear(); ou.reset_cache()
+    with pytest.raises(ValueError, match=ou.MISSING):
+        sync_worker.run_once(db, exchange, security_dir=directory)
+
+
+def test_cli_status_and_errors_are_fixed_and_secret_free(tmp_path, monkeypatch, capsys):
+    import agentmesh
+    backend = FakeBackend()
+    directory, public = enabled(tmp_path, backend)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    assert agentmesh.main(['identity-os-unlock', 'status', '--security-dir', str(directory)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report['available'] is True and backend.items[public['key_id']].hex() not in json.dumps(report)
+    backend.fail['delete'] = ou.NOT_REMOVED
+    assert agentmesh.main(['identity-os-unlock', 'disable', '--security-dir', str(directory)]) == 1
+    assert json.loads(capsys.readouterr().err)['reason'] == ou.NOT_REMOVED
+
+
+def test_public_validation_never_reads_os_store(tmp_path, monkeypatch):
+    import install_adopt, memory_sync
+    from test_install_inspect import fixture_install
+    runtime, db, exchange = fixture_install(tmp_path)
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    security = signed.Security(directory, unlock=lambda: PASS)
+    memory_sync.cycle(db, exchange, security=security)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    config = json.loads(runtime.read_text())
+    config['security_dir'] = str(directory)
+    assert install_adopt.validate(config, runtime)['policy'] == 'required'
+    assert backend.calls == []
+
+
+def test_memory_sync_cli_uses_os_unlock(tmp_path, monkeypatch, capsys):
+    import memory_sync
+    from test_install_inspect import fixture_install
+    _, db, exchange = fixture_install(tmp_path)
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    assert memory_sync.main(['once', str(db), str(exchange), '--security-dir', str(directory)]) == 0
+    assert backend.calls == ['load']
+
+
+def test_wizard_resume_prefers_os_then_falls_back(tmp_path, monkeypatch):
+    import security_wizard
+    from test_install_inspect import fixture_install
+    _, db, exchange = fixture_install(tmp_path)
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    asked = []
+    def ask():
+        asked.append(True)
+        return PASS
+    state = tmp_path / 'wizard.json'
+    security_wizard.resume(db, exchange, directory, state, unlock=ask)
+    assert asked == [] and backend.calls == ['load']
+    ou.reset_cache()
+    backend.fail['load'] = ou.REFUSED
+    security_wizard.resume(db, exchange, directory, state, unlock=ask)
+    assert asked == [True]

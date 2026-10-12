@@ -143,7 +143,7 @@ TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packet
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
-    is_key = action == 'identity-protect'
+    is_key = action in ('identity-protect', 'identity-os-unlock')
     if not is_windows and not is_key and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)

@@ -9,6 +9,8 @@ Local-first memory sync and cross-platform setup scripts for AI agents,
 connecting Hermes, OMP, Codex, and Claude across devices via peer-to-peer
 file exchange.
 
+**User guide:** https://theidentify.github.io/AgentMesh/
+
 ## Status
 
 AgentMesh is in active development. The Python/SQLite sync engine, private

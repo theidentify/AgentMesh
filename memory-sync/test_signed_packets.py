@@ -228,12 +228,12 @@ def test_conflict_rollback_and_signed_receipt_covers_header(secure_peers):
     assert signed.receipt_digest(changed) != signed.receipt_digest(p)
 
 
-def test_signature_checked_even_after_successful_replay(secure_peers):
+def test_accepted_packet_stays_seen_after_revocation(secure_peers):
     a, b, ex, sa, sb = secure_peers
     path, p = packet(secure_peers)
     assert sync.receive(b, ex, security=sb)['applied'] == 1
     signed.revoke(sb.directory, sa.public['key_id'])
-    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    assert sync.receive(b, ex, security=sb)['invalid'] == 0
     with sync.connect(b) as c:
         assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1
 
@@ -339,12 +339,10 @@ def test_verification_telemetry_records_actual_attempts_not_delivery(secure_peer
     assert security['verification']['attempts'] == 1
     assert security['verification']['failed_attempts'] == 0
     assert security['verification']['last_success_at'] is not None
-    success_at = security['verification']['last_success_at']
+    accepted = dict(security['verification'])
     signed.revoke(sb.directory, sa.public['key_id'])
-    assert sync.receive(b, ex, security=sb)['invalid'] == 1
-    rejected = sync.status(b)['security']['verification']
-    assert rejected['attempts'] == 2 and rejected['failed_attempts'] == 1
-    assert rejected['last_failure_at'] is not None and rejected['last_success_at'] == success_at
+    assert sync.receive(b, ex, security=sb)['invalid'] == 0
+    assert sync.status(b)['security']['verification'] == accepted
     with sync.connect(b) as c:
         assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1
 
@@ -378,3 +376,88 @@ def test_write_local_persistent_denial_is_bounded_and_leaves_no_temp(tmp_path, m
     with pytest.raises(PermissionError):
         signed.write_local(tmp_path / 'process.json', {'state': 'running'})
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('old_receipt', [False, True])
+@pytest.mark.parametrize('damage', ['body', 'sender', 'signature', 'uuid', 'folder', 'filename'])
+def test_tampered_applied_packet_is_invalid_after_revoke(secure_peers, old_receipt, damage):
+    a, b, ex, sa, sb = secure_peers
+    path, p = packet(secure_peers)
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    if old_receipt:
+        with sync.connect(b) as c, c:
+            c.execute('DROP TABLE IF EXISTS _sync_receipt_envelopes')
+    signed.revoke(sb.directory, sa.public['key_id'])
+    if damage == 'body': p['body'][0]['row']['content'] = 'tampered'
+    elif damage == 'sender': p['sender'] = str(uuid.uuid4())
+    elif damage == 'signature': p['signature'] = '0' * 128
+    elif damage == 'uuid': p['uuid'] = str(uuid.uuid4())
+    elif damage == 'folder':
+        destination = ex / 'signed-changes/linux' / path.name
+        destination.parent.mkdir()
+        path.rename(destination)
+        path = destination
+    else:
+        destination = path.with_name(str(uuid.uuid4()) + '.json')
+        path.rename(destination)
+        path = destination
+    path.write_bytes(signed.wire(p))
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    with sync.connect(b) as c:
+        assert c.execute('SELECT content FROM memory_items WHERE id=1').fetchone()[0] == 'signed incoming'
+        assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1
+
+
+def test_new_packet_from_revoked_key_still_refused(secure_peers):
+    a, b, ex, sa, sb = secure_peers
+    packet(secure_peers)
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    signed.revoke(sb.directory, sa.public['key_id'])
+    with sync.connect(a) as c, c:
+        c.execute("UPDATE memory_items SET content='new after revoke' WHERE id=1")
+    sync.capture(a, security=sa)
+    sync.publish(a, ex, security=sa)
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    with sync.connect(b) as c:
+        assert c.execute('SELECT content FROM memory_items WHERE id=1').fetchone()[0] == 'signed incoming'
+        assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 1
+
+
+def test_old_receipt_upgrades_after_revoke_then_needs_no_peer_trust(secure_peers):
+    a, b, ex, sa, sb = secure_peers
+    packet(secure_peers)
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    with sync.connect(b) as c, c:
+        c.execute('DROP TABLE IF EXISTS _sync_receipt_envelopes')
+    signed.revoke(sb.directory, sa.public['key_id'])
+    assert sync.receive(b, ex, security=sb)['invalid'] == 0
+    trust = signed.read_trust(sb.directory)
+    del trust['peers'][sa.public['key_id']]
+    signed.write_local(sb.directory / 'trust.json', trust)
+    assert sync.receive(b, ex, security=sb)['invalid'] == 0
+
+
+def test_managed_worker_continues_with_retained_revoked_packet(secure_peers, tmp_path, monkeypatch):
+    from contextlib import closing
+    import worker_lifecycle as worker
+    a, b, ex, sa, sb = secure_peers
+    packet(secure_peers)
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    signed.revoke(sb.directory, sa.public['key_id'])
+    data = tmp_path / 'local/data'
+    data.mkdir(parents=True)
+    db, runtime = data / 'windows.db', data / 'runtime.json'
+    with closing(sqlite3.connect(b)) as source, closing(sqlite3.connect(db)) as target:
+        source.backup(target)
+    db.chmod(0o600)
+    signed.windows_private(db, provision=True)
+    signed.write_local(runtime, {'database': str(db), 'exchange': str(ex), 'node': 'windows',
+                                'security_dir': str(sb.directory)})
+    signed.write_local(data / 'workflow.json', {'ingest': False, 'summarize': False})
+    def after_two_cycles(directory, nonce):
+        record = directory / 'process.json'
+        return record.exists() and json.loads(record.read_text()).get('cycles', 0) >= 2
+    monkeypatch.setattr(worker, 'stop_requested', after_two_cycles)
+    assert worker.run(runtime, interval=0.001) == 0
+    assert worker.status(runtime)['state'] == 'stopped'
+    assert sync.status(db)['invalid'] == 0

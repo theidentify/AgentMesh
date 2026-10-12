@@ -311,6 +311,7 @@ class Security:
         if existing is not None and tuple(existing) != expected: raise ValueError('signed database binding mismatch')
         if existing is None: c.execute('INSERT INTO _sync_security VALUES(?,?,?)', expected)
         c.execute('CREATE TABLE IF NOT EXISTS _sync_verification(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,failed_attempts INTEGER NOT NULL,last_success_at TEXT,last_failure_at TEXT)')
+        c.execute('CREATE TABLE IF NOT EXISTS _sync_receipt_envelopes(uuid TEXT PRIMARY KEY,digest TEXT NOT NULL)')
 
     def sign(self, legacy):
         self.require_unlocked()
@@ -323,17 +324,25 @@ class Security:
         return p
 
     def verify(self, p, group, folder):
+        return self._verify(p, group, folder, historical=False)
+
+    def verify_received(self, p, group, folder, receipt_checksum):
+        """Upgrade a committed pre-envelope receipt, never authorize a new packet.
+
+        The caller must obtain receipt_checksum from this database's committed
+        receipt for p['uuid']. Revocation does not undo that authorization. The
+        retained public key still proves the signature bytes omitted by old
+        receipt digests, after which the complete envelope can be pinned.
+        """
+        if receipt_checksum != receipt_digest(p): raise ValueError('packet UUID reused')
+        return self._verify(p, group, folder, historical=True)
+
+    def _verify(self, p, group, folder, *, historical):
         _, Public, InvalidSignature = crypto()
-        if type(p) is not dict or set(p) != FIELDS: raise ValueError('signed packet required; invalid envelope')
-        if p['format'] != FORMAT or p['encoding'] != ENCODING: raise ValueError('unsupported signed protocol')
-        if not canonical_uuid(p['group']) or p['group'] != group or not canonical_uuid(p['sender']) or not canonical_uuid(p['uuid']):
-            raise ValueError('invalid signed scope/UUID')
-        if type(p['node']) is not str or p['node'] not in SLOTS or p['node'] != folder: raise ValueError('signed sender/folder mismatch')
-        hex_bytes(p['key_id'], 32); hex_bytes(p['checksum'], 32)
-        signature = hex_bytes(p['signature'], 64)
+        signature = validate_envelope(p, group, folder)
         trust = read_trust(self.directory)
         entry = trust['peers'].get(p['key_id'])
-        if not entry or entry['revoked']: raise ValueError('unknown or revoked signing key')
+        if not entry or (entry['revoked'] and not historical): raise ValueError('unknown or revoked signing key')
         if (entry['group'], entry['node'], entry['sender']) != (p['group'], p['node'], p['sender']):
             raise ValueError('key not authorized for packet scope')
         unsigned = {k: v for k, v in p.items() if k != 'signature'}
@@ -342,6 +351,22 @@ class Security:
         if type(p['body']) is not list or not p['body'] or hashlib.sha256(typed(p['body'])).hexdigest() != p['checksum']:
             raise ValueError('signed body checksum/shape mismatch')
         return p
+
+
+def validate_envelope(p, group, folder):
+    """Scope/shape checks also required for retained packets; no trust decision."""
+    if type(p) is not dict or set(p) != FIELDS: raise ValueError('signed packet required; invalid envelope')
+    if p['format'] != FORMAT or p['encoding'] != ENCODING: raise ValueError('unsupported signed protocol')
+    if not canonical_uuid(p['group']) or p['group'] != group or not canonical_uuid(p['sender']) or not canonical_uuid(p['uuid']):
+        raise ValueError('invalid signed scope/UUID')
+    if type(p['node']) is not str or p['node'] not in SLOTS or p['node'] != folder: raise ValueError('signed sender/folder mismatch')
+    hex_bytes(p['key_id'], 32); hex_bytes(p['checksum'], 32)
+    return hex_bytes(p['signature'], 64)
+
+
+def envelope_digest(p):
+    """Pin all parsed packet bytes, including the signature, for exact replay."""
+    return hashlib.sha256(DOMAIN + typed(p)).hexdigest()
 
 
 def receipt_digest(p):

@@ -85,4 +85,10 @@ def test_shell_wrappers_forward_exact_paths(tmp_path):
         assert args[1:] == ['--node', node, '--exchange', '/exchange with spaces', '--local-dir', default]
         result = subprocess.run(['sh', str(wrapper), '/exchange', '/custom local'], env=env, text=True, capture_output=True, check=True)
         assert json.loads(result.stdout)[-1] == '/custom local'
+        for positional in ([], ['/exchange with spaces', '/custom local']):
+            result = subprocess.run(['sh', str(wrapper), '--no-ingest', *positional], env=env, text=True, capture_output=True, check=True)
+            forwarded = json.loads(result.stdout)
+            assert forwarded[-1] == '--no-ingest'
+            if positional:
+                assert forwarded[4] == positional[0] and forwarded[6] == positional[1]
         assert len(wrapper.read_text().splitlines()) <= 30

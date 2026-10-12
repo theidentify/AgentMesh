@@ -218,12 +218,11 @@ def test_existing_runtime_remains_unchanged(api, tmp_path):
     signed = dict(packet, format=api.SIGNED_FORMAT, encoding=signed_packets.ENCODING,
                   sender=uid(2), key_id='a'*64, signature='a'*128)
     with pytest.raises(ValueError): signed_packets.validate_envelope(signed, uid(1), 'mac')
-    for source in Path(__file__).parent.glob('*.py'):
-        if source.name == 'resolution_protocol.py' or source.name.startswith('test_'): continue
-        # Gate 2 permits reader imports, but application remains a later gate.
-        assert 'import resolution_apply' not in source.read_text(), source
-        assert 'from resolution_apply' not in source.read_text(), source
-    assert not (Path(__file__).parent / 'resolution_apply.py').exists()
+    # Gate 3 permits application imports, but exposes no activation/authoring CLI.
+    cli = (Path(__file__).parent / 'agentmesh.py').read_text()
+    assert 'commit_resolution' not in cli
+    assert 'gate3-test-only' not in cli
+
 
 
 def test_missing_current_baseline_is_refused_not_pending(api):

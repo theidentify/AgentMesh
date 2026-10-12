@@ -22,7 +22,7 @@ def db(tmp_path):
 
 
 TABLES = ('_sync_protocol', '_sync_revision_nodes', '_sync_revision_parents', '_sync_packet_evidence',
-          '_sync_packet_dispositions', '_sync_origins')
+          '_sync_packet_dispositions', '_sync_origins', '_sync_resolution_operations', '_sync_packet_paths')
 
 
 @pytest.mark.parametrize('fail_table', TABLES)
@@ -38,7 +38,7 @@ def test_migration_is_idempotent_and_atomic(store, db, fail_table):
         dump = '\n'.join(c.iterdump())
         store.migrate(c)
         assert '\n'.join(c.iterdump()) == dump
-        assert c.execute('SELECT schema_version,emission_enabled,activation_manifest_digest FROM _sync_protocol').fetchone()[:] == (1,0,None)
+        assert c.execute('SELECT schema_version,emission_enabled,activation_manifest_digest FROM _sync_protocol').fetchone()[:] == (store.SCHEMA_VERSION,0,None)
         assert all(c.execute('SELECT 1 FROM sqlite_master WHERE name=?',(t,)).fetchone() for t in TABLES)
     # Durable when called outside a transaction, caller-owned rollback otherwise.
     with sync.connect(db) as c:
@@ -181,4 +181,4 @@ def test_migration_final_boundaries_are_atomic(store, db, action, name):
         c.set_authorizer(None)
         assert '\n'.join(c.iterdump()) == before
         store.migrate(c)
-        assert c.execute('SELECT schema_version FROM _sync_protocol').fetchone()[0] == 1
+        assert c.execute('SELECT schema_version FROM _sync_protocol').fetchone()[0] == store.SCHEMA_VERSION

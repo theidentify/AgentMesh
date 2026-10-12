@@ -283,7 +283,10 @@ class Security:
         # Do not rewrite committed legacy packets or silently abandon unpublished backlog.
         for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0'):
             p = parse(row[0])
-            if p.get('format') != FORMAT: raise ValueError('unsigned outbox backlog: drain before signed activation')
+            if p.get('format') != FORMAT:
+                from resolution_store import test_activation
+                if p.get('format') != RESOLUTION_FORMAT or not test_activation(c):
+                    raise ValueError('unsigned outbox backlog: drain before signed activation')
             self.verify(p, self.public['group'], self.public['node'])
             if p['sender'] != self.public['sender']: raise ValueError('outbox sender mismatch')
         c.execute('CREATE TABLE IF NOT EXISTS _sync_security(sender TEXT NOT NULL,group_id TEXT NOT NULL,node TEXT NOT NULL)')
@@ -303,6 +306,19 @@ class Security:
         p = {**legacy, 'format': FORMAT, 'encoding': ENCODING, 'sender': self.public['sender'], 'key_id': self.public['key_id']}
         p['checksum'] = hashlib.sha256(typed(p['body'])).hexdigest()
         p['signature'] = self.key.sign(DOMAIN + typed(p)).hex()
+        wire(p)
+        return p
+
+    def _sign_resolution(self, c, envelope):
+        from resolution_store import test_activation
+        if not test_activation(c): raise ValueError('new packet emission disabled')
+        self.check_self()
+        if (envelope['group'], envelope['node']) != (self.public['group'], self.public['node']):
+            raise ValueError('signing scope mismatch')
+        p = {**envelope, 'format': RESOLUTION_FORMAT, 'encoding': ENCODING,
+             'sender': self.public['sender'], 'key_id': self.public['key_id']}
+        p['signature'] = self.key.sign(RESOLUTION_DOMAIN + typed(p)).hex()
+        validate_envelope(p, self.public['group'], self.public['node'])
         wire(p)
         return p
 

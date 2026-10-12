@@ -11,7 +11,11 @@ import json
 import memory_sync as sync
 from resolution_protocol import Key, Ref, Limits, MissingEvidence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+UPGRADE_DDL = (
+    'CREATE TABLE _sync_resolution_operations(operation_id TEXT PRIMARY KEY,plan_digest TEXT NOT NULL,packet_uuid TEXT NOT NULL)',
+    'CREATE TABLE _sync_packet_paths(path TEXT PRIMARY KEY,packet_uuid TEXT NOT NULL,envelope_digest TEXT NOT NULL)',
+)
 DDL = (
     'CREATE TABLE _sync_protocol(id INTEGER PRIMARY KEY CHECK(id=1),schema_version INTEGER NOT NULL,emission_enabled INTEGER NOT NULL DEFAULT 0 CHECK(emission_enabled IN (0,1)),activation_manifest_digest TEXT)',
     'CREATE TABLE _sync_revision_nodes(revision TEXT PRIMARY KEY,table_name TEXT NOT NULL,key TEXT NOT NULL,origin TEXT,row_digest TEXT NOT NULL,row_json TEXT,packet_uuid TEXT NOT NULL,evidence_state TEXT NOT NULL)',
@@ -20,7 +24,7 @@ DDL = (
     "CREATE TABLE _sync_packet_dispositions(packet_uuid TEXT NOT NULL,envelope_digest TEXT NOT NULL,resolution_uuid TEXT NOT NULL,disposition TEXT NOT NULL CHECK(disposition='superseded'),PRIMARY KEY(packet_uuid,resolution_uuid))",
     'CREATE TABLE _sync_origins(table_name TEXT NOT NULL,key TEXT NOT NULL,revision TEXT,row_json TEXT,PRIMARY KEY(table_name,key))',
     'CREATE INDEX _sync_revision_parent_lookup ON _sync_revision_parents(parent)',
-)
+) + UPGRADE_DDL
 
 
 @contextmanager
@@ -52,6 +56,10 @@ def migrate(c) -> None:
         sync.config(c)
         if exists(c):
             version = c.execute('SELECT schema_version FROM _sync_protocol WHERE id=1').fetchone()
+            if version is not None and version[0] == 1:
+                for sql in UPGRADE_DDL: c.execute(sql)
+                c.execute('UPDATE _sync_protocol SET schema_version=?', (SCHEMA_VERSION,))
+                return
             if version is None or version[0] != SCHEMA_VERSION:
                 raise ValueError('unsupported resolution schema')
             return
@@ -231,3 +239,14 @@ def load_evidence(c, refs) -> dict:
             raise ValueError('stored evidence changed')
         result[ref.uuid] = envelope
     return result
+
+
+def test_activation(c):
+    """Read-only gate-3 fence. Only test fixtures write this temporary record.
+
+    No flag, environment variable, CLI or production writer can activate it.
+    Gate 4 will replace this sentinel with an operator-approved capability record.
+    """
+    return exists(c) and c.execute(
+        "SELECT 1 FROM _sync_protocol WHERE id=1 AND schema_version=? AND emission_enabled=1 AND activation_manifest_digest='gate3-test-only'",
+        (SCHEMA_VERSION,)).fetchone() is not None

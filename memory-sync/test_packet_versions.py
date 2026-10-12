@@ -79,24 +79,21 @@ def test_legacy_fixtures_remain_readable_forever(versions, secure_peers):
 
 @pytest.mark.parametrize('secure', [False, True])
 @pytest.mark.parametrize('kind', ['change', 'resolution'])
-def test_new_packet_read_does_not_emit_or_apply(versions, store, secure_peers, secure, kind):
+def test_new_packet_read_applies_changes_or_waits_for_resolution_proof(versions, store, secure_peers, secure, kind):
     a, b, ex, sa, sb = secure_peers
     p = new_packet(sa if secure else None, kind=kind)
     path = publish_fixture(ex, p)
-    with sync.connect(b) as c:
-        before = sync.rows(c); shadow = list(c.execute('SELECT * FROM _sync_shadow'))
     report = sync.receive(b, ex, security=sb if secure else None)
-    assert report['pending'] == 1 and report['applied'] == report['invalid'] == 0
+    assert report['invalid'] == 0
+    assert report['pending'] == int(kind == 'resolution')
+    assert report['applied'] == int(kind == 'change')
     with sync.connect(b) as c:
-        assert sync.rows(c) == before
-        assert list(c.execute('SELECT * FROM _sync_shadow')) == shadow
-        assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == 0
+        assert c.execute('SELECT count(*) FROM _sync_receipts').fetchone()[0] == int(kind == 'change')
         assert c.execute('SELECT count(*) FROM _sync_outbox').fetchone()[0] == 0
         assert c.execute('SELECT emission_enabled FROM _sync_protocol').fetchone()[0] == 0
-        assert c.execute('SELECT message FROM _sync_diagnostics WHERE path=?',(str(path),)).fetchone()[0] == 'resolution_apply_not_enabled'
-        row = c.execute('SELECT authorization_state FROM _sync_packet_evidence WHERE uuid=?',(p['uuid'],)).fetchone()
-        assert row[0] == 'verified'
-    assert sync.receive(b, ex, security=sb if secure else None)['pending'] == 1
+        if kind == 'resolution':
+            assert c.execute('SELECT message FROM _sync_diagnostics WHERE path=?',(str(path),)).fetchone()[0] != 'resolution_apply_not_enabled'
+    assert sync.receive(b, ex, security=sb if secure else None)['applied'] == 0
 
 
 def test_old_reader_rejects_new_formats_without_receipt(versions, secure_peers):
@@ -134,7 +131,7 @@ def test_v3_tampering_every_field(versions, secure_peers, field):
 
 def test_revoked_uncommitted_evidence_refused(versions, store, secure_peers):
     _, b, ex, sa, sb = secure_peers
-    p = new_packet(sa); publish_fixture(ex, p)
+    p = new_packet(sa, kind='resolution'); publish_fixture(ex, p)
     assert sync.receive(b, ex, security=sb)['pending'] == 1
     signed.revoke(sb.directory, sa.public['key_id'])
     assert sync.receive(b, ex, security=sb)['invalid'] == 1

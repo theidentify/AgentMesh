@@ -119,6 +119,8 @@ def status(db):
             record = c.execute('SELECT attempts,failed_attempts,last_success_at,last_failure_at FROM _sync_verification WHERE id=1').fetchone()
             if record: security['verification'] = dict(record)
         result['security'] = security
+        from resolution_store import exists
+        result['superseded'] = c.execute('SELECT count(DISTINCT packet_uuid) FROM _sync_packet_dispositions').fetchone()[0] if exists(c) else 0
         return result
 
 def capture(db, *, security=None):
@@ -170,7 +172,11 @@ def publish(db, exchange, *, security=None):
         for ident, text in packets:
             from signed_packets import FORMAT as signed_format
             if load_packet(text).get('format') not in (FORMAT, signed_format):
-                raise ValueError('new packet emission disabled')
+                with connect(db) as c:
+                    from resolution_store import test_activation
+                    if not test_activation(c): raise ValueError('new packet emission disabled')
+                from packet_versions import is_new
+                if not is_new(load_packet(text)): raise ValueError('unsupported packet format')
             target = directory/(ident+'.json')
             if security is not None:
                 from signed_packets import no_symlinks
@@ -379,8 +385,10 @@ def receive(db, exchange, *, security=None):
     applied=0
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
+    indexed=False
     while retry:
-        pending=[]; progress=False
+        pending=[]; conflicts=[]; progress=False
+        was_indexed=indexed
         for path in retry:
             verified_signature = False
             try:
@@ -392,16 +400,23 @@ def receive(db, exchange, *, security=None):
                 with connect(db) as c, c:
                     c.execute('BEGIN IMMEDIATE')
                     _security_policy(c, security, exchange)
-                    from packet_versions import is_new, decode_packet, _has_committed_envelope
-                    if is_new(p):
-                        cached_signature = security is not None and _has_committed_envelope(c, p.get('uuid'))
-                        decode_packet(c, p, security=security, folder=path.parent.name, filename=path.name)
-                        # Commit evidence and its pending diagnostic together. Raising
-                        # Pending here would roll back the authenticated evidence.
-                        c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',
-                                  (str(path), 'pending', 'resolution_apply_not_enabled'))
+                    from packet_versions import is_new, _has_committed_envelope
+                    from resolution_store import exists
+                    if is_new(p) or exists(c):
+                        indexed=True
+                        from resolution_apply import receive_indexed
+                        # Validate transport scope before the adapter's retained scope.
+                        from packet_versions import validate_wire
+                        validate_wire(p,group=config(c)['group_id'],folder=path.parent.name)
+                        if (security is not None or is_new(p)) and path.name != p['uuid']+'.json':
+                            raise ValueError('packet filename mismatch')
+                        cached_signature = security is not None and _has_committed_envelope(c,p.get('uuid'))
+                        outcome, added = receive_indexed(c,p,path,security=security)
                         verified_signature = True if security is not None and not cached_signature else None
-                        pending.append(path)
+                        changed = outcome == 'applied'
+                        applied += int(changed); progress |= changed or added
+                        if outcome=='pending': pending.append(path)
+                        if outcome=='conflict': conflicts.append(path)
                         continue
                     if security is not None:
                         from signed_packets import validate_envelope
@@ -432,14 +447,20 @@ def receive(db, exchange, *, security=None):
                 with connect(db) as c, c:
                     # Signed failures must not leak memory contents into diagnostics/status.
                     message = type(e).__name__ if security is not None else str(e)
+                    from resolution_store import exists
+                    if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_packet_paths'").fetchone():
+                        c.execute('DELETE FROM _sync_packet_paths WHERE path=?',(str(path),))
                     c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,message))
                 if kind=='pending': pending.append(path)
+                if kind=='conflict': conflicts.append(path)
             finally:
                 if security is not None and verified_signature is not None:
                     from signed_packets import record_verification
                     record_verification(db, verified_signature)
         if not progress: break
-        retry=pending
+        # The first migration must index earlier legacy files too. Thereafter
+        # only held paths need retry; committed exact replays cannot unblock proof.
+        retry=paths if indexed and not was_indexed else pending+conflicts if indexed else pending
     report=status(db)
     return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
             **({'error': io_error} if io_error else {})}

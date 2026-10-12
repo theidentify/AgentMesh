@@ -117,7 +117,7 @@ Write `test_migration_is_idempotent_and_atomic`, `test_missing_baseline_witness_
 
 Run `"$TEST_PY" -m pytest -q memory-sync/test_resolution_store.py memory-sync/test_packet_versions.py memory-sync/test_memory_sync.py memory-sync/test_signed_packets.py memory-sync/test_package.py memory-sync/test_standalone_build.py`, then full suite. Acceptance: schema restart-safe; all four formats have fixtures; old traffic behavior preserved; strict revocation verified with real crypto; migration/receipt audit passes; emission still disabled. Review before gate 3.
 
-## Gate 3 — atomic same-lineage application and convergence (NOT started)
+## Gate 3 — atomic same-lineage application and convergence (implemented; execution evidence below)
 
 ### Exact files
 
@@ -277,3 +277,85 @@ Full command: `"$TEST_PY" -m pytest -q memory-sync`. Logs are local under `$TMPD
 - Native-platform skips and the known consumer-export failures are not fixed or waived beyond the previously approved baseline.
 
 Gate-2 acceptance is met under the approved baseline: 56 additional tests pass; all three failure identities are unchanged. The final focused run contains the 166 gate-2/legacy/package tests and all 94 gate-1 tests. The unchanged failures are `ConsumerTests.test_export_complete_collision_safe_manual_notes_and_source_anchors`, `ConsumerTests.test_export_infers_transcript_tasks_even_without_structured_task_ref`, and `ConsumerTests.test_export_resolution_of_last_active_item_clears_current_memory` in `test_sqlite_consumers.py`; all still report `ValueError: symlink export root refused`. Both full runs have the same duplicate ZIP-entry warning. Gate 3 remains **unstarted**.
+
+
+## Gate-3 execution evidence (2026-10-12)
+
+Gate 3 implements atomic same-lineage application and conditional convergence. **Gate 4 is not started.** Production capture still emits unsigned-v1/signed-v2; their readers remain. No CLI authoring/activation command, worker lifecycle change, join change, or network operation was added. No git writes were performed.
+
+### Files and gate-transition deviations
+
+Created `memory-sync/resolution_apply.py`, `memory-sync/test_resolution_apply.py`, and `memory-sync/test_resolution_e2e.py`.
+
+Modified all planned gate-3 files: `memory-sync/resolution_store.py`, `memory-sync/memory_sync.py`, `memory-sync/signed_packets.py`, `memory-sync/test_signed_packets.py`, `memory-sync/build_package.py`, `memory-sync/standalone_build.py`, `memory-sync/test_package.py`, and `memory-sync/test_standalone_build.py`, plus this plan.
+
+Narrow additions to the planned file list:
+
+- `test_packet_versions.py`: replaces gate 2's temporary “all new packets stay pending” assertions with ordinary-change application and missing-resolution-proof pending assertions. Its uncommitted revocation fixture now has missing resolution evidence, so it remains genuinely uncommitted after gate 3.
+- `test_resolution_store.py`: extends migration fault coverage to the two new tables and checks the current schema version.
+- `test_resolution_protocol.py`: replaces gate 2's temporary prohibition of the apply module/import with a prohibition on CLI authoring/activation wiring; legacy wire assertions remain.
+- `packet_versions.py` and `resolution_protocol.py`: docstring updates only. Their executable adapters and pure gate-1 contract are unchanged.
+
+Schema advances from 1 to 2. Alongside the planned `_sync_resolution_operations(operation_id PRIMARY KEY, plan_digest, packet_uuid)`, it adds `_sync_packet_paths(path PRIMARY KEY, packet_uuid, envelope_digest)`. This extra identity binding is necessary because the legacy diagnostics table stores only a filesystem path: filename suffix matching cannot safely identify which diagnostic a resolution may clear. Both additions and the version update are atomic. Existing schema-1 evidence, origins, receipts and dispositions are preserved. Legacy-only capture/receive/status never create resolution tables; migration remains triggered by new-format receipt or explicit test activation.
+
+### Application and authorization boundaries
+
+`prepare_resolution(c, source_refs, choices, *, security)` produces a frozen `ResolutionPlan` containing canonical payload bytes, complete transitive packet/key coverage, expected actual/shadow/config/activation state digest, schema version and a trust digest binding both pinned trust and the local signing identity. Choices must supply a full row or tombstone for every covered key; there is no default winner. The gate-1 validator checks closure and exact maximal frontiers.
+
+`commit_resolution(c, plan, *, security, operation_id)` revalidates the plan, then commits the new immutable outbox envelope, application rows, shadows, materialized history, evidence DAG, exact superseded dispositions, receipt/envelope pin and operation record in one savepoint transaction. Savepoints never commit an existing caller transaction. Reusing an operation with the same plan returns the original packet/UUID; a different plan is refused. Dirty actual rows or stale shadow/config/trust fail closed. FK, unique and off-packet cascade/trigger effects roll back with the fixed `unsupported relational repair` error. Importing flags roll back too.
+
+`receive_resolution` retains authenticated evidence before the nested application transaction. `apply_resolution` reauthorizes the complete bounded proof, checks origins and current heads, and returns `ApplyResult(status, packet_uuid)` with `applied`, `superseded` or `noop`. It preserves proved descendants and rejects incomparable heads without applying companion prefixes. Retained evidence is never an authorization cache. Exact committed receipt/disposition replay is the only revocation exception; complete-envelope changes remain invalid. Trust is checked again before completing a row transaction to catch changes during application. This narrows the existing filesystem-trust/SQLite race; it is not a claim of a cross-filesystem atomic trust transaction.
+
+The receive adapter retains legacy evidence only once the resolution schema exists. The first migration retries earlier exchange files so already-applied or held legacy packets can supply proof. Subsequent progress retries held pending/conflict paths. It clears diagnostics through exact path/envelope bindings in the same commit as disposition/receipt writes; unrelated and differently bound diagnostics survive. A later legacy edit descending from a superseded branch is classified as conflict, without adding fake applied history or receipts for the original held packet. Status exposes a separate distinct-packet `superseded` count and preserves the meaning of `received`.
+
+### Emission remains fenced
+
+The only authoring capability in gate 3 is a database record inserted by test fixtures: schema 2, `emission_enabled=1`, and `activation_manifest_digest='gate3-test-only'`. Production contains a read-only predicate for this record; no production entry point creates it. There is no environment bypass or force flag. The private v3 signer, signed backlog guard and publish guard all require this record. Public `Security.sign` still refuses new formats, and capture's implementation and emitted formats are unchanged. Gate 4 must replace this temporary test sentinel with the approved operator inventory/capability activation protocol before exposing authoring.
+
+### TDD and verification
+
+All pytest runs used the supplied interpreter:
+
+```text
+/private/tmp/claude-501/-Users-krisanathep-Workspaces-AgentMesh--claude-worktrees-gitbook-agent-mesh-usage-1839e8/726c4aa1-e480-4547-b773-90d2bb8f75d5/scratchpad/testvenv/bin/python
+```
+
+| Run | Actual result |
+|---|---|
+| Full baseline before gate-3 edits | 900 passed, 3 known failures, 14 skipped; 20 subtests passed; 134.82s |
+| Listed new apply/e2e tests before implementation | 51 setup errors, all `ModuleNotFoundError: resolution_apply`; 0.68s |
+| First application run | 48 passed, 3 failed; 14.85s |
+| Expanded run after initial fixes | 283 passed; 36.29s |
+| Later-edit branch classification red test | 1 failed; known superseded predecessor incorrectly left pending; 0.51s |
+| Expanded focused/package run | 310 passed; 46.25s |
+| Mid-transaction revocation red test | 1 failed; trust change during row writes was not rechecked; 1.45s |
+| Intermediate full regression | 982 passed, same 3 failures, 14 skipped; 20 subtests passed; 171.76s |
+| Final focused verification | 312 passed; 67.09s |
+| Final full regression | 983 passed, same 3 failures, 14 skipped; 20 subtests passed; 189.53s |
+
+All twelve named gate-3 scenarios were written before implementation. Initial failures were missing-module failures, not import/environment failures in existing modules. The first implementation failures exposed a late evidence-status update and two fixture mistakes (a trigger deleted an on-packet row subsequently restored by the valid vector, and a simulated schema-1 database retained a schema-2 table). Those fixtures were corrected to target an off-packet row and a real schema-1 shape. Follow-up red tests independently exposed the superseded-branch classification and mid-transaction trust race, then passed after their fixes.
+
+Focused command:
+
+```sh
+"$TEST_PY" -m pytest -q memory-sync/test_resolution_apply.py memory-sync/test_resolution_e2e.py memory-sync/test_signed_packets.py memory-sync/test_packet_versions.py memory-sync/test_resolution_store.py memory-sync/test_resolution_protocol.py memory-sync/test_resolution_model.py memory-sync/test_package.py memory-sync/test_standalone_build.py
+```
+
+Full command: `"$TEST_PY" -m pytest -q memory-sync`. Local logs: `$TMPDIR/conflict-g3-{baseline,red,first,focus1,focus2,branch-red,focused,trust-red,full,focused-final,focused-verified,full-final}.log`.
+
+The final suites include 40 reproducible randomized SQLite-versus-independent-model seeds. Histories vary keys, packet companions, predecessor chains, forks, tombstones, choices, ordering and duplicates. Expected final heads and rows come from the gate-1 test-owned least-fixed-point oracle, not SQL application code. Tests also cover two independent resolutions followed by a terminal choice, a third peer missing both branches, offline divergent edits, later descendants, exact matching diagnostic cleanup, legacy replay with no capture echoes, and one initial row scan with no per-retained-packet replay scans.
+
+Fault coverage uses real SQLite: seven injected local transaction boundaries, five receiver boundaries, and eight subprocess hard exits (including after successful commit). Reopening the database verifies rollback/durability and idempotent operation retry. A separate subprocess exits after publishing the immutable resolution file but before marking the outbox published; retry preserves identical bytes and UUID. These tests exercise process crashes, not hardware power-loss certification. Real Ed25519 keys/signatures cover three peers, revocation of retained uncommitted dependencies, exact committed replay after revocation, signature-byte tampering, stale trust plans and revocation during row application.
+
+The unchanged baseline failures are the same three `ConsumerTests` in `memory-sync/test_sqlite_consumers.py`: `test_export_complete_collision_safe_manual_notes_and_source_anchors`, `test_export_infers_transcript_tasks_even_without_structured_task_ref`, and `test_export_resolution_of_last_active_item_clears_current_memory`. They report `ValueError: symlink export root refused`; none was changed or deselected. The existing duplicate ZIP-entry warning and native-platform skips remain.
+
+### Risks and gate-4 handoff
+
+- Original baseline payloads lost before lazy migration cannot be invented from later rows. Missing witnesses remain pending/refused; a different baseline is invalid. This is deliberately not a cross-lineage repair mechanism.
+- Proof and closure limits still reject large legitimate histories rather than truncate or split atomic resolutions. Evidence, outbox and dispositions are retained; no garbage collection or large-history performance claim is added.
+- Exact replay has a receipt/disposition fast path. Preparing/applying a new resolution still scans application rows for stale edits and off-packet side effects, and reauthorizes referenced immutable evidence; this is required safety work, not a background merge policy.
+- Test activation is not production rollout approval. CLI choices/confirmation, peer inventory, managed downgrade fences, join replay integration and stopped-worker recovery remain gate 4. Workers are not automatically restarted.
+- Trust files and SQLite have no shared transaction coordinator. Final digest checks detect tested mid-transaction changes but do not make a filesystem revocation concurrent with the final SQLite commit globally atomic.
+- No native Windows build/run or physical power-loss test was performed. Existing approved baseline failures remain environmental limitations, not new passing checks.
+
+Gate-3 acceptance is met under the approved baseline: 83 additional tests pass, all three failure identities are unchanged, and emission is still unavailable through production activation/authoring entry points. Gate 4 remains **unstarted**.

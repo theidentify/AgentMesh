@@ -1,7 +1,7 @@
 """Permanent legacy readers plus read-only resolution-format adapters.
 
-No packet constructor/signing/emission API. New packets are retained as pending
-by receive; transactional application is deliberately a later gate.
+No packet constructor/signing/emission API. This adapter retains evidence only;
+resolution_apply owns transactional application and guarded test authoring.
 """
 import hashlib
 import json

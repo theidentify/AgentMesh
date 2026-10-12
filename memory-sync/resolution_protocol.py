@@ -2,7 +2,7 @@
 
 Inputs to validate_resolution must already have authenticated envelope bindings
 and verified origins. This module proves semantic coverage, not authorization.
-Gate-2 wire readers supply bindings; transactional application remains gated off.
+Versioned wire readers supply bindings; resolution_apply owns SQL transactions.
 """
 from __future__ import annotations
 
@@ -222,7 +222,7 @@ def validate_resolution(packet: Packet, evidence: Mapping[str, Packet],
 
     Evidence may include additional authenticated local descendants of packet.
     A declared missing reference is pending. An available but omitted companion
-    or ancestor packet is invalid. Origins are verified by the future adapter.
+    or ancestor packet is invalid. Origins are verified by the storage adapter.
     """
     _require(all(type(v) is int and v > 0 for v in vars(limits).values()), 'invalid limits')
     _check_packet(packet)

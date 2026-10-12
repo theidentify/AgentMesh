@@ -24,6 +24,18 @@ Invitation request and invitation transfer files contain no memory rows or secre
 
 File hashes detect changes relative to a trusted expected hash. They do not authenticate the sender or protect against replacement of both a file and its checksum manifest. Restrict access to the exchange folder. Signing and trust configuration are separate operator topics; see the [reference index](./reference/).
 
+## Protect keys and their backups
+
+[Passphrase protection](./install/security#protect-the-device-key-at-rest) encrypts the device signing key at rest in `identity.json`. It helps protect copied identity directories, backups and disk images, and detects tampering with protected key/public fields. It does not encrypt the memory database, packets or transcripts. It does not protect an unlocked process from code running as the same user, nor prevent guessing a weak/reused passphrase. Use a long unique passphrase; there is no recovery for a lost one.
+
+OS unlock adds a wrapping key in the account’s OS store. Any process of that user can read it, making the device key effectively always unlockable by that user. This is not hardware-isolated signing. macOS currently uses an interim file-based login-keychain backend with `/usr/bin/security`’s default item ACL; Windows uses a DPAPI-protected Credential Manager item. Neither changes the private-file or trusted-peer boundaries.
+
+Keep the protected `identity.json` and its passphrase available through your private backup procedure. An identity-directory copy alone does not carry the OS wrapping key, but OS backups may: Time Machine/Migration Assistant can copy the login keychain, and Windows profile/password or domain DPAPI recovery material can recover credentials. A backup containing both unlock paths is only as strong as the **weaker of the passphrase and OS login password**.
+
+Earlier backups, snapshots, journaled or copy-on-write storage and SSD blocks can retain the old plaintext key after protection. Protect raw-key backups separately; migration cannot erase all old copies. If exposure matters, use the operator’s coordinated key rotation/pairing procedure. No passphrase-change, unprotect or backup/restore command is supplied by this feature; do not invent a restore by editing identity fields.
+
+Disable failures can leave a wrapping key in the OS store. That key plus an older identity-file backup containing its envelope can still unlock the old identity. Resolve deletion failures and check `stray_item`; status checks only the current key ID and does not clean up old or rotated IDs. See the [key-protection threat model and portability limits](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md#threats-and-portability).
+
 ## Handle status and screenshots carefully
 
 Peer status reports contain operational metadata rather than memory record bodies. They still include sync identifiers, and publication errors can expose filesystem paths. Do not treat raw status JSON as guaranteed safe to publish.

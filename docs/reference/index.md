@@ -19,6 +19,7 @@ Find the repository reference for details beyond the task-based user guide. Star
 | [Workflow](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) | Configure ingestion, primary summarization, exchange and recall. |
 | [OTA updates](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md) | Set up opt-in signed worker updates and recovery. |
 | [Signed sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md) | Understand packet authentication and pinned peer trust. |
+| [Key protection and OS unlock](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md) | Protect device keys, configure account-bound unattended unlock, and review backup/portability limits. |
 | [Security wizard](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SECURITY-WIZARD.md) | Review explicit identity, pairing and activation steps. |
 | [Mac replacement](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md) | Plan operator-led program replacement and rollback. |
 

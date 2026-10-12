@@ -117,20 +117,35 @@ WINDOWS_REASONS = frozenset({
     'worker changed while draining',
     'worker must be proven stopped; stale or running refused',
 })
+KEY_REASONS = frozenset({
+    'identity is already passphrase-protected',
+    'passphrase must be at least 12 characters',
+    'passphrases do not match; nothing was changed',
+    'passphrase entry requires an interactive console',
+    'protected identity verification failed; nothing was changed',
+    'protected identity readback failed',
+    'protected identity could not be unlocked: wrong passphrase or damaged file',
+    'invalid protected identity parameters',
+    'passphrase-protected identity is locked; unattended unlock is not available yet (requires OS-protected key access)',
+    'invalid private identity',
+    'local signing key is not authorized',
+    'security directory must be owner-only (chmod 700)',
+})
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task'})
+                           'windows_install', 'windows_task', 'key_protection'})
 
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
-    if not is_windows and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    is_key = action == 'identity-protect'
+    if not is_windows and not is_key and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
-    known = message in SAFE_REASONS or (is_windows and message in WINDOWS_REASONS)
+    known = message in SAFE_REASONS or message in KEY_REASONS or (is_windows and message in WINDOWS_REASONS)
     result['reason'] = message if known else 'details withheld; inspect diagnostic stage'
     code, hint = DETAILS.get(message, (
         'GUARD_REFUSED' if known else 'UNCLASSIFIED_ERROR',

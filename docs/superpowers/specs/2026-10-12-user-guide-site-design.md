@@ -175,3 +175,17 @@ run (`codex exec -s read-only`) with a persona prompt kept in
 
 Reviewers write their reports in Thai (quotes, locations, commands and suggested English wording stay verbatim). They only report; they do not edit. Findings are triaged against this spec and
 the code before any change; a finding that conflicts with the code is rejected.
+
+## Adding a device to a new group (decided 2026-10-12)
+
+`build_package.py` only accepts an `omp-sqlite-snapshot-v1` snapshot, and no code in
+the repository produces one from a SQLite database. A group started with `setup-new`
+therefore cannot add a second device today. Decision (option A′):
+
+- `install/new-group.md` documents what works now: building a peer bootstrap with
+  `build_package.py` from an existing snapshot, run by whoever administers the group
+  (possibly the reader), and states plainly that a group started with `setup-new`
+  cannot yet add devices.
+- A separate feature (implemented by Codex, reviewed by Claude) adds a supported way
+  to export a SQLite database to a bootstrap snapshot that preserves baseline
+  revisions. When it lands, the guide gains the full "second device" procedure.

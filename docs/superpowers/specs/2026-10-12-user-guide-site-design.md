@@ -140,3 +140,38 @@ PostgreSQL mirroring (operator topics, phase B).
 Every command, flag and behavior on these pages must be verified against the code;
 where code and existing docs disagree, the code wins and the page says only what
 the code does.
+
+## Device identity wording (added 2026-10-12)
+
+The design does not tie a device's identity to its operating system. In code, a
+device's identity is one of three **slots** (`mac`, `windows`, `linux`;
+`memory_sync.RANGES`) plus the sync group UUID. The slot names are labels only:
+the platform wrappers pick the matching slot by default, but `bootstrap_windows.py
+--node` and `setup-new --node` accept any slot on any OS. A profile-ID model exists
+only in the opt-in `profile-memory/` prototype.
+
+Guide wording:
+
+- Use the neutral term **device identity** in prose. State once, in Concepts, that
+  today a device identity is one of three slot values `mac`, `windows`, `linux`,
+  that these are labels and not operating systems, and that a group therefore has
+  at most three devices, each with a different identity.
+- Never imply "one device per OS". Two Macs, or a Linux source and a Mac
+  destination, are valid when they use different identities.
+- Show the literal values only where a command needs them (`--node mac`).
+- Mention profile-owned memory only on the Reference page, as an experiment.
+
+## Persona review (added 2026-10-12)
+
+After writing, three independent reviewers read the built guide. Each is a Codex
+run (`codex exec -s read-only`) with a persona prompt kept in
+`docs/superpowers/reviewers/`:
+
+| Persona | File | Looks for |
+| --- | --- | --- |
+| Open-source community user, impatient and easily confused | `community-user.md` | where they get lost, missing steps, unexplained terms, frustration |
+| University professor proofreading a thesis | `professor.md` | wrong or inconsistent wording, grammar, terminology drift, unclear claims |
+| Industry computer-science and mathematics practitioner who must operate it | `practitioner.md` | technical imprecision, unverifiable claims, missing failure modes, things they could not actually run |
+
+Reviewers only report; they do not edit. Findings are triaged against this spec and
+the code before any change; a finding that conflicts with the code is rejected.

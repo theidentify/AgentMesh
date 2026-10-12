@@ -1,0 +1,14 @@
+{
+  "name": "agentmesh-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "check": "sh scripts/check-privacy.sh && vitepress build"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

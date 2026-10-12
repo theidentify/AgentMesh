@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1189 518" width="1189" height="518" role="img" aria-label="Devices share records through one private folder, never database files" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="1189" height="518" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">Devices share records through one private folder, never database files</text>
+<rect class="grp" x="305" y="84" width="270" height="406" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="327" y="112" font-size="15">This device · local only</text>
+<path class="ar" d="M263.0,206.0 L327.0,206.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M440.0,272.0 L440.0,336.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<path class="ar" d="M553.0,206.0 L617.0,206.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<path class="ar" d="M877.0,206.0 L941.0,206.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<rect class="ex" x="28" y="140" width="235" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="179" font-size="17" font-weight="700">Your agents</text>
+<text class="nb" x="50" y="205" font-size="14.5">OMP · Codex · Claude</text>
+<text class="nb" x="50" y="227" font-size="14.5">Hermes: recall only</text>
+<text class="nm" x="50" y="249" font-size="14.5">supported sessions / recall</text>
+<rect class="nd" x="327" y="140" width="226" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="349" y="179" font-size="17" font-weight="700">sync worker</text>
+<text class="nb" x="349" y="205" font-size="14.5">configured ingestion</text>
+<text class="nb" x="349" y="227" font-size="14.5">export / import packets</text>
+<text class="nb" x="349" y="249" font-size="14.5">60 s wait after each cycle</text>
+<rect class="nd" x="327" y="336" width="226" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="349" y="375" font-size="17" font-weight="700">Local database</text>
+<text class="nb" x="349" y="401" font-size="14.5">local SQLite memory</text>
+<text class="nb" x="349" y="423" font-size="14.5">outside the exchange</text>
+<text class="nm" x="349" y="445" font-size="14.5">one identity per device</text>
+<rect class="hl" x="617" y="140" width="260" height="132" rx="12" stroke-width="2.5"/>
+<text class="nt" x="639" y="179" font-size="17" font-weight="700">Exchange folder</text>
+<text class="nb" x="639" y="205" font-size="14.5">private Syncthing share</text>
+<text class="nb" x="639" y="227" font-size="14.5">change packets</text>
+<text class="nb" x="639" y="249" font-size="14.5">status/&lt;node&gt;.json</text>
+<rect class="ex" x="941" y="140" width="220" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="963" y="179" font-size="17" font-weight="700">Other devices</text>
+<text class="nb" x="963" y="205" font-size="14.5">distinct device identities</text>
+<text class="nb" x="963" y="227" font-size="14.5">separate local databases</text>
+<text class="nm" x="963" y="249" font-size="14.5">online at the same time</text>
+<rect class="rj" x="617" y="336" width="260" height="132" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="639" y="375" font-size="17" font-weight="700">Syncing .db / WAL / SHM</text>
+<text class="nb" x="639" y="401" font-size="14.5">can corrupt state</text>
+<text class="nm" x="639" y="423" font-size="14.5">never do this</text>
+</svg>

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 868 474" width="868" height="474" role="img" aria-label="What one worker cycle does" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="868" height="474" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">What one worker cycle does</text>
+<rect class="grp" x="28" y="84" width="537" height="362" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="50" y="112" font-size="15">This device</text>
+<path class="ar" d="M269.0,195.0 L333.0,195.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M543.0,195.0 L607.0,195.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M723.5,250.0 L723.5,282.0 L438.0,282.0 L438.0,314.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M333.0,369.0 L269.0,369.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect class="nd" x="50" y="140" width="219" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="72" y="179" font-size="17" font-weight="700">Ingest</text>
+<text class="nb" x="72" y="205" font-size="14.5">if configured</text>
+<text class="nb" x="72" y="227" font-size="14.5">sessions → local database</text>
+<rect class="nd" x="333" y="140" width="210" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="355" y="179" font-size="17" font-weight="700">Export</text>
+<text class="nb" x="355" y="205" font-size="14.5">local changes</text>
+<text class="nb" x="355" y="227" font-size="14.5">→ change packets</text>
+<rect class="hl" x="607" y="140" width="233" height="110" rx="12" stroke-width="2.5"/>
+<text class="nt" x="629" y="179" font-size="17" font-weight="700">Exchange folder</text>
+<text class="nb" x="629" y="205" font-size="14.5">packets from all peers</text>
+<text class="nb" x="629" y="227" font-size="14.5">status/&lt;node&gt;.json</text>
+<rect class="nd" x="333" y="314" width="210" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="355" y="353" font-size="17" font-weight="700">Import</text>
+<text class="nb" x="355" y="379" font-size="14.5">validate peer packets</text>
+<text class="nb" x="355" y="401" font-size="14.5">apply or keep pending</text>
+<rect class="nd" x="50" y="314" width="219" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="72" y="353" font-size="17" font-weight="700">Report</text>
+<text class="nb" x="72" y="379" font-size="14.5">counts · sync health</text>
+<text class="nb" x="72" y="401" font-size="14.5">→ status/&lt;node&gt;.json</text>
+<rect class="rj" x="607" y="314" width="233" height="110" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="629" y="353" font-size="17" font-weight="700">Silent overwrite</text>
+<text class="nb" x="629" y="379" font-size="14.5">one conflicting row</text>
+<text class="nb" x="629" y="401" font-size="14.5">→ whole packet quarantined</text>
+</svg>

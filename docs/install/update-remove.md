@@ -1,0 +1,96 @@
+# Update or remove
+
+Update AgentMesh's program files or stop using it while retaining your memory and configuration. Start with your [installation details](../use/worker#inspect-the-installation-first) and identify whether you use bootstrap source files, a source checkout or a separately installed program bundle. You will know which update path applies and what to preserve when removing the program.
+
+::: info
+These procedures concern the AgentMesh memory-sync application, not Hermes or other agents. Keep databases and WAL/SHM files, runtime and workflow configuration, identity and trust, security state, backups and the private exchange.
+:::
+
+## Update a bootstrap installation
+
+On macOS or Linux, stop the foreground worker or its [background service](./background-service), wait for the supplied package to finish syncing, then rerun the same [macOS](./macos) or [Linux](./linux) installer with the same local directory and device identity. On Windows, stop the current worker using its foreground, managed or service controls and rerun **START-WINDOWS.cmd**, as described in [Windows setup](./windows#updating). If you chose a custom local directory or device identity through the Python installer, repeat the same explicit `--local-dir` and `--node` values instead of reverting to the platform default; the Windows launcher remembers neither.
+
+For a signed installation, bootstrap reruns now resolve signing paths using the same explicit-or-default rules as the managed worker and pass them to the sync cycle/loop. Keep the existing signing identity and trust state; rerunning does not create replacement keys or downgrade the signing policy.
+
+Use `--no-ingest` on an update only when you intend to disable transcript ingestion again. To retain an already reviewed and enabled workflow, rerun without that flag.
+
+The bootstrap extracts application files and preserves an existing database only when its group and device identity match the supplied package. It retains existing workflow settings and recorded security paths. Do not delete a database to get past a mismatch. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) and [Windows bootstrap reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#console-progress).
+
+Older bootstrap packages omitted modules needed by several CLI actions. Stop existing execution, obtain a newly built package from the group administrator, wait for delivery and rerun the installer once with the same identity and local directory. Current bootstrap replaces `runtime.json` and extracted application files with owner-only permissions, repairing older permissive files. Do not patch permissions or module files piecemeal.
+
+Old OTA consumers enforce an exact release file list and reject packages built with the expanded list until re-bootstrapped. OTA activation and recovery remain [operator procedures](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md).
+
+A macOS standalone replacement has a different ownership and service model; use the operator's [Mac replacement reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md). Do not rerun bootstrap over that deployment as an upgrade shortcut.
+
+## Update a source checkout
+
+For the [local empty-group route](./new-group), your stable checkout supplies the application. Stop workers, retain private database/runtime/workflow files outside the checkout, and review the intended source revision before replacing code. Record the current and intended revisions and review their changes for database/runtime compatibility; this guide has no verified recommended release or automated compatibility guarantee. If compatibility is uncertain, keep the current revision and request maintainer guidance. Keep the application path stable or update your recall rules and service paths deliberately. Inspect the existing runtime and run a controlled cycle before resuming recurring work; do not run `setup-new` again as an update. No automated source-checkout upgrade or rollback command is provided.
+
+## Update a separately installed Windows program
+
+These commands require an existing program installation tracked and managed by the Windows installer, beyond bootstrap alone. Use PowerShell in the new bundle extracted locally outside the exchange, with `agentmesh.exe`, adjacent `BUILD.json` and all bundled files intact. Begin with a read-only plan:
+
+```powershell
+.\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --dry-run
+```
+
+Output (example from code)
+
+JSON with `status: planned`, exit `0`, with no changes. Any error must be investigated before execution.
+
+For a basic unsigned installation, stop prior workers using [worker control](../use/worker) or their original foreground/service controls. Then run:
+
+```powershell
+.\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --legacy-drained
+```
+
+Output (example from code)
+
+One confirmation and then `status: selected` (or `unchanged` when already selected), exit `0`. Cancellation exits `2`; errors exit `1`. Review the plan and its single interactive confirmation. This stopped-worker upgrade selects the new program and updates an owned login-task binding; it does not start a worker. Start the selected installed version using [worker control](../use/worker), then check its cycles.
+
+For signed policy, omit `--legacy-drained`. If there is no managed record, `--unmanaged-drained` is a separate acknowledgment that prior source workers really exited. A dry run does not perform the later stopped-worker precheck, so a successful plan alone does not prove execution is ready. Live replacement is a separate operator procedure in the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md#upgrade-program-rollback-uninstall).
+
+## Roll back or remove a Windows program
+
+Use an external extracted bundle, not an executable running inside the owned program storage. Stop the worker first. For an unsigned installation, preview whichever operation you need:
+
+```powershell
+.\agentmesh.exe windows-rollback --runtime 'C:\path\to\runtime.json' --legacy-drained --dry-run
+.\agentmesh.exe windows-uninstall --runtime 'C:\path\to\runtime.json' --legacy-drained --dry-run
+```
+
+Output (example from code)
+
+ each dry run returns `status: planned`, exit `0`, or an error for invalid prerequisites. The commands only preview separate alternatives.
+
+Run only the chosen command again without `--dry-run` after reviewing it. Interactive rollback requires `ROLLBACK`; removal requires `UNINSTALL`. The signed-policy drain rules above also apply.
+
+After confirmation, expected from code: rollback returns `status: selected`; uninstall returns `status: uninstalled` and `data_preserved: true`, both exit `0`. Cancellation exits `2` and failure exits `1`.
+
+Rollback selects a previous intact version owned by this installer, changes only program/task selection and does not restart the worker. It does not restore a database. Uninstall removes only the verified owned program files and task; it keeps private data, configuration and ownership/recovery records. Unknown files, changed hashes or uncertain ownership block removal. Preserve incomplete-operation state for operator review instead of deleting it or recreating the installation.
+
+## Remove a bootstrap or source-checkout installation
+
+Stop the foreground worker and disable any configured [background service](./background-service). On macOS, move the unloaded LaunchAgent plist to private storage outside the LaunchAgents directory so it cannot load at login. On Linux, disable the user service and retain its unit privately for possible reuse.
+
+For a Windows bootstrap, stop its foreground window with Ctrl-C, or stop the managed worker through its own controls. Retire any startup configuration you added; bootstrap alone does not register one. Confirm execution has stopped before removing files. `windows-uninstall` does not manage this bootstrap layout.
+
+Once no worker or service references it, remove only the application directory identified by your installation. For a bootstrap installation, preserve its private baseline and manifest before removing `app`, and retain the `data` directory beside it. On default Windows installations these are `%LOCALAPPDATA%\AgentMesh\app` and `%LOCALAPPDATA%\AgentMesh\data`; use your chosen root for custom installations. For a source-checkout installation, retain the separate local installation directory created by `setup-new`. In both cases, preserve all private state listed above; do not delete the whole installation root. [Remove the recall rules](#remove-agent-recall-rules) as a separate step. No unified bootstrap/source-checkout uninstall action is provided by this CLI. For an operator-managed macOS bundle, follow [Uninstall while keeping data](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md#uninstall-while-keeping-data) instead.
+
+::: warning
+These instructions were checked against source and CLI help, not executed against a native Windows or Linux installation. Verify the resulting worker and service state on the target host.
+:::
+
+## Remove agent recall rules
+
+`install_agent_rules.py` has no uninstall action. First inspect the installed instruction files and their managed markers; preserve any text you added outside the managed block. Remove only the AgentMesh-managed instructions and adjacent manifest you intend to retire:
+
+| Integration | Instruction file and manifest |
+| --- | --- |
+| OMP and Codex (shared) | `~/.agents/skills/agentmesh-shared-memory/SKILL.md` and its adjacent `command.json` |
+| Claude | `~/.claude/rules/agentmesh-shared-memory.md` and `agentmesh-shared-memory.command.json` in the same directory |
+| Hermes | `skills/agentmesh-shared-memory/SKILL.md` and adjacent `command.json` beneath the selected Hermes profile |
+
+Use the actual custom `--home`/`--hermes-home` location if one was selected. Removing the shared OMP/Codex files affects both agents. Do not remove an unowned file or a whole rules directory. Verify the agent no longer loads the retired rule; removing program files alone leaves these instructions behind.
+
+Next, [check sync status](../use/status) after an update or rollback; after removal, follow [Privacy](../privacy) to protect the retained data.

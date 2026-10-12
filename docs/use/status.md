@@ -1,53 +1,72 @@
 # Check sync status
 
-Check local and peer status to distinguish file delivery from completed record imports. Start with a [configured worker](./worker) and its database and runtime paths. You will be able to identify pending changes, conflicts and worker diagnostics before investigating sync problems.
+Distinguish file delivery from completed record imports before relying on shared memory. Start with a [configured worker](./worker) and its database and runtime paths. You will be able to inspect local counts, peer reports and worker failures, then verify a record at its destination.
 
-![One worker cycle: ingest new sessions, export local changes as packets, exchange through the shared folder, import peer packets, then write a status report. A row edited on two devices is quarantined rather than silently overwritten.](/diagrams/worker-cycle.svg)
+![Basic cycle: ingest supported sessions, export records, exchange packets, import peer packets and write a report; a conflict quarantines the whole packet.](/diagrams/worker-cycle.svg)
 
-Each cycle runs in arrow order. **Ingest** stores new agent sessions locally. **Export** turns local changes into change packets. The **exchange folder** carries packets from every peer. **Import** validates peer packets and applies them, or keeps them pending until their dependencies arrive. **Report** writes counts and sync health to `status/<node>.json`. The red box is what AgentMesh refuses to do: when the same row was edited on two devices, it quarantines the change instead of overwriting either one.
+**Ingest** reads supported sessions when enabled. **Export** captures record changes; the **Exchange folder** carries their packets through independently running Syncthing. **Import** validates and applies whole packets or leaves them pending; **Report** publishes observations. The highlighted folder connects peers. The red box rejects silent overwrite: one conflicting row prevents every change in that packet from applying. Configured summarization can add more work after this simplified flow.
 
-Run these commands from the installed `app` directory.
+Open a second terminal if the foreground worker occupies the first. Commands below run from the installed `app` directory or checkout's `memory-sync` directory.
 
 ## Local status
 
 ```sh
-python3 agentmesh.py --database /path/to/memory.db status
+python3 agentmesh.py --database "/path/to/memory.db" status
 ```
 
-The JSON result contains memory-table counts and local sync state, including unpublished outbox, received, pending, conflict and invalid counts. Status does not scan incoming exchange files; a worker cycle must import them first.
+Observed excerpt from an empty test database, exit `0`:
 
-`status` has no action-specific options. Omitting the global database argument produces `agentmesh.py: error: --database is required for this action` and exit code `2`.
+```json
+{"counts":{"ingestion_cursors":0,"ingestion_errors":0,"memory_items":0,"memory_sources":0,"memory_summaries":0,"observation_events":0,"source_sessions":0,"summary_state":0},"sync":{"conflict":0,"invalid":0,"outbox":0,"pending":0,"received":0}}
+```
+
+This excerpt omits device/group and security metadata. Exit `0` means status was read, not that syncing succeeded. Omitting `--database` exits `2`; database errors exit `1`.
+
+- `outbox` counts captured packets not yet published. It excludes local changes not captured by a worker cycle; `outbox: 0` does not mean nothing remains to send. Published outbox records are retained.
+- `received` counts local packet receipts, not proof of two-way convergence.
+- `pending`, `conflict` and `invalid` count diagnostic file paths, not rows. Run a cycle before interpreting incoming files: status itself does not scan or import them.
+- Equal record counts do not prove equal contents. Verify a distinctive record by recall on the receiving device.
 
 ## Peer status files
 
-Each completed worker cycle writes `status/<node>.json` in the private exchange, using the database's device identity. It reports platform, counts, sync health and an update timestamp. These are last-reported observations, not proof that a peer is currently running or fully synchronized.
+The worker attempts to publish `status/<node>.json` in the private exchange folder; `<node>` is the database's node slot. These files report platform, counts, sync health and a timestamp. They can be stale or absent, especially when the exchange is unavailable. They include sync identifiers and may include filesystem paths through errors; keep raw reports private.
 
-Reports do not include memory record bodies or credential configuration, but they include sync identifiers, and publication error text can contain filesystem paths. Keep raw status files private and inspect them before sharing excerpts. [Insight](./insight) provides a restricted projection for its dashboard.
-
-::: warning
-A zero exit code from a status query or the low-level sync command does not mean there are no conflicts. Inspect pending, conflict and invalid counts. The worker's one-cycle command does return failure for recorded conflicts or invalid packets; use both the report and exit status.
-:::
+One-shot workers now exit `1` for both transient exchange failure and permanent failure. A status query can still exit `0` while showing conflicts. See the [worker failure table](./worker#respond-to-failures-and-timeouts), and inspect both the report and exit status.
 
 ## Diagnose a worker
 
 ```sh
-python3 agentmesh.py diagnose --runtime /path/to/runtime.json
+python3 agentmesh.py diagnose --runtime "/path/to/runtime.json" --json
 ```
 
-For machine-readable output:
+Observed excerpt before a managed record existed, exit `0`:
 
-```sh
-python3 agentmesh.py diagnose --runtime /path/to/runtime.json --json
+```json
+{"read_only":true,"status":"ok","worker":{"cycles":0,"process_observation":"no_record","state":"stopped"}}
 ```
 
-Diagnosis is read-only and redacted; it does not create or repair runtime state. It exits `0` only when the report is `ok`, and `1` otherwise. The existing runtime supplies the database path, so these commands do not require `--database`.
+`ok` does not mean a worker is running. After a managed worker ran and stopped, diagnosis returned `status: attention`, a worker check with `code: WORKER_NOT_RUNNING`, and exit `1`. An invalid installation can fail an earlier check and skip worker inspection. Neither diagnosis nor inspection repairs state.
+
+Omit `--json` for the human-readable report. Expected from the same renderer: staged check results, `Result: OK` or `Result: ATTENTION`, and limitations. Exit `0` is only for `ok`; all other report statuses exit `1`. For exchange retries, inspect `worker-status` too: the diagnostic projection does not expose the new `failure_kind`/`warning` fields and may stop at an unavailable-exchange installation check.
 
 ## Managed worker
 
 ```sh
-python3 agentmesh.py worker-status --runtime /path/to/runtime.json
+python3 agentmesh.py worker-status --runtime "/path/to/runtime.json"
 ```
 
-This inspects managed-worker lifecycle state. It does not establish whether an unrelated foreground worker is running; missing managed metadata is not proof that all workers are stopped.
+Observed before managed execution, exit `0`:
 
-To browse the same information in a dashboard, open [Insight](./insight). See [troubleshooting](../troubleshooting) and the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for interpreting conflicts and recovery limits.
+```json
+{"cycles":0,"state":"stopped"}
+```
+
+After a transient one-shot failure, the observed excerpt was:
+
+```json
+{"state":"failed","cycles":1,"failure_kind":"transient","warning":"exchange unavailable","last_error":"ExchangeUnavailable"}
+```
+
+That one-shot instance has finished; a recurring managed loop instead remains running for transient failures. A permanent failure stops the managed loop. Use `last_error_detail` and [troubleshooting](../troubleshooting) to inspect the cause before restarting. Missing metadata does not account for unrelated foreground or service workers.
+
+Next, perform the [A → B recall check](../getting-started/quick-start#prove-a-record-travels-from-a-to-b). To browse selected observations, open [Insight](./insight).

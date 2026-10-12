@@ -1,40 +1,57 @@
 # New sync group
 
-Create an empty local database and a separate sync group when you have no supplied bootstrap. First complete the [prerequisites](../getting-started/prerequisites) and understand [device identity](../getting-started/concepts#device-identity). You will finish with local database and runtime files; application installation, ingestion and worker startup are separate steps.
+Create an empty local database when you are starting alone without a supplied bootstrap. Complete the [prerequisites](../getting-started/prerequisites), including Python 3.11+, first. You will have local memory that you can ingest and recall from a repository checkout; this route cannot add another device yet.
 
 ::: info
-AgentMesh manages memory sync, not installation of Hermes or other agents. This command creates local state only; it does not copy application code or join an existing group.
+AgentMesh manages memory sync, not installation of Hermes or other agents. `setup-new` creates local state only; it does not copy application code, start a worker or join an existing group.
 :::
 
-## Choose empty, separate storage
+## Prepare the source and storage
 
-Use Python 3.11 or later for this command. Unlike the bootstrap wrappers' Python 3.10 minimum, this implementation uses `hashlib.file_digest`, added in Python 3.11.
+Obtain the [AgentMesh repository](https://github.com/theidentify/AgentMesh) and open its `memory-sync` directory in a terminal. Keep this checkout at a stable local path outside the exchange folder; it supplies the application for this route. Use that directory wherever this guide says “installed app or repository source.” There is no generated `app` directory to point service examples at.
 
-Use an accepted private Syncthing exchange containing its `.stfolder` directory. The new local directory must not exist, its parent must already exist, and neither directory may contain the other. Use absolute paths without parent traversal or symlink components.
+Add a private local folder in Syncthing and let Syncthing create `.stfolder`, as described in [prerequisites](../getting-started/prerequisites#share-the-private-exchange-folder). The new local installation directory must not exist, and its parent must already exist. The local installation and exchange folder must not be nested inside one another. Use absolute paths without parent traversal or symlink components, including in ancestor directories.
 
-If you received a bootstrap, use [Quick start](../getting-started/quick-start) instead. Each invocation below creates a new group, so do not repeat it on peers to join them.
+## Create local memory
 
-## Create the group
-
-From the repository root:
+From `memory-sync`:
 
 ```sh
-python3 memory-sync/agentmesh.py setup-new \
-  --local-dir /absolute/path/to/new-installation \
-  --exchange /absolute/path/to/exchange --node mac
+python3 agentmesh.py setup-new \
+  --local-dir "/absolute/path/to/new-installation" \
+  --exchange "/absolute/path/to/exchange" --node mac
 ```
 
-The literal value after `--node` selects a device identity, regardless of the operating system. Review the prompt and type `NEW` only if you intend to create a separate empty group. No global `--database` argument is needed.
+The prompt asks you to type `NEW`. Observed result after confirming, with private values redacted, exit `0`:
 
-The command creates `data/memory.db`, `data/runtime.json` and `data/workflow.json` beneath your chosen local directory. Ingestion and summarization are both disabled in this new workflow. It creates no signing keys and starts no service or worker. A retained `.setup-pending.json` indicates incomplete setup requiring review; do not bypass it by copying state or rerunning into another identity.
+```json
+{"format":"agentmesh-setup-new-v1","group":"<UUID>","node":"mac","runtime":"/path/to/new-installation/data/runtime.json","status":"created"}
+```
 
-## Inspect the result
+Success is `status: created`. Declining leaves `status: pending` and exits `2`; a validation or setup error exits `1`. The `--node` value selects the node slot independently of OS; the command creates a new group UUID. Running it again on another device creates a different group.
+
+The new directory contains `data/memory.db`, `data/runtime.json` and `data/workflow.json`, with ingestion and summarization disabled. There are no signing keys or running services. If `.setup-pending.json` remains, preserve the entire partial directory and [request help](../troubleshooting#request-help-without-sharing-memory); do not delete its marker to bypass validation.
+
+## Inspect and use the database
 
 ```sh
-python3 memory-sync/agentmesh.py inspect-install \
-  --runtime /absolute/path/to/new-installation/data/runtime.json
+python3 agentmesh.py inspect-install --runtime "/path/to/new-installation/data/runtime.json"
 ```
 
-Keep these files private and outside the exchange. To add another device to this same group, arrange a private bootstrap with the operator; creating another empty group is not a join procedure. The implementation is in [install_setup.py](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/install_setup.py).
+Observed result, redacted, exit `0`:
 
-Next, [ingest agent sessions](../use/ingest) manually to give this empty database something to recall; use the repository's `memory-sync` directory for those source commands.
+```json
+{"database":"/path/to/new-installation/data/memory.db","exchange":"/path/to/exchange","format":"agentmesh-install-inspect-v1","group":"<UUID>","identity":"absent","node":"mac","policy":"legacy","status":"ready"}
+```
+
+`ready` means the existing local installation passed inspection, not that a worker is running. `identity: absent` means no signing-key directory exists; the database already has its device identity. A missing runtime can return `not_found` with exit `0`; an invalid installation exits `1`.
+
+Use this database path for [manual ingestion](../use/ingest) and [recall](../use/recall), running from the checkout's `memory-sync` directory. Manual ingestion must be repeated when new sessions arrive. To automate supported local sources later, use the [workflow example](../use/ingest#configure-automatic-ingestion) and [worker control](../use/worker); no summaries is normal while summarization is disabled.
+
+## Adding another device
+
+**A group created with `setup-new` cannot add another device yet.** The invitation-based join feature is being implemented separately. Do not copy the initialized database, create another group with the same label, or manufacture a new baseline to work around this limitation.
+
+The existing [package builder](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/build_package.py) can build a private peer bootstrap from an already available `omp-sqlite-snapshot-v1` snapshot and an explicitly chosen group UUID. This is a separate operator path, not an export/join procedure for your new SQLite group. The repository has no supported SQLite-to-bootstrap snapshot exporter preserving the required baseline history. If you already have a compatible snapshot, whoever administers that group—possibly you—must follow the [private bootstrap reference](https://github.com/theidentify/AgentMesh/blob/main/README.md#private-bootstrap-construction), retain the common baseline and assign distinct device identities.
+
+Next, [ingest a supported local session](../use/ingest) to give your new database something to recall.

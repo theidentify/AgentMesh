@@ -20,7 +20,7 @@ Keep local databases, WAL/SHM files, credentials and deployment configuration ou
 
 ## Understand integrity checks
 
-File hashes detect accidental corruption, not malicious replacement. Restrict access to the exchange folder. Signing and trust configuration are separate operator topics; see the [reference index](./reference/).
+File hashes detect changes relative to a trusted expected hash. They do not authenticate the sender or protect against replacement of both a file and its checksum manifest. Restrict access to the exchange folder. Signing and trust configuration are separate operator topics; see the [reference index](./reference/).
 
 ## Handle status and screenshots carefully
 
@@ -30,4 +30,4 @@ Insight can display memory excerpts. Its redaction is best effort, so keep scree
 
 See the [repository privacy boundary](https://github.com/theidentify/AgentMesh/blob/main/README.md#privacy), [Windows setup boundaries](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#important-boundaries), and [Insight privacy details](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#read-only-and-privacy-boundary).
 
-Next, use [Reference](./reference/index) for deeper trust and recovery procedures.
+Next, use the [privacy-safe help template](./troubleshooting#request-help-without-sharing-memory) if you need support, or [Reference](./reference/index) for deeper trust procedures.

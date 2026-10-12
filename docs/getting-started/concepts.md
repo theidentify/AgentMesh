@@ -1,41 +1,39 @@
 # Concepts
 
-Understand how AgentMesh keeps memory local while sharing record changes between devices. Begin with [What is AgentMesh](../introduction) for the scope of the application; no installation is needed yet. You will be ready to choose distinct device identities and prepare a private exchange.
+Understand how AgentMesh keeps memory local while sharing record changes between devices. Begin with [What is AgentMesh](../introduction) for the application's scope; no installation is needed yet. You will be ready to choose distinct device identities and prepare a private exchange folder.
 
 ## How AgentMesh works
 
-AgentMesh exchanges record changes instead of live database files. Each device keeps its own memory and shares only small record changes, so the picture below is the whole system.
+Each device keeps a local database and exchanges record changes. The diagram summarizes the main components of routine sync.
 
-![Your agents feed a local sync worker that keeps a local database and exchanges change packets with other devices through a private Syncthing folder; syncing database files directly is forbidden.](/diagrams/architecture.svg)
+![Supported transcripts feed the worker and local database; the worker exchanges packets with other devices through a private folder, while live database-file sync is unsafe.](/diagrams/architecture.svg)
 
-Follow the arrows from left to right. **Your agents** (Claude, Codex, Hermes, OMP) write session transcripts as they work. The **sync worker** picks up new sessions, stores them in the local database, **Local database**, and every 60 seconds exports local changes and imports changes from peers. The **exchange folder** is the only thing the devices share: a private Syncthing folder of change packets and status reports. **Other devices** run the same worker against their own local databases.
+**Your agents** can use recall rules; built-in session ingestion supports OMP, Codex and Claude. When ingestion is enabled, the **sync worker** stores supported sessions in the **Local database**, then exports and imports record changes through the **Exchange folder**. **Other devices** have separate databases and distinct device identities. Hermes supports recall through this integration, but its sessions are not ingested by this workflow.
 
-The exchange folder is highlighted because everything depends on it, and it is also the reason both devices must be online at the same time. The red box is the shortcut people try first: putting the database file itself in Syncthing. Never do that; live SQLite files and their WAL/SHM companions corrupt when copied mid-write.
+The highlighted exchange folder carries packets and reports. Direct Syncthing exchange between two devices requires overlapping online time. The red box shows an unsafe shortcut: copying live SQLite database files and their WAL/SHM companions during writes can produce an inconsistent or corrupted copy. WAL and SHM are SQLite's write-ahead log and shared-memory sidecar files.
 
-The rest of this page defines each piece in more detail.
+A bootstrap enables ingestion; an empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
 
 ## Device identity
 
-A device identity combines the sync group UUID with one of three allocation slots: `mac`, `windows` or `linux`. These are labels, not operating systems: a group supports at most three devices, each with a different identity. Two Macs, or a Linux source and a Mac destination, can share memory when they use different identities. Platform wrappers select a matching label by default; the Python installer and empty-group setup can select any slot on any OS. Never reuse an identity on another active device or clone initialized local state.
+A device identity combines a sync group UUID with one of three values: `mac`, `windows` or `linux`. These labels are independent of the operating system. When explaining `--node`, its value is the **node slot**; the `<node>` in `status/<node>.json` means that same value. Elsewhere this guide uses **device identity**.
 
-## Exchange folder
+A group supports at most three active devices with different identities. Two Macs and one Linux device can use the three different identities; a fourth device cannot join the same group under this model. Platform setup wrappers choose a default identity, while the Python installer can select an alternative on any OS. Ask the group administrator which identity is assigned to each device, including offline devices, and inspect existing runtimes. Never clone initialized local state or reuse an identity on another active device.
 
-The private exchange carries immutable change packets, the bootstrap ZIP and manifest, and peer reports at `status/<node>.json`. Supplied setup files may also live there. Keep the live database and its WAL/SHM files outside this folder; AgentMesh synchronizes records, not database files.
+## Exchange folder and bootstrap
 
-## Bootstrap
+The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. A group created with `setup-new` [cannot add another device yet](../install/new-group#adding-another-device).
 
-The bootstrap ZIP supplies a shared starting snapshot. Its checksum manifest lets the installer check integrity. Both contain private installation material: never publish them, including as GitHub release assets. A Git checkout alone contains no memories.
+## Conflicts affect whole packets
 
-## Change packets and conflicts
+A packet can contain several changed records. If one conflicts with an independent edit or a natural unique key, the **entire packet** is quarantined: unrelated records inside it do not apply either. Later packets depending on it may remain pending. Other independent packets can still apply during that cycle, but a managed worker stops after a permanent failure. [Inspect the failure](../troubleshooting#records-are-quarantined) before restarting.
 
-A packet describes record changes. Independent edits to the same row or natural unique key are quarantined instead of silently merged. Other unrelated packets can still apply. See [troubleshooting](../troubleshooting#records-are-quarantined) before attempting recovery.
+## Plan for growth
 
-## Overlapping online time
+Capture scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packets, receipts, history and published outbox records are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
 
-Direct Syncthing exchange needs both devices online at the same time. Offline writes stay local until transport and workers are available again.
+## What setup does not include
 
-## What AgentMesh does not do
+AgentMesh installs memory sync, not Hermes or other agent applications. Setup does not run OS package managers or enable a background service. PostgreSQL is not required for this guide's SQLite path; if you use the optional PostgreSQL mirror, peer changes do not write back to PostgreSQL. See the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details.
 
-The setup wrappers install the memory-sync application, not Hermes or other agents. They do not run OS package managers or register services. Background operation is a [separate step](../install/background-service). Peer edits do not write back to PostgreSQL.
-
-Read the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details and limitations. When the model is clear, check the [prerequisites](./prerequisites) for your devices.
+Next, prepare the [prerequisites](./prerequisites) for your chosen setup route.

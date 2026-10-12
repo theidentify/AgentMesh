@@ -21,8 +21,9 @@
 <path class="ar" d="M686.0,346.0 L622.0,346.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
 <rect class="nd" x="28" y="84" width="257" height="132" rx="12" stroke-width="1.5"/>
 <text class="nt" x="50" y="123" font-size="17" font-weight="700">1 · Prerequisites</text>
-<text class="nb" x="50" y="149" font-size="14.5">Python 3.10+ with FTS5</text>
-<text class="nb" x="50" y="171" font-size="14.5">Syncthing on PATH</text>
+<text class="nb" x="50" y="149" font-size="14.5">Python 3.10+ (bootstrap)</text>
+<text class="nb" x="50" y="171" font-size="14.5">3.11+ for empty groups</text>
+<text class="nb" x="50" y="193" font-size="14.5">FTS5 · JSON · Syncthing</text>
 <rect class="nd" x="349" y="84" width="273" height="132" rx="12" stroke-width="1.5"/>
 <text class="nt" x="371" y="123" font-size="17" font-weight="700">2 · Pair devices</text>
 <text class="nb" x="371" y="149" font-size="14.5">accept the exchange</text>
@@ -35,7 +36,7 @@
 <text class="nb" x="708" y="193" font-size="14.5">START-WINDOWS.cmd</text>
 <rect class="nd" x="686" y="280" width="245" height="132" rx="12" stroke-width="1.5"/>
 <text class="nt" x="708" y="319" font-size="17" font-weight="700">4 · Foreground worker</text>
-<text class="nb" x="708" y="345" font-size="14.5">syncs every 60 s</text>
+<text class="nb" x="708" y="345" font-size="14.5">60 s wait between cycles</text>
 <text class="nm" x="708" y="367" font-size="14.5">stops on Ctrl-C / close</text>
 <rect class="nd" x="349" y="280" width="273" height="132" rx="12" stroke-width="1.5"/>
 <text class="nt" x="371" y="319" font-size="17" font-weight="700">5 · Background (optional)</text>

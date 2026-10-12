@@ -1,6 +1,6 @@
 # Reference
 
-Find the repository reference for details beyond the task-based user guide. Start with [What is AgentMesh](../introduction) if you have not chosen a setup path yet. You will be able to distinguish user instructions from operator procedures and developer material, each with its own verification limits.
+Find the repository reference for details beyond the task-based user guide. Start with [What is AgentMesh](../introduction) if you have not chosen a setup path yet. You will be able to distinguish user instructions from operator procedures and developer material, and consult each linked document for its verification limits.
 
 ## Users
 
@@ -31,4 +31,4 @@ Find the repository reference for details beyond the task-based user guide. Star
 | [Standalone builds](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/STANDALONE-BUILD.md) | Build native CLI bundles and review platform verification gates. |
 | [Profile-owned memory prototype](https://github.com/theidentify/AgentMesh/blob/main/profile-memory/README.md) | Explore the separate opt-in profile memory experiment. |
 
-Next, return to [Quick start](../getting-started/quick-start) for the end-user setup path.
+Next, use [Quick start](../getting-started/quick-start) for a supplied bootstrap, or [New sync group](../install/new-group) to begin local use without one.

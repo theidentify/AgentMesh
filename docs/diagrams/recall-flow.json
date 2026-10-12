@@ -3,7 +3,7 @@
   "groups": [{"label": "This device · no network call", "cols": [1, 2], "rows": [0, 0]}],
   "nodes": [
     {"id": "agent", "col": 0, "row": 0, "kind": "external", "title": "Agent",
-     "lines": ["reads its AgentMesh rule", "runs recall_argv"], "muted": "Claude · Codex · Hermes · OMP"},
+     "lines": ["rule instructs recall", "verify actual invocation"], "muted": "Claude · Codex · Hermes · OMP"},
     {"id": "cli", "col": 1, "row": 0, "kind": "highlight", "title": "agentmesh.py recall",
      "lines": ["query with --limit 12", "--project optional"]},
     {"id": "db", "col": 2, "row": 0, "title": "Local database",

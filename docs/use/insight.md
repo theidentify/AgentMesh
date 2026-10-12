@@ -21,18 +21,20 @@ From the repository root:
 python3 -u insight/server.py --port 0
 ```
 
-The server chooses an available port and prints JSON containing its `127.0.0.1` URL, PID and read-only flag. Open that URL locally. Stop the server with Ctrl-C.
+Expected example derived from `insight/server.py` (server not run here): JSON containing `url` on `127.0.0.1`, `pid` and `readonly: true`. The server chooses an available port. A bind error or missing URL is startup failure; an open page with unavailable sources means the server works but the data source needs checking. Open that URL locally. Stop the server with Ctrl-C.
 
 ## Point it at your data
 
-Use an existing SQLite database and the runtime profile directory containing your metrics and job files:
+Use `--sqlite` for an existing database and `--home` for the Hermes profile containing metrics/job files; that profile is not the directory containing `runtime.json`. If you use only Codex, omit `--home` and supply just `--sqlite`; missing Hermes metrics/jobs may remain unavailable:
 
 ```sh
 python3 -u insight/server.py --port 0 \
-  --sqlite /path/to/node.db --home /absolute/path/to/profile
+  --sqlite "/path/to/node.db" --home "/absolute/path/to/profile"
 ```
 
-`--home` defaults to `HERMES_HOME`, or `~/.hermes` if unset. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. Authority labels require explicit backend configuration; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
+Expected from the same server code: the local URL/PID/`readonly` startup JSON, then a read-only dashboard. Inspect Memory Browser connection availability; an absent database is not created or repaired.
+
+`--home` defaults to `HERMES_HOME`, or `~/.hermes` if unset. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. To label a backend authoritative in Insight, configure its role explicitly; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
 
 ::: tip
 Optional PostgreSQL access takes its DSN only from the `INSIGHT_PG_DSN` environment variable, never a CLI flag or a file in Git. See the [connection instructions](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#run-from-the-repository-root) for the required format and read-only setup.

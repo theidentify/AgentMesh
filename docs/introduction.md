@@ -4,11 +4,11 @@ AgentMesh makes past work available across agents and devices through local memo
 
 ## Keep context across agents and devices
 
-Agent sessions are stored separately, so a decision recorded by one agent on one device may be missing from the next conversation elsewhere. AgentMesh ingests supported session transcripts into a local SQLite database, exchanges record changes through a private Syncthing folder, and lets agents recall memory with source evidence. Each device keeps its own database; the shared folder carries change packets.
+Agent sessions are stored separately, so a decision recorded by one agent on one device may be missing from the next conversation elsewhere. AgentMesh ingests OMP, Codex and Claude session transcripts into a local SQLite database, exchanges record changes through a private Syncthing folder, and lets agents recall memory with source evidence. Each device keeps its own database; the shared folder carries change packets.
 
 ## Use this guide to set up and use memory
 
-This guide is for people using Hermes, OMP, Codex or Claude who want to install AgentMesh, connect recall rules and check that memory is available. If you already received a private bootstrap, take the [quick start](./getting-started/quick-start). If you are creating an empty group, follow [New sync group](./install/new-group).
+Hermes uses recall through this integration; its transcripts are not ingested. Recall rules are instructions telling an agent how to invoke the local read-only query. This guide is for people using Hermes, OMP, Codex or Claude who want to install AgentMesh, connect recall rules and check that memory is available. If you already received a private bootstrap, take the [quick start](./getting-started/quick-start). If you are creating an empty group, follow [New sync group](./install/new-group).
 
 ## Know what setup includes
 
@@ -20,7 +20,7 @@ For the project scope, see the [repository overview](https://github.com/theident
 
 ![Reading path from Concepts through Prerequisites, Install, Use and Help, with Install highlighted.](/diagrams/reading-path.svg)
 
-Start with **Concepts** to understand local memory and sync. **Prerequisites** prepares Python and Syncthing. **Install**, the highlighted step, sets up this device. **Use** takes you through status checks and recall. **Help** covers troubleshooting and protecting your data.
+Start with **Concepts** to understand local memory and sync. The **Prerequisites** page explains how to prepare Python and Syncthing. **Install**, the highlighted step, sets up this device. **Use** takes you through status checks and recall. **Help** covers troubleshooting and protecting your data.
 
 1. Read [Concepts](./getting-started/concepts).
 2. Prepare the [prerequisites](./getting-started/prerequisites).
@@ -28,4 +28,4 @@ Start with **Concepts** to understand local memory and sync. **Prerequisites** p
 4. [Check status](./use/status), then [recall memory and connect agents](./use/recall).
 5. Use [Troubleshooting](./troubleshooting) and [Privacy](./privacy) when you need help.
 
-Next, read [Concepts](./getting-started/concepts) to understand what stays local and what travels between devices.
+Next, choose [Quick start](./getting-started/quick-start) if you received a private bootstrap, or [New sync group](./install/new-group) for local use when starting alone. Read [Concepts](./getting-started/concepts) first if these terms are new.

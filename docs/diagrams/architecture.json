@@ -3,9 +3,9 @@
   "groups": [{"label": "This device · local only", "cols": [1, 1], "rows": [0, 1]}],
   "nodes": [
     {"id": "agents", "col": 0, "row": 0, "kind": "external", "title": "Your agents",
-     "lines": ["Claude · Codex", "Hermes · OMP"], "muted": "write sessions, read recall"},
+     "lines": ["OMP · Codex · Claude", "Hermes: recall only"], "muted": "supported sessions / recall"},
     {"id": "worker", "col": 1, "row": 0, "title": "sync worker",
-     "lines": ["ingest sessions", "export / import packets", "every 60 s"]},
+     "lines": ["configured ingestion", "export / import packets", "60 s wait after each cycle"]},
     {"id": "db", "col": 1, "row": 1, "title": "Local database",
      "lines": ["local SQLite memory", "outside the exchange"], "muted": "one identity per device"},
     {"id": "exchange", "col": 2, "row": 0, "kind": "highlight", "title": "Exchange folder",
@@ -13,7 +13,7 @@
     {"id": "peers", "col": 3, "row": 0, "kind": "external", "title": "Other devices",
      "lines": ["distinct device identities", "separate local databases"], "muted": "online at the same time"},
     {"id": "nofile", "col": 2, "row": 1, "kind": "rejected", "title": "Syncing .db / WAL / SHM",
-     "lines": ["corrupts state"], "muted": "never do this"}
+     "lines": ["can corrupt state"], "muted": "never do this"}
   ],
   "edges": [
     {"from": "agents", "to": "worker"},

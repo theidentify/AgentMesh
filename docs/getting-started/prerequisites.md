@@ -1,37 +1,59 @@
 # Prerequisites
 
-Prepare Python, Syncthing and a private exchange before installing AgentMesh. Read [Concepts](./concepts) first so you can choose a device identity without duplicating another writer. You will finish with the prerequisites needed for bootstrap installation or a new empty group.
+Prepare Python, Syncthing and local storage before installing AgentMesh. Read [Concepts](./concepts) first to understand device identity and the private exchange folder. You will be ready either to use a supplied bootstrap or to create an empty group for local use.
 
-![Five steps: prerequisites, pair devices, run the installer, foreground worker, optional background service. Unzipping the bootstrap by hand is not allowed.](/diagrams/install-flow.svg)
+![Bootstrap setup: check prerequisites, pair devices, run the installer, keep the foreground worker open, then optionally configure background operation.](/diagrams/install-flow.svg)
 
-Follow **Prerequisites** by preparing Python and Syncthing, then **Pair devices** and accept the private exchange. **Run the installer**, highlighted, verifies the bootstrap and creates local state. The **Foreground worker** ingests and exchanges records while its window stays open. For **Background (optional)** operation, stop the foreground worker before configuring startup. Do not unzip the bootstrap by hand; let the installer perform its checks.
+**Prerequisites** means checking Python and Syncthing. **Pair devices** shares the private exchange folder. **Run the installer**, highlighted, verifies a supplied bootstrap and creates local state. The **Foreground worker** runs while its terminal stays open; stop it before **Background (optional)** setup. This diagram shows the bootstrap path; starting alone follows [New sync group](../install/new-group) instead.
 
-## Python
+## Install and check Python
 
-Install Python 3.10 or later with SQLite FTS5 and JSON support. On macOS and Linux, put `python3` on PATH. Check FTS5 and print the SQLite version:
+Bootstrap installation requires Python 3.10+ with SQLite FTS5 and JSON support. `setup-new` requires Python 3.11+ because it uses `hashlib.file_digest`. Choose a supported Python 3.11+ release when preparing a new environment.
+
+| Platform | Installation starting point |
+| --- | --- |
+| macOS | Use the [official macOS downloads](https://www.python.org/downloads/macos/) and reopen your terminal after installation. |
+| Windows | Use the [official Windows downloads](https://www.python.org/downloads/windows/); confirm `py -3` selects the intended interpreter. |
+| Linux | Follow [Python's Unix installation guidance](https://docs.python.org/3/using/unix.html) for your distribution; verify the interpreter's SQLite capabilities below. |
+
+On macOS/Linux, run:
 
 ```sh
-python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sqlite3.sqlite_version)"
+python3 -c "import sys,sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sys.version.split()[0]); print('FTS5: ok'); print('JSON:',c.execute(\"select json_valid('{}')\").fetchone()[0])"
 ```
 
-Check JSON support too:
+Observed on macOS, exit `0`:
 
-```sh
-python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); print(c.execute(\"select json_valid('{}')\").fetchone()[0])"
+```text
+3.14.8
+FTS5: ok
+JSON: 1
 ```
 
-The JSON check prints `1`. On Windows, use `py -3` in place of `python3`. The setup wrappers check these prerequisites; they do not install Python.
+Your version can differ; it must meet the minimum for your route. A missing command, traceback or missing success lines means this interpreter is not ready. Install a Python build with SQLite FTS5/JSON support and rerun the check using the interpreter that will run AgentMesh.
 
-## Syncthing
+On Windows, run the same check with `py -3` in place of `python3`. Expected result derived from the same Python code, not a native Windows run: a suitable version, `FTS5: ok`, `JSON: 1`, and exit `0`. The macOS/Linux setup wrappers perform prerequisite checks; **START-WINDOWS.cmd only finds a runnable Python command**. It does not verify the minimum version, FTS5, JSON or Syncthing for you.
 
-Install Syncthing separately, put `syncthing` on PATH, and keep it running. Keep local application and database storage outside the exchange folder.
+## Install and start Syncthing
 
-## Pair devices and accept the exchange folder
+Use the [official Syncthing downloads](https://syncthing.net/downloads/) for macOS, Windows or Linux, or the linked distribution packages. Keep `syncthing` on PATH for the macOS/Linux wrappers. Start it, then open its local management GUI at `http://127.0.0.1:8384/` unless you configured another address. A reachable GUI confirms the local service is available, not that peer files have arrived. Choose startup behavior separately using [Syncthing's autostart documentation](https://docs.syncthing.net/users/autostart.html).
 
-Pair only trusted devices and accept the private exchange folder. For bootstrap installation, it must contain the supplied setup files, bootstrap ZIP and checksum manifest. A [new empty group](../install/new-group) needs an accepted exchange but no bootstrap. Wait until Syncthing reports **Up to Date** before installing. Do not unpack the bootstrap into the exchange yourself.
+## Share the private exchange folder
 
-## Choose a device identity
+For a supplied bootstrap, the person administering the group must assign an unused AgentMesh device identity. Check their device list and existing runtime inspections; an offline device still owns its identity. Syncthing device IDs are separate from AgentMesh device identities, and missing status files do not prove an identity is free.
 
-Choose an unused [device identity](./concepts#device-identity) in the group. Platform wrappers choose a default label, which may already belong to another device running the same OS. In that case use the Python installer with an explicit unused identity as described on each install page. Do not copy another device's initialized database or local sync state.
+1. On each device, open **Actions → Show ID**. Exchange those Syncthing IDs through a trusted channel.
+2. Use **Add Remote Device** on both sides and enter the other device's ID.
+3. On the supplying device, add the private exchange folder and select the intended peer in its sharing settings.
+4. On the receiving device, accept the offered folder and choose a private local folder path outside AgentMesh's application and database directories.
+5. Wait for the folder to show **Up to Date** and resolve any folder errors before installing.
 
-Continue with [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows) installation. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) for prerequisite details.
+For a first device starting alone, add a local folder in Syncthing; no remote invitation is required. Syncthing creates its `.stfolder` marker. Do not manufacture a marker to bypass an unavailable folder. See the [official getting-started guide](https://docs.syncthing.net/intro/getting-started.html) for the GUI steps and [folder settings](https://docs.syncthing.net/users/config.html#folder-element) for details.
+
+## Check the supplied files
+
+A bootstrap exchange contains `AgentMesh-bootstrap-v1.zip`, its matching `agentmesh-package.json`, `bootstrap_windows.py`, `setup_macos.sh`, `setup_linux.sh` and `START-WINDOWS.cmd`, plus supporting files such as `brand.py`, `terminal_progress.py` and `assets/`. Keep the supplied set together; do not unzip the bootstrap yourself. The installer compares the ZIP's hash with the manifest, then checks the snapshot hash.
+
+Both ZIP member sizes combined after decompression and the separately gunzipped baseline must each be at most **200,000,000 bytes**. Oversized material fails with `unsafe archive size` or `unsafe baseline size`; see [troubleshooting](../troubleshooting#bootstrap-is-too-large). Free disk space alone does not remove these limits.
+
+Next, follow [Quick start](./quick-start) if you received a bootstrap, or [New sync group](../install/new-group) if you are starting alone.

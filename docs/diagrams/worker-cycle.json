@@ -3,7 +3,7 @@
   "groups": [{"label": "This device", "cols": [0, 1], "rows": [0, 1]}],
   "nodes": [
     {"id": "ingest", "col": 0, "row": 0, "title": "Ingest",
-     "lines": ["new agent sessions", "→ local database"]},
+     "lines": ["if configured", "sessions → local database"]},
     {"id": "export", "col": 1, "row": 0, "title": "Export",
      "lines": ["local changes", "→ change packets"]},
     {"id": "exchange", "col": 2, "row": 0, "kind": "highlight", "title": "Exchange folder",
@@ -13,7 +13,7 @@
     {"id": "status", "col": 0, "row": 1, "title": "Report",
      "lines": ["counts · sync health", "→ status/<node>.json"]},
     {"id": "conflict", "col": 2, "row": 1, "kind": "rejected", "title": "Silent overwrite",
-     "lines": ["same row edited twice", "→ quarantined instead"]}
+     "lines": ["one conflicting row", "→ whole packet quarantined"]}
   ],
   "edges": [
     {"from": "ingest", "to": "export"},

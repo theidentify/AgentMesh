@@ -14,6 +14,8 @@ Complete the [prerequisites](../getting-started/prerequisites). Keep Syncthing r
 py -3 --version
 ```
 
+Expected example from the launcher code, not run on Windows: `Python` followed by the interpreter version, exit `0`. Confirm it is at least 3.10 and run the full [FTS5/JSON check](../getting-started/prerequisites#install-and-check-python); the launcher does not check those capabilities or Syncthing.
+
 ## Run the installer
 
 Double-click **START-WINDOWS.cmd** in the supplied exchange folder. Do not unzip the private bootstrap yourself.
@@ -24,21 +26,27 @@ Alternatively, run this from that folder in Command Prompt:
 py -3 bootstrap_windows.py --exchange .
 ```
 
+Expected example derived from bootstrap code, not a native Windows run: checksum/import stages, `Ready: local database installed; starting synchronization`, then cycle JSON and a countdown. Errors or `Sync needs attention` require investigation.
+
 For installation followed by only one sync pass:
 
 ```bat
 py -3 bootstrap_windows.py --exchange . --once
 ```
 
+Expected from code: installation progress and one cycle JSON, then exit `0` on success or `1` for transient/permanent cycle failure. Read `failure_kind`, `warning` and the sync counters as well as the exit code.
+
 ## Use a different device identity
 
-The launcher's default identity must be unused in this group. If another device already uses it, choose a different [device identity](../getting-started/concepts#device-identity) with the cross-platform Python installer from the supplied setup directory:
+The platform setup wrapper uses the Python installer's `--node windows` default; that device identity must be unused in this group. If another device already uses it, choose a different [device identity](../getting-started/concepts#device-identity) with the cross-platform Python installer from the supplied setup directory:
 
 ```bat
 py -3 bootstrap_windows.py --exchange "C:\path\to\exchange" --local-dir "C:\path\to\installation" --node mac
 ```
 
-The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+Expected from the same bootstrap code: progress followed by cycle reports, or a nonzero setup failure. This example is not a native Windows execution capture. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+
+The same [bootstrap size limits](../getting-started/prerequisites#check-the-supplied-files) apply on this platform. Fresh packages contain the CLI modules used in this guide and write `runtime.json` owner-only; older installations must [re-bootstrap once](./update-remove#update-a-bootstrap-installation) from an updated package.
 
 ## What gets installed
 
@@ -48,15 +56,15 @@ The example selects an alternative identity; confirm it is unused before proceed
 | Local database | `%LOCALAPPDATA%\AgentMesh\data\windows.db` |
 | Runtime paths | `%LOCALAPPDATA%\AgentMesh\data\runtime.json` |
 
-The installer checks the package and snapshot, preserves an existing matching database, and starts a sync loop with a 60-second interval.
+The installer checks the package and snapshot, preserves an existing matching database, and starts a sync loop with a default 60-second wait after each completed cycle.
 
 ## Keep the window open
 
-Closing the window stops memory import/export, even if Syncthing continues transferring files. Run the same CMD after login to resume. This launcher does not configure autostart; [sign-in startup](./background-service#windows-sign-in-start) requires separate program installation.
+Closing the window stops memory import/export, even if Syncthing continues transferring files. If you installed with START-WINDOWS.cmd, run START-WINDOWS.cmd again after login to resume. Open a second terminal for checks while the worker occupies the first. This launcher does not configure autostart; [sign-in startup](./background-service#windows-sign-in-start) requires separate program installation.
 
 ## Reading the progress line
 
-For a 40,000-row import, the progress renderer can show the following line, followed later by a sync countdown:
+Example derived from `terminal_progress.py`, not a Windows capture: for a 40,000-row import, the progress renderer can show the following line, followed later by a sync countdown:
 
 ```text
 [4/6] Importing 40,000 rows into SQLite | [############--------] 60% | 24,000/40,000 rows | elapsed 0s
@@ -67,10 +75,10 @@ Your counts and timing will differ. Unknown-duration work uses a spinner and ela
 
 ## Updating
 
-For this bootstrap-based setup, wait for Syncthing to finish, stop the old worker with Ctrl-C, and run **START-WINDOWS.cmd** again. It loads the supplied application while keeping your matching database. Separately installed program bundles use the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md), which also explains confirmation prompts.
+For this bootstrap-based setup, wait for Syncthing to finish, stop the current worker using its foreground, managed or service controls, and run **START-WINDOWS.cmd** again. It loads the supplied application while keeping your matching database. Separately installed program bundles use the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md), which also explains confirmation prompts.
 
 ::: warning
-Native Windows production verification remains outstanding in the repository's documented boundary. Tests on macOS do not establish Windows command execution, firewall behavior or local permissions. Verify these on the Windows host.
+This guide does not establish operation on your Windows host. Verify the Python/SQLite checks, Syncthing connection through the host firewall, private local file permissions, successive worker cycles and the [A → B recall test](../getting-started/quick-start#prove-a-record-travels-from-a-to-b). If enabling sign-in startup, test a real sign-out/sign-in and reboot, then inspect worker cycles; task registration alone is insufficient.
 :::
 
 Next, [check sync status](../use/status) or [ingest a transcript](../use/ingest#windows-single-transcript). See the [Windows setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md) for details.

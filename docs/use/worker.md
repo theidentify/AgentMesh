@@ -1,63 +1,121 @@
 # Control the worker
 
-Run one sync cycle, keep a foreground loop open, or control a managed worker so memory continues moving between devices. First complete [installation](../getting-started/quick-start) and locate your database, exchange and runtime paths. You will be able to start, inspect and stop the appropriate worker without running duplicate loops.
+Choose one worker for the installation so memory can be processed without duplicate loops. Start with a [bootstrap installation](../getting-started/quick-start) or [local empty group](../install/new-group), and locate its runtime and database paths. You will be able to run a cycle, inspect failures and start or stop managed execution.
+
+## Choose one mode
+
+For a fresh bootstrap, keep its foreground worker open and use a **second terminal** for checks. For an empty group, start with manual ingestion and one cycle. Switch to managed execution only after stopping the previous foreground worker or [service](../install/background-service).
+
+| Mode | Use | Stop control |
+| --- | --- | --- |
+| `once` | One unsigned cycle | Exits after the cycle |
+| `watch` / bootstrap worker | Unsigned foreground loop | Ctrl-C in its terminal |
+| `worker-run` | Managed foreground loop; supports configured signed sync | Ctrl-C or `worker-stop` |
+| `worker-start` | Managed detached loop | `worker-stop` |
+| OS service | Startup managed by the OS | The service's own controls |
+
+These commands run from the installed `app` directory or checkout's `memory-sync` directory. Older bootstrap installations need a freshly built package and one [re-bootstrap](../install/update-remove#update-a-bootstrap-installation) to receive all CLI modules. On Windows use `py -3` for source commands. For a standalone installation, use the selected installed executable instead of `python3 agentmesh.py`.
 
 ## Inspect the installation first
 
-Run these commands from the installed `app` directory or the repository's `memory-sync` directory. On Windows with Python installed, use `py -3` in place of `python3`. For a standalone program installation, invoke the selected installed AgentMesh executable in place of `python3 agentmesh.py`, keeping the same action and arguments; this starts the selected program version rather than an older source copy.
-
 ```sh
-python3 agentmesh.py inspect-install --runtime /path/to/runtime.json
+python3 agentmesh.py inspect-install --runtime "/path/to/runtime.json"
 ```
 
-Inspection is read-only and does not create missing state. Its output includes private paths and group metadata; do not publish it. Pass the runtime explicitly, especially for custom installation locations. `inspect-install` and managed lifecycle actions do not require a global `--database` argument.
+Observed excerpt from an empty group, exit `0`:
 
-Stop any existing foreground loop or [background service](../install/background-service) before starting another worker. Managed status cannot prove that unrelated source workers have stopped.
+```json
+{"status":"ready","policy":"legacy","identity":"absent"}
+```
+
+Full output includes private paths and group metadata; keep it private. `ready` confirms inspection, not worker health. `not_found` can also exit `0`; errors exit `1`. Runtime-based actions do not require global `--database`.
 
 ## Run a basic unsigned cycle or loop
 
-For a basic unsigned installation, choose one command:
+With no other worker running:
 
 ```sh
-python3 agentmesh.py --database /path/to/memory.db \
-  --exchange /absolute/path/to/exchange once
+python3 agentmesh.py --database "/path/to/memory.db" \
+  --exchange "/absolute/path/to/exchange" once
 ```
+
+Observed excerpt after one synthetic record was ingested, exit `0`:
+
+```json
+{"cycle":{"capture":{"changes":2,"packets":1},"publish":{"published":1,"unavailable":false},"receive":{"applied":0,"conflict":0,"invalid":0,"pending":0,"unavailable":false}},"failure_kind":null,"warning":null}
+```
+
+The two changes were the event and its ingestion cursor. Counts vary. Exit `0` means no classified failure; it does not prove a peer received the record. With the exchange marker unavailable, the same command exited `1` and returned this excerpt:
+
+```json
+{"cycle":{"receive":{"unavailable":true}},"failure_kind":"transient","warning":"exchange unavailable"}
+```
+
+For a repeating foreground loop instead:
 
 ```sh
-python3 agentmesh.py --database /path/to/memory.db \
-  --exchange /absolute/path/to/exchange watch --interval 60
+python3 agentmesh.py --database "/path/to/memory.db" \
+  --exchange "/absolute/path/to/exchange" watch --interval 60
 ```
 
-`once` runs a cycle and exits; `watch` repeats in the foreground until Ctrl-C. Both require the database and exchange. The loop interval defaults to 60 seconds. They use `workflow.json` beside the database, unless you supply global `--config /path/to/workflow.json` before the action. Ingestion and summarization depend on that configuration; an empty group starts with both disabled.
+Expected behavior derived from `sync_worker.py`: each cycle prints JSON, with progress and a countdown on stderr. Successful cycles have no failure classification; unavailable exchange reports `failure_kind: transient`. The loop continues after transient **and permanent reported cycle failures** until Ctrl-C; continued execution is not proof of success.
 
-`once` forces the configured summary schedule, while managed startup does not. It returns failure if the cycle report records errors, conflicts or invalid packets. Inspect [status](./status) as well as the exit code.
+Both actions read `workflow.json` beside the database unless global `--config "/path/to/workflow.json"` selects another file. When summarization is enabled, `once` requests it immediately rather than waiting for its scheduled time; it does not enable disabled summarization. Managed startup follows the configured schedule. Ingestion is also conditional on workflow settings.
 
-::: warning
-The unified `once` and `watch` actions do not accept a signing-directory option. Use the configured managed lifecycle below for signed installations; do not use an unsigned command to bypass required policy.
-:::
+## Use managed execution
 
-## Run a managed foreground worker
-
-For an unsigned installation, after confirming the prior worker has stopped:
+For an unsigned installation, first stop all prior workers. Then:
 
 ```sh
-python3 agentmesh.py worker-run --runtime /path/to/runtime.json --legacy-drained
+python3 agentmesh.py worker-run --runtime "/path/to/runtime.json" --legacy-drained
 ```
 
-Add `--once` for a single managed cycle. `--interval` changes the loop interval, whose default is 60 seconds. For a signed installation, omit `--legacy-drained`; its runtime must identify the existing matching security directory. The flag acknowledges that old unsigned execution was drained and unsigned policy is intended; it does not stop another worker.
+Expected from code: this holds the terminal and records managed state; it does not print the full cycle JSON. Inspect it from a second terminal. A completed `--once` run was observed to exit `0` without stdout; an unavailable-exchange `--once` run exited `1`. Without `--once`, transient exchange failures are retried, while permanent failures stop the worker with exit `1`.
 
-## Start, inspect and stop a managed worker
+For signed sync, omit `--legacy-drained`. The worker resolves explicit security paths or the same defaults as the wizard; no manual runtime patch is needed for a standard bootstrap. It validates existing signing identity and policy. `--legacy-drained` only acknowledges that prior unsigned execution stopped; it does not stop a worker or change policy.
 
-For unsigned policy, after the same drain check:
+For a detached worker instead:
 
 ```sh
-python3 agentmesh.py worker-start --runtime /path/to/runtime.json --legacy-drained
-python3 agentmesh.py worker-status --runtime /path/to/runtime.json
-python3 agentmesh.py worker-stop --runtime /path/to/runtime.json
+python3 agentmesh.py worker-start --runtime "/path/to/runtime.json" --legacy-drained
 ```
 
-Run these as separate steps when you need each operation. For signed policy, omit `--legacy-drained` from startup. `worker-start` launches a detached process and waits for its first healthy cycle; it does not register login startup. `worker-stop` requests a cooperative stop and waits for the lifetime lock to drain rather than killing a PID from a file. Startup and stop each default to a 60-second timeout, adjustable with `--timeout`.
+Observed excerpt with the exchange unavailable, exit `0`:
 
-Missing metadata can report stopped even when an unrelated worker exists. Stale or corrupt state needs investigation; a status result alone is not permission to launch duplicates. See the [managed lifecycle reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md#managed-lifecycle-and-adoption-without-service-replacement) and [CLI implementation](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/agentmesh.py).
+```json
+{"state":"running","failure_kind":"transient","warning":"exchange unavailable","last_error":"ExchangeUnavailable"}
+```
 
-Next, [check sync status](./status) to confirm cycles are completing and records are being imported.
+Startup accepts a completed transient cycle with a warning. This proves the instance started, **not** that sync succeeded. Normal operation has increasing `cycles`, null `failure_kind` and no `last_error`. Startup does not register login startup.
+
+```sh
+python3 agentmesh.py worker-status --runtime "/path/to/runtime.json"
+```
+
+Observed before any managed worker existed, exit `0`:
+
+```json
+{"cycles":0,"state":"stopped"}
+```
+
+This means no managed record exists, not that every possible worker is stopped. With a record, inspect `state`, `cycles`, `failure_kind`, `warning` and `last_error_detail`. Status exit `0` means the query worked, even for a failed worker.
+
+```sh
+python3 agentmesh.py worker-stop --runtime "/path/to/runtime.json"
+```
+
+Observed result excerpt after stopping the temporary loop: `"state": "stopped"`, exit `0`. Stop requests cooperation and waits for the worker to release its lifetime lock; it never kills a PID read from metadata. Missing metadata also returns stopped, so use the original terminal or service controls for unmanaged execution.
+
+## Respond to failures and timeouts
+
+| Result | Meaning and next action |
+| --- | --- |
+| `failure_kind: transient` | Exchange read/write or status publication is unavailable. Restore the accepted folder, mount, permissions and Syncthing availability; a managed loop retries. |
+| `failure_kind: permanent` | Conflict, invalid packet, ingestion/summary failure or another non-retryable error. A managed loop stops; inspect [status and diagnostics](./status), fix the cause and review retained diagnostics before restarting. |
+| `pending > 0` only | Dependencies are missing; this alone is not classified as failure. Investigate missing packets if they do not arrive. |
+
+All worker one-shot paths (`agentmesh.py once`, `worker-run --once`, `sync_worker.py --once`, bootstrap `--once`) exit `1` for transient or permanent failure. Low-level `memory_sync.py once` retains different exit semantics; do not use it as a substitute health check.
+
+The default interval is a 60-second **wait after each cycle**. Use positive finite interval and timeout values. Managed start/stop each default to a 60-second timeout. Startup timeout requests a stop but does not wait for it to finish; stop timeout likewise does not establish that the worker exited. Inspect `worker-status` and [diagnose](./status#diagnose-a-worker), allow the current cycle to finish, and confirm stopped execution before retrying startup, update or removal. Only then consider a longer `--timeout`. If the original worker cannot be identified through its terminal or service configuration, preserve state and request help rather than guessing which PID to kill.
+
+Next, [check sync status](./status) and verify the actual record on the receiving device.

@@ -23,8 +23,8 @@
 <path class="ar" d="M609.0,206.0 L673.0,206.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
 <rect class="ex" x="28" y="140" width="261" height="132" rx="12" stroke-width="1.5"/>
 <text class="nt" x="50" y="179" font-size="17" font-weight="700">Agent</text>
-<text class="nb" x="50" y="205" font-size="14.5">reads its AgentMesh rule</text>
-<text class="nb" x="50" y="227" font-size="14.5">runs recall_argv</text>
+<text class="nb" x="50" y="205" font-size="14.5">rule instructs recall</text>
+<text class="nb" x="50" y="227" font-size="14.5">verify actual invocation</text>
 <text class="nm" x="50" y="249" font-size="14.5">Claude · Codex · Hermes · OMP</text>
 <rect class="hl" x="391" y="140" width="218" height="132" rx="12" stroke-width="2.5"/>
 <text class="nt" x="413" y="179" font-size="17" font-weight="700">agentmesh.py recall</text>

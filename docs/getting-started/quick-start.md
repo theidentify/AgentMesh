@@ -31,7 +31,7 @@ Output labels distinguish disposable macOS runs from examples derived from code.
 
    `3.14.8`, `FTS5: ok`, `JSON: 1`, exit `0`. A traceback or a version below your route's minimum means stop and fix [Python setup](./prerequisites#install-and-check-python).
 
-2. In Syncthing, confirm the supplied private exchange folder is **Up to Date**, review [source ownership and default roots](../use/ingest#before-the-first-bootstrap-cycle) before the installer starts ingestion, then install on [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows). Keep the foreground worker open.
+2. In Syncthing, confirm the supplied private exchange folder is **Up to Date**, install with `--no-ingest` on [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows). Keep the foreground worker open for the checks below. Then [review roots and explicitly enable ingestion](../use/ingest#before-the-first-bootstrap-cycle); the flag does not disable sync or manual ingestion.
 3. Open a **second terminal** in the installed `app` directory and check the runtime:
 
    macOS/Linux:

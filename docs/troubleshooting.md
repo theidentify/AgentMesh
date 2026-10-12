@@ -78,9 +78,9 @@ Ingestion can commit valid events while reporting errors. Inspect [partial inges
 
 Signed packets have [size and structure limits](./install/security#respect-packet-limits). A backlog already exceeding them is not fixed by reducing the next wait interval. Retain the database, outbox and original input for operator review; no automatic split/recovery command is documented.
 
-## Previously accepted signed packets become invalid
+## Signed packets are invalid after revocation
 
-Revoking a key also rejects its retained, previously accepted packets on the next cycle. The managed worker stops on that permanent failure; existing rows and receipts are retained. Preserve the original packets, database/history/receipts and trust state, and follow [rotation and revocation](./install/security#understand-the-protection) with the operator. No general command resolves retained revoked packets automatically. Do not delete history or diagnostics to make the worker appear healthy.
+Revocation alone no longer invalidates previously committed packets or stops the managed worker. Exact retained packets remain accepted against local receipts and full envelope digests. New, unapplied packets from the revoked key and tampered replays remain invalid; a managed worker stops for that permanent failure. Preserve original packets, database/history/receipts and trust state, including revoked public-key records needed to verify older receipts. Follow [rotation and revocation](./install/security#understand-the-protection) with the operator; do not delete history or diagnostics to hide a validation failure.
 
 ## Windows window closed and sync stopped
 

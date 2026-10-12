@@ -12,7 +12,7 @@ Each device keeps a local database and exchanges record changes. The diagram sum
 
 The highlighted exchange folder carries packets and reports. Direct Syncthing exchange between two devices requires overlapping online time. The red box shows an unsafe shortcut: copying live SQLite database files and their WAL/SHM companions during writes can produce an inconsistent or corrupted copy. WAL and SHM are SQLite's write-ahead log and shared-memory sidecar files.
 
-A bootstrap enables default ingestion and starts the worker immediately; [review source ownership and paths before installing](../use/ingest#before-the-first-bootstrap-cycle). An empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
+A fresh bootstrap enables default ingestion and starts the worker immediately unless you pass `--no-ingest`. Use that flag to [review and limit roots before enabling ingestion](../use/ingest#before-the-first-bootstrap-cycle); synchronization still runs. An empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
 
 ## Device identity
 
@@ -26,11 +26,19 @@ Use a dedicated private exchange folder for each sync group: a group UUID does n
 
 ## Conflicts affect whole packets
 
+![Device A edits a row and captures a change packet; the exchange carries it to device B, which applies it and records a receipt when the parent matches, or holds the whole packet on conflict or a missing predecessor.](/diagrams/packet-lifecycle.svg)
+
+**1 · Edit a row** changes local memory on device A. **2 · Capture** compares it with the saved synchronized view (the shadow), records the previous revision as `parent`, assigns a new revision UUID and puts all changes found in that capture into one packet. **3 · Exchange folder**, highlighted, holds the published immutable file while Syncthing transfers it. **4 · Receive: check parent** compares each change’s parent with B’s current revision. **5 · Match → apply + receipt** applies the changes and records a receipt in B’s database after validation succeeds. On the other arrow, **Mismatch → no overwrite** holds the entire packet: an independent edit can cause a conflict; an unknown predecessor can leave it pending.
+
+The example’s `v1` and `v2` stand for revisions, not literal database values. Parent matching is one check among packet, signature (when signed), uniqueness and referential-integrity checks. A known but different parent or a mismatched baseline is a conflict, not a missing predecessor to wait for. Publication uses `changes/<node>/<uuid>.json`, or `signed-changes/<node>/<uuid>.json` for signed packets; `<node>` is the node slot and `<uuid>` is the packet’s UUID. A packet carries changed rows and their ancestry, not a complete database copy. Receipts prevent applying an accepted packet again.
+
+Never delete packets to reclaim space. A missing intermediate packet can leave later changes **pending**; a missing newest packet can cause **silent loss on a peer** with no later dependency to reveal it. Published packets are not automatically recreated. Keep the original files and [preserve evidence if packets are missing](../troubleshooting#exchange-packets-were-deleted).
+
 A packet can contain several changed records. If one conflicts with an independent edit or a natural unique key, the **entire packet** is quarantined: unrelated records inside it do not apply either. Later packets depending on it may remain pending. Other independent packets can still apply during that cycle, but a managed worker stops after a [permanent failure](../use/worker#respond-to-failures-and-timeouts), an error requiring review rather than automatic retry. [Inspect the failure](../troubleshooting#records-are-quarantined) before restarting.
 
 ## Plan for growth
 
-**Capture** compares local records with the last synchronized view and packages their changes. It scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packet files live under `changes/<node>/` in the exchange folder. Receipts (accepted packet identifiers/checksums), history (record revision ancestry) and outbox records (outgoing packets and publication state) live in the local SQLite database as `_sync_receipts`, `_sync_history` and `_sync_outbox`. All are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
+**Capture** compares local records with the last synchronized view and packages their changes. It scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packet files live under `changes/<node>/` or `signed-changes/<node>/` in the exchange folder. Receipts (accepted packet identifiers/checksums), history (record revision ancestry) and outbox records (outgoing packets and publication state) live in the local SQLite database as `_sync_receipts`, `_sync_history` and `_sync_outbox`. All are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
 
 ## What setup does not include
 

@@ -1,0 +1,118 @@
+{
+  "title": "A packet describes a change, not a copy of the database",
+  "groups": [
+    {
+      "label": "Device A · sender",
+      "cols": [
+        0,
+        1
+      ],
+      "rows": [
+        0,
+        0
+      ]
+    },
+    {
+      "label": "Device B · receiver",
+      "cols": [
+        3,
+        3
+      ],
+      "rows": [
+        0,
+        1
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "edit",
+      "col": 0,
+      "row": 0,
+      "title": "1 · Edit a row",
+      "lines": [
+        "Example: memory_items #42",
+        "Change v1 → v2"
+      ]
+    },
+    {
+      "id": "capture",
+      "col": 1,
+      "row": 0,
+      "title": "2 · Capture",
+      "lines": [
+        "Compare with saved shadow",
+        "Change records parent=v1",
+        "New revision=v2 (new UUID)"
+      ],
+      "muted": "All captured changes → one packet"
+    },
+    {
+      "id": "exchange",
+      "col": 2,
+      "row": 0,
+      "kind": "highlight",
+      "title": "3 · Exchange folder",
+      "lines": [
+        "changes/<node>/<uuid>.json",
+        "Signed: signed-changes/",
+        "Immutable; Syncthing transfers"
+      ]
+    },
+    {
+      "id": "check",
+      "col": 3,
+      "row": 0,
+      "title": "4 · Receive: check parent",
+      "lines": [
+        "Is B’s current revision for #42",
+        "v1, matching the parent?"
+      ]
+    },
+    {
+      "id": "apply",
+      "col": 3,
+      "row": 1,
+      "title": "5 · Match → apply + receipt",
+      "lines": [
+        "Row becomes v2",
+        "Receipt prevents repeat application"
+      ]
+    },
+    {
+      "id": "conflict",
+      "col": 2,
+      "row": 1,
+      "kind": "rejected",
+      "title": "Mismatch → no overwrite",
+      "lines": [
+        "B independently edited → conflict",
+        "Unknown predecessor → pending"
+      ],
+      "muted": "The whole packet is held"
+    }
+  ],
+  "edges": [
+    {
+      "from": "edit",
+      "to": "capture"
+    },
+    {
+      "from": "capture",
+      "to": "exchange"
+    },
+    {
+      "from": "exchange",
+      "to": "check"
+    },
+    {
+      "from": "check",
+      "to": "apply"
+    },
+    {
+      "from": "check",
+      "to": "conflict",
+      "route": "v"
+    }
+  ]
+}

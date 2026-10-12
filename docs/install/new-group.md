@@ -10,7 +10,17 @@ AgentMesh manages memory sync, not installation of Hermes or other agents. `setu
 
 Obtain the [AgentMesh repository](https://github.com/theidentify/AgentMesh) and open its `memory-sync` directory in a terminal. Keep this checkout at a stable local path outside the exchange folder; it supplies the application for this route. Use that directory wherever this guide says “installed app or repository source.” There is no generated `app` directory to point service examples at. Select a source revision reviewed for your deployment and record it before creating state; this guide has not verified a recommended release or compatibility matrix. Do not assume an arbitrary latest checkout is a tested upgrade.
 
-Use a dedicated exchange folder for each sync group, with no packets or history from another group. The current setup checks do not reject that mix; a successful setup is not proof that reuse is safe. Do not clear an existing group’s folder to reuse it. Add a new private local folder in Syncthing and let Syncthing create `.stfolder`, as described in [prerequisites](../getting-started/prerequisites#share-the-private-exchange-folder). The new local installation directory must not exist, and its parent must already exist. The local installation and exchange folder must not be nested inside one another. Use absolute paths without parent traversal or symlink components, including in ancestor directories.
+Use a dedicated exchange folder for each sync group, with no packets or history from another group. `setup-new` now refuses prior content, including packet directories, bootstrap files and retained Syncthing versions. Only `.stfolder`, a `.stignore` file and an empty `.stversions` directory are allowed. Do not clear an existing group’s folder to reuse it. Add a new private local folder in Syncthing and let Syncthing create `.stfolder`, as described in [prerequisites](../getting-started/prerequisites#share-the-private-exchange-folder). The new local installation directory must not exist, and its parent must already exist. The local installation and exchange folder must not be nested inside one another. Use absolute paths without parent traversal or symlink components, including in ancestor directories.
+
+A disposable attempt to use an exchange containing bootstrap files exited `1` before creating the local directory:
+
+Output (run on macOS)
+
+```json
+{"error":"ValueError","reason":"exchange folder is already used; each sync group needs its own exchange folder (only .stfolder, .stignore and an empty .stversions are allowed)","next_action":"Choose a new dedicated Syncthing exchange folder; retain the existing group files."}
+```
+
+Choose a new dedicated folder; do not delete existing group files to bypass this refusal.
 
 ## Create local memory
 

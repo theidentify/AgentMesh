@@ -24,7 +24,39 @@ Hermes is recall-only in this integration; its transcripts are not discovered. D
 
 ## Before the first bootstrap cycle
 
-Before running a bootstrap installer, coordinate which device will ingest each source and check for identical absolute transcript paths across devices. Review all three default roots above for private or duplicated sessions. Bootstrap installation enables default ingestion and starts the worker immediately; `--once` still runs ingestion once. There is no installer option to pause for root selection before that cycle. If those defaults are unsafe, do not run the installer yet: request an operator-reviewed configuration. For a synthetic-only local trial, use [New sync group](../install/new-group), which starts with ingestion disabled, then manually ingest only the test directory. That local route does not support adding B.
+Install with `--no-ingest` through the [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows) instructions. Bootstrap still imports its supplied snapshot and starts synchronization, but skips local transcript ingestion. Without the flag, a fresh installation enables default ingestion immediately. On an existing installation, the flag sets `ingest` to `false` while preserving roots and other workflow settings.
+
+A disposable bootstrap run with `--no-ingest --once` exited `0` with this cycle excerpt:
+
+Output (run on macOS)
+
+```json
+{"workflow":{"ingestion":{"status":"disabled"},"summary":{"status":"disabled"}},"failure_kind":null,"warning":null}
+```
+
+This confirms ingestion was disabled and the cycle had no classified failure; it does not prove delivery to a peer. A nonzero exit or classified failure needs [worker review](./worker#respond-to-failures-and-timeouts).
+
+To enable only reviewed sources:
+
+1. Stop the foreground worker with Ctrl-C and any separately managed worker before editing.
+2. Open the private `data/workflow.json` path printed by bootstrap. Coordinate which device ingests each source and check for identical absolute transcript paths across devices. Preserve existing settings, then set `ingest` to `true` and `roots` to only the sources this device owns:
+
+   ```json
+   {"ingest":true,"roots":{"omp":"/absolute/path/to/reviewed-sessions"}}
+   ```
+
+   For Windows JSON, use a path such as `"C:/path/to/reviewed-sessions"`. Supported keys are `omp`, `codex` and `claude`. An explicit `roots` object replaces all defaults; omitted agents are not scanned, and `{}` scans none. Without `roots`, enabling ingestion scans the default directories above.
+3. Restart with the same local directory and device identity **without `--no-ingest`**. Bootstrap preserves your edited configuration; repeating the flag disables ingestion again. Check the cycle’s ingestion results before adding more roots.
+
+After enabling a single synthetic OMP root and restarting without the flag, the disposable run exited `0` with this ingestion result:
+
+Output (run on macOS)
+
+```json
+{"status":"completed","error_classes":[],"errors":0,"found":1,"inserted":1,"processed":1,"skipped":0}
+```
+
+For a fresh test record, require `inserted: 1` and `errors: 0`; `errors > 0` needs investigation even if some records were inserted. Follow the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md#review-ingestion-roots-before-the-first-cycle) for the same workflow. A synthetic-only local trial without a supplied bootstrap can use [New sync group](../install/new-group), which starts with ingestion disabled but cannot add B yet.
 
 ## Use a custom location
 
@@ -95,9 +127,9 @@ Exit `0` means inspection succeeded. This synthetic fixture’s malformed second
 
 Output (example from code)
 
-The next worker cycle uses only this root. Check `workflow.ingestion.errors` and the inserted count in its cycle report. A new empty group starts with ingestion disabled. For bootstrap, complete the [source review before installation](#before-the-first-bootstrap-cycle).
+The next worker cycle uses only this root. Check `workflow.ingestion.errors` and the inserted count in its cycle report. A new empty group starts with ingestion disabled. For bootstrap, [install with ingestion disabled, review roots, then enable](#before-the-first-bootstrap-cycle).
 
-The [Workflow reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) describes configuration, but its current “one logical node per OS” and “Mac” wording conflicts with the code. Device identities are OS-independent. The summary writer is selected by `summary.primary_node`, default `mac`, regardless of its operating system; do not enable independent summary writers on other identities.
+The [Workflow reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) describes configuration and OS-independent device identities. The summary writer is selected by `summary.primary_node`, default `mac`, regardless of its operating system; do not enable independent summary writers on other identities.
 
 ## Windows single transcript
 

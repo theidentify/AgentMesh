@@ -10,13 +10,13 @@ These procedures concern the AgentMesh memory-sync application, not Hermes or ot
 
 On macOS or Linux, stop the foreground worker or its [background service](./background-service), wait for the supplied package to finish syncing, then rerun the same [macOS](./macos) or [Linux](./linux) installer with the same local directory and device identity. On Windows, stop the current worker using its foreground, managed or service controls and rerun **START-WINDOWS.cmd**, as described in [Windows setup](./windows#updating). If you chose a custom local directory or device identity through the Python installer, repeat the same explicit `--local-dir` and `--node` values instead of reverting to the platform default; the Windows launcher remembers neither.
 
-::: warning
-The current bootstrap restart does not resolve the wizard’s default signing paths unless they are already explicit in runtime configuration. For signed installations, the unsigned bootstrap update recipe is not a verified restart procedure. Preserve the existing identity/trust and request the operator’s signed-update review; the managed worker resolves those defaults, but that does not fix the bootstrap loop.
-:::
+For a signed installation, bootstrap reruns now resolve signing paths using the same explicit-or-default rules as the managed worker and pass them to the sync cycle/loop. Keep the existing signing identity and trust state; rerunning does not create replacement keys or downgrade the signing policy.
+
+Use `--no-ingest` on an update only when you intend to disable transcript ingestion again. To retain an already reviewed and enabled workflow, rerun without that flag.
 
 The bootstrap extracts application files and preserves an existing database only when its group and device identity match the supplied package. It retains existing workflow settings and recorded security paths. Do not delete a database to get past a mismatch. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) and [Windows bootstrap reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#console-progress).
 
-Older bootstrap packages omitted modules needed by several CLI actions. Stop existing execution, obtain a newly built package from the group administrator, wait for delivery and rerun the installer once with the same identity and local directory. Current bootstrap also replaces `runtime.json` with owner-only permissions, repairing older permissive files. Do not patch permissions or module files piecemeal.
+Older bootstrap packages omitted modules needed by several CLI actions. Stop existing execution, obtain a newly built package from the group administrator, wait for delivery and rerun the installer once with the same identity and local directory. Current bootstrap replaces `runtime.json` and extracted application files with owner-only permissions, repairing older permissive files. Do not patch permissions or module files piecemeal.
 
 Old OTA consumers enforce an exact release file list and reject packages built with the expanded list until re-bootstrapped. OTA activation and recovery remain [operator procedures](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md).
 

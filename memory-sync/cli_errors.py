@@ -121,16 +121,20 @@ from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task'})
+                           'windows_install', 'windows_task', 'install_join'})
 
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
-    if not is_windows and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
+    if not is_windows and not is_join and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
     known = message in SAFE_REASONS or (is_windows and message in WINDOWS_REASONS)
+    if is_join:
+        from install_join import REASONS
+        known = known or message in REASONS
     result['reason'] = message if known else 'details withheld; inspect diagnostic stage'
     code, hint = DETAILS.get(message, (
         'GUARD_REFUSED' if known else 'UNCLASSIFIED_ERROR',

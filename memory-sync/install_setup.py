@@ -126,6 +126,8 @@ def setup_new(local_dir, exchange, node):
         group = str(uuid.uuid4())
         memory_sync.initialize(db, node, group)
         verify_empty(db, node, group)
+        from install_join import record_origin
+        record_origin(db, node, group)
         # All SQLite handles are closed; incomplete initialization stays partial.
         owned[db] = fingerprint(db)
         workflow = data / 'workflow.json'

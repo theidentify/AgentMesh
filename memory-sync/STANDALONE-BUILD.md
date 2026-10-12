@@ -34,6 +34,10 @@ launcher, not a before-login Windows service or crash supervisor.
 
 Windows builds use a generated onedir spec (`agentmesh.exe`, windowless `agentmeshw.exe`, shared `_internal/`); macOS remains a single onefile binary for `mac-replace`.
 
+## Passphrase-protected identity key
+
+`agentmesh identity-protect --security-dir DIR` encrypts an existing private identity key with a passphrase entered in an interactive console. The public identity is unchanged. Until OS-protected unlock exists (issue #7), an unattended worker refuses a protected key and never falls back to plaintext or unsigned mode. See [Passphrase-protected identity key](KEY-PROTECTION.md) for the threat model, format, migration steps, restart behaviour and limitations.
+
 ## Read-only diagnostics and safe error details
 
 ```powershell

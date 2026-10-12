@@ -14,6 +14,7 @@ import uuid
 
 import memory_sync
 import sqlite_memory
+import key_protection
 import signed_packets
 import security_wizard
 
@@ -199,6 +200,22 @@ def main():
         assert (db.read_bytes(), runtime.read_bytes()) == source_before
         assert not run('wizard-resume', '--runtime', root / 'missing.json', inputs='', expected=1)
         assert not run('wizard-resume', '--runtime', runtime, inputs='', expected=1)
+        # Passphrase-protected identity (#6): the frozen CLI reads the format and refuses without a console.
+        assert 'identity-protect' in run('--help') and '--security-dir' in run('identity-protect', '--help')
+        raw_identity = root / 'raw-identity'
+        signed_packets.init_identity(raw_identity, public['group'], 'mac')
+        raw_before = {p.name: p.read_bytes() for p in raw_identity.iterdir()}
+        assert not run('identity-protect', '--security-dir', raw_identity, inputs='disposable passphrase\n' * 2, expected=1)
+        assert {p.name: p.read_bytes() for p in raw_identity.iterdir()} == raw_before
+        locked_identity = root / 'locked-identity'
+        signed_packets.init_identity(locked_identity, public['group'], 'mac')
+        key_protection.protect_identity(locked_identity, lambda prompt: 'disposable passphrase', n=2 ** 14)
+        locked_before = {p.name: p.read_bytes() for p in locked_identity.iterdir()}
+        refused = subprocess.run([str(binary), 'identity-protect', '--security-dir', str(locked_identity)], cwd=root,
+                                 env=env, input='', text=True, capture_output=True, timeout=120)
+        assert refused.returncode == 1 and not refused.stdout, refused.stderr
+        assert 'identity is already passphrase-protected' in refused.stderr, refused.stderr
+        assert {p.name: p.read_bytes() for p in locked_identity.iterdir()} == locked_before
         # Prepare real two-peer receipts, then decline ACTIVATE in the binary.
         peer_db = root / 'data' / 'windows.db'
         sqlite_memory.init_database(peer_db)
@@ -231,7 +248,7 @@ def main():
         before_block = state.read_bytes()
         assert not run('wizard-resume', '--runtime', runtime, inputs='CREATE\nReplacement\n', expected=1)
         assert state.read_bytes() == before_block
-        print('native standalone smoke: help/status/recall/inspect-install/wizard-status/wizard-resume passed; activation pending')
+        print('native standalone smoke: help/status/recall/inspect-install/wizard-status/wizard-resume/identity-protect passed; activation pending')
 
 
 if __name__ == '__main__':

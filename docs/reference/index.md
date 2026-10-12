@@ -7,7 +7,7 @@ Find the repository reference for details beyond the task-based user guide. Star
 | Document | Use it for |
 | --- | --- |
 | [Sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) | Understand record exchange, identity limits and conflicts. |
-| [macOS and Linux setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) | Review installation paths and optional user services. |
+| [macOS and Linux setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) | Review installation paths, optional user services and the unsigned invitation/join contract. |
 | [Windows setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md) | Run the bootstrap launcher and interpret its progress. |
 | [Insight](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md) | Configure the read-only dashboard and understand its observations. |
 
@@ -31,4 +31,4 @@ Find the repository reference for details beyond the task-based user guide. Star
 | [Standalone builds](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/STANDALONE-BUILD.md) | Build native CLI bundles and review platform verification gates. |
 | [Profile-owned memory prototype](https://github.com/theidentify/AgentMesh/blob/main/profile-memory/README.md) | Explore the separate opt-in profile memory experiment. |
 
-Next, use [Quick start](../getting-started/quick-start) for a supplied bootstrap, or [New sync group](../install/new-group) to begin local use without one.
+Next, use [Quick start](../getting-started/quick-start) for a supplied bootstrap, or [New sync group](../install/new-group) to begin without one and [add eligible peers by invitation](../install/new-group#adding-another-device).

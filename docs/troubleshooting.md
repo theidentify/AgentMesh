@@ -88,7 +88,37 @@ For the default bootstrap installation, reopen **START-WINDOWS.cmd** after confi
 
 ## I copied my database to another machine
 
-Copying initialized local state duplicates the device identity. Stop the duplicate worker and preserve both databases; do not overwrite either during recovery. Review [device identity](./getting-started/concepts#device-identity) before proceeding. A `setup-new` group cannot currently add devices by copying a database or creating a fresh baseline.
+Copying initialized local state duplicates the device identity. Stop the duplicate worker and preserve both databases; do not overwrite either during recovery. Review [device identity](./getting-started/concepts#device-identity) before proceeding. Eligible unsigned `setup-new` groups now use [origin-issued invitations](./install/new-group#adding-another-device); copying a database or creating a fresh baseline is not that procedure.
+
+## Invitation join is refused or incomplete
+
+Use the [invitation procedure](./install/new-group#adding-another-device) from the same source revision on both devices. For guard failures, the CLI exits `1` and prints JSON on stderr with `reason`, `code`, `stage` and `next_action`. A replay can instead return `status: pending` (exit `2`) or `blocked` (exit `1`) on stdout. Preserve the origin database, reservations, original transfer files and the recipient’s private prepared state before investigating.
+
+| Reason or result | Meaning and supported next step |
+| --- | --- |
+| `invitation expired` | The recipient clock has reached the invitation deadline before consumption. Check the clock, but do not edit expiry or backdate it to bypass the guard. Expiry does not release the permanently reserved identity; there is no supported reissue/release command. Request maintainer review. |
+| `invitation already consumed` | Initial consumption already began or completed on this prepared device. If replay is incomplete, use `setup-join --resume` on that same installation. If already joined, use its existing runtime; do not join again. |
+| `slot already used or reserved` | The selected device identity belongs to the origin, an observed publisher or a durable reservation. Check the origin’s assignment records, including offline peers. Prepare a new request for another genuinely unused identity only if one remains; do not delete reservation records or exchange directories. |
+| `signed groups are not supported by invitations; use the security pairing workflow` | The source is signed/security-configured, the invitation is signed-policy, or the exchange contains `signed-changes`. This invitation route cannot proceed. Retain existing signing state and consult the [security operator reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SECURITY-WIZARD.md); do not downgrade policy or delete signing files. Pairing is not a replacement invitation command. |
+| `non-empty baseline group; use the original bootstrap` | The group has baseline history incompatible with empty-baseline replay. Use its original compatible bootstrap through the group operator, not a newly manufactured baseline or copied initialized database. |
+| `empty origin provenance unavailable; use the original bootstrap` | Run `invite-peer` on the actual origin, not a joined peer. An older `setup-new` database has no recorded origin provenance and cannot invite even after a code update. No provenance-upgrade procedure is provided; use an original bootstrap only if this deployment has one, otherwise request maintainer review. |
+| `status: pending`, `failure_kind: pending-history` | A predecessor is missing. Allow full history to arrive, then resume the consumed invitation. `.setup-pending.json` must remain until successful replay. |
+| `status: pending`, `failure_kind: transient` | Replay found the exchange unavailable. Restore access to the accepted folder and retained history, then resume. |
+| `status: blocked`, `failure_kind: permanent` | Replay found conflicts or invalid packets. Preserve files and [inspect diagnostics](#records-are-quarantined) with the operator before retrying; restarting does not reconcile records. |
+| `join is not awaiting replay` | Resume applies only to a consumed invitation awaiting replay/finalization. Do not edit `join-state.json` to force a different phase. |
+| `invitation belongs to another prepared device` | Return the invitation to its matching prepared recipient. Never copy the private prepared installation or its secret to make another device match. |
+
+In the disposable test, trying B’s invitation again after successful join exited `1` with this excerpt:
+
+Output (run on macOS)
+
+```json
+{"error":"ValueError","reason":"invitation already consumed","code":"GUARD_REFUSED","stage":"install_join.setup_join"}
+```
+
+A repeated reservation attempt also exited `1`, with `reason: slot already used or reserved` and `stage: install_join.check_slot`. Expiry and unsupported-group messages above were checked against code; those fixtures were not executed here. For an incomplete replay, use the [tested resume command](./install/new-group#resume-an-incomplete-replay), without `--invitation`; successful resume is allowed after the consumed invitation expires and does not reserve another identity.
+
+A missing newest packet or independent chain can escape diagnostics entirely. `joined` and zero pending counts are not proof of complete history: verify known A-only records on B and retain all exchange packets. Never bypass the guard, reset history, clone the origin or restore a prepared-state copy to reuse an invitation. Share only the sanitized failure fields in the help template below; `data/join-state.json` contains a secret and must stay private.
 
 ## Request help without sharing memory
 

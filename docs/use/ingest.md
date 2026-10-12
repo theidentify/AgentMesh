@@ -56,7 +56,7 @@ Output (run on macOS)
 {"status":"completed","error_classes":[],"errors":0,"found":1,"inserted":1,"processed":1,"skipped":0}
 ```
 
-For a fresh test record, require `inserted: 1` and `errors: 0`; `errors > 0` needs investigation even if some records were inserted. Follow the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md#review-ingestion-roots-before-the-first-cycle) for the same workflow. A synthetic-only local trial without a supplied bootstrap can use [New sync group](../install/new-group), which starts with ingestion disabled but cannot add B yet.
+For a fresh test record, require `inserted: 1` and `errors: 0`; `errors > 0` needs investigation even if some records were inserted. Follow the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md#review-ingestion-roots-before-the-first-cycle) for the same workflow. A synthetic-only local trial without a supplied bootstrap can use [New sync group](../install/new-group), which starts with ingestion disabled and supports [origin-issued invitations](../install/new-group#adding-another-device) for eligible unsigned groups.
 
 ## Use a custom location
 

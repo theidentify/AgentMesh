@@ -5,7 +5,7 @@ Install from a supplied private bootstrap, check sync and run your first recall 
 ## Choose your starting point
 
 - **Received a private bootstrap:** use the checklist below. The person administering the group supplies the files and identity assignment; these are not public release assets.
-- **Starting alone from GitHub:** use [New sync group](../install/new-group) for local ingestion and recall. That route cannot add another device yet, so the A → B test below does not apply to it.
+- **Starting alone from GitHub:** use [New sync group](../install/new-group) for local ingestion and recall, then [invite a second device](../install/new-group#adding-another-device) if the group is eligible. After join completes, use the same A → B test below.
 
 ::: info
 Output labels distinguish disposable macOS runs from examples derived from code. JSON blocks may show only the fields discussed; private values are redacted. Windows and OS-service behavior still needs verification on the target host.
@@ -90,7 +90,7 @@ Output labels distinguish disposable macOS runs from examples derived from code.
 
 ## Prove a record travels from A to B
 
-Use two already bootstrapped devices with different identities in the same group. Keep both Syncthing instances and workers available. On **A only**, create a private test directory outside the exchange and save this single line as `test.jsonl`, including a newline at the end:
+Use two successfully bootstrapped or invitation-joined devices with different identities in the same group. Keep both Syncthing instances and workers available. On **A only**, create a private test directory outside the exchange and save this single line as `test.jsonl`, including a newline at the end:
 
 ```json
 {"type":"message","id":"guide-check","message":{"role":"user","content":[{"type":"text","text":"The amber orchard verification record is synthetic."}]}}

@@ -1,5 +1,8 @@
 """Public diagnostics: fixed reasons and trusted code locations, never input values."""
 
+USED_EXCHANGE_REASON = ('exchange folder is already used; each sync group needs its own exchange folder '
+                        '(only .stfolder, .stignore and an empty .stversions are allowed)')
+
 # Exact constants emitted by installation/lifecycle/private-storage guards.
 # Do not expose arbitrary exception text, paths, keys or subprocess output.
 SAFE_REASONS = frozenset({
@@ -126,6 +129,9 @@ TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packet
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
+    if action == 'setup-new' and str(exc) == USED_EXCHANGE_REASON:
+        return dict(result, reason=USED_EXCHANGE_REASON,
+                    next_action='Choose a new dedicated Syncthing exchange folder; retain the existing group files.')
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
     if not is_windows and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result

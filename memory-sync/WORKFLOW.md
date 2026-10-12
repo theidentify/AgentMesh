@@ -12,10 +12,16 @@ legacy agent memory. The original production PostgreSQL caller remains unchanged
 Peer SQLite memory never writes PostgreSQL; any primary-side PostgreSQL mirror is
 read-only at its PostgreSQL source and preserves original IDs in SQLite.
 
-Use one logical node per OS: `mac`, `windows`, `linux`. Mac is the single primary
-LLM summary writer. Windows and Linux ingest their own local sources, exchange
-observations, and receive primary-generated summaries. Do not reuse an identity
-on multiple active machines. Do not run secondary summary writers.
+Give each active machine a distinct logical identity slot: `mac`, `windows`, or
+`linux`. These are labels, independent of the host OS (for example, Linux can use
+`mac`). Do not reuse a slot on multiple active machines in the same group.
+The single LLM summary writer is the database whose node identity matches
+`summary.primary_node` in `workflow.json`, defaulting to `mac`, for both the
+legacy and bounded backends. Direct summary commands use their `primary_node`
+configuration / `--primary-node` option, also defaulting to `mac`. Enable
+summarization only on that designated identity; peers ingest their own local
+sources, exchange observations, and receive its summaries. Keep one summary
+primary per group; selecting a slot does not depend on the machine's OS.
 
 ## Prerequisites and private bootstrap
 
@@ -28,10 +34,20 @@ on multiple active machines. Do not run secondary summary writers.
   workflow configuration in commits or public artifacts. Do not commit secrets.
 - Provision each local SQLite database from the same consistent, uninitialized
   private baseline; use SQLite backup for an open database, not a main-file copy
-  that omits WAL. Initialize each clone with its own OS identity and shared group
+  that omits WAL. Initialize each clone with its own node identity and shared group
   ID; never copy an already initialized peer identity. See `SYNC.md`.
 - Keep each writable database **outside Syncthing**. Pair only the immutable
   exchange folder. Credentials and local runtime config stay outside that folder.
+- Each sync group needs its own exchange folder. `setup-new` requires an unused
+  folder: only `.stfolder`, an optional `.stignore` file, and an optional empty
+  `.stversions` directory are allowed. Any other entry or retained version counts
+  as prior use, including empty application namespaces and bootstrap packages.
+  Group UUIDs do not partition packets within a shared exchange folder.
+- Installed `app` files are private too: `app/baseline.jsonl.gz` and
+  `app/bootstrap-manifest.json` contain memory or its metadata, as does
+  `data/baseline.jsonl`. Do not share an installed app directory as a code bundle.
+  Bootstrap extracts files owner-only (POSIX `0600`; private Windows ACLs) and
+  replaces them with private copies on re-run.
 
 ## Local workflow configuration and execution
 
@@ -39,9 +55,14 @@ Configure the sync/summary runner in local `data/workflow.json`, outside the cod
 checkout and exchange folder. The runtime owns the exact JSON schema/options;
 use the shipped `agentmesh.py --help` and subcommand help rather than guessing
 fields. Configure absolute native-platform paths for Python, app, database,
-exchange and source roots. On Mac additionally configure the actual LLM provider
+exchange and source roots. On the designated summary primary configure the actual LLM provider
 command as an argv array and its locally authenticated execution environment.
 No provider key is embedded in agent rules or their command manifests.
+
+To review sources before any local transcript ingestion, bootstrap with
+`--no-ingest`; see [installation flags and the exact JSON edit to enable chosen roots](README-SETUP.md#review-ingestion-roots-before-the-first-cycle).
+The flag disables ingestion on fresh installs and re-runs, preserving all other
+workflow settings. It does not disable snapshot import or packet synchronization.
 
 The runtime exposes `ingest`, `summarize`, `once`, `watch`, `status`, and `recall`.
 This installer does **not** install a scheduler, start services, or create autostart.
@@ -58,7 +79,7 @@ explicit operator step. Exact scheduling flags are runtime-owned.
    preserved across nodes; node-reserved ranges avoid new-ID collisions. Packet
    UUID receipts prevent replay, imported revisions avoid echo, and unresolved
    dependencies retry on later cycles rather than becoming silent overwrites.
-3. On **Mac only**, run summarization using the configured real provider command.
+3. On the **designated summary identity only**, run summarization using the configured real provider command.
    It receives a JSON task on stdin and must return the specified grounded JSON
    response on stdout, with actual provider/model and observation-event source
    IDs. No fabricated fallback summaries. Summary event receipts/provenance,

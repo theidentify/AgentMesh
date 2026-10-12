@@ -327,3 +327,52 @@ def test_confirmed_setup_creates_empty_isolated_installation(paths, monkeypatch,
     status = json.loads(capsys.readouterr().out)
     assert status['policy'] == 'legacy' and status['wizard_step'] == 'prerequisites'
     assert not (root / 'identity').exists()
+
+
+@pytest.mark.parametrize('entry', ['changes/mac/foreign.json', 'signed-changes/linux/foreign.json',
+    'pairing/proposals/peer.json', 'status/mac.json', 'AgentMesh-bootstrap-v1.zip',
+    'agentmesh-package.json', 'changes', 'notes.txt', '.stversions/old.json'])
+def test_used_exchange_rejected_without_local_writes(paths, monkeypatch, capsys, entry):
+    root, exchange = paths
+    target = exchange / entry
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if entry == 'changes':
+        target.mkdir()
+    else:
+        target.write_text('{"group":"another-group"}')
+    before = snapshot(exchange)
+    assert invoke(root, exchange, monkeypatch) == 1
+    assert not root.exists()
+    assert snapshot(exchange) == before
+    assert 'each sync group needs its own exchange folder' in capsys.readouterr().err
+
+
+def test_new_exchange_allows_only_empty_syncthing_metadata(paths, monkeypatch):
+    root, exchange = paths
+    (exchange / '.stignore').write_text('// local ignore rules\n')
+    (exchange / '.stversions').mkdir()
+    assert invoke(root, exchange, monkeypatch) == 0
+
+
+def test_exchange_used_during_confirmation_is_rejected(paths, monkeypatch, capsys):
+    root, exchange = paths
+    class Input:
+        def readline(self):
+            (exchange / 'signed-changes').mkdir()
+            return 'NEW\n'
+    monkeypatch.setattr('sys.stdin', Input())
+    assert agentmesh.main(['setup-new', '--local-dir', str(root), '--exchange', str(exchange), '--node', 'mac']) == 1
+    assert not root.exists()
+    assert 'each sync group needs its own exchange folder' in capsys.readouterr().err
+
+
+def test_shared_validate_paths_accepts_used_exchange(paths):
+    from install_setup import validate_paths
+    root, exchange = paths
+    packets = exchange / 'signed-changes/mac'
+    packets.mkdir(parents=True)
+    (packets / 'existing.json').write_text('{"group":"existing-group"}')
+    before = snapshot(exchange)
+    assert validate_paths(root, exchange, 'windows') == (root, exchange)
+    assert not root.exists()
+    assert snapshot(exchange) == before

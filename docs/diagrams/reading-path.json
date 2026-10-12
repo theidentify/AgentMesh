@@ -1,0 +1,69 @@
+{
+  "title": "From understanding memory to using it",
+  "nodes": [
+    {
+      "id": "concepts",
+      "col": 0,
+      "row": 0,
+      "title": "Concepts",
+      "lines": [
+        "Understand local memory and sync"
+      ]
+    },
+    {
+      "id": "prerequisites",
+      "col": 0,
+      "row": 1,
+      "title": "Prerequisites",
+      "lines": [
+        "Prepare Python and Syncthing"
+      ]
+    },
+    {
+      "id": "install",
+      "col": 0,
+      "row": 2,
+      "title": "Install",
+      "lines": [
+        "Set up this device"
+      ],
+      "kind": "highlight"
+    },
+    {
+      "id": "use",
+      "col": 0,
+      "row": 3,
+      "title": "Use",
+      "lines": [
+        "Check status and recall memory"
+      ]
+    },
+    {
+      "id": "help",
+      "col": 0,
+      "row": 4,
+      "title": "Help",
+      "lines": [
+        "Troubleshoot and protect data"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "concepts",
+      "to": "prerequisites"
+    },
+    {
+      "from": "prerequisites",
+      "to": "install"
+    },
+    {
+      "from": "install",
+      "to": "use"
+    },
+    {
+      "from": "use",
+      "to": "help"
+    }
+  ]
+}

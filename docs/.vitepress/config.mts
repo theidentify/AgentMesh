@@ -13,12 +13,14 @@ export default defineConfig({
   themeConfig: {
     logo: '/agentmesh-icon.svg',
     nav: [
-      { text: 'Guide', link: '/getting-started/concepts' },
+      { text: 'Guide', link: '/introduction' },
       { text: 'Reference', link: '/reference/' },
     ],
     sidebar: [
       { text: 'Getting started', items: [
         { text: 'Overview', link: '/' },
+        { text: 'What is AgentMesh', link: '/introduction' },
+        { text: 'Quick start', link: '/getting-started/quick-start' },
         { text: 'Concepts', link: '/getting-started/concepts' },
         { text: 'Prerequisites', link: '/getting-started/prerequisites' },
       ] },
@@ -27,8 +29,12 @@ export default defineConfig({
         { text: 'Linux', link: '/install/linux' },
         { text: 'Windows', link: '/install/windows' },
         { text: 'Run in the background', link: '/install/background-service' },
+        { text: 'New sync group', link: '/install/new-group' },
+        { text: 'Signed sync', link: '/install/security' },
+        { text: 'Update or remove', link: '/install/update-remove' },
       ] },
       { text: 'Use', items: [
+        { text: 'Control the worker', link: '/use/worker' },
         { text: 'Recall memory', link: '/use/recall' },
         { text: 'Ingest agent sessions', link: '/use/ingest' },
         { text: 'Check sync status', link: '/use/status' },

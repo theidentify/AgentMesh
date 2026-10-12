@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 336 808" width="336" height="808" role="img" aria-label="From understanding memory to using it" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="336" height="808" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">From understanding memory to using it</text>
+<path class="ar" d="M168.0,172.0 L168.0,236.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M168.0,324.0 L168.0,388.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M168.0,476.0 L168.0,540.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M168.0,628.0 L168.0,692.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect class="nd" x="28" y="84" width="280" height="88" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="123" font-size="17" font-weight="700">Concepts</text>
+<text class="nb" x="50" y="149" font-size="14.5">Understand local memory and sync</text>
+<rect class="nd" x="28" y="236" width="280" height="88" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="275" font-size="17" font-weight="700">Prerequisites</text>
+<text class="nb" x="50" y="301" font-size="14.5">Prepare Python and Syncthing</text>
+<rect class="hl" x="28" y="388" width="280" height="88" rx="12" stroke-width="2.5"/>
+<text class="nt" x="50" y="427" font-size="17" font-weight="700">Install</text>
+<text class="nb" x="50" y="453" font-size="14.5">Set up this device</text>
+<rect class="nd" x="28" y="540" width="280" height="88" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="579" font-size="17" font-weight="700">Use</text>
+<text class="nb" x="50" y="605" font-size="14.5">Check status and recall memory</text>
+<rect class="nd" x="28" y="692" width="280" height="88" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="731" font-size="17" font-weight="700">Help</text>
+<text class="nb" x="50" y="757" font-size="14.5">Troubleshoot and protect data</text>
+</svg>

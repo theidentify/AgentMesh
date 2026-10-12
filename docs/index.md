@@ -6,7 +6,7 @@ hero:
   tagline: Share memory between Hermes, OMP, Codex and Claude across your devices, with no cloud memory service.
   image: { src: /agentmesh-icon.svg, alt: AgentMesh }
   actions:
-    - { theme: brand, text: Get started, link: /getting-started/concepts }
+    - { theme: brand, text: Get started, link: /introduction }
     - { theme: alt, text: Install, link: /install/macos }
 features:
   - title: Each device owns its memory

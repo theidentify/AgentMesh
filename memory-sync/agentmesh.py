@@ -81,6 +81,8 @@ def main(argv=None):
             worker.add_argument('--startup-deadline', type=float, help=argparse.SUPPRESS)
         if name in ('worker-start', 'worker-stop'):
             worker.add_argument('--timeout', type=float, default=60)
+    protect = subs.add_parser('identity-protect', help='encrypt the existing private identity key with a passphrase')
+    protect.add_argument('--security-dir', required=True, help='existing private identity directory')
     replacement = subs.add_parser('mac-replace', help='operator-confirmed Mac replacement; planning is read-only')
     replacement.add_argument('--manifest', required=True, help='private explicit existing-install manifest')
     replacement.add_argument('--binary', help='bundled standalone executable; defaults to this frozen executable')
@@ -149,6 +151,11 @@ def main(argv=None):
                 prompt.result(True, verb + ' complete', done.get(report['status'], report['status'])
                               + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
             return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
+        if args.action == 'identity-protect':
+            import key_protection
+            report = key_protection.protect_identity(args.security_dir)
+            print(json.dumps(report, sort_keys=True))
+            return 0
         if args.action == 'diagnose':
             from worker_diagnostics import diagnose, render
             progress = None if args.json else lambda stage: print('Checking ' + stage + '...', file=sys.stderr, flush=True)

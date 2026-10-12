@@ -250,16 +250,38 @@ def revoke(directory, fingerprint):
 
 
 class Security:
-    def __init__(self, directory):
+    """Local identity. A passphrase-protected key stays locked unless `unlock`
+    (an interactive passphrase source) is given: public checks and verification
+    still work, but signing refuses. Nothing ever falls back to plaintext."""
+    def __init__(self, directory, unlock=None):
         Private, _, _ = crypto()
         self.directory = private_directory(directory)
         read_trust(self.directory)  # Reject unsafe trust storage before loading any key material.
         raw = parse(read_local(self.directory / 'identity.json', private=True))
-        if type(raw) is not dict or set(raw) != PUBLIC_FIELDS | {'private_key'}: raise ValueError('invalid private identity')
+        if type(raw) is not dict or set(raw) not in (PUBLIC_FIELDS | {'private_key'}, PUBLIC_FIELDS | {'protection'}):
+            raise ValueError('invalid private identity')
         self.public = check_public({k: raw[k] for k in PUBLIC_FIELDS})
-        self.key = Private.from_private_bytes(hex_bytes(raw['private_key'], 32))
-        if self.key.public_key().public_bytes_raw().hex() != self.public['public_key']: raise ValueError('private/public identity mismatch')
+        self.key, self.locked = None, 'protection' in raw
+        if self.locked:
+            import key_protection
+            key_protection.check(raw['protection'])
+            if unlock is not None:
+                secret = key_protection.open_sealed(self.public, raw['protection'], unlock())
+                self.key, self.locked = Private.from_private_bytes(secret), False
+        else:
+            self.key = Private.from_private_bytes(hex_bytes(raw['private_key'], 32))
+        if self.key is not None and self.key.public_key().public_bytes_raw().hex() != self.public['public_key']:
+            raise ValueError('private/public identity mismatch')
         self.check_self()
+
+    def require_unlocked(self):
+        if self.locked:
+            import key_protection
+            raise ValueError(key_protection.LOCKED)
+        return self
+
+    def sign_bytes(self, data):
+        return self.require_unlocked().key.sign(data)
 
     def check_self(self):
         private_directory(self.directory)
@@ -292,11 +314,12 @@ class Security:
         c.execute('CREATE TABLE IF NOT EXISTS _sync_receipt_envelopes(uuid TEXT PRIMARY KEY,digest TEXT NOT NULL)')
 
     def sign(self, legacy):
+        self.require_unlocked()
         self.check_self()
         if (legacy['group'], legacy['node']) != (self.public['group'], self.public['node']): raise ValueError('signing scope mismatch')
         p = {**legacy, 'format': FORMAT, 'encoding': ENCODING, 'sender': self.public['sender'], 'key_id': self.public['key_id']}
         p['checksum'] = hashlib.sha256(typed(p['body'])).hexdigest()
-        p['signature'] = self.key.sign(DOMAIN + typed(p)).hex()
+        p['signature'] = self.sign_bytes(DOMAIN + typed(p)).hex()
         wire(p)
         return p
 

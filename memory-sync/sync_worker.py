@@ -34,7 +34,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
     security = None
     if security_dir is not None:
         from signed_packets import Security
-        security = Security(security_dir)
+        security = Security(security_dir).require_unlocked()  # unattended: refuse a locked key up front
     # Fail closed before mirror/ingestion/summary can write after signed activation.
     with memory_sync.connect(database) as c, c:
         c.execute('BEGIN IMMEDIATE')

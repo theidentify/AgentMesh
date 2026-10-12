@@ -125,7 +125,7 @@ def signed_ack(security, packet, receipt_checksum):
            'packet_uuid': packet['uuid'], 'packet_digest': receipt_checksum,
            'origin_sender': packet['sender'], 'origin_node': packet['node'],
            'result': 'isolated_sqlite_probe_committed', 'committed_at': stamp()}
-    ack['signature'] = security.key.sign(ACK_DOMAIN + signed.typed(ack)).hex()
+    ack['signature'] = security.sign_bytes(ACK_DOMAIN + signed.typed(ack)).hex()
     return ack
 
 
@@ -231,7 +231,7 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
            display_name=None, peer_public=None, confirm_fingerprint=None, expected_group=None,
            expected_node=None, expected_sender=None, publish_proposal=False,
            send_probe=False, accept_probes=False, activate=False, confirm_both_peers=False,
-           confirm_legacy_boundary=False, dry_run=False, allow_install_crypto=False,
+           confirm_legacy_boundary=False, dry_run=False, allow_install_crypto=False, unlock=None,
            confirm_quarantine_receipts=False):
     prerequisites = inspect(database, exchange, security_dir, state_path)
     state = load_state(state_path)
@@ -277,7 +277,7 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
         if display_name is None or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', display_name): raise ValueError('display name must be 1-64 English ASCII characters')
         signed.init_identity(security_dir, prerequisites['group'], prerequisites['node'])
         state['display_name'] = display_name
-    security = signed.Security(security_dir)
+    security = signed.Security(security_dir, unlock=unlock)  # unlock is asked only for a protected key
     if (security.public['group'], security.public['node']) != (prerequisites['group'], prerequisites['node']): raise ValueError('identity/database mismatch')
     if prerequisites['policy'] == 'required':
         with sync.connect(database) as c:
@@ -340,9 +340,17 @@ def resume(database, exchange, security_dir, state_path, *, create_identity=Fals
 
 def interactive(args, *, validate_scope=None):
     # CLI only; all approval requires operator typing, never dashboard buttons.
+    remembered = []
+    def unlock():
+        # Asked at most once per run, and only when the identity is passphrase-protected.
+        if not remembered:
+            import key_protection
+            remembered.append(key_protection.console_passphrase('Identity passphrase: '))
+        return remembered[0]
     def checked_resume(*positional, **options):
         if validate_scope is not None:
             validate_scope()
+        options.setdefault('unlock', unlock)
         return resume(*positional, **options)
     print('[1/6] Prerequisites | Python, cryptography, accepted Syncthing folder')
     initial = checked_resume(args.database, args.exchange, args.security_dir, args.state, dry_run=True)

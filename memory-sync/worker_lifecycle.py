@@ -143,6 +143,13 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     with lock(directory / 'lifetime.lock', timeout=0):
         if startup_deadline is not None and time.monotonic() > startup_deadline:
             raise TimeoutError('startup deadline expired')
+        # Sole lifetime owner now: a request for another (finished) instance is stale.
+        try:
+            previous = _stop_request(directory)
+        except ValueError:
+            previous = None  # unreadable requests are left for diagnosis, never guessed at
+        if previous is not None and previous['nonce'] != nonce:
+            (directory / 'stop.json').unlink(missing_ok=True)
         record = {'format': 'agentmesh-worker-v1', 'runtime': str(runtime),
                   'pid': os.getpid(), 'nonce': nonce, 'state': 'running',
                   'cycles': 0, 'last_error': None, 'last_error_detail': None, 'updated_at': time.time()}
@@ -191,6 +198,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                     time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             if not result and stop_requested(directory, nonce):
                 record['stop_reason'] = stop_reason(directory, nonce)
+                (directory / 'stop.json').unlink(missing_ok=True)  # consumed; never left stale
         except Exception as exc:
             result = 1
             record['last_error'] = type(exc).__name__

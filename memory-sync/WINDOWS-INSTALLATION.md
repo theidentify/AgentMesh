@@ -48,7 +48,12 @@ only this case:
 - the running worker comes from that version's `_internal` folder, has no error and
   completes one more sync cycle.
 
-It then marks the upgrade complete. It never stops or starts the worker, and changes
+It then marks the upgrade complete. While any operation runs, `installed.json` shows
+`status=in_progress` with `pending.phase` (`copy`, `stop`, `select`, `task`, `start`,
+`remove`); it becomes `recovery_required` only if the operation fails. If the process
+died, `in_progress` remains; both block other commands until resolved. Operations
+that need a stopped worker (enable start at login, upgrade without `--replace`,
+rollback, uninstall) now refuse before the confirmation instead of after it. It never stops or starts the worker, and changes
 nothing else. Any other pending state is refused for manual review. Do not edit
 `installed.json` by hand.
 

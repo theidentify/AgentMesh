@@ -325,3 +325,19 @@ def test_launcher_gives_logon_starts_a_long_startup_deadline(monkeypatch, tmp_pa
     agentmesh_launcher.main(['worker-start', '--runtime', 'r', '--interval', '60', '--timeout', '60', '--legacy-drained'])
     assert seen['command'][-2:] == ['--timeout', str(agentmesh_launcher.LOGON_TIMEOUT)]  # argparse: last value wins
     assert agentmesh_launcher.LOGON_TIMEOUT >= 600
+
+
+def test_stop_request_is_consumed_and_a_stale_one_is_cleared_at_start(tmp_path, monkeypatch):
+    import uuid
+    import worker_lifecycle as worker
+    from signed_packets import write_local
+    args = bound(tmp_path, monkeypatch)
+    config, _ = worker.load(args['runtime'], authoritative=False)
+    directory = worker.control(config, create=True)
+    mine = str(uuid.uuid4())
+    write_local(directory / 'stop.json', {'nonce': mine})
+    assert worker.run(args['runtime'], legacy_drained=True, nonce=mine) == 0
+    assert not (directory / 'stop.json').exists()  # consumed by the instance it addressed
+    write_local(directory / 'stop.json', {'nonce': str(uuid.uuid4())})  # left by an older instance
+    assert worker.run(args['runtime'], legacy_drained=True, once=True) == 0
+    assert not (directory / 'stop.json').exists()

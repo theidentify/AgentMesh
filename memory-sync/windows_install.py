@@ -24,7 +24,13 @@ LAUNCHER = 'agentmeshw.exe'
 # rc.5-rc.7 flat onefile bundles stay verifiable for rollback.
 RUNTIME = '_internal'
 TOP_LEVEL = {'agentmesh.exe', LAUNCHER, 'BUILD.json'}
+# in_progress: an operation is running (or its process died); recovery_required:
+# it failed with an error. Both block other operations until resolved.
+INTERRUPTED = ('in_progress', 'recovery_required')
 DEVELOPMENT = 'unsigned development trial; not a final or trusted-publisher release'
+RELEASE = 'unsigned release; not signed by a trusted publisher'
+# 0.2.0-rc.5+ development trials or 0.2.N releases; each must carry its own claim.
+VERSION = r'0\.2\.(?:0-rc\.(?:[5-9]|[1-9][0-9]+)|[0-9]+)'
 
 
 def digest(path):
@@ -90,10 +96,11 @@ def bundle(binary):
     metadata = json.loads(manifest.read_bytes())
     required = {'version', 'source_sha', 'system', 'architecture', 'checksums', 'distribution', 'verification', 'scope'}
     if (type(metadata) is not dict or set(metadata) != required
-            or not re.fullmatch(r'0\.2\.0-rc\.(?:[5-9]|[1-9][0-9]+)', metadata.get('version', ''))
+            or not re.fullmatch(VERSION, str(metadata.get('version', '')))
             or not re.fullmatch(r'[0-9a-f]{40}', metadata.get('source_sha', ''))
             or metadata['system'] != 'windows' or metadata['architecture'] not in ('amd64', 'x86_64', 'arm64')
-            or metadata['distribution'] != DEVELOPMENT or not isinstance(metadata['verification'], str)
+            or metadata['distribution'] != (DEVELOPMENT if '-rc.' in metadata['version'] else RELEASE)
+            or not isinstance(metadata['verification'], str)
             or metadata['scope'] != 'program files only; no database, keys, runtime, snapshots or deployment secrets'
             or not isinstance(metadata['checksums'], dict) or binary.name != 'agentmesh.exe'):
         raise ValueError('invalid development BUILD.json schema')
@@ -273,9 +280,11 @@ def read_state(root, state_path, *, recovering=False):
     if (not isinstance(state, dict) or state.get('format') != FORMAT or marker != {'format': FORMAT, 'owner': state.get('owner')}
             or state.get('root') != str(root) or state.get('root_identity') != identity(root)
             or state.get('marker') != FORMAT + ':OWNED:' + str(state.get('owner'))
-            or state.get('status') != ('recovery_required' if recovering else 'ready')
+            or state.get('status') not in (INTERRUPTED if recovering else ('ready', *INTERRUPTED))
             or str(uuid.UUID(state['owner'])) != state['owner']):
         raise ValueError('installation ownership or recovery status uncertain')
+    if not recovering and state['status'] != 'ready':
+        raise ValueError('another installer operation is in progress or was interrupted')
     if state_path != root / 'installed.json':
         raise ValueError('installed-state must be the owned root installed.json')
     programs = state['programs']
@@ -285,7 +294,7 @@ def read_state(root, state_path, *, recovering=False):
     if not isinstance(programs, dict) or state['active'] not in programs or set(state['history']) - set(programs):
         raise ValueError('invalid owned version inventory')
     for key, entry in programs.items():
-        if (not re.fullmatch(r'0\.2\.0-rc\.[0-9]+-[0-9a-f]{40}', key)
+        if (not re.fullmatch(r'0\.2\.[0-9]+(?:-rc\.[0-9]+)?-[0-9a-f]{40}', key)
                 or set(entry) != {'identity', 'files'} or not valid_files(entry['files'])
                 or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{64}', v) for v in entry['files'].values())):
             raise ValueError('invalid owned program manifest')
@@ -318,8 +327,8 @@ def task_owned(report, state):
             raise ValueError('Scheduled Task binding is not owned')
 
 
-@contextmanager
-def stopped(config, runtime, scope, legacy_drained, unmanaged_drained=False):
+def precheck_stopped(config, runtime, scope, legacy_drained, unmanaged_drained=False):
+    """Read-only: the same refusals as stopped(), so they come before any prompt."""
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('explicit prior legacy-worker drain approval required')
     record = managed.status(runtime)
@@ -328,6 +337,11 @@ def stopped(config, runtime, scope, legacy_drained, unmanaged_drained=False):
     existing_control = managed.control(config)
     if managed.metadata(existing_control, runtime) is None and not (unmanaged_drained or legacy_drained):
         raise ValueError('explicit prior unmanaged-worker drain approval required')
+
+
+@contextmanager
+def stopped(config, runtime, scope, legacy_drained, unmanaged_drained=False):
+    precheck_stopped(config, runtime, scope, legacy_drained, unmanaged_drained)
     # Created only after confirmation. Hold the same kernel lock used by workers
     # through the binding/removal; an informational stopped record is not enough.
     directory = managed.control(config, create=True)
@@ -354,8 +368,8 @@ def stage(root, candidate, state, state_path):
         raise ValueError('unowned version directory refused')
     with step('Copying and verifying program files', 'Program files copied and verified'):
         # Recovery records stay local and private, never in distributed BUILD.json.
-        state['status'] = 'recovery_required'
-        state['pending'] = {'operation': 'stage', 'key': key, 'files': candidate['files']}
+        state['status'] = 'in_progress'
+        state['pending'] = {'operation': 'stage', 'phase': 'copy', 'key': key, 'files': candidate['files']}
         save(state_path, state)
         protection(directory)
         state['pending']['directory_identity'] = identity(directory)
@@ -419,6 +433,20 @@ def uninterruptible():
         yield
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+def mark_failed(state_path):
+    """Best effort: turn the persisted in_progress marker into recovery_required.
+
+    Re-reads the file so unsaved in-memory changes are never persisted here.
+    """
+    try:
+        current = parse(read_local(state_path, private=True))
+        if isinstance(current, dict) and current.get('status') == 'in_progress':
+            current['status'] = 'recovery_required'
+            save(state_path, current)
+    except Exception:
+        pass
 
 
 def recoverable(state):
@@ -521,6 +549,10 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
     if prompt is None:
         import console_prompt
         prompt = console_prompt.ConsolePrompt()
+    if (action in ('rollback', 'uninstall') or (action == 'autostart' and enable)
+            or (action == 'upgrade' and not replace)):
+        # Refuse up front instead of after the operator already confirmed.
+        precheck_stopped(config, runtime, scope, legacy_drained, unmanaged_drained)
     if not yes:
         text, info = describe({**plan, 'task_exists': report['task'] is not None},
                               current=state['active'] if state else None,
@@ -598,8 +630,8 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                     raise ValueError('live replacement is upgrade-only')
                 if scope['policy'] == 'legacy' and not legacy_drained:
                     raise ValueError('explicit prior legacy-worker drain approval required')
-                state['status'] = 'recovery_required'
-                state['pending'] = {'operation': 'replace', 'old': state['active'], 'new': key, 'task': state['task']}
+                state['status'] = 'in_progress'
+                state['pending'] = {'operation': 'replace', 'phase': 'stop', 'old': state['active'], 'new': key, 'task': state['task']}
                 save(state_path, state)
                 managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
                 restarting = True
@@ -616,8 +648,8 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                     state['interval'], state['timeout'], state['legacy_drained'] = interval, timeout, legacy_drained
                     result = change_task(adapter, state, state_path, enabled=True)
                 elif action == 'uninstall':
-                    state['status'] = 'recovery_required'
-                    state['pending'] = {'operation': 'uninstall', 'task': state['task'], 'programs': state['programs']}
+                    state['status'] = 'in_progress'
+                    state['pending'] = {'operation': 'uninstall', 'phase': 'remove', 'task': state['task'], 'programs': state['programs']}
                     save(state_path, state)
                     if state['task'] is not None:
                         adapter.remove(name, state['sid'], state['task']['xml'])
@@ -643,8 +675,8 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                 else:
                     old = state['active']
                     transition = {'operation': action, 'old': old, 'new': key, 'task': state['task']}
-                    state['status'] = 'recovery_required'
-                    state['pending'] = transition
+                    state['status'] = 'in_progress'
+                    state['pending'] = {**transition, 'phase': 'select'}
                     save(state_path, state)
                     state['active'] = key
                     if state['task'] is not None:
@@ -653,7 +685,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                         state['history'].pop()
                     elif old != key:
                         state['history'].append(old)
-                    state['status'] = 'recovery_required' if restarting else 'ready'
+                    state['status'] = 'in_progress' if restarting else 'ready'
                     state['pending'] = {**transition, 'phase': 'start'} if restarting else None
                     save(state_path, state)
                     result = {'status': 'selected', 'version': key, 'worker_changed': False}
@@ -688,13 +720,17 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             return result
 
     with uninterruptible():
-        return apply()
+        try:
+            return apply()
+        except BaseException:
+            mark_failed(state_path)
+            raise
 
 
 def change_task(adapter, state, state_path, *, enabled, finish=True):
     previous = state['task']
-    state['status'] = 'recovery_required'
-    state['pending'] = {'operation': 'task', 'previous': previous, 'transition': state.get('pending')}
+    state['status'] = 'in_progress'
+    state['pending'] = {'operation': 'task', 'phase': 'task', 'previous': previous, 'transition': state.get('pending')}
     save(state_path, state)
     definition = windows_task.binding(state['sid'], state['marker'], task_entry(state, state['active']),
         state['runtime'], state['interval'], state['timeout'], state['legacy_drained'], enabled)

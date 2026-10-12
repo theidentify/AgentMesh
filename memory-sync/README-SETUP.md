@@ -20,6 +20,53 @@ The exchange argument defaults to the directory containing the wrapper. An optio
 
 Installation starts a foreground worker: the shell remains occupied until Ctrl-C. Running the macOS wrapper does **not** enable a background service. Stop this worker before enabling persistent operation to avoid duplicate workers.
 
+## Review ingestion roots before the first cycle
+
+By default, a new bootstrap enables local transcript ingestion immediately. To
+install and synchronize without scanning local transcripts, use the leading flag:
+
+```sh
+sh setup_macos.sh --no-ingest "/absolute/path/to/exchange" "/absolute/path/to/local"
+sh setup_linux.sh --no-ingest "/absolute/path/to/exchange" "/absolute/path/to/local"
+```
+
+The flag also works directly as `python3 bootstrap_windows.py --no-ingest` with
+your usual `--exchange`, `--local-dir`, and `--node` options. Windows Command Prompt:
+
+```bat
+START-WINDOWS.cmd --no-ingest
+```
+
+This still imports the supplied bootstrap snapshot and exchanges existing memory;
+it disables **local transcript ingestion**, not synchronization. On re-run it sets
+`ingest` to `false` while preserving chosen roots and all other workflow settings.
+
+To enable ingestion afterwards:
+
+1. Stop the foreground worker with Ctrl-C (and stop any separately managed worker).
+2. Open the local `data/workflow.json` path printed by bootstrap. Preserve existing
+   fields, and set these two fields to your reviewed source directories:
+
+   ```json
+   {
+     "ingest": true,
+     "roots": {"omp": "/absolute/path/to/reviewed-sessions"}
+   }
+   ```
+
+   On Windows, use native paths such as
+   `"roots": {"codex": "C:/Users/you/reviewed-sessions"}` (forward slashes avoid
+   JSON backslash escaping). Supported agent keys are `omp`, `codex`, and `claude`.
+   Include only sources this machine should ingest. An explicit `roots` object
+   replaces all default roots; omitted agents are not scanned, and `{}` scans none.
+   Without a `roots` field, enabling ingestion scans the default agent directories.
+3. Restart with the same installation paths and identity, **without `--no-ingest`**.
+   Bootstrap preserves the edited configuration. Check the cycle's ingestion
+   results before adding more roots. Repeating `--no-ingest` disables it again.
+
+This uses the existing workflow JSON format; no new configuration command is
+needed. Keep this file private and outside the exchange folder.
+
 ## Manual restart after installation
 
 Use the installation paths reported by bootstrap (`data/runtime.json`). For default locations:

@@ -6,9 +6,12 @@ device key is sealed under K in identity.json `os_unlock`; the passphrase
 envelope (`protection`) stays the portable path. Any same-user process can read
 K. See KEY-PROTECTION.md and docs/superpowers/specs/2026-10-12-os-unattended-unlock-design.md.
 """
+from contextlib import contextmanager
 import os
 import re
+import subprocess
 import sys
+from threading import RLock
 
 import signed_packets as signed
 
@@ -33,7 +36,7 @@ REASONS = frozenset({UNSUPPORTED, ENABLED, MISSING, REFUSED, NO_RESPONSE, DAMAGE
 class OSUnlockError(ValueError):
     """Carries only a fixed reason; always raised `from None` so no subprocess output is chained."""
     def __init__(self, reason):
-        if reason not in REASONS:
+        if type(reason) is not str or reason not in REASONS:
             reason = REFUSED
         super().__init__(reason)
 
@@ -68,6 +71,9 @@ def _aesgcm():
 
 
 def seal(public, private_bytes, backend, key):
+    if (type(key) is not bytes or len(key) != 32 or type(private_bytes) is not bytes
+            or len(private_bytes) != 32 or backend not in BACKENDS):
+        raise OSUnlockError(REFUSED) from None
     AESGCM, _ = _aesgcm()
     nonce = os.urandom(12)
     ciphertext = AESGCM(key).encrypt(nonce, private_bytes, associated_data(backend, public))
@@ -77,14 +83,14 @@ def seal(public, private_bytes, backend, key):
 def open_envelope(public, envelope, key):
     AESGCM, InvalidTag = _aesgcm()
     check(envelope)
+    if type(key) is not bytes or len(key) != 32:
+        raise OSUnlockError(DAMAGED) from None
     try:
         return AESGCM(key).decrypt(bytes.fromhex(envelope['nonce']), bytes.fromhex(envelope['ciphertext']),
                                    associated_data(envelope['backend'], public))
     except (InvalidTag, ValueError, TypeError):
         pass
     raise OSUnlockError(DAMAGED) from None
-
-import subprocess
 
 
 def home():
@@ -149,7 +155,7 @@ class MacKeychainFile:
 def current_backend():
     if sys.platform == 'darwin':
         return MacKeychainFile()
-    if os.name == 'nt' or sys.platform == 'win32':
+    if sys.platform == 'win32':
         return WindowsCredential()
     return None
 
@@ -179,7 +185,13 @@ class WindowsCredential:
                         ('Persist', wintypes.DWORD), ('AttributeCount', wintypes.DWORD),
                         ('Attributes', ctypes.c_void_p), ('TargetAlias', wintypes.LPWSTR),
                         ('UserName', wintypes.LPWSTR)]
-        advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+        advapi = None
+        try:
+            advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+        except OSError:
+            pass
+        if advapi is None:
+            raise OSUnlockError(REFUSED) from None
         advapi.CredWriteW.argtypes = [ctypes.POINTER(CREDENTIAL), wintypes.DWORD]
         advapi.CredWriteW.restype = wintypes.BOOL
         advapi.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
@@ -229,8 +241,6 @@ class WindowsCredential:
             raise OSUnlockError(NOT_REMOVED) from None
 
 
-from threading import RLock
-
 _RESULTS = {}
 _CACHE_LOCK = RLock()
 
@@ -265,9 +275,6 @@ def unlock(directory, public, envelope, backend=None, *, cache=True):
     return result
 
 LOCK_NAME = '.os-unlock.lock'
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -315,6 +322,10 @@ def enable(directory, ask=None, backend=None):
             if open_envelope(current.public, envelope, backend.load(current.public['key_id'])) != private_bytes:
                 raise OSUnlockError(REFUSED) from None
             signed.write_local(path, {**raw, 'os_unlock': envelope})
+            reset_cache()
+            reread = signed.Security(directory, os_unlock=True, backend=backend)
+            if reread.locked or reread.key.private_bytes_raw() != private_bytes:
+                raise OSUnlockError(DAMAGED) from None
         except BaseException:
             try:
                 on_disk = _raw(directory).get('os_unlock')
@@ -324,10 +335,6 @@ def enable(directory, ask=None, backend=None):
             if on_disk != envelope:
                 backend.delete(current.public['key_id'])
             raise
-        reset_cache()
-        reread = signed.Security(directory, os_unlock=True, backend=backend)
-        if reread.locked or reread.key.private_bytes_raw() != private_bytes:
-            raise OSUnlockError(DAMAGED) from None
         return {'status': 'enabled', 'key_id': current.public['key_id'], 'backend': backend.name}
 
 

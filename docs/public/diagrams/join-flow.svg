@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1018 670" width="1018" height="670" role="img" aria-label="Join with an origin-issued invitation, not a copied database" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="1018" height="670" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">Join with an origin-issued invitation, not a copied database</text>
+<rect class="grp" x="28" y="84" width="320" height="558" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="50" y="112" font-size="15">Device B · joining device</text>
+<rect class="grp" x="683" y="84" width="307" height="188" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="705" y="112" font-size="15">Device A · origin only</text>
+<path class="ar" d="M326.0,195.0 L390.0,195.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M641.0,195.0 L705.0,195.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M836.5,250.0 L836.5,282.0 L515.5,282.0 L515.5,314.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M390.0,380.0 L326.0,380.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M188.0,446.0 L188.0,510.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect class="nd" x="50" y="140" width="276" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="72" y="179" font-size="17" font-weight="700">1 · B: prepare-join</text>
+<text class="nb" x="72" y="205" font-size="14.5">Type REQUEST</text>
+<text class="nb" x="72" y="227" font-size="14.5">Keep private prepared state</text>
+<rect class="ex" x="390" y="140" width="251" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="412" y="179" font-size="17" font-weight="700">Request file</text>
+<text class="nb" x="412" y="205" font-size="14.5">Trusted channel → A</text>
+<text class="nb" x="412" y="227" font-size="14.5">Outside the exchange</text>
+<rect class="nd" x="705" y="140" width="263" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="727" y="179" font-size="17" font-weight="700">2 · A: invite-peer</text>
+<text class="nb" x="727" y="205" font-size="14.5">Type INVITE</text>
+<text class="nb" x="727" y="227" font-size="14.5">Permanently reserve identity</text>
+<rect class="ex" x="390" y="314" width="251" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="412" y="353" font-size="17" font-weight="700">Invitation file</text>
+<text class="nb" x="412" y="379" font-size="14.5">Trusted channel → B</text>
+<text class="nb" x="412" y="401" font-size="14.5">Unsigned · one-time · expires</text>
+<rect class="hl" x="50" y="314" width="276" height="132" rx="12" stroke-width="2.5"/>
+<text class="nt" x="72" y="353" font-size="17" font-weight="700">3 · B: setup-join</text>
+<text class="nb" x="72" y="379" font-size="14.5">Type JOIN</text>
+<text class="nb" x="72" y="401" font-size="14.5">Replay full exchange history</text>
+<text class="nm" x="72" y="423" font-size="14.5">Incomplete? --resume / RESUME</text>
+<rect class="nd" x="50" y="510" width="276" height="110" rx="12" stroke-width="1.5"/>
+<text class="nt" x="72" y="549" font-size="17" font-weight="700">4 · Start and verify</text>
+<text class="nb" x="72" y="575" font-size="14.5">Start worker · check status</text>
+<text class="nb" x="72" y="597" font-size="14.5">Recall an A-only record on B</text>
+<rect class="rj" x="705" y="314" width="263" height="132" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="727" y="353" font-size="17" font-weight="700">Copy the origin database</text>
+<text class="nb" x="727" y="379" font-size="14.5">Duplicates device identity</text>
+<text class="nb" x="727" y="401" font-size="14.5">Never clone prepared state</text>
+</svg>

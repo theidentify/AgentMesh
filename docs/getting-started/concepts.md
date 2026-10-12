@@ -22,7 +22,7 @@ A group supports at most three active devices with different identities. Two Mac
 
 ## Exchange folder and bootstrap
 
-Use a dedicated private exchange folder for each sync group: a group UUID does not isolate several groups sharing one folder. The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. A group created with `setup-new` [cannot add another device yet](../install/new-group#adding-another-device).
+Use a dedicated private exchange folder for each sync group: a group UUID does not isolate several groups sharing one folder. The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. An unsigned group created by current `setup-new` can [add a second and third device through origin-issued invitations](../install/new-group#adding-another-device). Joining replays the empty-baseline group’s retained packets; it does not copy a database. Lost or expired invitations permanently consume their reserved identities.
 
 ## Conflicts affect whole packets
 

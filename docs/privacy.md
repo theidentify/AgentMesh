@@ -10,13 +10,15 @@ Never commit or publish:
 - SQLite databases and their WAL/SHM files.
 - Bootstrap ZIPs and manifests, including as release assets; installed `app/baseline.jsonl.gz`, `app/bootstrap-manifest.json` and `data/baseline.jsonl`.
 - Change packets, raw status reports and logs.
-- Credentials, DSNs and device-specific deployment files.
+- Credentials, DSNs and device-specific deployment files, including private `data/join-state.json` recipient secrets.
 
 The repository contains code, tests and documentation. A private bootstrap contains real memory; it is not a public software download. Its extracted `app` directory also contains private snapshot material. Protect the entire installation root and never share `app` as a code-only bundle.
 
 ## Separate local storage from exchange
 
 Keep local databases, WAL/SHM files, credentials and deployment configuration outside the Syncthing exchange. Only the intended private exchange artifacts should travel between trusted peers. Record-level sync does not make live database-file synchronization safe.
+
+Invitation request and invitation transfer files contain no memory rows or secrets, but carry group/device metadata and are unsigned. Transfer them only through an authenticated trusted channel outside the exchange; never transfer the prepared installation itself.
 
 ## Understand integrity checks
 

@@ -8,7 +8,7 @@ Agent sessions are stored separately, so a decision recorded by one agent on one
 
 ## Use this guide to set up and use memory
 
-Hermes uses recall through this integration; its transcripts are not ingested. Recall rules are instructions telling an agent how to invoke the local read-only query. This guide is for people using Hermes, OMP, Codex or Claude who want to install AgentMesh, connect recall rules and check that memory is available. If you already received a private bootstrap, take the [quick start](./getting-started/quick-start). If you are creating an empty group, follow [New sync group](./install/new-group).
+Hermes uses recall through this integration; its transcripts are not ingested. Recall rules are instructions telling an agent how to invoke the local read-only query. This guide is for people using Hermes, OMP, Codex or Claude who want to install AgentMesh, connect recall rules and check that memory is available. If you already received a private bootstrap, take the [quick start](./getting-started/quick-start). If you are creating an empty group, follow [New sync group](./install/new-group); eligible unsigned groups can then [invite a second and third device](./install/new-group#adding-another-device) from the origin.
 
 ## Know what setup includes
 
@@ -28,4 +28,4 @@ Start with **Concepts** to understand local memory and sync. The **Prerequisites
 4. [Check status](./use/status), then [recall memory and connect agents](./use/recall).
 5. Use [Troubleshooting](./troubleshooting) and [Privacy](./privacy) when you need help.
 
-Next, choose [Quick start](./getting-started/quick-start) if you received a private bootstrap, or [New sync group](./install/new-group) for local use when starting alone. Read [Concepts](./getting-started/concepts) first if these terms are new.
+Next, choose [Quick start](./getting-started/quick-start) if you received a private bootstrap, or [New sync group](./install/new-group) to start locally and add devices through eligible unsigned invitations. Read [Concepts](./getting-started/concepts) first if these terms are new.

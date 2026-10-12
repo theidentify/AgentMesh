@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import zipfile
 
@@ -144,6 +145,14 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     assert first['node'] == node
     second = module.install(exchange, local, node=node)
     assert second['database'] == first['database']
+    from signed_packets import read_local
+    runtime = Path(first['database']).parent / 'runtime.json'
+    read_local(runtime, private=True)  # managed worker requires owner-only runtime
+    if os.name != 'nt':
+        assert runtime.stat().st_mode & 0o077 == 0
+        runtime.chmod(0o644)  # installs from earlier releases are repaired on rerun
+        module.install(exchange, local, node=node)
+        assert runtime.stat().st_mode & 0o077 == 0
     assert module.main(['--exchange', str(exchange), '--local-dir', str(local), '--node', node, '--once']) == 0
     acknowledgment = json.loads((exchange / ('status/' + node + '.json')).read_text())
     assert acknowledgment['node'] == node

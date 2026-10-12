@@ -15,6 +15,14 @@ def absolute(value):
     return no_symlinks(path)
 
 
+def security_paths(config, runtime):
+    """Explicit runtime security paths, else the defaults the wizard resolves."""
+    runtime = absolute(runtime)
+    root = config.get('app_root', runtime.parent.parent)
+    return (absolute(config.get('security_dir', Path(root) / 'identity')),
+            absolute(config.get('security_state', runtime.parent / 'security-wizard.json')))
+
+
 def validate(config, runtime, *, authoritative=True, allow_exchange_unavailable=False):
     """Read scope; never call Security.guard (which activates a legacy DB)."""
     from install_setup import reject_partial
@@ -66,7 +74,7 @@ def validate(config, runtime, *, authoritative=True, allow_exchange_unavailable=
     fingerprint = None
     if strict:
         from signed_packets import Security
-        security = Security(absolute(config.get('security_dir', root / 'identity')))
+        security = Security(security_paths(config, runtime)[0])
         if binding != [(security.public['sender'], group, node)] or (security.public['node'], security.public['group']) != (node, group):
             raise ValueError('strict identity binding mismatch')
         fingerprint = security.public['key_id']

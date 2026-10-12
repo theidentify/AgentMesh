@@ -154,7 +154,18 @@ def install(exchange, local_dir, node='windows', progress=None):
         # Preserve explicit signed activation across normal restarts; never make a new key.
         for key in ('security_dir', 'security_state'):
             if key in previous: result[key] = previous[key]
-    (data / 'runtime.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
+    # The managed worker reads runtime.json as a private file. Replacing it on
+    # every run also repairs runtimes written world-readable by older releases.
+    from signed_packets import replace, windows_private
+    temporary = data / ('.runtime.json.' + uuid.uuid4().hex + '.tmp')
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            windows_private(temporary, provision=True)
+            out.write(json.dumps(result, indent=2)+'\n')
+        replace(temporary, runtime_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     progress('Ready: local database installed; starting synchronization')
     return result
 

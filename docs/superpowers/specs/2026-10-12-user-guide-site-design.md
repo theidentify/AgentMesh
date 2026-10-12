@@ -103,3 +103,40 @@ docs/
 - A scripted grep over `docs/` finds no absolute user home paths, IP addresses
   other than `127.0.0.1`, or DSN strings with credentials.
 - Commands in the guide are spot-checked against `--help` output.
+
+## Phase A completion (added 2026-10-12)
+
+Review of the first draft found two problems: user-facing commands missing from the
+guide, and pages that start with steps before telling the reader why they are there.
+
+### Introductions
+
+- **Site level.** New `docs/introduction.md` ("What is AgentMesh"), first in the sidebar
+  after Overview and the target of the home page's *Get started* button. It covers:
+  the problem (agent memory is siloed per agent and per device), what AgentMesh does
+  about it, who the guide is for, what AgentMesh is not, and a reading path through
+  the guide (Concepts → Prerequisites → Install → Use → Help).
+- **Page level.** Every guide page opens, before its first `##` heading, with a lead of
+  2–4 sentences answering: what this page helps you do and why it matters; what you
+  need first (linked); what you will have at the end. Pages that already have a
+  diagram keep it after the lead.
+- **Continuity.** Every page ends by pointing to the next logical page.
+- Writing follows the `drawing-flow-diagrams` report rules (conclusion-first titles,
+  prose walks diagrams in arrow order, values in prose match the diagram).
+
+### New pages
+
+| Page | Covers | Source of truth |
+| --- | --- | --- |
+| `getting-started/quick-start.md` | Shortest path for someone who already received a bootstrap: check prerequisites → install → check status → first recall → connect agents. Links out for every detail. | existing guide pages |
+| `install/new-group.md` | Starting a new, empty sync group without a bootstrap (`setup-new --local-dir --exchange --node`), and when to use it instead of a supplied bootstrap. | `agentmesh.py`, `install_setup.py` |
+| `install/security.md` | Signed sync for users: what it protects, `wizard-status`, `wizard-resume`; operator activation stays in the reference. | `SECURITY-WIZARD.md`, `SIGNED-SYNC.md`, `security_wizard.py` |
+| `install/update-remove.md` | Updating and removing on macOS, Linux and Windows while keeping data; Windows `windows-upgrade` / `windows-rollback` / `windows-uninstall` at user level. | `README-SETUP.md`, `README-WINDOWS.md`, `WINDOWS-INSTALLATION.md`, `MAC-REPLACEMENT.md`, setup scripts |
+| `use/worker.md` | Running and controlling the worker: `once`, `watch`, `worker-run`, `worker-start`, `worker-stop`, `worker-status`, `inspect-install`. | `agentmesh.py`, worker modules |
+
+Still out of scope: `adopt-install`, `summarize`, `mac-replace`, `mac-rollback`,
+PostgreSQL mirroring (operator topics, phase B).
+
+Every command, flag and behavior on these pages must be verified against the code;
+where code and existing docs disagree, the code wins and the page says only what
+the code does.

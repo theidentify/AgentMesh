@@ -461,3 +461,22 @@ git commit -m "docs: link the user guide from README"
 - [ ] **Step 6: Hand off**
 
 Tell the owner to set **Settings → Pages → Source = GitHub Actions** before the first merge to `main`.
+
+---
+
+## Phase A completion tasks (spec section "Phase A completion")
+
+### Task 8: Introduction page and navigation
+
+- Create `docs/introduction.md` with the sections the spec lists. Include one diagram made with `docs/scripts/flow_svg.py` from a new `docs/diagrams/reading-path.json` (Concepts → Prerequisites → Install → Use → Help; highlight Install) rendered to `docs/public/diagrams/reading-path.svg`. Run: `python3 docs/scripts/flow_svg.py docs/diagrams/reading-path.json -o docs/public/diagrams/reading-path.svg`.
+- In `docs/.vitepress/config.mts`: add sidebar items `What is AgentMesh` (`/introduction`) and `Quick start` (`/getting-started/quick-start`) under Getting started after Overview; `New sync group` (`/install/new-group`), `Signed sync` (`/install/security`) and `Update or remove` (`/install/update-remove`) under Install; `Control the worker` (`/use/worker`) under Use. Change nav `Guide` link to `/introduction`.
+- In `docs/index.md`: hero *Get started* links to `/introduction`.
+- Verify: `npm --prefix docs run check`.
+
+### Task 9: New pages
+
+Write `quick-start.md`, `new-group.md`, `security.md`, `update-remove.md`, `worker.md` per the spec table. Before writing each, run the relevant `python3 memory-sync/agentmesh.py <action> --help` and read the cited source. Verify: `npm --prefix docs run check`.
+
+### Task 10: Page leads and continuity on existing pages
+
+For every existing page under `docs/` (except `index.md`), add or rewrite the opening lead per the spec and make the last paragraph point to the next page. Do not change verified technical content. Verify: `npm --prefix docs run check`.

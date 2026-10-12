@@ -64,3 +64,12 @@ community user most resolved, none untouched.
 - **Practitioner 25**: should packets accepted before a key was revoked stay accepted?
 - **Ingest before first cycle**: should the bootstrap offer a way to review or limit
   ingestion roots before the worker starts?
+
+## Maintainer decisions (2026-10-12)
+
+- **Practitioner 25 → A:** packets accepted before a key was revoked stay accepted;
+  only new packets signed by the revoked key are refused, and the managed worker does
+  not stop because of old packets. (Code change; the guide then describes this.)
+- **Ingest before first cycle → A:** the bootstrap offers a way to install without
+  ingesting so the user can review or limit roots, then enable ingestion. (Code change;
+  the guide then documents the flow and drops the "plan before running" workaround.)

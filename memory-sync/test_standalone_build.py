@@ -134,3 +134,29 @@ def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
     assert text.count('windows-autostart') == 1 and '--dry-run' not in text and '--enable --legacy-drained' in text
     assert 'choice /m' in text and 'Do not close this window' in text
     assert 'programs\\' not in text  # no version-pinned installed path
+
+
+def test_os_unlock_is_frozen_and_test_hooks_are_explicit(tmp_path):
+    root = Path(__file__).resolve().parent
+    normal = standalone_build.build_command(root, tmp_path / 'dist', tmp_path / 'work')
+    assert 'os_unlock' in normal and '--runtime-hook' not in normal
+    hook = tmp_path / 'fixture_hook.py'
+    hook.write_text('# disposable store selection only\n')
+    command = standalone_build.build_command(root, tmp_path / 'dist', tmp_path / 'work', runtime_hooks=[hook])
+    assert command[command.index('--runtime-hook') + 1] == str(hook)
+    spec, _ = standalone_build.windows_build(root, tmp_path / 'dist', tmp_path / 'work', runtime_hooks=[hook])
+    assert repr(str(hook)) in spec.read_text() and 'runtime_hooks=' in spec.read_text()
+
+
+def test_frozen_smoke_hook_binds_only_the_disposable_store(tmp_path, monkeypatch):
+    import runpy
+    import os_unlock as ou
+    import smoke_os_unlock
+    backend = ou.WindowsCredential(prefix='agentmesh-test-fixture/')
+    path = smoke_os_unlock.write_hook(tmp_path / 'hook.py', backend)
+    original = ou.current_backend
+    try:
+        runpy.run_path(str(path))
+        assert ou.current_backend().prefix == backend.prefix
+    finally:
+        monkeypatch.setattr(ou, 'current_backend', original)

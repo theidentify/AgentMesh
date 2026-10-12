@@ -49,6 +49,10 @@ jobs:
         run: python memory-sync/smoke_windows_install.py
       - name: Smoke disposable installation
         run: python memory-sync/smoke_standalone.py
+      - name: Verify frozen OS unlock on a disposable store
+        env:
+          AGENTMESH_NATIVE_KEYCHAIN_TESTS: '1'
+        run: python memory-sync/smoke_os_unlock.py
       - name: Verify independent background worker lifetime
         run: python memory-sync/smoke_worker_lifetime.py
       - name: Rehearse Mac replacement with real binary and fake launchd

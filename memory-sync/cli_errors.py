@@ -60,6 +60,7 @@ WINDOWS_REASONS = frozenset({
     'binding inputs changed while draining',
     'existing installed-state required',
     'existing runtime required',
+    'another installer operation is in progress or was interrupted',
     'recovery shape not supported; manual review required',
     'recovery requires a healthy running worker',
     'running worker is not the selected version',

@@ -44,7 +44,7 @@ class FakeTasks:
 ONEDIR = ('_internal/python311.dll', '_internal/base_library.zip', '_internal/cryptography/hazmat/_rust.pyd')
 
 
-def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False, onedir=False):
+def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False, onedir=False, distribution=None):
     directory = parent / (version + '-bundle')
     directory.mkdir()
     binary = directory / 'agentmesh.exe'
@@ -58,7 +58,7 @@ def package(parent, version='0.2.0-rc.5', sha='a' * 40, launcher=False, onedir=F
         (directory / name).write_bytes(b'disposable onedir runtime fixture ' + name.encode() + sha.encode())
         checksums[name] = installer.digest(directory / name)
     metadata = dict(version=version, source_sha=sha, system='windows', architecture='amd64',
-                    checksums=checksums, distribution=installer.DEVELOPMENT,
+                    checksums=checksums, distribution=distribution or (installer.DEVELOPMENT if '-rc.' in version else installer.RELEASE),
                     verification='fixture only, no native verification claim',
                     scope='program files only; no database, keys, runtime, snapshots or deployment secrets')
     (directory / 'BUILD.json').write_text(json.dumps(metadata))
@@ -288,7 +288,7 @@ def test_failed_readback_retains_private_recovery_descriptor(existing, monkeypat
         command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True, adapter=Broken())
     state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
     assert state['status'] == 'recovery_required' and state['pending']['operation'] == 'task'
-    with pytest.raises(ValueError, match='recovery'):
+    with pytest.raises(ValueError, match='recovery|in progress or was interrupted'):
         command(existing, monkeypatch, 'uninstall', 'UNINSTALL\n', legacy_drained=True)
 
 
@@ -518,23 +518,60 @@ def test_destructive_actions_need_the_named_word_even_with_yes(existing, monkeyp
     assert prompt.asked == ['UNINSTALL']  # typed word, not a select
 
 
-def test_upgrade_is_one_decision_and_staging_precedes_the_stopped_check(existing, monkeypatch):
+def test_bind_upgrade_with_a_running_worker_is_refused_before_any_prompt(existing, monkeypatch):
     command(existing, monkeypatch)
     monkeypatch.setattr(installer.managed, 'status', lambda runtime: {'state': 'running', 'cycles': 3})
     newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
     before = snapshot(existing['runtime'].parent.parent)
-    prompt = Answers('NO\n')
-    assert command(existing, monkeypatch, 'upgrade', binary=newer, prompt=prompt)['status'] == 'cancelled'
-    assert prompt.asked == ['Upgrade now?']
+    for options in ({}, {'legacy_drained': True}):
+        prompt = Answers('UPGRADE\n')
+        with pytest.raises(ValueError, match='legacy-worker drain|proven stopped'):
+            command(existing, monkeypatch, 'upgrade', binary=newer, prompt=prompt, **options)
+        assert prompt.asked == []  # refused before the operator is asked anything
     state_path = existing['program_root'] / 'installed.json'
-    assert len(installer.read_state(existing['program_root'], state_path)['programs']) == 1
-    prompt = Answers('UPGRADE\n')
-    with pytest.raises(ValueError, match='proven stopped'):
-        command(existing, monkeypatch, 'upgrade', binary=newer, prompt=prompt, legacy_drained=True)
-    assert prompt.asked == ['Upgrade now?']  # no second BIND/REPLACE prompt
+    assert len(installer.read_state(existing['program_root'], state_path)['programs']) == 1  # nothing staged
     assert snapshot(existing['runtime'].parent.parent) == before
     assert not existing['adapter'].operations
 
+
+def test_running_worker_blocks_stopped_only_actions_before_the_dialog(existing, monkeypatch):
+    command(existing, monkeypatch)
+    monkeypatch.setattr(installer.managed, 'status', lambda runtime: {'state': 'running', 'cycles': 3})
+    for action, options in (('autostart', {'enable': True}), ('rollback', {}), ('uninstall', {})):
+        prompt = Answers('Y\n')
+        with pytest.raises(ValueError, match='proven stopped|no previous'):
+            command(existing, monkeypatch, action, prompt=prompt, legacy_drained=True, **options)
+        assert prompt.asked == []
+    prompt = Answers('DISABLE\n')  # turning start-at-login off never needs the worker stopped
+    assert command(existing, monkeypatch, 'autostart', prompt=prompt, disable=True)['status'] == 'disabled'
+
+
+def test_running_operation_is_in_progress_and_only_a_failure_becomes_recovery_required(existing, monkeypatch):
+    command(existing, monkeypatch)
+    command(existing, monkeypatch, 'autostart', 'ENABLE\n', enable=True, legacy_drained=True)
+    state_path = existing['program_root'] / 'installed.json'
+    seen, original = [], installer.save
+    def watching(path, state):
+        seen.append((state['status'], (state.get('pending') or {}).get('phase')))
+        original(path, state)
+    monkeypatch.setattr(installer, 'save', watching)
+    newer = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=newer, legacy_drained=True)['status'] == 'selected'
+    in_flight = [entry for entry in seen if entry[0] != 'ready']
+    assert in_flight and all(status == 'in_progress' and phase for status, phase in in_flight)
+    assert {phase for _, phase in in_flight} >= {'copy', 'select', 'task'}
+    assert json.loads(state_path.read_bytes())['status'] == 'ready'
+    # A failure after the in_progress marker was written leaves recovery_required.
+    def refused(*args, **kwargs):
+        raise ValueError('Scheduled Task readback mismatch')
+    monkeypatch.setattr(existing['adapter'], 'register', refused)
+    newer2 = package(existing['binary'].parent.parent, '0.2.0-rc.7', 'c' * 40)
+    with pytest.raises(ValueError, match='readback mismatch'):
+        command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=newer2, legacy_drained=True)
+    failed = json.loads(state_path.read_bytes())
+    assert failed['status'] == 'recovery_required' and failed['pending']['phase'] == 'task'
+    with pytest.raises(ValueError, match='in progress or was interrupted'):
+        command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=newer2, legacy_drained=True)
 
 def test_orphan_wal_dry_run_decline_and_eof_have_no_side_effects(existing, monkeypatch):
     config = json.loads(existing['runtime'].read_bytes())
@@ -689,3 +726,23 @@ def test_dialog_receives_the_same_plan_with_labelled_button(existing, monkeypatc
     assert info['content'][-1] == 'You can roll back to 0.2.0-rc.5 (aaaaaaa).'
     assert any(line.startswith('Task: AgentMesh-') for line in info['details'])
     assert not any('Yes =' in line for line in info['content'] + info['details'])
+
+
+def test_final_release_version_upgrades_from_an_rc_and_rolls_back(existing, monkeypatch):
+    command(existing, monkeypatch)
+    final = package(existing['binary'].parent.parent, '0.2.0', 'd' * 40, launcher=True, onedir=True)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=final, legacy_drained=True)['status'] == 'selected'
+    state = installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')
+    assert state['active'] == '0.2.0-' + 'd' * 40 and installer.short(state['active']) == '0.2.0 (ddddddd)'
+    assert command(existing, monkeypatch, 'rollback', 'ROLLBACK\n', legacy_drained=True)['status'] == 'selected'
+
+
+@pytest.mark.parametrize('version,distribution', [
+    ('0.2.0', 'unsigned development trial; not a final or trusted-publisher release'),
+    ('0.2.0-rc.12', 'unsigned release; not signed by a trusted publisher'),
+    ('0.2.0-rc.4', None), ('0.3.0', None), ('0.2.0-beta', None), ('0.2.0-rc.12', 'signed by Example Corp'),
+])
+def test_bundle_rejects_mismatched_claims_and_unknown_versions(existing, monkeypatch, version, distribution):
+    bad = package(existing['binary'].parent.parent, version, 'e' * 40, distribution=distribution)
+    with pytest.raises(ValueError, match='invalid development BUILD.json schema'):
+        installer.bundle(bad)

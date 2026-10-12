@@ -43,6 +43,29 @@ def main(argv=None):
     setup.add_argument('--local-dir', required=True, help='new absolute local root; parent must exist')
     setup.add_argument('--exchange', required=True, help='accepted absolute Syncthing exchange')
     setup.add_argument('--node', required=True, help='allocation slot: mac, windows or linux')
+    for name, text in (
+            ('prepare-join', 'Prepare a private device request for an empty-baseline group.'),
+            ('invite-peer', 'Reserve a peer slot on the original unsigned setup-new device.'),
+            ('setup-join', 'Consume a device-bound invitation and replay retained exchange history.')):
+        command = subs.add_parser(name, help=text, description=__import__('brand').description(text),
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+        command.add_argument('-y', '--yes', action='store_true', help='skip the prompt; requires --confirm')
+        command.add_argument('--confirm', dest='confirm_word', help='REQUEST, INVITE, JOIN, or RESUME for the selected action')
+        if name == 'invite-peer':
+            command.add_argument('--runtime', required=True, help='original setup-new device runtime.json')
+            command.add_argument('--request', required=True, help='owner-only request transferred from the joining device')
+            command.add_argument('--output', required=True, help='new owner-only invitation outside the installation and exchange')
+            command.add_argument('--expires-in', type=int, default=86400, help='validity in seconds, 60..604800 (default: 86400)')
+        else:
+            command.add_argument('--local-dir', required=True, help='absolute local installation root')
+            command.add_argument('--exchange', required=True, help='existing Syncthing exchange; read only during onboarding')
+            if name == 'prepare-join':
+                command.add_argument('--node', choices=('mac', 'windows', 'linux'), required=True)
+                command.add_argument('--output', required=True, help='new request file outside the installation and exchange')
+            else:
+                mode = command.add_mutually_exclusive_group(required=True)
+                mode.add_argument('--invitation', help='owner-only source-issued invitation for this prepared device')
+                mode.add_argument('--resume', action='store_true', help='retry an already consumed invitation awaiting replay')
     adoption = subs.add_parser('adopt-install', help='bind existing paths only; requires BIND')
     for key in ('runtime', 'app-root', 'database', 'exchange', 'node', 'security-dir', 'security-state', 'workflow-config'):
         adoption.add_argument('--' + key, required=True)
@@ -168,6 +191,17 @@ def main(argv=None):
             report = setup_new(args.local_dir, args.exchange, args.node)
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 0 if report['status'] == 'created' else 2
+        if args.action in ('prepare-join', 'invite-peer', 'setup-join'):
+            from install_join import prepare_join, invite_peer, setup_join
+            confirmation = {'yes': args.yes, 'confirm_word': args.confirm_word}
+            if args.action == 'prepare-join':
+                report = prepare_join(args.local_dir, args.exchange, args.node, args.output, **confirmation)
+            elif args.action == 'invite-peer':
+                report = invite_peer(args.runtime, args.request, args.output, expires_in=args.expires_in, **confirmation)
+            else:
+                report = setup_join(args.local_dir, args.exchange, args.invitation, resume=args.resume, **confirmation)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 0 if report['status'] in ('prepared', 'issued', 'joined') else (1 if report['status'] == 'blocked' else 2)
         if args.action in ('inspect-install', 'wizard-status', 'wizard-resume'):
             from install_setup import reject_partial
             reject_partial(args.runtime)
@@ -238,6 +272,10 @@ def main(argv=None):
             return int(bool(result.get('errors')))
         return 0
     except KeyboardInterrupt:
+        if args.action in ('prepare-join', 'invite-peer', 'setup-join'):
+            print('\nInterrupted. Retain private join state and source reservations; '
+                  'setup-join --resume retries a consumed invitation awaiting replay.', file=sys.stderr)
+            return 130
         # Before approval nothing has changed; afterwards Ctrl+C is ignored, so
         # reaching here means no transaction was started by this command.
         print('\nInterrupted. Run diagnose to check the worker; windows-recover finishes an interrupted upgrade.',

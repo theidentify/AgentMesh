@@ -6,6 +6,25 @@ import sys
 import uuid
 
 from signed_packets import no_symlinks, private_directory, read_local, windows_private, write_local
+from cli_errors import USED_EXCHANGE_REASON
+
+
+def require_unused_exchange(exchange):
+    """Only Syncthing marker/ignore metadata and empty version storage are unused.
+
+    Do not parse packets to guess ownership: this creates a fresh group UUID,
+    so even malformed packets, bootstrap bundles and empty app namespaces are
+    evidence of prior use. Retained Syncthing versions also count as prior use.
+    """
+    for entry in exchange.iterdir():
+        no_symlinks(entry)
+        if entry.name == '.stfolder' and entry.is_dir():
+            continue
+        if entry.name == '.stignore' and entry.is_file():
+            continue
+        if entry.name == '.stversions' and entry.is_dir() and not any(entry.iterdir()):
+            continue
+        raise ValueError(USED_EXCHANGE_REASON)
 
 
 def validate_paths(local_dir, exchange, node):
@@ -93,6 +112,7 @@ def setup_new(local_dir, exchange, node):
     from install_inspect import inspect, wizard_status
 
     root, exchange = validate_paths(local_dir, exchange, node)
+    require_unused_exchange(exchange)
     binding = path_binding(root, exchange)
     print('Create a NEW EMPTY installation and isolated group (not a baseline join)? Type NEW:', file=sys.stderr)
     answer = sys.stdin.readline()
@@ -101,6 +121,7 @@ def setup_new(local_dir, exchange, node):
     if answer.rstrip('\r\n') != 'NEW':
         return {'format': 'agentmesh-setup-new-v1', 'status': 'pending'}
     root, exchange = validate_paths(local_dir, exchange, node)
+    require_unused_exchange(exchange)
     if path_binding(root, exchange) != binding:
         raise ValueError('setup paths changed during confirmation')
     # A losing installer must not enter the cleanup path or adopt another root.

@@ -47,6 +47,8 @@ def inspect(runtime_path=None):
         connection.execute('PRAGMA query_only=ON')
         node, group = connection.execute('SELECT node,group_id FROM _sync_config').fetchone()
         strict = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sync_security'").fetchone()
+    from protocol_activation import require_capability
+    require_capability(runtime,db)
     if node != config['node']:
         raise ValueError('runtime/database node mismatch')
     identity = config.get('security_dir') or str(runtime.parent.parent / 'identity')

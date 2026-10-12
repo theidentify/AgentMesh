@@ -137,7 +137,7 @@ Write `test_two_peers_companions_exactly_once`, `test_three_peers_resolution_bef
 
 Run `"$TEST_PY" -m pytest -q memory-sync/test_resolution_apply.py memory-sync/test_resolution_e2e.py memory-sync/test_signed_packets.py`, gate-1 tests, then full suite. Acceptance: all supported same-lineage histories converge conditionally; no companion loss; all failure boundaries atomic; signed identity and revocation preserved; no CLI/network emission available and authoring fails without activation. Review before gate 4.
 
-## Gate 4 — CLI, join, workers and activation (NOT started)
+## Gate 4 — CLI, join, workers and activation (implemented locally; native CI pending)
 
 ### Exact files
 
@@ -359,3 +359,232 @@ The unchanged baseline failures are the same three `ConsumerTests` in `memory-sy
 - No native Windows build/run or physical power-loss test was performed. Existing approved baseline failures remain environmental limitations, not new passing checks.
 
 Gate-3 acceptance is met under the approved baseline: 83 additional tests pass, all three failure identities are unchanged, and emission is still unavailable through production activation/authoring entry points. Gate 4 remains **unstarted**.
+
+
+## Gate-4 execution evidence (2026-10-12)
+
+Gate 4 implements the local CLI, real operator activation, worker recovery,
+unsigned join compatibility, capability fences and packaging. No network or git
+writes were performed. All activations and worker exercises were on disposable
+test databases; no operational group was activated or deployed.
+
+### Files
+
+Created `memory-sync/conflict_commands.py`, `memory-sync/protocol_activation.py`,
+`memory-sync/test_conflict_commands.py`, and
+`memory-sync/test_protocol_activation.py`.
+
+Modified every planned gate-4 file: `agentmesh.py`, `worker_lifecycle.py`,
+`install_join.py`, `install_inspect.py`, `windows_install.py`, `mac_replace.py`,
+`resolution_apply.py`, `memory_sync.py`, `test_install_join.py`,
+`test_worker_lifecycle.py`, `test_agentmesh.py`, `test_windows_install.py`,
+`test_mac_replace.py`, `SYNC.md`, `SIGNED-SYNC.md`, `build_package.py`,
+`standalone_build.py`, `test_package.py`, and `test_standalone_build.py`, all under
+`memory-sync/`, plus this plan.
+
+Additional files required by the reviewed gate transition:
+
+- `resolution_store.py`: schema 3 persists the real activation manifest and
+  minimum capability; removes the test-sentinel predicate entirely. Schema-1/2
+  upgrades and new schema creation stay transactional and lazy.
+- `signed_packets.py`: the v3 signer and signed backlog guard now check the real
+  activation record, with no test-only branch or alternate environment flag.
+- `test_resolution_apply.py` and `test_signed_packets.py`: earlier-gate fixtures
+  now activate through the public operator API. The descendant test now receives
+  the legitimately new-format post-activation capture through the new reader;
+  it no longer incorrectly feeds it to the legacy-only validator.
+- `cli_errors.py`: fixed, redacted protocol-command reasons and guidance. Without
+  this addition the existing CLI error projector returned only an exception class
+  for the new commands, making refusal and stale-plan recovery opaque.
+
+### Implementation decisions and review-note evidence
+
+**Real activation, no production test bypass.** `activation_plan(runtime,
+peer_inventory)` writes an owner-only local proposal. `activate(runtime,
+plan_digest, confirm_word='ACTIVATE')` requires its exact digest, confirms the
+complete inventory and legacy-worker drain acknowledgment, rechecks observed and
+reserved slots, runtime/path/trust bindings and authoritative DB scope, and commits
+the real inventory/minimum-capability/digest record. The inventory includes each
+node's declared software, capability and offline status. Capability `1` denotes
+this complete resolution implementation. No production module contains the old
+sentinel or its predicate, and no production test activation writer exists.
+
+The activation record adds `activation_manifest` and `minimum_capability` to
+`_sync_protocol`, advancing schema 2 to 3. Its integrity and scope are checked
+before emission. Unactivated capture still emits unsigned-v1/signed-v2; activated
+capture emits ordinary unsigned-v2/signed-v3 with one parent (or absence root).
+Previously committed outboxes retain their exact bytes. Public legacy signing
+still rejects a new-format payload; the database-bound v3 signer checks activation.
+The former gate-3 fixtures use public activation, not direct flag/sentinel writes.
+
+**Strict read-only listing.** `list_conflicts` never calls capture, migration,
+packet application, security guard, or verification telemetry writes. A three-attempt
+stable copy of the DB/WAL pair is opened in a private temporary directory; only
+that disposable copy may create a WAL index. The source database, WAL, SHM,
+exchange, diagnostics and counters remain byte-identical. This deliberately
+avoids treating SQLite `mode=ro` as a zero-filesystem-write guarantee. Default and
+JSON reports redact rows/natural keys; explicit local content display shows both
+sides, keys, revisions and parents. Listings are labeled unverified previews;
+authorization is checked at execution. Continuous writes that prevent a stable
+snapshot cause a retryable inspection refusal rather than a guessed snapshot.
+
+**Concrete private plans and confirmations.** `preview_resolution` indexes proof
+only on a disposable copy, includes selected source packets, local heads and
+transitive companions, and supports `mine`, `theirs`, explicit `row` overrides or
+`delete`. Non-conflicting companions retain their maximal values. It rejects
+uncaptured edits and rehearses the complete SQL transaction on the copy, refusing
+unsupported relational repair before confirmation. A private plan under
+`runtime.json`'s sibling `.agentmesh-plans/` contains full chosen rows and immutable
+refs; its digest binds both the core `ResolutionPlan` and runtime/path/trust state.
+This local artifact is the concrete mechanism for the plan's cross-process
+`resolve(runtime, plan_digest, ...)` API; it is never exchanged or put in status.
+Reports are JSON records, consistent with the existing CLI.
+
+Execution checks typed `RESOLVE`, the exact plan digest and a stable operation ID.
+Wrong confirmation/EOF applies nothing. An already-stale plan is refused before
+worker control files are created or a worker is stopped; the locked transaction
+then revalidates again. Repeated operation/plan pairs recover the same committed
+packet and retry publication. Source/evidence envelope changes fail revalidation.
+
+**Worker integration.** Recovery cooperatively stops only owned running execution,
+then holds the lifetime lock and the existing DB-directory cycle lock. Receive-only
+captures local edits and receives without ingestion, summarization or publication.
+Resolution commits, publishes and receives while holding those locks. Neither
+operation restarts a worker or overwrites existing failed-worker metadata. Reports
+request diagnostic review while anything remains pending/conflicted/invalid or
+unavailable, publication retry if needed, and otherwise an explicit `worker-start`.
+Unrelated worker errors still require operator review; an empty sync diagnostic
+count is not proof that ingestion or summarization is healthy.
+
+**Legacy interoperation and race fixes discovered in this gate.** Explicit real
+unsigned and Ed25519 tests exchange both directions between a legacy-only DB and
+an unactivated DB that has the resolution store; their captures remain legacy and
+the legacy-only DB remains unmigrated. The indexed receiver now also captures an
+intervening local edit under the incoming packet's write lock before applying an
+unseen packet. A new red test showed that gate 3's indexed legacy path could
+otherwise overwrite a local edit committed after receive's initial capture. Exact
+committed/own replays retain the no-per-packet-row-scan fast path. Another red test
+showed new-format capture's own outbox replay being misclassified as a conflict;
+committed local ordinary captures now return no-op, while local resolutions still
+run their atomic commit path.
+
+Exchange indexing binds paths to exact envelope digests, including diagnostics
+created before activation. A crash immediately after resolution commit but before
+publication now leaves covered diagnostics cleared atomically and unrelated
+failures intact; a follow-up receive is not required to finish that cleanup.
+
+**Join and managed capability fences.** `observed_slots` validates both unsigned
+formats, checks every delivered source packet's scalar/array parents and origin,
+and therefore inspects ancestors even when their packets were superseded. It
+refuses non-empty baseline ancestry. Missing ancestor/evidence packets stay pending
+through receive; the pending-install guard is removed only after replay settles.
+Signed namespace/invitation refusal, durable slot reservations and replay-only
+installation remain intact. Tests replay resolved histories from empty, with and
+without required sources, and verify guard retention.
+
+The new read-only `protocol-capability` entry point allows Windows program
+selection/rollback and Mac replacement/restore to check the actual chosen
+executable before it can run against an activated database. Legacy source workers
+are rejected without executing their worker script. Capability checks repeat
+under installer revalidation; worker run/start and installation inspection refuse
+unsupported DB capability. Installer rehearsal tests prove refusal before program,
+service or task changes. This uses an executable capability response rather than
+changing the existing strict `BUILD.json` format, preserving old package metadata
+compatibility. It is still an operator-trusted executable check, not remote
+attestation or a retroactive fence in unmanaged old binaries.
+
+### TDD and local verification
+
+All pytest commands used the supplied interpreter:
+
+```text
+/private/tmp/claude-501/-Users-krisanathep-Workspaces-AgentMesh--claude-worktrees-gitbook-agent-mesh-usage-1839e8/726c4aa1-e480-4547-b773-90d2bb8f75d5/scratchpad/testvenv/bin/python
+```
+
+| Run | Actual result |
+|---|---|
+| Full baseline before gate-4 edits | 983 passed, same 3 failures, 14 skipped; 20 subtests passed; 179.06s |
+| Listed command/activation/join tests before implementation | 4 failed, 45 passed, 16 setup errors; 12.05s |
+| First command/activation/join implementation run | 65 passed; 14.70s |
+| Managed-program capability red tests | 2 failed; 4.09s |
+| Expanded focused suites | 502 passed, 4 skipped; 77.06s |
+| Stale-plan pre-lock refusal red test | 1 failed; 1.25s |
+| Expanded interoperation/WAL suites | 506 passed, 4 skipped; 84.25s |
+| Fixed actionable CLI errors red test | 1 failed; 0.05s |
+| Indexed legacy interleaving red test | 1 failed; 2.53s |
+| Activated own-packet replay red test | 1 failed; 0.27s |
+| Command/crypto/installer boundary run | 266 passed, 4 skipped; 57.16s |
+| Pre-activation diagnostic atomic-cleanup red test | 1 failed; 0.46s |
+| Preview uncaptured-edit/SQL-rehearsal red test | 1 failed; 1.84s |
+| Intermediate full regression | 1020 passed, same 3 failures, 14 skipped; 20 subtests passed; 171.35s |
+| Expanded focused run | 515 passed, 4 skipped; 81.03s |
+| Pending-recovery guidance red test | 1 failed; 0.43s |
+| Final focused verification | 516 passed, 4 skipped; 88.21s |
+| Final full verification | 1022 passed, same 3 failures, 14 skipped; 20 subtests passed; 181.67s |
+
+The initial failures were the absent `protocol_activation`/`conflict_commands`
+modules and the old join reader rejecting new-format history before the intended
+baseline check. The existing signed-invitation refusal already passed. All later
+red tests failed for their named behavioral assertions, then passed after the
+corresponding implementation change. One recovery-guidance fixture initially
+claimed the receiver's own node; it was corrected to a remote node and rerun red
+before changing the guidance code.
+
+Final focused command (gate-4 files, all earlier protocol/application regressions,
+and packaging):
+
+```sh
+"$TEST_PY" -m pytest -q memory-sync/test_conflict_commands.py memory-sync/test_protocol_activation.py memory-sync/test_install_join.py memory-sync/test_worker_lifecycle.py memory-sync/test_agentmesh.py memory-sync/test_windows_install.py memory-sync/test_mac_replace.py memory-sync/test_resolution_apply.py memory-sync/test_resolution_e2e.py memory-sync/test_signed_packets.py memory-sync/test_packet_versions.py memory-sync/test_resolution_store.py memory-sync/test_resolution_protocol.py memory-sync/test_resolution_model.py memory-sync/test_package.py memory-sync/test_standalone_build.py
+```
+
+Full command: `"$TEST_PY" -m pytest -q memory-sync`. Also ran the real source CLI
+`agentmesh.py protocol-capability` (capability 1) and `agentmesh.py --help` locally.
+Packaging tests validate source ZIP membership and standalone hidden imports;
+no dependencies were downloaded. Local evidence logs are under
+`$TMPDIR/conflict-g4-{baseline,red,first,fence-red,focused1,stale-red,focused2,errors-red,interleaving-red,self-red,boundaries,diagnostics-red,preview-red,guidance-red,focused-final,focused-verified,full1,full-final,cli-help}.log`.
+
+All three baseline failures remain in `test_sqlite_consumers.py::ConsumerTests`:
+`test_export_complete_collision_safe_manual_notes_and_source_anchors`,
+`test_export_infers_transcript_tasks_even_without_structured_task_ref`, and
+`test_export_resolution_of_last_active_item_clears_current_memory`. Each reports
+`ValueError: symlink export root refused`. No failure was deselected or changed.
+The duplicate ZIP-entry warning and existing native/platform skips remain.
+
+### Native CI still required
+
+Per the current task, these native entry points were **not run here**. Provision
+private disposable `RUNNER_TEMP`, use an already-installed native interpreter and
+build dependencies, and run without downloads:
+
+```sh
+"$TEST_PY" memory-sync/standalone_build.py --dist "$RUNNER_TEMP/agentmesh-dist" --work "$RUNNER_TEMP/agentmesh-build"
+AGENTMESH_DIST="$RUNNER_TEMP/agentmesh-dist" "$TEST_PY" memory-sync/smoke_worker_lifetime.py
+# Windows only; set AGENTMESH_NATIVE_TASK_FIXTURE_ROOT to a NEW disposable directory.
+"$TEST_PY" memory-sync/smoke_windows_install.py
+```
+
+Use native Windows environment-assignment syntax on that runner. Frozen CLI
+capability/command loading, real worker lifetime, Windows task/ACL behavior and
+platform installation/rollback smoke evidence remain unverified locally. No claim
+is made about actual host upgrade, login/autostart, signing/notarization or release
+readiness from the mocked OS-boundary installer tests.
+
+### Risks and completion boundary
+
+- Private preview artifacts contain memory rows and must remain outside exchange;
+  retain the selected artifact for durable operation retry. No artifact/evidence
+  garbage collector was added.
+- Inventory completeness and drained unmanaged workers are operator assertions.
+  Observed/reserved slots are checked, but undiscovered offline devices and old
+  binaries bypassing managed entry points cannot be fenced retroactively.
+- Missing original baseline witnesses and oversized closure/ancestry proofs still
+  fail closed. Relational repairs, ID remapping and automatic LWW remain unsupported.
+- Signed authorization is rechecked, but filesystem trust and SQLite do not form
+  one distributed atomic transaction. Packet signatures do not encrypt content.
+- Stable read-only snapshots may require retry during sustained writes. Resolution
+  preview rehearses SQL privately; the live transaction must still revalidate
+  rows, heads, scope, trust and constraints after confirmation.
+- The three environment-specific export failures and native CI listed above remain
+  explicit verification limits. No operational activation or deployment was done.
+
+Gate-4 implementation and local acceptance are complete under the approved baseline: 39 additional tests pass, and the three failure identities are unchanged. Native CI acceptance remains pending the explicit commands above. Work stops here for review; no operational activation or deployment was performed.

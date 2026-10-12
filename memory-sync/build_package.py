@@ -8,7 +8,7 @@ import tempfile
 import uuid
 import zipfile
 
-FILES = ['resolution_protocol.py', 'resolution_store.py', 'packet_versions.py', 'resolution_apply.py', 'bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest_scheduler.py',
+FILES = ['resolution_protocol.py', 'resolution_store.py', 'packet_versions.py', 'resolution_apply.py', 'conflict_commands.py', 'protocol_activation.py', 'bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest_scheduler.py',
          'shared_memory_context.py', 'sqlite_export.py', 'retention_audit.py', 'SQLITE-CONSUMERS.md', 'SQLITE-WRITERS.md',
          'brand.py', 'terminal_progress.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
          'recall_memory.py', 'summarize_memory.py', 'claude_summary_provider.py',

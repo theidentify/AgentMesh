@@ -284,8 +284,8 @@ class Security:
         for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0'):
             p = parse(row[0])
             if p.get('format') != FORMAT:
-                from resolution_store import test_activation
-                if p.get('format') != RESOLUTION_FORMAT or not test_activation(c):
+                from protocol_activation import emission_enabled
+                if p.get('format') != RESOLUTION_FORMAT or not emission_enabled(c):
                     raise ValueError('unsigned outbox backlog: drain before signed activation')
             self.verify(p, self.public['group'], self.public['node'])
             if p['sender'] != self.public['sender']: raise ValueError('outbox sender mismatch')
@@ -310,8 +310,8 @@ class Security:
         return p
 
     def _sign_resolution(self, c, envelope):
-        from resolution_store import test_activation
-        if not test_activation(c): raise ValueError('new packet emission disabled')
+        from protocol_activation import emission_enabled
+        if not emission_enabled(c): raise ValueError('new packet emission disabled')
         self.check_self()
         if (envelope['group'], envelope['node']) != (self.public['group'], self.public['node']):
             raise ValueError('signing scope mismatch')

@@ -483,7 +483,7 @@ def test_resolution_signing_fence_and_stale_trust_plan(secure_peers):
     retain(a,[p,q],sa)
     with sync.connect(a) as c, pytest.raises(ValueError,match='emission disabled'):
         sa._sign_resolution(c,{})
-    activate(a)
+    activate(a,sa)
     with sync.connect(a) as c:
         plan=apply.prepare_resolution(c,[ref(p),ref(q)],choices(x=3),security=sa)
     signed.revoke(sa.directory,sb.public['key_id'])

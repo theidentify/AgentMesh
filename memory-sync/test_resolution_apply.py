@@ -27,11 +27,22 @@ def peers(tmp_path, count=3):
     return result
 
 
-def activate(db):
-    # No production writer for this record exists in gate 3.
-    with sync.connect(db) as c, c:
-        store.migrate(c)
-        c.execute("UPDATE _sync_protocol SET emission_enabled=1,activation_manifest_digest='gate3-test-only'")
+def activate(db, security=None):
+    # Earlier-gate fixtures now use the same operator-approved public API.
+    import protocol_activation as activation
+    from signed_packets import write_local
+    from test_protocol_activation import inventory
+    with sync.connect(db) as c:
+        if activation.emission_enabled(c): return
+        cfg=sync.config(c)
+    root=db.with_suffix('.activation'); root.mkdir(mode=0o700,exist_ok=True)
+    exchange=db.parent/'activation-exchange'; (exchange/'.stfolder').mkdir(parents=True,exist_ok=True)
+    runtime=root/'runtime.json'
+    config=dict(app_root=str(root),database=str(db),exchange=str(exchange),node=cfg['node'])
+    if security: config['security_dir']=str(security.directory)
+    write_local(runtime,config)
+    plan=activation.activation_plan(runtime,inventory())
+    activation.activate(runtime,plan['plan_digest'],confirm_word='ACTIVATE')
 
 
 def edit(db, values, security=None):
@@ -65,7 +76,7 @@ def choices(**values):
 
 
 def resolve(app, db, packets, values, security=None, operation_id=None):
-    retain(db, packets, security); activate(db)
+    retain(db, packets, security); activate(db,security)
     with sync.connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         plan = app.prepare_resolution(c, [ref(p) for p in packets], choices(**values), security=security)
@@ -133,7 +144,7 @@ def test_later_edit_precedes_resolution_delivery(app,tmp_path):
     u = edit(a,dict(x=8))
     retain(b,[p,q,r,u]); receive(app,b,r)
     with sync.connect(b) as con, con:
-        sync._validate(con,u); sync._apply(con,u)
+        app.receive_resolution(con,u,security=None)
         con.execute('DELETE FROM _sync_receipts WHERE uuid=?',(r['uuid'],))
     assert receive(app,b,r).status == 'noop'
     assert vector(b)['x'] == 8
@@ -221,6 +232,8 @@ def test_gate2_schema_upgrade_is_atomic_and_lazy(app,tmp_path):
         store.migrate(con)
         con.execute('DROP TABLE _sync_resolution_operations')
         con.execute('DROP TABLE _sync_packet_paths')
+        con.execute('ALTER TABLE _sync_protocol DROP COLUMN activation_manifest')
+        con.execute('ALTER TABLE _sync_protocol DROP COLUMN minimum_capability')
         con.execute('UPDATE _sync_protocol SET schema_version=1'); con.commit()
         before = '\n'.join(con.iterdump())
         con.set_authorizer(lambda action,name,*args: sqlite3.SQLITE_DENY if action==sqlite3.SQLITE_CREATE_TABLE and name=='_sync_resolution_operations' else sqlite3.SQLITE_OK)
@@ -228,7 +241,7 @@ def test_gate2_schema_upgrade_is_atomic_and_lazy(app,tmp_path):
         con.set_authorizer(None)
         assert '\n'.join(con.iterdump()) == before
         store.migrate(con)
-        assert con.execute('SELECT schema_version FROM _sync_protocol').fetchone()[0] == 2
+        assert con.execute('SELECT schema_version FROM _sync_protocol').fetchone()[0] == store.SCHEMA_VERSION
 
 
 @pytest.mark.parametrize('boundary',['rows','shadow','history','dispositions','receipt','outbox','operation','committed'])

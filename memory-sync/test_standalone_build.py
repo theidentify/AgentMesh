@@ -137,4 +137,4 @@ def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
 
 
 def test_gate2_readers_are_hidden_imports():
-    assert {'resolution_protocol', 'resolution_store', 'packet_versions', 'resolution_apply'} <= set(standalone_build.HIDDEN_MODULES)
+    assert {'resolution_protocol', 'resolution_store', 'packet_versions', 'resolution_apply', 'conflict_commands', 'protocol_activation'} <= set(standalone_build.HIDDEN_MODULES)

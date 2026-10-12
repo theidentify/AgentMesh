@@ -1,6 +1,6 @@
-"""Atomic resolution application. Authoring is fenced to test-created activation.
+"""Atomic resolution application. Authoring requires an operator-approved activation record.
 
-No CLI calls prepare/commit in gate 3. Retained envelopes are reauthorized on
+CLI confirmation plans bind prepare/commit. Retained envelopes are reauthorized on
 use; only exact committed receipts/dispositions survive later revocation.
 """
 from dataclasses import dataclass
@@ -35,7 +35,8 @@ def _checkpoint(boundary):
 
 
 def _require_activation(c):
-    if not store.test_activation(c): raise ValueError('new packet emission disabled')
+    from protocol_activation import emission_enabled
+    if not emission_enabled(c): raise ValueError('new packet emission disabled')
 
 
 def _trust(security):
@@ -178,7 +179,7 @@ def apply_resolution(c, packet, *, security):
         trust_before=_trust(security)
         normalized=_decode(c,packet,security)
         auth=versions._authorize(c,packet,security,packet['node'])
-        if auth.state in ('applied','superseded'):
+        if auth.state in ('applied','superseded') or (auth.state=='local' and normalized.kind=='change'):
             _clear(c,normalized.ref.uuid,normalized.ref.digest)
             return ApplyResult('superseded' if auth.state=='superseded' else 'noop',normalized.ref.uuid)
         _index_local(c,security)
@@ -265,6 +266,12 @@ def receive_indexed(c, envelope, path, *, security):
     c.execute('INSERT OR REPLACE INTO _sync_packet_paths VALUES(?,?,?)',
               (str(path),envelope['uuid'],versions.envelope_identity(envelope)))
     added=c.execute('SELECT count(*) FROM _sync_packet_evidence').fetchone()[0]>before
+    # A local writer may commit after receive's initial capture. Preserve that
+    # edit under this packet's write lock before any unseen packet can overwrite
+    # its row. Exact committed/own replays must not trigger per-packet row scans.
+    auth=versions._authorize(c,envelope,security,envelope['node'])
+    if auth.state not in ('applied','superseded','local'):
+        with store.atomic(c): sync._capture(c,security=security)
     try:
         with store.atomic(c):
             if versions.is_new(envelope):

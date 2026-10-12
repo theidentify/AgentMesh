@@ -133,6 +133,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     runtime = absolute(runtime)
     runtime_bytes = read_local(runtime, private=True)
     config, scope = load(runtime, allow_exchange_unavailable=True)
+    from protocol_activation import require_capability
+    require_capability(runtime, config['database'])
     # Bootstrap runtimes omit security paths; use the wizard's defaults.
     security_dir, security_state = security_paths(config, runtime)
     if scope['policy'] == 'legacy' and not legacy_drained:
@@ -240,6 +242,8 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     positive(interval)
     positive(timeout)
     config, scope = load(runtime, allow_exchange_unavailable=True)
+    from protocol_activation import require_capability
+    require_capability(runtime, config['database'])
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly')
     if status(runtime)['state'] == 'running':
@@ -317,3 +321,23 @@ def stop(runtime, *, timeout=60):
                 return drained(directory, current, deadline)
             time.sleep(0.1)
         raise TimeoutError('worker did not acknowledge stop; no process was signalled')
+
+
+@__import__('contextlib').contextmanager
+def recovery(runtime):
+    """Cooperatively stop owned execution; hold lifetime and cycle locks.
+
+    Leave failed metadata intact. Recovery never starts ingestion or a worker.
+    """
+    config, scope = load(runtime)
+    from protocol_activation import require_capability
+    require_capability(runtime,config['database'])
+    if status(runtime)['state']=='running': stop(runtime)
+    directory=control(config,create=True)
+    with lock(directory/'lifetime.lock',timeout=0), lock(Path(config['database']).parent/'worker.lock',timeout=0):
+        if load(runtime)!=(config,scope): raise ValueError('runtime or trust changed')
+        security=None
+        if scope['policy']=='required':
+            from signed_packets import Security
+            security=Security(security_paths(config,runtime)[0])
+        yield config,security

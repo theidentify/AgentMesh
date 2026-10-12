@@ -5,6 +5,26 @@ USED_EXCHANGE_REASON = ('exchange folder is already used; each sync group needs 
 
 # Exact constants emitted by installation/lifecycle/private-storage guards.
 # Do not expose arbitrary exception text, paths, keys or subprocess output.
+PROTOCOL_REASONS = frozenset({
+    'stale resolution plan', 'protocol activation required', 'protocol already activated',
+    'RESOLVE confirmation required', 'ACTIVATE confirmation required',
+    'runtime paths or trust changed; preview again', 'runtime or trust changed',
+    'activation scope changed', 'activation inputs changed', 'plan changed',
+    'complete peer inventory and drained legacy workers must be acknowledged',
+    'peer lacks required protocol capability', 'peer inventory omits an observed or reserved peer',
+    'database requires resolution protocol capability', 'unsupported protocol capability',
+    'program lacks required resolution protocol capability', 'legacy worker lacks required resolution protocol capability',
+    'activation record requires operator review', 'invalid protocol activation record',
+    'invalid plan digest', 'select conflict packet UUIDs', 'selected packet evidence unavailable',
+    'multiple remote sides; select explicit row', 'explicit row required for every conflicting key',
+    'explicit row outside coverage', 'unsupported relational repair', 'uncaptured local edits',
+    'origin witness unavailable', 'packet evidence unavailable', 'legacy ancestry evidence unavailable',
+    'operation ID reused', 'new packet emission disabled', 'trust changed during resolution',
+    'stable --operation-id required', 'peer inventory required',
+    'noninteractive confirmation requires the exact plan digest and typed word',
+    'JSON reports are redacted; omit --json for local content',
+})
+
 SAFE_REASONS = frozenset({
     'absolute paths without traversal required',
     'partial first-run installation requires manual review',
@@ -122,7 +142,7 @@ WINDOWS_REASONS = frozenset({
 })
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
-TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
+TRUSTED_MODULES = frozenset({'protocol_activation', 'conflict_commands', 'resolution_apply','install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
                            'windows_install', 'windows_task', 'install_join'})
 
@@ -133,11 +153,12 @@ def report(exc, action):
         return dict(result, reason=USED_EXCHANGE_REASON,
                     next_action='Choose a new dedicated Syncthing exchange folder; retain the existing group files.')
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
+    is_protocol = action in ('conflicts','resolve','receive-only','activate-protocol','protocol-capability')
     is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
-    if not is_windows and not is_join and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    if not is_windows and not is_join and not is_protocol and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
-    known = message in SAFE_REASONS or (is_windows and message in WINDOWS_REASONS)
+    known = message in SAFE_REASONS or message in PROTOCOL_REASONS or (is_windows and message in WINDOWS_REASONS)
     if is_join:
         from install_join import REASONS
         known = known or message in REASONS
@@ -148,6 +169,8 @@ def report(exc, action):
         'Run diagnose with the same executable/runtime; share code and stage. Private input values are withheld.'))
     if not known and result['error'] in SYSTEM_ERRORS:
         code, hint = SYSTEM_ERRORS[type(exc).__name__]
+    if is_protocol:
+        hint = 'Review conflicts and activation inventory locally; preview again after correcting the reported condition. Restart the worker explicitly only when healthy.'
     if is_windows:
         hint = 'Retain installed-state and program files for operator review; do not retry blindly or restore the database.'
     result.update(code=code, next_action=hint)

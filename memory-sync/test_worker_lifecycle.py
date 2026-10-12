@@ -429,3 +429,14 @@ def test_bootstrap_runtime_without_security_paths_runs_after_signing_activation(
     assert worker_lifecycle.run(args['runtime'], once=True) == 0
     report = json.loads((args['exchange'] / 'status/mac.json').read_text())
     assert report['security']['policy'] == 'required'
+
+
+def test_managed_worker_refuses_future_protocol_database(tmp_path,monkeypatch):
+    args=bound(tmp_path,monkeypatch)
+    import resolution_store as store
+    import memory_sync as sync
+    import worker_lifecycle as worker
+    with sync.connect(args['database']) as c,c:
+        store.migrate(c);c.execute('UPDATE _sync_protocol SET schema_version=999')
+    with pytest.raises(ValueError,match='capability'): worker.run(args['runtime'],once=True,legacy_drained=True)
+    assert not (args['database'].parent/'.agentmesh-worker/process.json').exists()

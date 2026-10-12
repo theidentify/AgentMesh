@@ -360,3 +360,33 @@ def test_rollback_refuses_changed_old_code_before_stopping_new_service(tmp_path,
         assert supervisor.calls == calls
     finally:
         supervisor.drain('org.example.agentmesh', 30)
+
+
+def test_activated_database_refuses_old_replacement_binary(tmp_path):
+    import protocol_activation as activation
+    import mac_replace
+    from test_protocol_activation import enable
+    from signed_packets import write_local
+    manifest,args,plist=fixture_manifest(tmp_path)
+    write_local(args['runtime'],{k:str(v) for k,v in args.items() if k!='runtime'})
+    enable(activation,args['runtime'])
+    with pytest.raises(ValueError,match='capability'):
+        mac_replace.plan(manifest,planning_binary(tmp_path),supervisor=FakeSupervisor(plist))
+
+
+def test_activated_database_blocks_legacy_restore_without_stopping_service(tmp_path):
+    import mac_replace
+    import protocol_activation as activation
+    from test_protocol_activation import enable
+    from signed_packets import write_local
+    manifest,args,plist=fixture_manifest(tmp_path)
+    write_local(args['runtime'],{k:str(v) for k,v in args.items() if k!='runtime'})
+    enable(activation,args['runtime'])
+    backup=tmp_path/'backup';backup.mkdir(mode=0o700)
+    write_local(backup/'old-code.json',mac_replace.code_descriptor(plistlib.loads(plist.read_bytes())['ProgramArguments']))
+    (backup/'service.plist').write_bytes(plist.read_bytes());(backup/'service.plist').chmod(0o600)
+    recovery=dict(config=json.loads(manifest.read_text()),old_plist_sha256=mac_replace.digest(plist),
+                  old_code_sha256=mac_replace.digest(backup/'old-code.json'))
+    supervisor=FakeSupervisor(plist)
+    with pytest.raises(ValueError,match='capability'):mac_replace._restore(backup,recovery,supervisor,30)
+    assert supervisor.calls==[]

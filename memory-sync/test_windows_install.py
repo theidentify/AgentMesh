@@ -746,3 +746,25 @@ def test_bundle_rejects_mismatched_claims_and_unknown_versions(existing, monkeyp
     bad = package(existing['binary'].parent.parent, version, 'e' * 40, distribution=distribution)
     with pytest.raises(ValueError, match='invalid development BUILD.json schema'):
         installer.bundle(bad)
+
+
+def test_activated_database_refuses_incompatible_program(existing,monkeypatch):
+    import protocol_activation as activation
+    from test_protocol_activation import enable
+    enable(activation,existing['runtime'])
+    with pytest.raises(ValueError,match='capability'):
+        installer.run('install',**existing,dry_run=True)
+    assert not existing['program_root'].exists()
+
+
+def test_activated_database_blocks_owned_rollback_before_changes(existing,monkeypatch):
+    import protocol_activation as activation
+    from test_protocol_activation import enable
+    command(existing,monkeypatch)
+    newer=package(existing['binary'].parent.parent,'0.2.0-rc.6','b'*40)
+    command(existing,monkeypatch,'upgrade','UPGRADE\nBIND\n',binary=newer,legacy_drained=True)
+    enable(activation,existing['runtime'])
+    before=snapshot(existing['program_root'])
+    with pytest.raises(ValueError,match='capability'):
+        command(existing,monkeypatch,'rollback','ROLLBACK\n',legacy_drained=True)
+    assert snapshot(existing['program_root'])==before

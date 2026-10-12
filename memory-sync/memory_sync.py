@@ -151,8 +151,27 @@ def _capture(c, *, security=None):
     if changes:
         cfg = config(c)
         packet = {'format':FORMAT,'group':cfg['group_id'],'node':cfg['node'],'uuid':str(uuid.uuid4()),'body':changes,'checksum':digest(changes)}
-        if security is not None: packet = security.sign(packet)
+        from protocol_activation import emission_enabled
+        if emission_enabled(c):
+            from resolution_apply import _index_local
+            from resolution_protocol import Key, payload_digest
+            from resolution_store import load_origins
+            _index_local(c,security)
+            body=[]
+            for ch in changes:
+                key=Key(ch['table'],tuple(ch['key']))
+                origin=load_origins(c,[key])[key] if ch['parent'] is not None else None
+                body.append({k:ch[k] for k in ('table','key','row','revision')} |
+                            {'parents':[] if ch['parent'] is None else [ch['parent']], 'origin':origin})
+            payload={k:packet[k] for k in ('group','node','uuid')}
+            payload.update(kind='change',body=body,covers=[],evidence=[])
+            packet=dict(payload,format='omp-memory-changes-v2',checksum=payload_digest(payload))
+            if security is not None: packet=security._sign_resolution(c,packet)
+        elif security is not None: packet = security.sign(packet)
         c.execute('INSERT INTO _sync_outbox(uuid,packet) VALUES(?,?)',(packet['uuid'],canonical(packet)))
+        if packet['format'] in ('omp-memory-changes-v2','agentmesh-signed-changes-v3'):
+            from packet_versions import decode_packet
+            decode_packet(c,packet,security=security,folder=packet['node'],filename=packet['uuid']+'.json')
     return {'changes':len(changes),'packets':int(bool(changes))}
 
 
@@ -173,8 +192,8 @@ def publish(db, exchange, *, security=None):
             from signed_packets import FORMAT as signed_format
             if load_packet(text).get('format') not in (FORMAT, signed_format):
                 with connect(db) as c:
-                    from resolution_store import test_activation
-                    if not test_activation(c): raise ValueError('new packet emission disabled')
+                    from protocol_activation import emission_enabled
+                    if not emission_enabled(c): raise ValueError('new packet emission disabled')
                 from packet_versions import is_new
                 if not is_new(load_packet(text)): raise ValueError('unsupported packet format')
             target = directory/(ident+'.json')

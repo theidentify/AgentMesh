@@ -90,7 +90,7 @@ def alive(pid):
 
 
 def status(runtime):
-    config, _ = load(runtime, authoritative=False)
+    config, _ = load(runtime, authoritative=False, allow_exchange_unavailable=True)
     directory = control(config)
     record = metadata(directory, runtime)
     if record is None:
@@ -132,7 +132,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     positive(interval)
     runtime = absolute(runtime)
     runtime_bytes = read_local(runtime, private=True)
-    config, scope = load(runtime)
+    config, scope = load(runtime, allow_exchange_unavailable=True)
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly; acknowledge unsigned policy')
     directory = control(config, create=True)
@@ -152,7 +152,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
             (directory / 'stop.json').unlink(missing_ok=True)
         record = {'format': 'agentmesh-worker-v1', 'runtime': str(runtime),
                   'pid': os.getpid(), 'nonce': nonce, 'state': 'running',
-                  'cycles': 0, 'last_error': None, 'last_error_detail': None, 'updated_at': time.time()}
+                  'cycles': 0, 'last_error': None, 'last_error_detail': None,
+                  'failure_kind': None, 'warning': None, 'updated_at': time.time()}
         if getattr(sys, 'frozen', False):
             # Local diagnostics only; never projected into exchange peer status.
             record['bundle_dir'] = getattr(sys, '_MEIPASS')
@@ -168,7 +169,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
         def preflight():
             if read_local(runtime, private=True) != runtime_bytes:
                 raise ValueError('runtime configuration changed; restart after review')
-            if load(runtime) != (config, scope):
+            if load(runtime, allow_exchange_unavailable=True) != (config, scope):
                 raise ValueError('database scope or signing key changed')
         save()
         result = 0
@@ -176,20 +177,27 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
             while not stop_requested(directory, nonce):
                 if read_local(runtime, private=True) != runtime_bytes:
                     raise ValueError('runtime configuration changed; restart after review')
-                current, current_scope = load(runtime)
+                current, current_scope = load(runtime, allow_exchange_unavailable=True)
                 if current != config or current_scope != scope:
                     raise ValueError('database scope or signing key changed')
                 report = sync_worker.run_once(config['database'], config['exchange'],
                     workflow_config=config.get('workflow_config'), force_summary=False,
                     security_dir=config.get('security_dir') if scope['policy'] == 'required' else None,
                     security_state=config.get('security_state'), preflight=preflight)
-                result = int(sync_worker.failed(report))
+                sync_worker.classify(report)
+                result = int(sync_worker.failed(report) if once else sync_worker.permanent_failure(report))
+                record['failure_kind'] = report['failure_kind']
+                record['warning'] = report['warning']
                 record['cycles'] += 1
-                record['last_error'] = 'CycleFailed' if result else None
+                record['last_error'] = ('CycleFailed' if sync_worker.permanent_failure(report) else
+                                        'ExchangeUnavailable' if sync_worker.failed(report) else None)
                 # Keep only fixed public diagnostics, never the full cycle report.
                 record['last_error_detail'] = ({'error': 'CycleFailed',
                     'code': 'WORKER_CYCLE_FAILED', 'reason': 'worker recorded a cycle failure',
-                    'stage': 'sync_worker.run_once'} if result else None)
+                    'stage': 'sync_worker.run_once'} if sync_worker.permanent_failure(report) else
+                    {'error': 'ExchangeUnavailable', 'code': 'EXCHANGE_UNAVAILABLE',
+                     'reason': 'exchange unavailable',
+                     'stage': 'sync_worker.run_once'} if sync_worker.failed(report) else None)
                 save()
                 if once or result:
                     break
@@ -201,6 +209,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 (directory / 'stop.json').unlink(missing_ok=True)  # consumed; never left stale
         except Exception as exc:
             result = 1
+            record['failure_kind'] = 'permanent'
             record['last_error'] = type(exc).__name__
             from cli_errors import report as error_report
             record['last_error_detail'] = error_report(exc, 'worker-run')
@@ -228,7 +237,7 @@ def command(runtime, *, interval=60, legacy_drained=False, once=False, nonce=Non
 def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     positive(interval)
     positive(timeout)
-    config, scope = load(runtime)
+    config, scope = load(runtime, allow_exchange_unavailable=True)
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly')
     if status(runtime)['state'] == 'running':
@@ -254,7 +263,7 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     with Wait('Starting the worker and waiting for its first sync cycle', timeout, done='Worker running'):
         while time.monotonic() < deadline:
             record = status(runtime)
-            if record.get('nonce') == nonce and record['state'] == 'running' and record['cycles'] > 0 and not record['last_error']:
+            if record.get('nonce') == nonce and record['state'] == 'running' and record['cycles'] > 0 and (not record['last_error'] or record.get('failure_kind') == 'transient'):
                 return record
             if process.poll() is not None:
                 _CHILDREN.pop(nonce, None)

@@ -189,3 +189,14 @@ def test_once_exit_status_matches_cycle_report(tmp_path, monkeypatch, capsys, sy
     monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **k: {'sync': sync})
     assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == expected
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {'sync': sync}
+
+
+def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
+    import sync_worker
+    report = {'cycle': {'receive': {'unavailable': True}}, 'failure_kind': 'transient'}
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **kw: report)
+    import json
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **kw: {'database': 'db', 'exchange': 'ex'})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == 1
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['failure_kind'] == 'transient'

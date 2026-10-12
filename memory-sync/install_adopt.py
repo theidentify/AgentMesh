@@ -15,7 +15,7 @@ def absolute(value):
     return no_symlinks(path)
 
 
-def validate(config, runtime, *, authoritative=True):
+def validate(config, runtime, *, authoritative=True, allow_exchange_unavailable=False):
     """Read scope; never call Security.guard (which activates a legacy DB)."""
     from install_setup import reject_partial
     runtime = absolute(runtime)
@@ -37,7 +37,10 @@ def validate(config, runtime, *, authoritative=True):
             paths.append(absolute(config[key]))
     if any(p == exchange or p.is_relative_to(exchange) for p in paths) or exchange.is_relative_to(root):
         raise ValueError('local state must remain separate from exchange')
-    if not db.is_file() or not no_symlinks(exchange / '.stfolder').is_dir():
+    # Managed execution may wait for an already-bound exchange to return.
+    # Keep path integrity checks even while its marker is unavailable.
+    marker = no_symlinks(exchange / '.stfolder')
+    if not db.is_file() or (not allow_exchange_unavailable and not marker.is_dir()):
         raise ValueError('existing database and accepted exchange required')
     if config.get('workflow_config') and not absolute(config['workflow_config']).is_file():
         raise ValueError('existing workflow configuration required')
@@ -72,12 +75,13 @@ def validate(config, runtime, *, authoritative=True):
     return {'node': node, 'group': group, 'policy': policy, 'key_id': fingerprint}
 
 
-def load(runtime, *, authoritative=True):
+def load(runtime, *, authoritative=True, allow_exchange_unavailable=False):
     runtime = absolute(runtime)
     config = parse(read_local(runtime, private=True))
     if not isinstance(config, dict):
         raise ValueError('invalid runtime')
-    return config, validate(config, runtime, authoritative=authoritative)
+    return config, validate(config, runtime, authoritative=authoritative,
+                            allow_exchange_unavailable=allow_exchange_unavailable)
 
 
 def adopt(*, runtime, app_root, database, exchange, node, security_dir, security_state, workflow_config):

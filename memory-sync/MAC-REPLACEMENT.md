@@ -180,8 +180,22 @@ only after an actual healthy cycle. Status does not create locks, repair state
 or open setup. Stop uses private nonce-bound metadata and a cooperative request;
 it waits for acknowledgement and lifetime-lock drain, never kills a PID read
 from a file. Stale/corrupt/foreign metadata refuses safely. A managed worker
-exits nonzero on a failed cycle rather than silently claiming healthy status.
-A failed cycle includes quarantined conflict/invalid packets and an exchange
-that could not be published to or read; unlike the foreground `watch`, the
-managed worker stops and stays stopped until an operator reviews the
-diagnostics and starts it again.
+stops and exits 1 on permanent failures: quarantined conflict/invalid packets,
+ingestion or mirror errors, and blocked/failed/stale summaries. An operator must
+review the diagnostics and start it again. Mixed permanent and transient
+failures also stop it.
+
+Exchange unavailability and publish/receive I/O errors are transient: the managed
+worker and foreground `watch` retry at the normal interval. `worker-start`
+accepts a transient-only first cycle and exits 0 with a warning, so a volume
+that is not ready at login does not permanently prevent syncing. Database,
+identity and runtime validation still apply. `once` and `worker-run --once`
+exit 1 for either failure kind. Foreground `watch` continues for either kind
+and exits 0 on Ctrl-C.
+
+Cycle reports expose `failure_kind` (`transient`, `permanent`, or null) and
+`warning: "exchange unavailable"` when applicable. Managed `worker-status`
+records the same fields locally, with `last_error: "ExchangeUnavailable"` and
+code `EXCHANGE_UNAVAILABLE` for transient-only failures. Peer status cannot be
+updated while the exchange is unavailable; use local `worker-status` or watch
+output until it returns. Recovery clears the warning on the next healthy cycle.

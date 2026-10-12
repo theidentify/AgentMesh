@@ -67,9 +67,18 @@ START-WINDOWS.cmd again to load a new application version without deleting data.
   into production PostgreSQL**. Reason/digest callers have not been cut over.
 - Two-way additions and changes are tested, but independent edits to the same row
   or natural unique key are quarantined. `--once` exits 1 when the cycle has
-  conflicts, invalid packets or an unwritable exchange; the foreground watcher
-  keeps running and exits 0 on Ctrl-C, so inspect `status/windows.json` and
-  `status/mac.json` rather than its exit code.
+  conflicts, invalid packets, ingestion/summary errors, or an unavailable exchange.
+  The foreground watcher keeps running for all cycle failures and exits 0 on
+  Ctrl-C. The managed worker stops on permanent failures (including conflicts,
+  invalid packets, ingestion/mirror errors and blocked/failed/stale summaries),
+  but retries exchange unavailability and publish/receive I/O errors at the
+  normal interval. Mixed failures stop it. `worker-start` accepts a transient-only
+  first cycle with exit 0 and an exchange-unavailable warning; `worker-run --once`
+  still exits 1. Reports and local `worker-status` expose `failure_kind` and
+  `warning`; transient-only managed status has `last_error: "ExchangeUnavailable"`.
+  Use local status or watcher output while offline: exchange `status/windows.json`
+  and `status/mac.json` cannot update until the exchange returns. A healthy cycle
+  clears the warning.
 - The initial implementation supports one logical node per `mac`, `windows` and
   `linux` identity. Do not reuse an identity across multiple active writers.
 - Keep live SQLite DB/WAL/SHM, PostgreSQL dumps and credentials outside the exchange.

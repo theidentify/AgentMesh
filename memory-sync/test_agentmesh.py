@@ -122,3 +122,27 @@ def test_shared_cli_reports_blocked_summary_as_failure_but_preserves_sync(tmp_pa
     assert not process.stderr
     assert json.loads(process.stdout)['workflow']['summary']['status'] == 'blocked'
     assert json.loads((exchange / 'status/mac.json').read_text())['sync']['invalid'] == 0
+
+
+def test_ingest_exit_status_matches_reported_errors(tmp_path, monkeypatch, capsys):
+    import agentmesh
+    import ingest_sessions
+    db = tmp_path / 'local.db'
+    sqlite_memory.init_database(db)
+    report = {'files': 1, 'errors': 0, 'error_classes': []}
+    monkeypatch.setattr(ingest_sessions, 'ingest', lambda *a, **k: dict(report))
+    assert agentmesh.main(['--database', str(db), 'ingest']) == 0
+    report.update(errors=1, error_classes=['JSONDecodeError'])
+    assert agentmesh.main(['--database', str(db), 'ingest']) == 1
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['errors'] == 1
+
+
+def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
+    import sync_worker
+    report = {'cycle': {'receive': {'unavailable': True}}, 'failure_kind': 'transient'}
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **kw: report)
+    import agentmesh
+    db = tmp_path / 'local.db'
+    sqlite_memory.init_database(db)
+    assert agentmesh.main(['--database', str(db), '--exchange', str(tmp_path / 'exchange'), 'once']) == 1
+    assert json.loads(capsys.readouterr().out)['failure_kind'] == 'transient'

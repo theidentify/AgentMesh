@@ -343,6 +343,77 @@ def test_stop_request_is_consumed_and_a_stale_one_is_cleared_at_start(tmp_path, 
     assert not (directory / 'stop.json').exists()
 
 
+@pytest.mark.parametrize('report', [
+    {'sync': {'conflict': 1, 'invalid': 0}},
+    {'sync': {'invalid': 1}},
+    {'workflow': {'ingestion': {'errors': 1}}},
+    {'workflow': {'summary': {'status': 'blocked'}}},
+    {'workflow': {'summary_sync': {'publish': {'unavailable': True}}, 'ingestion': {'errors': 1}}},
+    {'sync': {'conflict': 0, 'invalid': 1}, 'cycle': {'publish': {'published': 0, 'unavailable': True, 'error': 'denied'}}}])
+def test_managed_worker_stops_after_failed_cycle_unlike_foreground_watch(tmp_path, monkeypatch, report):
+    import worker_lifecycle as worker
+    import sync_worker
+    args = bound(tmp_path, monkeypatch)
+    calls = []
+    def cycle(*a, **kw):
+        calls.append(1)
+        if len(calls) > 1:
+            raise AssertionError('managed worker continued after a failed cycle')
+        return report
+    monkeypatch.setattr(sync_worker, 'run_once', cycle)
+    assert worker.run(args['runtime'], interval=0.01, legacy_drained=True) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('once', [False, True])
+def test_transient_managed_cycle_retries_or_once_fails(tmp_path, monkeypatch, once):
+    import worker_lifecycle as worker
+    import sync_worker
+    from signed_packets import write_local
+    args = bound(tmp_path, monkeypatch)
+    calls = []
+    def cycle(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return {'cycle': {'receive': {'unavailable': True}}}
+        record = worker.status(args['runtime'])
+        assert record['state'] == 'running'
+        assert record['failure_kind'] == 'transient'
+        assert record['warning'] == 'exchange unavailable'
+        write_local(worker.control(worker.load(args['runtime'])[0]) / 'stop.json', {'nonce': record['nonce']})
+        return {}
+    monkeypatch.setattr(sync_worker, 'run_once', cycle)
+    assert worker.run(args['runtime'], once=once, interval=0.01, legacy_drained=True) == int(once)
+    assert len(calls) == (1 if once else 2)
+    if not once:
+        assert worker.status(args['runtime'])['warning'] is None
+
+
+@pytest.mark.parametrize('recover', [False, True])
+def test_start_missing_exchange_warns_and_keeps_worker_alive(tmp_path, monkeypatch, recover):
+    import worker_lifecycle as worker
+    args = bound(tmp_path, monkeypatch)
+    args['exchange'].rename(tmp_path / 'offline-exchange')
+    try:
+        report = worker.start(args['runtime'], interval=0.05, legacy_drained=True, timeout=NATIVE_TIMEOUT)
+        assert report['state'] == 'running'
+        assert report['failure_kind'] == 'transient'
+        assert report['warning'] == 'exchange unavailable'
+        if not recover:
+            return  # finally must also stop cleanly while the exchange is still absent.
+        (tmp_path / 'offline-exchange').rename(args['exchange'])
+        deadline = time.monotonic() + NATIVE_TIMEOUT
+        while time.monotonic() < deadline:
+            current = worker.status(args['runtime'])
+            if current['cycles'] > report['cycles'] and current['failure_kind'] is None:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail('worker did not recover')
+    finally:
+        worker.stop(args['runtime'], timeout=NATIVE_TIMEOUT)
+
+
 def test_bootstrap_runtime_without_security_paths_runs_after_signing_activation(tmp_path, monkeypatch):
     # Bootstrap runtimes never record security paths; the wizard uses the
     # default identity beside data/, so the managed worker must find it too.

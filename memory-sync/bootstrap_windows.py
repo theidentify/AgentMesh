@@ -223,8 +223,9 @@ def main(argv=None):
             return 0  # Activation and scheduling remain separate operator decisions.
         import sync_worker
         if args.once:
-            print(json.dumps(sync_worker.run_once(result['database'], result['exchange'], security_dir=result.get('security_dir'))), flush=True)
-            return 0
+            report = sync_worker.run_once(result['database'], result['exchange'], security_dir=result.get('security_dir'))
+            print(json.dumps(report), flush=True)
+            return int(sync_worker.failed(report))
         print('Keep this window open for sync. Ctrl-C stops the worker; Syncthing is separate.', flush=True)
         worker_args = [result['database'], result['exchange'], '--interval', '60']
         if result.get('security_dir'): worker_args += ['--security-dir', result['security_dir']]

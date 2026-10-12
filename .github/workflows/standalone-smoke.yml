@@ -31,6 +31,10 @@ jobs:
         run: python -m pip install -r memory-sync/requirements-security.txt pyinstaller==6.16.0 pyinstaller-hooks-contrib==2026.8 pytest==8.4.2
       - name: Test build and inspection contracts
         run: python -m pytest -q --durations=20 memory-sync/test_native_windows_acl.py memory-sync/test_standalone_build.py memory-sync/test_install_setup.py memory-sync/test_install_inspect.py memory-sync/test_agentmesh.py memory-sync/test_install_adopt.py memory-sync/test_worker_lifecycle.py memory-sync/test_wizard_resume.py::test_declined_create_leaves_existing_installation_pending memory-sync/test_wizard_resume.py::test_custom_security_paths_preserve_identity_and_pending_state
+      - name: Verify OS unlock backends on a disposable keychain / credential
+        env:
+          AGENTMESH_NATIVE_KEYCHAIN_TESTS: '1'
+        run: python -m pytest -q -rs memory-sync/test_native_os_unlock.py memory-sync/test_os_unlock.py
       - name: Verify Windows program lifecycle and disposable native tasks
         if: runner.os == 'Windows'
         env:

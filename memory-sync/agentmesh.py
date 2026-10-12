@@ -234,6 +234,8 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         if args.action == 'once':
             return int(sync_worker.failed(result))
+        if args.action == 'ingest':
+            return int(bool(result.get('errors')))
         return 0
     except KeyboardInterrupt:
         # Before approval nothing has changed; afterwards Ctrl+C is ignored, so

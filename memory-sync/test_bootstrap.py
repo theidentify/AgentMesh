@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import zipfile
 
@@ -144,6 +145,14 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     assert first['node'] == node
     second = module.install(exchange, local, node=node)
     assert second['database'] == first['database']
+    from signed_packets import read_local
+    runtime = Path(first['database']).parent / 'runtime.json'
+    read_local(runtime, private=True)  # managed worker requires owner-only runtime
+    if os.name != 'nt':
+        assert runtime.stat().st_mode & 0o077 == 0
+        runtime.chmod(0o644)  # installs from earlier releases are repaired on rerun
+        module.install(exchange, local, node=node)
+        assert runtime.stat().st_mode & 0o077 == 0
     assert module.main(['--exchange', str(exchange), '--local-dir', str(local), '--node', node, '--once']) == 0
     acknowledgment = json.loads((exchange / ('status/' + node + '.json')).read_text())
     assert acknowledgment['node'] == node
@@ -176,3 +185,27 @@ def test_bootstrap_progress_has_real_row_bar(capsys):
     assert '[######--------------] 30%' in text
     assert '30/100 rows' in text
     assert text.isascii()
+
+
+@pytest.mark.parametrize('sync, expected', [({'conflict': 0, 'invalid': 0}, 0),
+                                            ({'conflict': 1, 'invalid': 0}, 1),
+                                            ({'conflict': 0, 'invalid': 2}, 1)])
+def test_once_exit_status_matches_cycle_report(tmp_path, monkeypatch, capsys, sync, expected):
+    import json
+    import sync_worker
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **k: {'database': 'db', 'exchange': 'ex'})
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **k: {'sync': sync})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == expected
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {'sync': sync}
+
+
+def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
+    import sync_worker
+    report = {'cycle': {'receive': {'unavailable': True}}, 'failure_kind': 'transient'}
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **kw: report)
+    import json
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **kw: {'database': 'db', 'exchange': 'ex'})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == 1
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['failure_kind'] == 'transient'

@@ -342,12 +342,18 @@ def receive(db, exchange, *, security=None):
         _security_policy(c, security, exchange)
     capture(db, security=security)
     root=Path(exchange)
-    if not root.is_dir(): return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
     namespace = 'signed-changes' if security is not None else 'changes'
     if security is not None:
         from signed_packets import no_symlinks
         no_symlinks(root/namespace)
-    paths = sorted((root/namespace).glob('*/*.json'))
+    try:
+        if not root.is_dir():
+            return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
+        paths = sorted((root/namespace).glob('*/*.json'))
+    except OSError as exc:
+        return {'applied':0,'pending':0,'conflict':0,'invalid':0,
+                'unavailable':True,'error':type(exc).__name__}
+    io_error = None
     applied=0
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
@@ -378,7 +384,10 @@ def receive(db, exchange, *, security=None):
                         changed=_apply(c,p)
                     c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
                 applied+=int(changed); progress |= changed
-            except (OSError,ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
+            except OSError as exc:
+                # A packet that cannot be read is not an invalid packet. Retry next cycle.
+                io_error = type(exc).__name__
+            except (ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
                 kind='pending' if isinstance(e,Pending) else 'conflict' if isinstance(e,(Conflict,sqlite3.IntegrityError)) else 'invalid'
                 with connect(db) as c, c:
                     # Signed failures must not leak memory contents into diagnostics/status.
@@ -392,7 +401,8 @@ def receive(db, exchange, *, security=None):
         if not progress: break
         retry=pending
     report=status(db)
-    return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':False}
+    return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
+            **({'error': io_error} if io_error else {})}
 
 def cycle(db, exchange, *, security=None):
     with connect(db) as c, c:

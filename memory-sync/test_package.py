@@ -19,6 +19,8 @@ def test_build_package_preserves_snapshot_and_publishes_only_allowlisted_sources
     exchange.mkdir()
     (exchange / '.stfolder').mkdir()
     result = builder.build(snapshot, exchange, '00000000-0000-4000-8000-000000000001')
+    # The launcher needs the ACL helper before any archive payload is extracted.
+    assert (exchange / 'windows_acl.py').read_bytes() == (root / 'windows_acl.py').read_bytes()
     archive = exchange / result['archive']
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == result['archive_sha256']
     with zipfile.ZipFile(archive) as package:

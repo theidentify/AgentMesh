@@ -152,11 +152,22 @@ to the existing sender UUID and the same group/slot. Verify the new fingerprint
 out of band on every receiver; approve it explicitly, then revoke the old key at
 the agreed boundary. Do not change the production identity merely to test rotation.
 Drain signed outboxes before revoking their signing keys; old unpublished packets
-cannot be silently rewritten. Verification reloads pinned trust and checks signatures
-before the replay ledger, so revoked retained packets are rejected, including those
-already applied. Historical receipts/rows remain intact; retained revoked files
-can show invalid diagnostics until an operator reviews the archive. Do not delete
-history to hide them. Replacing a lost key is explicit recovery, not auto-generation.
+cannot be silently rewritten. Revocation blocks **new, unapplied packets** from
+that key. Packets already committed remain accepted: the receiver checks their
+packet UUID, recorded content/identity digest, and complete envelope digest
+(including signature) before consulting current peer trust. Retaining these exact
+packets does not create invalid diagnostics or stop the worker. Changing content,
+identity, signature, filename, or sender folder is still rejected. Do not delete
+history. Replacing a lost key is explicit recovery, not auto-generation.
+
+Receipts from older installations omit signature bytes. On their first replay,
+the receiver requires the exact recorded content/identity digest and verifies the
+signature with the retained pinned public key, even if that key is revoked. It
+then stores the complete envelope digest locally. Keep revoked public-key records
+for this compatibility check; it cannot safely reconstruct a missing key. Once
+the envelope is recorded, replay no longer needs the peer's trust entry or a new
+signature verification. Cached replays do not increment verification-attempt
+telemetry; a compatibility signature check does.
 
 ## Wire contract
 
@@ -169,6 +180,9 @@ NUL byte and the typed complete envelope **excluding only signature**. Signed
 receipt checksums hash that same domain-separated authenticated envelope, binding
 headers as well as content. Schema/range/causality/FK validation still runs before
 any database apply; receipt and application changes commit in the same transaction.
+`_sync_receipt_envelopes` additionally records a digest of the complete typed
+envelope, including signature, in that transaction. The existing receipt checksum
+and pairing acknowledgement format remain unchanged.
 
 This is deliberately **not RFC 8785 / JCS**: Python's sorted JSON is not JCS. JSON
 is the transport representation, independent of whitespace/key presentation.
@@ -191,8 +205,9 @@ preserved; integer `-0` is integer zero. Unicode is not normalized; surrogate co
 points, duplicate decoded JSON keys, nonfinite/overflowing float values, unsupported
 types, >64 nesting depth, >100,000 recursively counted values, and packets/files or
 encoded payloads >8 MiB are rejected. Filename must match the canonical packet UUID
-and the folder must match the authorized allocation slot. Signature verification
-happens before row reconciliation and before trusting replay receipts.
+and the folder must match the authorized allocation slot. New packets require
+current trust and signature verification before row reconciliation. Exact
+committed replays use the receipt and complete envelope checks described above.
 
 The transport is not trusted for authenticity. Symlink components, nonregular
 files and traversal-like identities are rejected; bounded reads prevent FIFO/large

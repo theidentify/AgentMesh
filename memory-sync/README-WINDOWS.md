@@ -28,6 +28,18 @@ For installation plus a single sync pass without a persistent console:
 py -3 bootstrap_windows.py --exchange . --once
 ```
 
+To review local transcript sources before ingestion starts, use Command Prompt:
+
+```bat
+START-WINDOWS.cmd --no-ingest
+```
+
+The same flag works with `py -3 bootstrap_windows.py --exchange . --no-ingest`
+(optionally add `--once`). Synchronization and snapshot import still run. Local
+transcript ingestion stays disabled until you explicitly enable it. Follow
+[the workflow JSON editing steps](README-SETUP.md#review-ingestion-roots-before-the-first-cycle)
+to choose roots and enable ingestion, then restart without `--no-ingest`.
+
 The worker publishes `status/windows.json` containing platform, counts and sync
 health so the paired Mac can verify that installation actually ran. Status does
 not include memory contents, credentials or local database paths.
@@ -38,8 +50,9 @@ To ingest a local transcript into the synced SQLite database after installation:
 py -3 "%LOCALAPPDATA%\AgentMesh\app\sqlite_memory.py" ingest "%LOCALAPPDATA%\AgentMesh\data\windows.db" "C:\path\to\transcript.jsonl" --agent codex --project your-project
 ```
 
-Use `omp`, `codex` or `claude` for `--agent`. Automatic discovery/ingestion of all
-Windows agent sessions is not yet configured. The copied pure parsers are bundled;
+Use `omp`, `codex` or `claude` for `--agent`. A new bootstrap enables automatic
+discovery of default local agent roots unless `--no-ingest` is given. Existing
+workflow settings are preserved on ordinary re-runs. The copied pure parsers are bundled;
 PostgreSQL and psycopg are not required for Windows SQLite ingestion or syncing.
 
 ## Console progress

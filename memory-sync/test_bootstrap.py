@@ -209,3 +209,60 @@ def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(module, 'install', lambda *a, **kw: {'database': 'db', 'exchange': 'ex'})
     assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == 1
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['failure_kind'] == 'transient'
+
+
+@pytest.mark.parametrize('paths', ['default', 'explicit', 'app-root'])
+@pytest.mark.parametrize('once', [True, False])
+def test_rerun_activated_bootstrap_resolves_wizard_security_paths(tmp_path, monkeypatch, paths, once):
+    import json
+    import build_package
+    import memory_sync
+    import signed_packets
+    import sync_worker
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    snapshot = tmp_path / 'snapshot.jsonl'
+    snapshot.write_text(json.dumps({'format': 'omp-sqlite-snapshot-v1', 'tables': build_package.TABLES}) + '\n')
+    group = '00000000-0000-4000-8000-000000000001'
+    build_package.build(snapshot, exchange, group)
+    module = load_bootstrap()
+    local = tmp_path / 'local'
+    result = module.install(exchange, local, node='linux')
+    (local / 'data/workflow.json').write_text(json.dumps({'ingest': False, 'summarize': False}))
+    runtime = local / 'data/runtime.json'
+    config = json.loads(runtime.read_text())
+    identity = local / 'identity'
+    state = local / 'data/security-wizard.json'
+    if paths == 'explicit':
+        identity, state = local / 'custom-identity', local / 'data/custom-state.json'
+        config.update(security_dir=str(identity), security_state=str(state))
+    elif paths == 'app-root':
+        config['app_root'] = str(local / 'alternate')
+        identity = local / 'alternate/identity'
+    signed_packets.write_local(runtime, config)
+    signed_packets.init_identity(identity, group, 'linux')
+    # wizard-resume activates via Security.guard without adding runtime paths.
+    security = signed_packets.Security(identity)
+    with memory_sync.connect(result['database']) as c, c:
+        security.guard(c, exchange)
+    key_before = (identity / 'identity.json').read_bytes()
+    calls = []
+    real_once = sync_worker.run_once
+    def checked_once(database, exchange, **kwargs):
+        calls.append(kwargs.get('security_dir'))
+        assert kwargs.get('security_dir') == str(identity)
+        return real_once(database, exchange, **kwargs)
+    def checked_loop(argv):
+        calls.append(argv[argv.index('--security-dir') + 1] if '--security-dir' in argv else None)
+        assert '--security-dir' in argv
+        assert argv[argv.index('--security-dir') + 1] == str(identity)
+        return int(sync_worker.failed(real_once(argv[0], argv[1], security_dir=str(identity))))
+    monkeypatch.setattr(sync_worker, 'run_once', checked_once)
+    monkeypatch.setattr(sync_worker, 'main', checked_loop)
+    argv = ['--exchange', str(exchange), '--local-dir', str(local), '--node', 'linux']
+    assert module.main(argv + (['--once'] if once else [])) == 0
+    assert calls == [str(identity)]
+    updated = json.loads(runtime.read_text())
+    assert updated['security_dir'] == str(identity)
+    assert updated['security_state'] == str(state)
+    assert (identity / 'identity.json').read_bytes() == key_before

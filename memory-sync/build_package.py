@@ -73,7 +73,7 @@ def build(snapshot, exchange, group_id):
         # Bootstrap validates the archive hash before touching its database.
         os.replace(archive, exchange / archive.name)
         for name in ['bootstrap_windows.py', 'START-WINDOWS.cmd', 'README-WINDOWS.md',
-                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py', 'terminal_progress.py',
+                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py', 'terminal_progress.py', 'windows_acl.py',
                      'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
                      'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md']:
             staged = temp / name

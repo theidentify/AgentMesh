@@ -58,19 +58,18 @@ Refusals (mismatched or short passphrase, already protected, no console) leave t
 
 ## Worker and restart behaviour
 
-- A protected key is **locked** in every new process unless an interactive unlock supplies the
-  passphrase. An unlock never persists: after a process exit or restart the key is locked again.
-- While locked, public checks, trust and verification of peer packets still work. Signing refuses
-  with `passphrase-protected identity is locked; unattended unlock is not available yet (requires
-  OS-protected key access)`.
-- The unattended worker (`worker-run`, `worker-start`, the `memory_sync once/watch` CLI) refuses a
-  locked key **up front, before any write**, on the first start and on every restart. There is no
-  plaintext or unsigned fallback. Under `legacy` policy the worker does not use the identity, so
-  protecting it changes nothing there.
-- `wizard-resume` asks for the passphrase once per run, and only when the identity is protected.
-- Unattended unlock through Keychain or DPAPI is issue #7. Until it exists, do not protect the
-  identity of a host whose worker runs signed (`required` policy), because that worker will stop
-  signing.
+- A protected key starts locked unless an explicitly enabled OS unlock path succeeds or an
+  interactive unlock supplies the passphrase. Each worker process reads the OS store at most once
+  per identity and caches either the unlocked key or the refusal. Restart after fixing a refusal.
+- While locked, public checks, trust and verification still work without accessing the OS store.
+  Signing refuses with `passphrase-protected identity is locked; enable OS unlock or unlock interactively`,
+  or the specific OS refusal below.
+- The unattended worker (`worker-run`, `worker-start`, `memory_sync once/watch`) opts into OS unlock
+  and refuses a locked key before sync writes. It never asks for a passphrase and never falls back
+  to plaintext or unsigned packets. Under `legacy` policy the worker does not use the identity.
+- `wizard-resume` tries OS unlock first, then asks for the passphrase if needed.
+- Disabling removes the persisted OS path. A process that already holds the key in memory remains
+  unlocked until it exits; stop/restart workers when changing unlock policy.
 
 ## Limitations
 
@@ -79,3 +78,85 @@ Refusals (mismatched or short passphrase, already protected, no console) leave t
   exposed and rotate it through pairing instead.
 - There is no passphrase change or unprotect command yet.
 - The KDF cost is fixed at N=2^17. Unlocking takes about half a second and about 128 MiB of memory.
+
+## OS-protected unattended unlock (#7)
+
+Use these explicit operator commands on a host whose worker runs as the same user:
+
+```
+agentmesh identity-os-unlock enable --security-dir <security dir>
+agentmesh identity-os-unlock status --security-dir <security dir>
+agentmesh identity-os-unlock disable --security-dir <security dir>
+```
+
+First protect the identity with `identity-protect`. Enable asks for that passphrase once in an
+interactive console, creates a random 32-byte wrapping key K in the OS store, and adds an
+`os_unlock` envelope to `identity.json`. The passphrase envelope remains the portable unlock path.
+Nothing enables this automatically, and release signing keys are excluded.
+
+On Mac, the worker is a LaunchAgent in `gui/<uid>` while the user is logged in. The interim
+`macos-keychain-file` backend invokes `/usr/bin/security` against the account's explicit
+`Library/Keychains/login.keychain-db` path, obtained from the account database rather than `HOME`.
+Apple TN3137 describes the file-based keychain as “on the road to deprecation”; it is not officially
+deprecated. No deprecated keychain API is used. The default keychain and search list are not used.
+K goes over stdin, never argv; the item retains the security tool's default ACL.
+
+On Windows, the logon task uses LogonType 3 (InteractiveToken). `windows-credential` uses current
+CredWriteW/CredReadW/CredDeleteW APIs for a generic credential with local-machine persistence,
+protected by that user's DPAPI. PowerShell is not used. The item is named
+`agentmesh.identity-unlock/<key_id>`; on Mac the service is `agentmesh.identity-unlock`, with `key_id`
+as its account. Linux has no backend.
+
+The envelope has exactly `format`, `backend`, `nonce`, and `ciphertext`, with format
+`agentmesh-os-unlock-v1`, a 12-byte nonce and 48-byte ciphertext encoded as hex. AES-256-GCM binds
+the domain label, backend and canonical public identity. Every enable generates a fresh K and seals
+once. Future passphrase changes or restore operations must also generate a fresh K. Unknown backends,
+malformed fields, and an envelope without `protection` are rejected. A known backend for another OS
+stays locked. Wrong K or authenticated-field tampering fails closed.
+
+Enable and disable hold `.os-unlock.lock` exclusively. Enable stores and verifies K before atomic
+replacement and verifies the committed file. If replacement reports an error after committing, K is
+retained. Disable removes the envelope first and then deletes K, without a passphrase. A deletion
+failure is an error: run disable again to remove a leftover item. Read-only status reports `key_id`,
+`protected`, `os_unlock`, `backend`, `available`, `reason`, and `stray_item`. It reads the store to
+verify decryption or detect a leftover item; it never prints K or the device key.
+
+### Threats and portability
+
+- Any process of the same user can read K using the security CLI or CredRead. With OS unlock enabled,
+  the device key is effectively always unlocked for that user. Same-user item-name squatting can
+  cause lockout, but cannot cause a different key to decrypt successfully.
+- Copying the identity directory alone to another account or machine leaves it locked. OS backups
+  can also carry K: Time Machine or Migration Assistant can copy `login.keychain-db`, recoverable
+  with the login password. A Windows profile backup plus the password, or the domain DPAPI backup
+  key, can decrypt the credential. Such a backup is only as strong as the **weaker** of the
+  passphrase and the OS login password. The portable backup remains `identity.json` with `protection`
+  plus the passphrase; issue #8 adds backup/restore commands.
+- A locked or password-out-of-sync Mac keychain can display a system unlock dialog. The worker OS
+  read is capped at 15 seconds and attempted at most once per identity per process, including after
+  refusal. Killing the security process does not promise that the system dialog closes.
+- Items for old or rotated key IDs are not automatically cleaned up. Status only checks the current
+  key ID. A leftover K plus an older identity-file backup containing its envelope still unlocks
+  that identity; deletion failures must be resolved.
+- Items created by the security CLI use Apple's tool ACL/partition defaults. The planned signed
+  SecItem data-protection-keychain or Secure Enclave upgrade must re-create the item rather than
+  reuse the old item. It requires Developer ID signing, a provisioning profile with keychain access
+  groups, and an app-like bundle. That upgrade is outside this feature.
+
+### Fixed refusals
+
+| Reason | Operator action |
+|---|---|
+| `OS unlock is not supported on this platform` | Use the matching OS/account or unlock interactively with the passphrase. |
+| `OS unlock is already enabled` | Inspect status; disable before explicitly enabling again. |
+| `OS unlock item is not available for this account` | Check the account and store; use the passphrase, then disable and re-enable if needed. |
+| `OS key store refused access` | Restore the user's logged-in key-store access, then restart the worker. |
+| `OS key store did not respond` | Resolve the locked keychain or system dialog, then restart the worker. |
+| `OS unlock could not open the identity: wrong key or damaged file` | Inspect/restore a trusted identity backup; use the passphrase path and explicitly recreate OS unlock. |
+| `identity must be passphrase-protected before enabling OS unlock` | Run `identity-protect` first. |
+| `OS unlock item could not be removed` | Restore store access and run disable again; inspect `stray_item` in status. |
+| `OS unlock is already in progress` | Wait for the other enable/disable operation to finish, then retry. |
+
+Native and frozen OS-store tests are CI-only, opt-in, and use temporary keychains or random test
+credential targets with cleanup. Never enable native tests on a production workstation. Normal
+standalone binaries contain no test-store override; CI builds a separate disposable smoke binary.

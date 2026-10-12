@@ -276,6 +276,23 @@ def _receipt_checksum(p):
         return receipt_digest(p)
     return p['checksum']
 
+def _received_signed(c, p, security, folder):
+    """Return cached/verified for a committed receipt, else None for new input."""
+    from signed_packets import envelope_digest, receipt_digest
+    receipt = c.execute('SELECT checksum FROM _sync_receipts WHERE uuid=?', (p['uuid'],)).fetchone()
+    if receipt is None: return None
+    if receipt[0] != receipt_digest(p): raise ValueError('packet UUID reused')
+    recorded = c.execute('SELECT digest FROM _sync_receipt_envelopes WHERE uuid=?', (p['uuid'],)).fetchone()
+    complete = envelope_digest(p)
+    if recorded is not None:
+        if recorded[0] != complete: raise ValueError('received packet envelope changed')
+        return 'cached'
+    # Compatibility with receipts written before complete envelopes were pinned.
+    # Require the committed content/identity AND a valid historical signature.
+    security.verify_received(p, config(c)['group_id'], folder, receipt[0])
+    c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], complete))
+    return 'verified'
+
 def _apply(c,p):
     if _seen(c,p): return False
     # Validate causality for the entire packet before touching application rows.
@@ -334,6 +351,9 @@ def _apply(c,p):
         c.execute('INSERT INTO _sync_history VALUES(?,?,?)',(ch['revision'],t,k))
     c.execute('UPDATE _sync_config SET importing=0')
     c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],_receipt_checksum(p)))
+    if p['format'] != FORMAT:
+        from signed_packets import envelope_digest
+        c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
     return True
 
 def receive(db, exchange, *, security=None):
@@ -342,12 +362,18 @@ def receive(db, exchange, *, security=None):
         _security_policy(c, security, exchange)
     capture(db, security=security)
     root=Path(exchange)
-    if not root.is_dir(): return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
     namespace = 'signed-changes' if security is not None else 'changes'
     if security is not None:
         from signed_packets import no_symlinks
         no_symlinks(root/namespace)
-    paths = sorted((root/namespace).glob('*/*.json'))
+    try:
+        if not root.is_dir():
+            return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
+        paths = sorted((root/namespace).glob('*/*.json'))
+    except OSError as exc:
+        return {'applied':0,'pending':0,'conflict':0,'invalid':0,
+                'unavailable':True,'error':type(exc).__name__}
+    io_error = None
     applied=0
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
@@ -365,9 +391,16 @@ def receive(db, exchange, *, security=None):
                     c.execute('BEGIN IMMEDIATE')
                     _security_policy(c, security, exchange)
                     if security is not None:
+                        from signed_packets import validate_envelope
+                        validate_envelope(p, config(c)['group_id'], path.parent.name)
+                        if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
+                        received = _received_signed(c, p, security, path.parent.name)
+                        if received is not None:
+                            verified_signature = True if received == 'verified' else None
+                            c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
+                            continue
                         security.verify(p, config(c)['group_id'], path.parent.name)
                         verified_signature = True
-                        if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
                         legacy = {k: p[k] for k in ('group','node','uuid','body')}
                         legacy.update(format=FORMAT, checksum=digest(p['body']))
                         _validate(c,legacy)
@@ -378,7 +411,10 @@ def receive(db, exchange, *, security=None):
                         changed=_apply(c,p)
                     c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
                 applied+=int(changed); progress |= changed
-            except (OSError,ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
+            except OSError as exc:
+                # A packet that cannot be read is not an invalid packet. Retry next cycle.
+                io_error = type(exc).__name__
+            except (ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
                 kind='pending' if isinstance(e,Pending) else 'conflict' if isinstance(e,(Conflict,sqlite3.IntegrityError)) else 'invalid'
                 with connect(db) as c, c:
                     # Signed failures must not leak memory contents into diagnostics/status.
@@ -386,13 +422,14 @@ def receive(db, exchange, *, security=None):
                     c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,message))
                 if kind=='pending': pending.append(path)
             finally:
-                if security is not None:
+                if security is not None and verified_signature is not None:
                     from signed_packets import record_verification
                     record_verification(db, verified_signature)
         if not progress: break
         retry=pending
     report=status(db)
-    return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':False}
+    return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
+            **({'error': io_error} if io_error else {})}
 
 def cycle(db, exchange, *, security=None):
     with connect(db) as c, c:

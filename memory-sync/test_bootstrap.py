@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import zipfile
 
@@ -144,6 +145,14 @@ def test_installer_places_database_outside_exchange_and_is_idempotent(tmp_path, 
     assert first['node'] == node
     second = module.install(exchange, local, node=node)
     assert second['database'] == first['database']
+    from signed_packets import read_local
+    runtime = Path(first['database']).parent / 'runtime.json'
+    read_local(runtime, private=True)  # managed worker requires owner-only runtime
+    if os.name != 'nt':
+        assert runtime.stat().st_mode & 0o077 == 0
+        runtime.chmod(0o644)  # installs from earlier releases are repaired on rerun
+        module.install(exchange, local, node=node)
+        assert runtime.stat().st_mode & 0o077 == 0
     assert module.main(['--exchange', str(exchange), '--local-dir', str(local), '--node', node, '--once']) == 0
     acknowledgment = json.loads((exchange / ('status/' + node + '.json')).read_text())
     assert acknowledgment['node'] == node
@@ -176,3 +185,84 @@ def test_bootstrap_progress_has_real_row_bar(capsys):
     assert '[######--------------] 30%' in text
     assert '30/100 rows' in text
     assert text.isascii()
+
+
+@pytest.mark.parametrize('sync, expected', [({'conflict': 0, 'invalid': 0}, 0),
+                                            ({'conflict': 1, 'invalid': 0}, 1),
+                                            ({'conflict': 0, 'invalid': 2}, 1)])
+def test_once_exit_status_matches_cycle_report(tmp_path, monkeypatch, capsys, sync, expected):
+    import json
+    import sync_worker
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **k: {'database': 'db', 'exchange': 'ex'})
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **k: {'sync': sync})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == expected
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {'sync': sync}
+
+
+def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
+    import sync_worker
+    report = {'cycle': {'receive': {'unavailable': True}}, 'failure_kind': 'transient'}
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **kw: report)
+    import json
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **kw: {'database': 'db', 'exchange': 'ex'})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == 1
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])['failure_kind'] == 'transient'
+
+
+@pytest.mark.parametrize('paths', ['default', 'explicit', 'app-root'])
+@pytest.mark.parametrize('once', [True, False])
+def test_rerun_activated_bootstrap_resolves_wizard_security_paths(tmp_path, monkeypatch, paths, once):
+    import json
+    import build_package
+    import memory_sync
+    import signed_packets
+    import sync_worker
+    exchange = tmp_path / 'exchange'
+    (exchange / '.stfolder').mkdir(parents=True)
+    snapshot = tmp_path / 'snapshot.jsonl'
+    snapshot.write_text(json.dumps({'format': 'omp-sqlite-snapshot-v1', 'tables': build_package.TABLES}) + '\n')
+    group = '00000000-0000-4000-8000-000000000001'
+    build_package.build(snapshot, exchange, group)
+    module = load_bootstrap()
+    local = tmp_path / 'local'
+    result = module.install(exchange, local, node='linux')
+    (local / 'data/workflow.json').write_text(json.dumps({'ingest': False, 'summarize': False}))
+    runtime = local / 'data/runtime.json'
+    config = json.loads(runtime.read_text())
+    identity = local / 'identity'
+    state = local / 'data/security-wizard.json'
+    if paths == 'explicit':
+        identity, state = local / 'custom-identity', local / 'data/custom-state.json'
+        config.update(security_dir=str(identity), security_state=str(state))
+    elif paths == 'app-root':
+        config['app_root'] = str(local / 'alternate')
+        identity = local / 'alternate/identity'
+    signed_packets.write_local(runtime, config)
+    signed_packets.init_identity(identity, group, 'linux')
+    # wizard-resume activates via Security.guard without adding runtime paths.
+    security = signed_packets.Security(identity)
+    with memory_sync.connect(result['database']) as c, c:
+        security.guard(c, exchange)
+    key_before = (identity / 'identity.json').read_bytes()
+    calls = []
+    real_once = sync_worker.run_once
+    def checked_once(database, exchange, **kwargs):
+        calls.append(kwargs.get('security_dir'))
+        assert kwargs.get('security_dir') == str(identity)
+        return real_once(database, exchange, **kwargs)
+    def checked_loop(argv):
+        calls.append(argv[argv.index('--security-dir') + 1] if '--security-dir' in argv else None)
+        assert '--security-dir' in argv
+        assert argv[argv.index('--security-dir') + 1] == str(identity)
+        return int(sync_worker.failed(real_once(argv[0], argv[1], security_dir=str(identity))))
+    monkeypatch.setattr(sync_worker, 'run_once', checked_once)
+    monkeypatch.setattr(sync_worker, 'main', checked_loop)
+    argv = ['--exchange', str(exchange), '--local-dir', str(local), '--node', 'linux']
+    assert module.main(argv + (['--once'] if once else [])) == 0
+    assert calls == [str(identity)]
+    updated = json.loads(runtime.read_text())
+    assert updated['security_dir'] == str(identity)
+    assert updated['security_state'] == str(state)
+    assert (identity / 'identity.json').read_bytes() == key_before

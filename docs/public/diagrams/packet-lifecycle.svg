@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1376 540" width="1376" height="540" role="img" aria-label="A packet describes a change, not a copy of the database" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="1376" height="540" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">A packet describes a change, not a copy of the database</text>
+<rect class="grp" x="28" y="84" width="622" height="232" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="50" y="112" font-size="15">Device A · sender</text>
+<rect class="grp" x="1008" y="84" width="340" height="428" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="1030" y="112" font-size="15">Device B · receiver</text>
+<path class="ar" d="M283.0,217.0 L347.0,217.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M628.0,217.0 L692.0,217.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M966.0,217.0 L1030.0,217.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M1178.0,294.0 L1178.0,358.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M1178.0,294.0 L1178.0,326.0 L829.0,326.0 L829.0,358.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect class="nd" x="50" y="140" width="233" height="154" rx="12" stroke-width="1.5"/>
+<text class="nt" x="72" y="179" font-size="17" font-weight="700">1 · Edit a row</text>
+<text class="nb" x="72" y="205" font-size="14.5">Example: memory_items #42</text>
+<text class="nb" x="72" y="227" font-size="14.5">Change v1 → v2</text>
+<rect class="nd" x="347" y="140" width="281" height="154" rx="12" stroke-width="1.5"/>
+<text class="nt" x="369" y="179" font-size="17" font-weight="700">2 · Capture</text>
+<text class="nb" x="369" y="205" font-size="14.5">Compare with saved shadow</text>
+<text class="nb" x="369" y="227" font-size="14.5">Change records parent=v1</text>
+<text class="nb" x="369" y="249" font-size="14.5">New revision=v2 (new UUID)</text>
+<text class="nm" x="369" y="271" font-size="14.5">All captured changes → one packet</text>
+<rect class="hl" x="692" y="140" width="274" height="154" rx="12" stroke-width="2.5"/>
+<text class="nt" x="714" y="179" font-size="17" font-weight="700">3 · Exchange folder</text>
+<text class="nb" x="714" y="205" font-size="14.5">changes/&lt;node&gt;/&lt;uuid&gt;.json</text>
+<text class="nb" x="714" y="227" font-size="14.5">Signed: signed-changes/</text>
+<text class="nb" x="714" y="249" font-size="14.5">Immutable; Syncthing transfers</text>
+<rect class="nd" x="1030" y="140" width="296" height="154" rx="12" stroke-width="1.5"/>
+<text class="nt" x="1052" y="179" font-size="17" font-weight="700">4 · Receive: check parent</text>
+<text class="nb" x="1052" y="205" font-size="14.5">Is B’s current revision for #42</text>
+<text class="nb" x="1052" y="227" font-size="14.5">v1, matching the parent?</text>
+<rect class="nd" x="1030" y="358" width="296" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="1052" y="397" font-size="17" font-weight="700">5 · Match → apply + receipt</text>
+<text class="nb" x="1052" y="423" font-size="14.5">Row becomes v2</text>
+<text class="nb" x="1052" y="445" font-size="14.5">Receipt prevents repeat application</text>
+<rect class="rj" x="692" y="358" width="274" height="132" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="714" y="397" font-size="17" font-weight="700">Mismatch → no overwrite</text>
+<text class="nb" x="714" y="423" font-size="14.5">B independently edited → conflict</text>
+<text class="nb" x="714" y="445" font-size="14.5">Unknown predecessor → pending</text>
+<text class="nm" x="714" y="467" font-size="14.5">The whole packet is held</text>
+</svg>

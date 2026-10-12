@@ -20,6 +20,53 @@ The exchange argument defaults to the directory containing the wrapper. An optio
 
 Installation starts a foreground worker: the shell remains occupied until Ctrl-C. Running the macOS wrapper does **not** enable a background service. Stop this worker before enabling persistent operation to avoid duplicate workers.
 
+## Review ingestion roots before the first cycle
+
+By default, a new bootstrap enables local transcript ingestion immediately. To
+install and synchronize without scanning local transcripts, use the leading flag:
+
+```sh
+sh setup_macos.sh --no-ingest "/absolute/path/to/exchange" "/absolute/path/to/local"
+sh setup_linux.sh --no-ingest "/absolute/path/to/exchange" "/absolute/path/to/local"
+```
+
+The flag also works directly as `python3 bootstrap_windows.py --no-ingest` with
+your usual `--exchange`, `--local-dir`, and `--node` options. Windows Command Prompt:
+
+```bat
+START-WINDOWS.cmd --no-ingest
+```
+
+This still imports the supplied bootstrap snapshot and exchanges existing memory;
+it disables **local transcript ingestion**, not synchronization. On re-run it sets
+`ingest` to `false` while preserving chosen roots and all other workflow settings.
+
+To enable ingestion afterwards:
+
+1. Stop the foreground worker with Ctrl-C (and stop any separately managed worker).
+2. Open the local `data/workflow.json` path printed by bootstrap. Preserve existing
+   fields, and set these two fields to your reviewed source directories:
+
+   ```json
+   {
+     "ingest": true,
+     "roots": {"omp": "/absolute/path/to/reviewed-sessions"}
+   }
+   ```
+
+   On Windows, use native paths such as
+   `"roots": {"codex": "C:/Users/you/reviewed-sessions"}` (forward slashes avoid
+   JSON backslash escaping). Supported agent keys are `omp`, `codex`, and `claude`.
+   Include only sources this machine should ingest. An explicit `roots` object
+   replaces all default roots; omitted agents are not scanned, and `{}` scans none.
+   Without a `roots` field, enabling ingestion scans the default agent directories.
+3. Restart with the same installation paths and identity, **without `--no-ingest`**.
+   Bootstrap preserves the edited configuration. Check the cycle's ingestion
+   results before adding more roots. Repeating `--no-ingest` disables it again.
+
+This uses the existing workflow JSON format; no new configuration command is
+needed. Keep this file private and outside the exchange folder.
+
 ## Manual restart after installation
 
 Use the installation paths reported by bootstrap (`data/runtime.json`). For default locations:
@@ -84,3 +131,108 @@ The generator only writes configuration; it never invokes a shell, registers ser
 Currently only one logical node per `mac`, `windows`, and `linux` is supported in a sync group. Do not clone local state or run the same node identity on multiple machines. Windows setup remains documented separately in README-WINDOWS.md.
 
 Tests exercise argument fidelity, plist parsing, validation, private output, and both wrappers on macOS. These tests are **not** Linux-host systemd validation. Verify the generated Linux unit and worker on your actual Linux host before relying on persistent operation.
+
+## Add peers to a new empty group
+
+Use current AgentMesh code on each device. This flow supports **unsigned groups
+created by `setup-new` in this version**. It initializes the same empty baseline
+and replays packets; it does not export memory rows or start a worker. Keep the
+original source as the group's sole invitation issuer.
+
+On the joining device, choose an unused logical slot (`mac`, `windows`, or
+`linux`; it need not match the operating system) and a new local root:
+
+```sh
+python3 agentmesh.py prepare-join --local-dir /absolute/local/AgentMesh-B \
+  --exchange /absolute/exchange --node windows \
+  --output /absolute/private-transfer/b-request.json
+# Type REQUEST.
+```
+
+Transfer the request to the original source through an operator-trusted channel.
+On that source:
+
+```sh
+python3 agentmesh.py invite-peer --runtime /absolute/AgentMesh-A/data/runtime.json \
+  --request /absolute/private-transfer/b-request.json \
+  --output /absolute/private-transfer/b-invitation.json --expires-in 86400
+# Type INVITE. The slot is now permanently reserved on A.
+```
+
+Transfer the invitation back to the same prepared device:
+
+```sh
+python3 agentmesh.py setup-join --local-dir /absolute/local/AgentMesh-B \
+  --exchange /absolute/exchange \
+  --invitation /absolute/private-transfer/b-invitation.json
+# Type JOIN.
+```
+
+For automation, use `--yes --confirm REQUEST`, `--yes --confirm INVITE`, or
+`--yes --confirm JOIN`. `--yes` alone is refused. All paths must be absolute,
+without symlinks; transfer files must be outside the installation and exchange.
+Outputs never overwrite existing files. Directories are private (0700), files
+are owner-only (0600), with native private ACL provisioning/validation on Windows.
+Keep transferred files owner-only too (`chmod 600` on POSIX).
+
+A successful join reports `joined` and creates `data/runtime.json` and
+`data/memory.db`, with ingestion and summarization disabled. Start/configure the
+normal worker separately. Repeat the request/invitation/join flow for the third
+slot; **B cannot issue C's invitation**. A checks its own slot, all persisted
+reservations, and directories/packet senders observed in the exchange. A silent
+invited peer is covered by its reservation. Do not mix this flow with manual
+same-group initialization, clone installations, or run another issuer: a silent
+unregistered device cannot be detected from exchange packets.
+
+### Invitation and replay contract
+
+- `setup-new` records `_sync_join_origin` in its private SQLite database only
+  after verifying an empty baseline. Invitations require that origin record and
+  no `baseline:` revisions in history, even if original rows were later deleted.
+  Older installations without this provenance fail closed; there is no automatic
+  provenance adoption. Groups with nonempty baselines must use their original
+  bootstrap. Joined peers do not receive the origin record.
+- The request (`agentmesh-join-request-v1`) contains a request UUID, slot, and
+  SHA-256 commitment to a random 256-bit recipient secret. The secret stays in
+  the joining device's private `data/join-state.json`; never transfer that file.
+- The invitation (`agentmesh-join-invitation-v1`) contains its UUID, group UUID,
+  reserved slot, issuer slot, origin UUID, `baseline: "empty"`, `policy: "legacy"`,
+  request UUID, recipient commitment, and integer Unix `issued_at`/`expires_at`.
+  **Neither transfer file contains memory rows or secrets.** These are unsigned
+  administrative files: authenticate the source and delivery channel yourself.
+  An origin UUID is an assertion from that trusted issuer, not a cryptographic
+  signature. No network service or shared online redemption server is used.
+- The source commits its reservation before publishing the invitation, under a
+  SQLite write transaction. Concurrent invitations cannot allocate the same
+  slot. Reservations never expire or recycle, even after file loss, expiration,
+  or failed output publication. There is no automatic reissue/release command;
+  retain the original invitation, source DB, and prepared recipient state. Loss
+  may require maintainer-assisted recovery or a new group. Do not delete ledger
+  records to make a slot available.
+- Validity defaults to 24 hours (`--expires-in`, 60 seconds through 7 days).
+  Consumption checks the recipient's clock and commits local consumed state
+  before creating the database. Reuse is refused, and another independently
+  prepared device lacks the matching secret. Copying/restoring the private
+  prepared state or the origin DB defeats these guarantees, just as cloning a
+  live node would. The offline source does not learn whether redemption finished.
+- Signed or security-configured sources are refused. Join also refuses signed
+  invitations and an exchange containing `signed-changes`. No signing identity
+  or trust is established. Keep the group unsigned throughout outstanding joins;
+  offline invitations cannot detect an unpropagated policy change on the source.
+  Signed onboarding remains the separate security pairing workflow.
+- Joining only reads the exchange. Uncaptured source writes arrive after the
+  source's next normal capture/publish. Pending predecessors leave a guarded
+  partial installation and exit 2; conflict/invalid reports block completion and
+  exit 1. After missing packets arrive, retry with
+  `setup-join --local-dir ... --exchange ... --resume` (type `RESUME`, or use
+  `--yes --confirm RESUME`). This resumes the consumed invitation, including
+  after expiry; it does not allocate another slot. Workers remain blocked by
+  `.setup-pending.json` until replay finishes. Retain partial state after errors
+  or interruption; do not bypass the guard.
+
+**Never prune exchange packets.** Replay time and storage grow with history.
+A missing predecessor may leave successors pending, but deleting the newest
+packet (or an entire independent chain) can silently lose data: zero diagnostics
+is not proof of complete history. Wait for Syncthing to finish transferring the
+full history before joining. The invitation is not a history inventory or a
+replacement for backups.

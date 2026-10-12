@@ -1,5 +1,8 @@
 """Public diagnostics: fixed reasons and trusted code locations, never input values."""
 
+USED_EXCHANGE_REASON = ('exchange folder is already used; each sync group needs its own exchange folder '
+                        '(only .stfolder, .stignore and an empty .stversions are allowed)')
+
 # Exact constants emitted by installation/lifecycle/private-storage guards.
 # Do not expose arbitrary exception text, paths, keys or subprocess output.
 SAFE_REASONS = frozenset({
@@ -137,17 +140,24 @@ from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task', 'key_protection', 'os_unlock'})
+                           'windows_install', 'windows_task', 'key_protection', 'os_unlock', 'install_join'})
 
 
 def report(exc, action):
     result: dict[str, object] = {'error': type(exc).__name__}
+    if action == 'setup-new' and str(exc) == USED_EXCHANGE_REASON:
+        return dict(result, reason=USED_EXCHANGE_REASON,
+                    next_action='Choose a new dedicated Syncthing exchange folder; retain the existing group files.')
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
     is_key = action in ('identity-protect', 'identity-os-unlock')
-    if not is_windows and not is_key and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
+    if not is_windows and not is_key and not is_join and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
     known = message in SAFE_REASONS or message in KEY_REASONS or (is_windows and message in WINDOWS_REASONS)
+    if is_join:
+        from install_join import REASONS
+        known = known or message in REASONS
     result['reason'] = message if known else 'details withheld; inspect diagnostic stage'
     code, hint = DETAILS.get(message, (
         'GUARD_REFUSED' if known else 'UNCLASSIFIED_ERROR',

@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 printf '%s\n' '[o-A-o] AgentMesh - local memory, connected agents.' >&2
-[ "$#" -le 2 ] || { printf '%s\n' 'Usage: sh setup_macos.sh [exchange-folder] [local-dir]' >&2; exit 2; }
+no_ingest=
+if [ "${1:-}" = '--no-ingest' ]; then no_ingest=--no-ingest; shift; fi
+[ "$#" -le 2 ] || { printf '%s\n' 'Usage: sh setup_macos.sh [--no-ingest] [exchange-folder] [local-dir]' >&2; exit 2; }
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Install Python 3.10+ with SQLite FTS5 and JSON support, then retry.' >&2; exit 1; }
 command -v syncthing >/dev/null 2>&1 || { printf '%s\n' 'Install Syncthing, pair your devices and accept the exchange folder, then retry.' >&2; exit 1; }
@@ -17,4 +19,4 @@ except (AssertionError, sqlite3.Error):
 PY
 exchange=${1:-$SCRIPT_DIR}
 local_dir=${2:-"${HOME}/Library/Application Support/AgentMesh"}
-exec python3 "$SCRIPT_DIR/bootstrap_windows.py" --node mac --exchange "$exchange" --local-dir "$local_dir"
+exec python3 "$SCRIPT_DIR/bootstrap_windows.py" --node mac --exchange "$exchange" --local-dir "$local_dir" ${no_ingest:+"$no_ingest"}

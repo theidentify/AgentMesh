@@ -9,6 +9,7 @@ from terminal_progress import TerminalProgress
 
 
 def extract_package(archive, app_dir):
+    import tempfile
     with zipfile.ZipFile(archive) as package:
         members = package.infolist()
         if sum(m.file_size for m in members) > 200_000_000:
@@ -32,9 +33,23 @@ def extract_package(archive, app_dir):
                 target.mkdir(parents=True, exist_ok=True)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with package.open(member) as source, target.open('wb') as out:
-                    import shutil
-                    shutil.copyfileobj(source, out)
+                # Protect an empty replacement before writing private payloads.
+                # Replacing (rather than truncating) also repairs old modes/ACLs.
+                fd, temporary = tempfile.mkstemp(prefix='.extract-', dir=target.parent)
+                temporary = Path(temporary)
+                try:
+                    with os.fdopen(fd, 'wb') as out:
+                        if os.name == 'nt':
+                            import windows_acl
+                            windows_acl.apply(temporary, provision=True)
+                        else:
+                            os.chmod(temporary, 0o600)
+                        with package.open(member) as source:
+                            import shutil
+                            shutil.copyfileobj(source, out)
+                    os.replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
     return destination
 
 
@@ -73,7 +88,7 @@ def prepare_baseline(app_dir, data_dir):
         temporary.unlink(missing_ok=True)
 
 
-def install(exchange, local_dir, node='windows', progress=None):
+def install(exchange, local_dir, node='windows', progress=None, *, no_ingest=False):
     import hashlib
     import json
     import sqlite3
@@ -142,19 +157,45 @@ def install(exchange, local_dir, node='windows', progress=None):
         try:
             fd = os.open(workflow_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'w', encoding='utf-8') as out:
-                json.dump({'ingest': True, 'summarize': False,
+                json.dump({'ingest': not no_ingest, 'summarize': False,
                            'summary_interval_seconds': 86400}, out)
                 out.write('\n')
         except FileExistsError:
             pass
+    if no_ingest:
+        from signed_packets import write_local
+        settings = json.loads(workflow_path.read_text(encoding='utf-8'))
+        if not isinstance(settings, dict): raise ValueError('workflow config must be an object')
+        settings['ingest'] = False
+        write_local(workflow_path, settings)
+        progress(f'Ingestion is disabled. Before enabling it, stop the worker and review roots in {workflow_path}. '
+                 'Set "roots" to your chosen agent/path mapping and "ingest" to true, preserving other settings; '
+                 'restart without --no-ingest. See app/README-SETUP.md for exact JSON examples.')
     result = {'database': str(db), 'exchange': str(exchange), 'app': str(app), **state}
     runtime_path = data / 'runtime.json'
     if runtime_path.exists():
         previous = json.loads(runtime_path.read_text(encoding='utf-8'))
         # Preserve explicit signed activation across normal restarts; never make a new key.
-        for key in ('security_dir', 'security_state'):
+        for key in ('security_dir', 'security_state', 'app_root'):
             if key in previous: result[key] = previous[key]
-    (data / 'runtime.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
+    if state['security']['policy'] == 'required':
+        # wizard-resume can activate signing without rewriting runtime.json.
+        # Resolve exactly the same paths as adoption and the managed worker.
+        from install_adopt import security_paths
+        identity, wizard_state = security_paths(result, runtime_path)
+        result.update(security_dir=str(identity), security_state=str(wizard_state))
+    # The managed worker reads runtime.json as a private file. Replacing it on
+    # every run also repairs runtimes written world-readable by older releases.
+    from signed_packets import replace, windows_private
+    temporary = data / ('.runtime.json.' + uuid.uuid4().hex + '.tmp')
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            windows_private(temporary, provision=True)
+            out.write(json.dumps(result, indent=2)+'\n')
+        replace(temporary, runtime_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     progress('Ready: local database installed; starting synchronization')
     return result
 
@@ -184,6 +225,7 @@ def main(argv=None):
     parser.add_argument('--node', choices=('mac', 'windows', 'linux'), default='windows')
     parser.add_argument('--local-dir', default=str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.local/share'))) / 'AgentMesh'))
     parser.add_argument('--once', action='store_true', help='install and sync once, without keeping a watcher open')
+    parser.add_argument('--no-ingest', action='store_true', help='disable local transcript ingestion until workflow.json roots are reviewed and ingestion is enabled explicitly')
     parser.add_argument('--security-wizard', action='store_true', help='interactive opt-in security setup; pending pairing does not start a worker')
     parser.add_argument('--wizard-status', action='store_true', help='read-only status for an existing installation')
     parser.add_argument('--wizard-dry-run', action='store_true', help='read-only prerequisites for an existing installation')
@@ -198,7 +240,7 @@ def main(argv=None):
                 '--exchange', args.exchange, '--security-dir', str(local / 'identity'),
                 '--state', str(local / 'data' / 'security-wizard.json'), action, '--dry-run'])
         with ConsoleProgress() as progress:
-            result = install(args.exchange, args.local_dir, node=args.node, progress=progress)
+            result = install(args.exchange, args.local_dir, node=args.node, progress=progress, no_ingest=args.no_ingest)
         print(json.dumps({'installed': True, **result}), flush=True)
         if args.security_wizard:
             import security_wizard
@@ -212,8 +254,9 @@ def main(argv=None):
             return 0  # Activation and scheduling remain separate operator decisions.
         import sync_worker
         if args.once:
-            print(json.dumps(sync_worker.run_once(result['database'], result['exchange'], security_dir=result.get('security_dir'))), flush=True)
-            return 0
+            report = sync_worker.run_once(result['database'], result['exchange'], security_dir=result.get('security_dir'))
+            print(json.dumps(report), flush=True)
+            return int(sync_worker.failed(report))
         print('Keep this window open for sync. Ctrl-C stops the worker; Syncthing is separate.', flush=True)
         worker_args = [result['database'], result['exchange'], '--interval', '60']
         if result.get('security_dir'): worker_args += ['--security-dir', result['security_dir']]

@@ -22,8 +22,15 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
     if preflight is not None:
         preflight()  # Inside cycle lock, before any ingestion or policy writes.
     exchange = Path(exchange)
-    if not (exchange / '.stfolder').exists():
-        raise ValueError('exchange is not an accepted Syncthing folder')
+    try:
+        exchange_ready = (exchange / '.stfolder').is_dir()
+    except OSError:
+        exchange_ready = False
+    if not exchange_ready:
+        # Never recreate an unmounted exchange or write without its marker.
+        report = {'sync': memory_sync.status(database),
+                  'cycle': {'receive': {'unavailable': True}}}
+        return classify(report)
     security = None
     if security_dir is not None:
         from signed_packets import Security
@@ -94,21 +101,35 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
               'security': security_report,
               'workflow': workflow_report}
     directory = exchange / 'status'
-    directory.mkdir(exist_ok=True)
     temp = directory / ('.' + state['node'] + '-' + str(uuid.uuid4()) + '.tmp')
+    classify(report)
     try:
+        directory.mkdir(exist_ok=True)
         with temp.open('x', encoding='utf-8') as out:
             json.dump(report, out, ensure_ascii=False, sort_keys=True)
             out.write('\n')
             out.flush()
             os.fsync(out.fileno())
         os.replace(temp, directory / (state['node'] + '.json'))
+    except OSError as exc:
+        report['status_write'] = {'unavailable': True, 'error': type(exc).__name__}
     finally:
-        temp.unlink(missing_ok=True)
-    return report
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass  # Best effort cleanup on an unavailable exchange.
+    return classify(report)
 
 
-def failed(report):
+def _exchange_failed(cycle):
+    # An unwritable or missing exchange leaves the outbox undelivered.
+    cycle = cycle or {}
+    return any((cycle.get(step) or {}).get('unavailable') or (cycle.get(step) or {}).get('error')
+               for step in ('publish', 'receive'))
+
+
+def permanent_failure(report):
+    """Failures requiring operator review; exchange availability never masks these."""
     workflow = report.get('workflow') or {}
     return bool('error' in report or
                 (report.get('postgres_mirror') or {}).get('error') or
@@ -118,6 +139,26 @@ def failed(report):
                 (workflow.get('summary') or {}).get('status') in ('stale', 'blocked', 'failed') or
                 report.get('sync', {}).get('conflict') or
                 report.get('sync', {}).get('invalid'))
+
+
+def exchange_unavailable(report):
+    workflow = report.get('workflow') or {}
+    return bool(_exchange_failed(report.get('cycle')) or
+                _exchange_failed(workflow.get('summary_sync')) or
+                (report.get('status_write') or {}).get('unavailable'))
+
+
+def failed(report):
+    """Any unsuccessful cycle, including retryable exchange failures (CLI exits)."""
+    return permanent_failure(report) or exchange_unavailable(report)
+
+
+def classify(report):
+    """Attach public diagnostics; permanent failures take precedence."""
+    report['failure_kind'] = ('permanent' if permanent_failure(report) else
+                              'transient' if exchange_unavailable(report) else None)
+    report['warning'] = 'exchange unavailable' if exchange_unavailable(report) else None
+    return report
 
 
 def main(argv=None):

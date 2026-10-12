@@ -21,7 +21,10 @@ FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest
          'runtime_lock.py', 'ota_update.py', 'OTA-UPDATES.md',
          'schema.sql', 'bootstrap_windows.py', 'platform_service.py',
          'START-WINDOWS.cmd', 'README-WINDOWS.md', 'README-SETUP.md',
-         'setup_macos.sh', 'setup_linux.sh', 'SYNC.md']
+         'setup_macos.sh', 'setup_linux.sh', 'SYNC.md', 'build_package.py',
+         'cli_errors.py', 'worker_error_details.py', 'console_prompt.py', 'install_adopt.py',
+         'install_inspect.py', 'install_setup.py', 'mac_replace.py', 'windows_install.py',
+         'windows_task.py', 'worker_diagnostics.py', 'worker_lifecycle.py', 'install_join.py', 'key_protection.py', 'os_unlock.py']
 TABLES = ['source_sessions', 'observation_events', 'ingestion_cursors',
           'ingestion_errors', 'memory_items', 'memory_sources',
           'memory_summaries', 'summary_state']
@@ -70,7 +73,7 @@ def build(snapshot, exchange, group_id):
         # Bootstrap validates the archive hash before touching its database.
         os.replace(archive, exchange / archive.name)
         for name in ['bootstrap_windows.py', 'START-WINDOWS.cmd', 'README-WINDOWS.md',
-                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py', 'terminal_progress.py',
+                     'README-SETUP.md', 'setup_macos.sh', 'setup_linux.sh', 'platform_service.py', 'brand.py', 'terminal_progress.py', 'windows_acl.py',
                      'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',
                      'assets/agentmesh-logo.svg', 'assets/agentmesh-logo-dark.svg', 'assets/PROVENANCE.md']:
             staged = temp / name

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 959 440" width="959" height="440" role="img" aria-label="Install once per device, then let the worker run" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="959" height="440" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">Install once per device, then let the worker run</text>
+<path class="ar" d="M285.0,150.0 L349.0,150.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M622.0,150.0 L686.0,150.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M808.5,216.0 L808.5,280.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<path class="ar" d="M686.0,346.0 L622.0,346.0" fill="none" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect class="nd" x="28" y="84" width="257" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="123" font-size="17" font-weight="700">1 · Prerequisites</text>
+<text class="nb" x="50" y="149" font-size="14.5">Python 3.10+ (bootstrap)</text>
+<text class="nb" x="50" y="171" font-size="14.5">3.11+ for empty groups</text>
+<text class="nb" x="50" y="193" font-size="14.5">FTS5 · JSON · Syncthing</text>
+<rect class="nd" x="349" y="84" width="273" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="371" y="123" font-size="17" font-weight="700">2 · Pair devices</text>
+<text class="nb" x="371" y="149" font-size="14.5">accept the exchange</text>
+<text class="nb" x="371" y="171" font-size="14.5">folder</text>
+<text class="nm" x="371" y="193" font-size="14.5">wait for Up to Date</text>
+<rect class="hl" x="686" y="84" width="245" height="132" rx="12" stroke-width="2.5"/>
+<text class="nt" x="708" y="123" font-size="17" font-weight="700">3 · Run the installer</text>
+<text class="nb" x="708" y="149" font-size="14.5">setup_macos.sh</text>
+<text class="nb" x="708" y="171" font-size="14.5">setup_linux.sh</text>
+<text class="nb" x="708" y="193" font-size="14.5">START-WINDOWS.cmd</text>
+<rect class="nd" x="686" y="280" width="245" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="708" y="319" font-size="17" font-weight="700">4 · Foreground worker</text>
+<text class="nb" x="708" y="345" font-size="14.5">60 s wait between cycles</text>
+<text class="nm" x="708" y="367" font-size="14.5">stops on Ctrl-C / close</text>
+<rect class="nd" x="349" y="280" width="273" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="371" y="319" font-size="17" font-weight="700">5 · Background (optional)</text>
+<text class="nb" x="371" y="345" font-size="14.5">LaunchAgent · systemd</text>
+<text class="nb" x="371" y="367" font-size="14.5">Windows sign-in start</text>
+<text class="nm" x="371" y="389" font-size="14.5">stop step 4 first</text>
+<rect class="rj" x="28" y="280" width="257" height="132" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="50" y="319" font-size="17" font-weight="700">Unzip bootstrap by hand</text>
+<text class="nb" x="50" y="345" font-size="14.5">skips checksum checks</text>
+<text class="nm" x="50" y="367" font-size="14.5">let the installer do it</text>
+</svg>

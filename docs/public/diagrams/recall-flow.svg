@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 957 474" width="957" height="474" role="img" aria-label="Agents recall memory read-only, with evidence" font-family="'IBM Plex Sans Thai','Noto Sans Thai','Sukhumvit Set',Thonburi,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+<style>
+.bg{fill:#FFFFFF}.ttl{fill:#1F1E1C}.cap{fill:#8C8880}
+.grp{fill:#F4F3EF;stroke:#CFCBC2}.glbl{fill:#6F6C66}
+.nd{fill:#FBFAF7;stroke:#CFCBC2}.nt{fill:#1F1E1C}.nb{fill:#3A3935}.nm{fill:#8C8880}
+.hl{fill:#DDE7F2;stroke:#3D7BD6}.rj{fill:#FFFFFF;stroke:#C8473D}.ex{fill:#FFFFFF;stroke:#CFCBC2}
+.ar{stroke:#B3AFA6}.ah{fill:#B3AFA6}.elb{fill:#6F6C66}.elbg{fill:#FFFFFF}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1E1D1B}.ttl{fill:#F1EFEA}.cap{fill:#8F8B83}
+.grp{fill:#262522;stroke:#4A4740}.glbl{fill:#A29E95}
+.nd{fill:#2B2A27;stroke:#4A4740}.nt{fill:#F1EFEA}.nb{fill:#D6D3CC}.nm{fill:#8F8B83}
+.hl{fill:#1F3550;stroke:#5B9BEF}.rj{fill:#1E1D1B;stroke:#E0675C}.ex{fill:#1E1D1B;stroke:#4A4740}
+.ar{stroke:#6D6A63}.ah{fill:#6D6A63}.elb{fill:#A29E95}.elbg{fill:#1E1D1B}}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" width="957" height="474" rx="16"/>
+<text class="ttl" x="28" y="52" font-size="22" font-weight="700">Agents recall memory read-only, with evidence</text>
+<rect class="grp" x="369" y="84" width="560" height="210" rx="18" stroke-width="1.5" stroke-dasharray="7 6"/>
+<text class="glbl" x="391" y="112" font-size="15">This device · no network call</text>
+<path class="ar" d="M289.0,206.0 L391.0,206.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<rect class="elbg" x="311.0" y="195.0" width="58.0" height="20" rx="4"/>
+<text class="elb" x="340.0" y="210.0" font-size="13" text-anchor="middle">results</text>
+<path class="ar" d="M609.0,206.0 L673.0,206.0" fill="none" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<rect class="ex" x="28" y="140" width="261" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="50" y="179" font-size="17" font-weight="700">Agent</text>
+<text class="nb" x="50" y="205" font-size="14.5">rule instructs recall</text>
+<text class="nb" x="50" y="227" font-size="14.5">verify actual invocation</text>
+<text class="nm" x="50" y="249" font-size="14.5">Claude · Codex · Hermes · OMP</text>
+<rect class="hl" x="391" y="140" width="218" height="132" rx="12" stroke-width="2.5"/>
+<text class="nt" x="413" y="179" font-size="17" font-weight="700">agentmesh.py recall</text>
+<text class="nb" x="413" y="205" font-size="14.5">query with --limit 12</text>
+<text class="nb" x="413" y="227" font-size="14.5">--project optional</text>
+<rect class="nd" x="673" y="140" width="234" height="132" rx="12" stroke-width="1.5"/>
+<text class="nt" x="695" y="179" font-size="17" font-weight="700">Local database</text>
+<text class="nb" x="695" y="205" font-size="14.5">opened read-only</text>
+<text class="nb" x="695" y="227" font-size="14.5">memories · summaries</text>
+<text class="nm" x="695" y="249" font-size="14.5">source IDs (evidence IDs)</text>
+<rect class="rj" x="28" y="336" width="261" height="110" rx="12" stroke-width="2" stroke-dasharray="7 6"/>
+<text class="nt" x="50" y="375" font-size="17" font-weight="700">Obey recalled text</text>
+<text class="nb" x="50" y="401" font-size="14.5">memory is data,</text>
+<text class="nb" x="50" y="423" font-size="14.5">not instructions</text>
+</svg>

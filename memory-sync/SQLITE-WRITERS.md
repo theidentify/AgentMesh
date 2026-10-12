@@ -78,6 +78,36 @@ cumulative fallback usage, maximum per-call input context, reviewed events, and
 validation versus applied writes. Failed fallback usage is unknown, not a partial
 first-call total. Provider diagnostics and source text are not logged.
 
+### Claude worker, digest API and model benchmarks
+
+`claude_digest_worker.py` speaks the same worker protocol through one
+`claude --print` call with tools, MCP, hooks and session persistence disabled;
+`--model` must be a full Claude model ID. It reports the actual cost when the
+CLI returns one.
+
+`digest_api.py` serves the worker protocol over loopback HTTP so the model is
+chosen per call as `provider:model`. Providers are worker argv in a JSON file
+(see `bench/providers.example.json`); without one, only `claude-code` is
+configured. The scheduler uses it through `digest_api_client.py`, so switching
+models is a config change:
+
+```sh
+python digest_api.py --providers providers.json --port 8765
+python digest_scheduler.py db --root vault \
+  --command-json '["python","digest_api_client.py","--url","http://127.0.0.1:8765"]' \
+  --model claude-code:claude-haiku-5-5 --conflict-model claude-code:claude-sonnet-5-5
+```
+
+`digest_bench.py` sends identical fixture batches (`bench/digest_cases.json`)
+to several models through the API and reports valid results, memory_key
+stability across trials, tokens, cost and latency. Benchmarks call live models
+and spend tokens; fixtures must stay synthetic.
+
+```sh
+python digest_bench.py --models claude-code:claude-haiku-5-5 \
+  claude-code:claude-sonnet-5-5 codex:gpt-6-luna --trials 3 --out bench.jsonl
+```
+
 Real-snapshot verification may require an explicitly larger related-context
 bound than the default; measure it and raise the bound deliberately. Do not work
 around overflow by dropping old rules. Private snapshots and model responses

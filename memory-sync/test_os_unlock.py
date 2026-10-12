@@ -247,3 +247,107 @@ def test_cached_success_cannot_hide_tampering(tmp_path, field, value):
     security = signed.Security(directory, os_unlock=True, backend=backend)
     assert security.locked
     assert backend.calls.count('load') == 1
+
+def test_enable_keeps_public_identity_and_passphrase_path(tmp_path):
+    backend = FakeBackend()
+    directory, public = protected(tmp_path)
+    before = json.loads((directory / 'identity.json').read_text())
+    report = ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    assert report == {'status': 'enabled', 'key_id': public['key_id'], 'backend': backend.name}
+    after = json.loads((directory / 'identity.json').read_text())
+    assert after['protection'] == before['protection'] and set(after) == set(before) | {'os_unlock'}
+    assert not signed.Security(directory, unlock=lambda: PASS).locked
+    stored = (directory / 'identity.json').read_text()
+    assert backend.items[public['key_id']].hex() not in stored and PASS not in json.dumps(report)
+
+
+def test_enable_refuses_raw_identity_twice_enabled_and_wrong_passphrase(tmp_path):
+    backend = FakeBackend()
+    raw_dir = tmp_path / 'raw'
+    signed.init_identity(raw_dir, GROUP, 'mac')
+    with pytest.raises(ValueError, match='must be passphrase-protected'):
+        ou.enable(raw_dir, ask=lambda prompt: PASS, backend=backend)
+    directory, _ = protected(tmp_path)
+    with pytest.raises(ValueError, match='wrong passphrase'):
+        ou.enable(directory, ask=lambda prompt: 'wrong passphrase!!', backend=backend)
+    assert backend.items == {}
+    ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    with pytest.raises(ValueError, match='already enabled'):
+        ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+
+
+def test_enable_removes_its_item_when_the_replace_never_happened(tmp_path, monkeypatch):
+    backend = FakeBackend()
+    directory, _ = protected(tmp_path)
+    before = (directory / 'identity.json').read_bytes()
+    def crash(source, target, **kwargs):
+        raise OSError('fixture failure before replace')
+    monkeypatch.setattr(signed, 'replace', crash)
+    with pytest.raises(OSError):
+        ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    assert (directory / 'identity.json').read_bytes() == before and backend.items == {}
+
+
+def test_enable_keeps_the_item_when_the_file_was_replaced_before_the_error(tmp_path, monkeypatch):
+    backend = FakeBackend()
+    directory, _ = protected(tmp_path)
+    original = signed.write_local
+    def replaced_then_failed(path, value, **kwargs):
+        original(path, value, **kwargs)
+        raise OSError('fixture directory fsync failure after replace')
+    monkeypatch.setattr(signed, 'write_local', replaced_then_failed)
+    with pytest.raises(OSError):
+        ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    monkeypatch.setattr(signed, 'write_local', original)
+    ou.reset_cache()
+    assert not signed.Security(directory, os_unlock=True, backend=backend).locked
+
+
+def test_concurrent_enable_is_refused(tmp_path):
+    from runtime_lock import lock
+    backend = FakeBackend()
+    directory, _ = protected(tmp_path)
+    with lock(directory / '.os-unlock.lock', timeout=0):
+        with pytest.raises(ValueError, match='already in progress'):
+            ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    assert backend.items == {}
+
+
+def test_disable_removes_envelope_then_item_and_reports_leftovers(tmp_path):
+    backend = FakeBackend()
+    directory, public = enabled(tmp_path, backend)
+    backend.fail['delete'] = ou.NOT_REMOVED
+    with pytest.raises(ValueError, match='could not be removed'):
+        ou.disable(directory, backend=backend)
+    assert 'os_unlock' not in json.loads((directory / 'identity.json').read_text())
+    assert ou.status(directory, backend=backend)['stray_item'] is True
+    del backend.fail['delete']
+    assert ou.disable(directory, backend=backend) == {'status': 'disabled', 'key_id': public['key_id']}
+    assert backend.items == {} and ou.status(directory, backend=backend)['stray_item'] is False
+
+
+def test_status_is_read_only_and_never_prints_secrets(tmp_path):
+    backend = FakeBackend()
+    directory, public = enabled(tmp_path, backend)
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    report = ou.status(directory, backend=backend)
+    assert report == {'key_id': public['key_id'], 'protected': True, 'os_unlock': 'enabled',
+                      'backend': backend.name, 'available': True, 'reason': None, 'stray_item': False}
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    assert backend.items[public['key_id']].hex() not in json.dumps(report)
+    backend.items.clear()
+    assert ou.status(directory, backend=backend)['reason'] == ou.MISSING
+
+
+def test_ota_release_keys_never_reach_os_unlock(tmp_path):
+    import ota_update
+    source = open(ota_update.__file__, encoding='utf-8').read()
+    assert 'os_unlock' not in source
+    directory = tmp_path / 'release'
+    ota_update.release_key(directory)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        ou.enable(directory, ask=lambda prompt: PASS, backend=FakeBackend())
+    device, _ = protected(tmp_path)
+    signed.write_local(device / 'identity.json', json.loads((directory / 'release-private.json').read_text()))
+    with pytest.raises(ValueError, match='invalid private identity'):
+        ou.enable(device, ask=lambda prompt: PASS, backend=FakeBackend())

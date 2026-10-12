@@ -263,3 +263,112 @@ def unlock(directory, public, envelope, backend=None, *, cache=True):
     if isinstance(result, str):
         raise OSUnlockError(result) from None
     return result
+
+LOCK_NAME = '.os-unlock.lock'
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _locked(directory):
+    from runtime_lock import lock
+    cm = lock(signed.private_directory(directory) / LOCK_NAME, timeout=0)
+    acquired = False
+    try:
+        cm.__enter__()
+        acquired = True
+    except TimeoutError:
+        pass
+    if not acquired:
+        raise OSUnlockError(BUSY) from None
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
+def _raw(directory):
+    return signed.parse(signed.read_local(signed.private_directory(directory) / 'identity.json', private=True))
+
+
+def enable(directory, ask=None, backend=None):
+    import key_protection
+    ask = ask or key_protection.console_passphrase
+    backend = backend if backend is not None else current_backend()
+    if backend is None:
+        raise OSUnlockError(UNSUPPORTED) from None
+    with _locked(directory):
+        current = signed.Security(directory)
+        raw = _raw(directory)
+        if 'protection' not in raw:
+            raise OSUnlockError(NOT_PROTECTED) from None
+        if 'os_unlock' in raw:
+            raise OSUnlockError(ENABLED) from None
+        unlocked = signed.Security(directory, unlock=lambda: ask('Identity passphrase: '))
+        private_bytes = unlocked.key.private_bytes_raw()
+        key = os.urandom(32)
+        envelope = seal(current.public, private_bytes, backend.name, key)
+        path = current.directory / 'identity.json'
+        try:
+            backend.store(current.public['key_id'], key)
+            if open_envelope(current.public, envelope, backend.load(current.public['key_id'])) != private_bytes:
+                raise OSUnlockError(REFUSED) from None
+            signed.write_local(path, {**raw, 'os_unlock': envelope})
+        except BaseException:
+            try:
+                on_disk = _raw(directory).get('os_unlock')
+            except Exception:
+                # If the committed file cannot be read, retain K rather than strand it.
+                on_disk = envelope
+            if on_disk != envelope:
+                backend.delete(current.public['key_id'])
+            raise
+        reset_cache()
+        reread = signed.Security(directory, os_unlock=True, backend=backend)
+        if reread.locked or reread.key.private_bytes_raw() != private_bytes:
+            raise OSUnlockError(DAMAGED) from None
+        return {'status': 'enabled', 'key_id': current.public['key_id'], 'backend': backend.name}
+
+
+def disable(directory, backend=None):
+    backend = backend if backend is not None else current_backend()
+    with _locked(directory):
+        current = signed.Security(directory)
+        raw = _raw(directory)
+        if 'os_unlock' in raw:
+            signed.write_local(current.directory / 'identity.json', {k: v for k, v in raw.items() if k != 'os_unlock'})
+            reset_cache()
+        if backend is None:
+            raise OSUnlockError(UNSUPPORTED) from None
+        failed = False
+        try:
+            backend.delete(current.public['key_id'])
+        except OSUnlockError:
+            failed = True
+        if failed:
+            raise OSUnlockError(NOT_REMOVED) from None
+        return {'status': 'disabled', 'key_id': current.public['key_id']}
+
+
+def status(directory, backend=None):
+    backend = backend if backend is not None else current_backend()
+    current = signed.Security(directory)
+    raw = _raw(directory)
+    report = {'key_id': current.public['key_id'], 'protected': 'protection' in raw,
+              'os_unlock': 'enabled' if 'os_unlock' in raw else 'absent',
+              'backend': raw['os_unlock']['backend'] if 'os_unlock' in raw else None,
+              'available': False, 'reason': None, 'stray_item': False}
+    if 'os_unlock' in raw:
+        try:
+            unlock(current.directory, current.public, raw['os_unlock'], backend, cache=False)
+            report['available'] = True
+        except OSUnlockError as exc:
+            report['reason'] = str(exc)
+    elif backend is not None:
+        try:
+            backend.load(current.public['key_id'])
+            report['stray_item'] = True
+        except OSUnlockError as exc:
+            report['reason'] = None if str(exc) == MISSING else str(exc)
+    return report

@@ -116,6 +116,11 @@ def layout(spec):
         gh = ys[r1] + row_h[r1] + GROUP_PAD - gy
         gboxes.append((g, gx, gy, gw, gh))
     width = max([xs[-1] + col_w[-1]] + [gx + gw for _, gx, _, gw, _ in gboxes]) + MARGIN
+    # Never clip the heading or caption: widen the canvas to fit them.
+    if spec.get('title'):
+        width = max(width, int(2 * MARGIN + text_width(spec['title'], 22) * 1.08 + 0.999))
+    if spec.get('caption'):
+        width = max(width, int(2 * MARGIN + text_width(spec['caption'], 14) + 0.999))
     bottom = max([ys[-1] + row_h[-1]] + [gy + gh for _, _, gy, _, gh in gboxes])
     height = bottom + (CAP_H if spec.get('caption') else 0) + MARGIN
     return boxes, gboxes, width, height, top

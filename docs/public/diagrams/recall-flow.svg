@@ -28,10 +28,10 @@
 <text class="nm" x="50" y="249" font-size="14.5">Claude · Codex · Hermes · OMP</text>
 <rect class="hl" x="391" y="140" width="218" height="132" rx="12" stroke-width="2.5"/>
 <text class="nt" x="413" y="179" font-size="17" font-weight="700">agentmesh.py recall</text>
-<text class="nb" x="413" y="205" font-size="14.5">&quot;QUERY&quot; --limit 12</text>
+<text class="nb" x="413" y="205" font-size="14.5">query with --limit 12</text>
 <text class="nb" x="413" y="227" font-size="14.5">--project optional</text>
 <rect class="nd" x="673" y="140" width="210" height="132" rx="12" stroke-width="1.5"/>
-<text class="nt" x="695" y="179" font-size="17" font-weight="700">mac.db</text>
+<text class="nt" x="695" y="179" font-size="17" font-weight="700">Local database</text>
 <text class="nb" x="695" y="205" font-size="14.5">opened read-only</text>
 <text class="nb" x="695" y="227" font-size="14.5">memories · summaries</text>
 <text class="nm" x="695" y="249" font-size="14.5">evidence IDs</text>

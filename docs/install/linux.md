@@ -1,5 +1,7 @@
 # Linux
 
+Install AgentMesh on Linux so this device can recall and exchange memory. Complete the [prerequisites](../getting-started/prerequisites) and obtain a private bootstrap first. You will have a local database and foreground worker to verify on your Linux host.
+
 ::: info
 This installs the AgentMesh memory-sync application, not Hermes or other agents.
 :::
@@ -18,6 +20,17 @@ sh setup_linux.sh "/absolute/path/to/exchange"
 
 An optional second argument selects the local installation directory. Keep it outside the exchange folder.
 
+## Use a different device identity
+
+The launcher's default identity must be unused in this group. If another device already uses it, choose a different [device identity](../getting-started/concepts#device-identity) with the cross-platform Python installer from the supplied setup directory:
+
+```sh
+python3 bootstrap_windows.py --exchange /absolute/path/to/exchange \
+  --local-dir /absolute/path/to/installation --node windows
+```
+
+The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+
 ## What gets installed
 
 | Item | Default path |
@@ -26,7 +39,7 @@ An optional second argument selects the local installation directory. Keep it ou
 | Local database | `${XDG_DATA_HOME:-$HOME/.local/share}/AgentMesh/data/linux.db` |
 | Runtime paths | `${XDG_DATA_HOME:-$HOME/.local/share}/AgentMesh/data/runtime.json` |
 
-The installer verifies the bootstrap and preserves an existing database with the matching node and sync group. Use the paths recorded in `data/runtime.json` if you chose another location.
+The installer verifies the bootstrap and preserves an existing database with the matching device identity and sync group. Use the paths recorded in `data/runtime.json` if you chose another location.
 
 ## The worker runs in the foreground
 
@@ -36,7 +49,7 @@ The terminal stays occupied until you press Ctrl-C. Stop this worker before enab
 
 ## Restart the worker later
 
-For a default installation:
+For the wrapper's default installation; if you selected a different identity or location, substitute the paths from `data/runtime.json`:
 
 ```sh
 LOCAL="${XDG_DATA_HOME:-$HOME/.local/share}/AgentMesh"
@@ -56,3 +69,5 @@ Linux-host verification remains outstanding. Wrapper tests on macOS do not valid
 [Run in the background](./background-service), [recall memory](../use/recall), or [check sync status](../use/status).
 
 See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) for details.
+
+Next, [check sync status](../use/status) on your Linux host.

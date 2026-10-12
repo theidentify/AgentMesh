@@ -1,10 +1,10 @@
 # Prerequisites
 
-Installing AgentMesh is the same five steps on every device. This page covers the first two; the install pages cover the rest.
+Prepare Python, Syncthing and a private exchange before installing AgentMesh. Read [Concepts](./concepts) first so you can choose a device identity without duplicating another writer. You will finish with the prerequisites needed for bootstrap installation or a new empty group.
 
 ![Five steps: prerequisites, pair devices, run the installer, foreground worker, optional background service. Unzipping the bootstrap by hand is not allowed.](/diagrams/install-flow.svg)
 
-The installer is highlighted because it is the only step that touches your data: it verifies checksums, creates the local database and starts the worker. That is also why you must not unzip the bootstrap yourself; doing so skips those checks.
+Follow **Prerequisites** by preparing Python and Syncthing, then **Pair devices** and accept the private exchange. **Run the installer**, highlighted, verifies the bootstrap and creates local state. The **Foreground worker** ingests and exchanges records while its window stays open. For **Background (optional)** operation, stop the foreground worker before configuring startup. Do not unzip the bootstrap by hand; let the installer perform its checks.
 
 ## Python
 
@@ -28,10 +28,10 @@ Install Syncthing separately, put `syncthing` on PATH, and keep it running. Keep
 
 ## Pair devices and accept the exchange folder
 
-Pair only trusted devices and accept the private exchange folder. It must contain the supplied setup files, bootstrap ZIP and checksum manifest. Wait until Syncthing reports **Up to Date** before installing. Do not unpack the bootstrap into the exchange yourself.
+Pair only trusted devices and accept the private exchange folder. For bootstrap installation, it must contain the supplied setup files, bootstrap ZIP and checksum manifest. A [new empty group](../install/new-group) needs an accepted exchange but no bootstrap. Wait until Syncthing reports **Up to Date** before installing. Do not unpack the bootstrap into the exchange yourself.
 
-## Choose a node name
+## Choose a device identity
 
-Use `mac`, `windows` or `linux`, with only one active device per identity in a sync group. The platform installers select the matching node. Do not copy another device's initialized database or local sync state.
+Choose an unused [device identity](./concepts#device-identity) in the group. Platform wrappers choose a default label, which may already belong to another device running the same OS. In that case use the Python installer with an explicit unused identity as described on each install page. Do not copy another device's initialized database or local sync state.
 
 Continue with [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows) installation. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) for prerequisite details.

@@ -1,5 +1,7 @@
 # Windows
 
+Install AgentMesh on Windows from a supplied private bootstrap. Complete the [prerequisites](../getting-started/prerequisites) first, including Python and the accepted exchange folder. You will have a local database and foreground sync loop to check on the Windows host.
+
 ::: info
 This installs the AgentMesh memory-sync application, not Hermes or other agents.
 :::
@@ -27,6 +29,16 @@ For installation followed by only one sync pass:
 ```bat
 py -3 bootstrap_windows.py --exchange . --once
 ```
+
+## Use a different device identity
+
+The launcher's default identity must be unused in this group. If another device already uses it, choose a different [device identity](../getting-started/concepts#device-identity) with the cross-platform Python installer from the supplied setup directory:
+
+```bat
+py -3 bootstrap_windows.py --exchange "C:\path\to\exchange" --local-dir "C:\path\to\installation" --node mac
+```
+
+The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
 
 ## What gets installed
 

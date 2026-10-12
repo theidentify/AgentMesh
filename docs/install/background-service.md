@@ -1,12 +1,14 @@
 # Run in the background
 
+Keep AgentMesh running without a foreground terminal by configuring startup for your platform. Complete [installation](../getting-started/quick-start) and stop the existing worker first. You will have a service or sign-in launcher whose worker health you can verify separately.
+
 ::: info
 These steps configure background operation for the AgentMesh memory-sync application. They do not install Hermes or other agents.
 :::
 
 ## Before you enable a service
 
-Stop the foreground worker with Ctrl-C first. Use the installed paths from `data/runtime.json`, and an absolute Python interpreter path available at login. The macOS and Linux commands below cover the basic setup and run from the supplied setup source directory.
+Stop the foreground worker with Ctrl-C first. Use the installed paths from `data/runtime.json`, and an absolute Python interpreter path available at login. The macOS and Linux commands below cover the basic setup and run from the supplied setup source directory. Their database filenames match the wrapper defaults; if you selected another device identity, use the database path from your runtime instead.
 
 The generator writes a private configuration file but does not register it. It refuses to overwrite an existing file. Inspect the generated file before running the registration commands; stop an old service before explicitly removing its configuration to regenerate it.
 
@@ -103,3 +105,5 @@ Actual Windows sign-in behavior remains a separate host-verification step. A sch
 :::
 
 For advanced configuration, including PostgreSQL mirroring, see the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md).
+
+Next, [check sync status](../use/status) to verify that the worker completes cycles.

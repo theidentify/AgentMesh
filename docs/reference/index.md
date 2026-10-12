@@ -1,6 +1,6 @@
 # Reference
 
-These links open the existing repository documents. This site covers end-user tasks; dedicated operator and developer guides are planned. The technical references below are already available and retain their own rollout and verification limits.
+Find the repository reference for details beyond the task-based user guide. Start with [What is AgentMesh](../introduction) if you have not chosen a setup path yet. You will be able to distinguish user instructions from operator procedures and developer material, each with its own verification limits.
 
 ## Users
 
@@ -30,3 +30,5 @@ These links open the existing repository documents. This site covers end-user ta
 | [SQLite consumers](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SQLITE-CONSUMERS.md) | Understand recall, exports and explicit backend selection. |
 | [Standalone builds](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/STANDALONE-BUILD.md) | Build native CLI bundles and review platform verification gates. |
 | [Profile-owned memory prototype](https://github.com/theidentify/AgentMesh/blob/main/profile-memory/README.md) | Explore the separate opt-in profile memory experiment. |
+
+Next, return to [Quick start](../getting-started/quick-start) for the end-user setup path.

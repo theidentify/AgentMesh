@@ -1,6 +1,6 @@
 # Check sync status
 
-Sync problems are quiet: files can arrive while records never import. This page shows how to tell what actually happened in the last worker cycle.
+Check local and peer status to distinguish file delivery from completed record imports. Start with a [configured worker](./worker) and its database and runtime paths. You will be able to identify pending changes, conflicts and worker diagnostics before investigating sync problems.
 
 ![One worker cycle: ingest new sessions, export local changes as packets, exchange through the shared folder, import peer packets, then write a status report. A row edited on two devices is quarantined rather than silently overwritten.](/diagrams/worker-cycle.svg)
 
@@ -11,7 +11,7 @@ Run these commands from the installed `app` directory.
 ## Local status
 
 ```sh
-python3 agentmesh.py --database /path/to/mac.db status
+python3 agentmesh.py --database /path/to/memory.db status
 ```
 
 The JSON result contains memory-table counts and local sync state, including unpublished outbox, received, pending, conflict and invalid counts. Status does not scan incoming exchange files; a worker cycle must import them first.
@@ -20,7 +20,7 @@ The JSON result contains memory-table counts and local sync state, including unp
 
 ## Peer status files
 
-Each completed worker cycle writes `status/<node>.json` in the private exchange, for `mac`, `windows` or `linux`. It reports platform, counts, sync health and an update timestamp. These are last-reported observations, not proof that a peer is currently running or fully synchronized.
+Each completed worker cycle writes `status/<node>.json` in the private exchange, using the database's device identity. It reports platform, counts, sync health and an update timestamp. These are last-reported observations, not proof that a peer is currently running or fully synchronized.
 
 Reports do not include memory record bodies or credential configuration, but they include sync identifiers, and publication error text can contain filesystem paths. Keep raw status files private and inspect them before sharing excerpts. [Insight](./insight) provides a restricted projection for its dashboard.
 

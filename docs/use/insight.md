@@ -1,6 +1,6 @@
 # Insight dashboard
 
-Insight is a local, read-only workspace for inspecting memory and operations. It does not run ingestion, summarization or sync jobs.
+Use Insight to browse local memory and recorded operations without changing them. First [check your installation paths](./worker#inspect-the-installation-first) and have a repository checkout available to run the dashboard. You will open a local read-only workspace for memory, ingestion and sync observations.
 
 | View | What to inspect |
 | --- | --- |

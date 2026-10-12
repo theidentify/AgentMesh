@@ -1,6 +1,6 @@
 # Privacy
 
-Keep private runtime data outside Git and public support posts. Share exchange artifacts only with the trusted devices that belong to your private sync group.
+Keep private memory and runtime data out of Git and public support posts. Review [Concepts](./getting-started/concepts) first to distinguish local state from private exchange artifacts. You will know what to protect and what to inspect before sharing diagnostic excerpts.
 
 ## Keep private material out of Git
 
@@ -29,3 +29,5 @@ Peer status reports contain operational metadata rather than memory record bodie
 Insight can display memory excerpts. Its redaction is best effort, so keep screenshots, exported excerpts and runtime logs private too.
 
 See the [repository privacy boundary](https://github.com/theidentify/AgentMesh/blob/main/README.md#privacy), [Windows setup boundaries](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#important-boundaries), and [Insight privacy details](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#read-only-and-privacy-boundary).
+
+Next, use [Reference](./reference/index) for deeper trust and recovery procedures.

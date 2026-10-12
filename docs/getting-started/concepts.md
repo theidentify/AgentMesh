@@ -1,20 +1,22 @@
 # Concepts
 
+Understand how AgentMesh keeps memory local while sharing record changes between devices. Begin with [What is AgentMesh](../introduction) for the scope of the application; no installation is needed yet. You will be ready to choose distinct device identities and prepare a private exchange.
+
 ## How AgentMesh works
 
-AgentMesh never moves a database between machines. Each device keeps its own memory and shares only small record changes, so the picture below is the whole system.
+AgentMesh exchanges record changes instead of live database files. Each device keeps its own memory and shares only small record changes, so the picture below is the whole system.
 
-![Your agents feed a local sync worker that keeps mac.db and exchanges change packets with other devices through a private Syncthing folder; syncing database files directly is forbidden.](/diagrams/architecture.svg)
+![Your agents feed a local sync worker that keeps a local database and exchanges change packets with other devices through a private Syncthing folder; syncing database files directly is forbidden.](/diagrams/architecture.svg)
 
-Follow the arrows from left to right. **Your agents** (Claude, Codex, Hermes, OMP) write session transcripts as they work. The **sync worker** picks up new sessions, stores them in the local database, **mac.db** on a Mac, and every 60 seconds exports local changes and imports changes from peers. The **exchange folder** is the only thing the devices share: a private Syncthing folder of change packets and status reports. **Other devices** run the same worker against their own `windows.db` or `linux.db`.
+Follow the arrows from left to right. **Your agents** (Claude, Codex, Hermes, OMP) write session transcripts as they work. The **sync worker** picks up new sessions, stores them in the local database, **Local database**, and every 60 seconds exports local changes and imports changes from peers. The **exchange folder** is the only thing the devices share: a private Syncthing folder of change packets and status reports. **Other devices** run the same worker against their own local databases.
 
 The exchange folder is highlighted because everything depends on it, and it is also the reason both devices must be online at the same time. The red box is the shortcut people try first: putting the database file itself in Syncthing. Never do that; live SQLite files and their WAL/SHM companions corrupt when copied mid-write.
 
 The rest of this page defines each piece in more detail.
 
-## Node
+## Device identity
 
-A node is one logical writer: `mac`, `windows` or `linux`. Each identity can belong to only one active device in a sync group. Never reuse an identity on another active device or clone initialized local state.
+A device identity combines the sync group UUID with one of three allocation slots: `mac`, `windows` or `linux`. These are labels, not operating systems: a group supports at most three devices, each with a different identity. Two Macs, or a Linux source and a Mac destination, can share memory when they use different identities. Platform wrappers select a matching label by default; the Python installer and empty-group setup can select any slot on any OS. Never reuse an identity on another active device or clone initialized local state.
 
 ## Exchange folder
 

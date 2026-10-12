@@ -63,3 +63,8 @@ def test_every_local_module_imported_by_packaged_sources_is_packaged():
             seen.add(name)
             pending.extend(imports(root / name))
     assert sorted(seen - packaged) == []
+
+
+def test_gate2_reader_modules_are_packaged():
+    import build_package
+    assert {'resolution_protocol.py', 'resolution_store.py', 'packet_versions.py'} <= set(build_package.FILES)

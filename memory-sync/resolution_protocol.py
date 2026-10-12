@@ -1,8 +1,8 @@
-"""Inert resolution contract: no live caller, I/O, signatures, SQL, or emission.
+"""Pure resolution contract: no I/O, signatures, SQL, or emission.
 
 Inputs to validate_resolution must already have authenticated envelope bindings
 and verified origins. This module proves semantic coverage, not authorization.
-Wire adapters and transactional application belong to later implementation gates.
+Gate-2 wire readers supply bindings; transactional application remains gated off.
 """
 from __future__ import annotations
 

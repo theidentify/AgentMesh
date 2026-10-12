@@ -220,8 +220,10 @@ def test_existing_runtime_remains_unchanged(api, tmp_path):
     with pytest.raises(ValueError): signed_packets.validate_envelope(signed, uid(1), 'mac')
     for source in Path(__file__).parent.glob('*.py'):
         if source.name == 'resolution_protocol.py' or source.name.startswith('test_'): continue
-        assert 'import resolution_protocol' not in source.read_text(), source
-        assert 'from resolution_protocol' not in source.read_text(), source
+        # Gate 2 permits reader imports, but application remains a later gate.
+        assert 'import resolution_apply' not in source.read_text(), source
+        assert 'from resolution_apply' not in source.read_text(), source
+    assert not (Path(__file__).parent / 'resolution_apply.py').exists()
 
 
 def test_missing_current_baseline_is_refused_not_pending(api):

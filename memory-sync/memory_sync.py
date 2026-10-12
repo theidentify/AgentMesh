@@ -168,6 +168,9 @@ def publish(db, exchange, *, security=None):
             directory = no_symlinks(directory)
         directory.mkdir(parents=True, exist_ok=True)
         for ident, text in packets:
+            from signed_packets import FORMAT as signed_format
+            if load_packet(text).get('format') not in (FORMAT, signed_format):
+                raise ValueError('new packet emission disabled')
             target = directory/(ident+'.json')
             if security is not None:
                 from signed_packets import no_symlinks
@@ -271,10 +274,8 @@ def _seen(c,p):
     return False
 
 def _receipt_checksum(p):
-    if p['format'] != FORMAT:
-        from signed_packets import receipt_digest
-        return receipt_digest(p)
-    return p['checksum']
+    from packet_versions import receipt_identity
+    return receipt_identity(p)
 
 def _received_signed(c, p, security, folder):
     """Return cached/verified for a committed receipt, else None for new input."""
@@ -351,7 +352,8 @@ def _apply(c,p):
         c.execute('INSERT INTO _sync_history VALUES(?,?,?)',(ch['revision'],t,k))
     c.execute('UPDATE _sync_config SET importing=0')
     c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],_receipt_checksum(p)))
-    if p['format'] != FORMAT:
+    from signed_packets import FORMAT as signed_format
+    if p['format'] == signed_format:
         from signed_packets import envelope_digest
         c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
     return True
@@ -390,6 +392,17 @@ def receive(db, exchange, *, security=None):
                 with connect(db) as c, c:
                     c.execute('BEGIN IMMEDIATE')
                     _security_policy(c, security, exchange)
+                    from packet_versions import is_new, decode_packet, _has_committed_envelope
+                    if is_new(p):
+                        cached_signature = security is not None and _has_committed_envelope(c, p.get('uuid'))
+                        decode_packet(c, p, security=security, folder=path.parent.name, filename=path.name)
+                        # Commit evidence and its pending diagnostic together. Raising
+                        # Pending here would roll back the authenticated evidence.
+                        c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',
+                                  (str(path), 'pending', 'resolution_apply_not_enabled'))
+                        verified_signature = True if security is not None and not cached_signature else None
+                        pending.append(path)
+                        continue
                     if security is not None:
                         from signed_packets import validate_envelope
                         validate_envelope(p, config(c)['group_id'], path.parent.name)

@@ -461,3 +461,14 @@ def test_managed_worker_continues_with_retained_revoked_packet(secure_peers, tmp
     assert worker.run(runtime, interval=0.001) == 0
     assert worker.status(runtime)['state'] == 'stopped'
     assert sync.status(db)['invalid'] == 0
+
+
+def test_gate2_signed_capture_remains_v2(secure_peers):
+    import resolution_store
+    a, b, ex, sa, sb = secure_peers
+    with sync.connect(a) as c, c:
+        resolution_store.migrate(c)
+    path, p = packet(secure_peers)
+    assert p['format'] == 'agentmesh-signed-changes-v2'
+    assert set(p) == signed.FIELDS
+    assert sync.receive(b, ex, security=sb)['applied'] == 1

@@ -134,3 +134,7 @@ def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
     assert text.count('windows-autostart') == 1 and '--dry-run' not in text and '--enable --legacy-drained' in text
     assert 'choice /m' in text and 'Do not close this window' in text
     assert 'programs\\' not in text  # no version-pinned installed path
+
+
+def test_gate2_readers_are_hidden_imports():
+    assert {'resolution_protocol', 'resolution_store', 'packet_versions'} <= set(standalone_build.HIDDEN_MODULES)

@@ -253,21 +253,32 @@ class Security:
     """Local identity. A passphrase-protected key stays locked unless `unlock`
     (an interactive passphrase source) is given: public checks and verification
     still work, but signing refuses. Nothing ever falls back to plaintext."""
-    def __init__(self, directory, unlock=None):
+    def __init__(self, directory, unlock=None, *, os_unlock=False, backend=None):
         Private, _, _ = crypto()
         self.directory = private_directory(directory)
         read_trust(self.directory)  # Reject unsafe trust storage before loading any key material.
         raw = parse(read_local(self.directory / 'identity.json', private=True))
-        if type(raw) is not dict or set(raw) not in (PUBLIC_FIELDS | {'private_key'}, PUBLIC_FIELDS | {'protection'}):
+        if type(raw) is not dict or set(raw) not in (PUBLIC_FIELDS | {'private_key'}, PUBLIC_FIELDS | {'protection'},
+                                                   PUBLIC_FIELDS | {'protection', 'os_unlock'}):
             raise ValueError('invalid private identity')
         self.public = check_public({k: raw[k] for k in PUBLIC_FIELDS})
-        self.key, self.locked = None, 'protection' in raw
+        self.key, self.locked, self.lock_reason = None, 'protection' in raw, None
         if self.locked:
             import key_protection
             key_protection.check(raw['protection'])
-            if unlock is not None:
+            secret = None
+            if 'os_unlock' in raw:
+                import os_unlock as osu
+                osu.check(raw['os_unlock'])
+                if os_unlock:
+                    try:
+                        secret = osu.unlock(self.directory, self.public, raw['os_unlock'], backend)
+                    except osu.OSUnlockError as exc:
+                        self.lock_reason = str(exc)
+            if secret is None and unlock is not None:
                 secret = key_protection.open_sealed(self.public, raw['protection'], unlock())
-                self.key, self.locked = Private.from_private_bytes(secret), False
+            if secret is not None:
+                self.key, self.locked, self.lock_reason = Private.from_private_bytes(secret), False, None
         else:
             self.key = Private.from_private_bytes(hex_bytes(raw['private_key'], 32))
         if self.key is not None and self.key.public_key().public_bytes_raw().hex() != self.public['public_key']:
@@ -277,7 +288,7 @@ class Security:
     def require_unlocked(self):
         if self.locked:
             import key_protection
-            raise ValueError(key_protection.LOCKED)
+            raise ValueError(self.lock_reason or key_protection.LOCKED) from None
         return self
 
     def sign_bytes(self, data):

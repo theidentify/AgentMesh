@@ -207,6 +207,9 @@ def main():
         raw_before = {p.name: p.read_bytes() for p in raw_identity.iterdir()}
         assert not run('identity-protect', '--security-dir', raw_identity, inputs='disposable passphrase\n' * 2, expected=1)
         assert {p.name: p.read_bytes() for p in raw_identity.iterdir()} == raw_before
+        assert 'identity-os-unlock' in run('--help')
+        assert 'status' in run('identity-os-unlock', '--help')
+        # Native status/worker coverage lives in smoke_os_unlock, bound to a disposable store.
         locked_identity = root / 'locked-identity'
         signed_packets.init_identity(locked_identity, public['group'], 'mac')
         key_protection.protect_identity(locked_identity, lambda prompt: 'disposable passphrase', n=2 ** 14)

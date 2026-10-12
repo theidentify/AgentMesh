@@ -458,7 +458,7 @@ def main(argv=None):
         security = None
         if getattr(args, 'security_dir', None):
             from signed_packets import Security
-            security = Security(args.security_dir).require_unlocked()
+            security = Security(args.security_dir, os_unlock=True).require_unlocked()
         if args.command=='init': report=initialize(args.db,args.node,args.group)
         elif args.command=='status': report=status(args.db)
         elif args.command=='once': report=cycle(args.db,args.exchange,security=security)

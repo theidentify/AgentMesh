@@ -3,9 +3,8 @@
 Threat model (see KEY-PROTECTION.md): protects the Ed25519 device key at rest
 against copies of the identity directory (backups, disk images, synced or
 stolen files). It does not protect against code already running as the same
-user while the key is unlocked, nor against a weak passphrase. Unattended
-unlock (OS keychain / DPAPI) is issue #7; until then a protected key can only
-be unlocked through an interactive console and the worker refuses it.
+user while the key is unlocked, nor against a weak passphrase. Optional OS-protected unattended unlock is provided by os_unlock; the
+passphrase envelope remains the portable interactive path.
 
 Format: identity.json keeps the public fields unchanged (same key_id,
 sender, group, node) and replaces `private_key` with `protection`:
@@ -21,8 +20,7 @@ SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 17, 8, 1  # ~128 MiB, about half a second to
 MIN_N, MAX_N = 2 ** 14, 2 ** 20
 MIN_PASSPHRASE = 12
 FIELDS = {'format', 'kdf', 'n', 'r', 'p', 'salt', 'cipher', 'nonce', 'ciphertext'}
-LOCKED = ('passphrase-protected identity is locked; unattended unlock is not available yet '
-          '(requires OS-protected key access)')
+LOCKED = 'passphrase-protected identity is locked; enable OS unlock or unlock interactively'
 
 
 def _primitives():

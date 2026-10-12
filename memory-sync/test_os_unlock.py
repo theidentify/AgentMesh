@@ -425,3 +425,58 @@ def test_wizard_resume_prefers_os_then_falls_back(tmp_path, monkeypatch):
     backend.fail['load'] = ou.REFUSED
     security_wizard.resume(db, exchange, directory, state, unlock=ask)
     assert asked == [True]
+
+
+def test_os_unlock_across_process_restarts(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    import sys
+    module = tmp_path / 'fakestore.py'
+    module.write_text('''import json
+from pathlib import Path
+import os_unlock as ou
+class Backend:
+    name = 'macos-keychain-file'
+    def __init__(self, path): self.path = Path(path)
+    def items(self): return json.loads(self.path.read_text()) if self.path.exists() else {}
+    def store(self, key_id, secret):
+        items = self.items(); items[key_id] = secret.hex()
+        self.path.write_text(json.dumps(items)); self.path.chmod(0o600)
+    def load(self, key_id):
+        value = self.items().get(key_id)
+        if value is None: raise ou.OSUnlockError(ou.MISSING) from None
+        return bytes.fromhex(value)
+    def delete(self, key_id):
+        items = self.items(); items.pop(key_id, None)
+        self.path.write_text(json.dumps(items))
+''')
+    spec = importlib.util.spec_from_file_location('fakestore', module)
+    fake = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fake)
+    store = tmp_path / 'store.json'
+    backend = fake.Backend(store)
+    directory, public = protected(tmp_path)
+    ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    script = '''import sys
+import fakestore, os_unlock, signed_packets
+os_unlock.current_backend = lambda: fakestore.Backend(sys.argv[2])
+try:
+    signed_packets.Security(sys.argv[1], os_unlock=True).sign_bytes(b'probe')
+except ValueError as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+print('signed')
+'''
+    env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(Path(__file__).parent), str(tmp_path)])}
+    def child():
+        return subprocess.run([sys.executable, '-c', script, str(directory), str(store)],
+                              env=env, capture_output=True, text=True, timeout=30)
+    result = child()
+    assert result.returncode == 0 and result.stdout.strip() == 'signed'
+    ou.disable(directory, backend=backend)
+    result = child()
+    assert result.returncode == 1 and kp.LOCKED in result.stderr
+    ou.enable(directory, ask=lambda prompt: PASS, backend=backend)
+    backend.delete(public['key_id'])
+    result = child()
+    assert result.returncode == 1 and ou.MISSING in result.stderr

@@ -32,3 +32,32 @@ def test_build_package_preserves_snapshot_and_publishes_only_allowlisted_sources
         manifest = json.loads(package.read('bootstrap-manifest.json'))
         assert manifest['table_counts'] == dict.fromkeys(tables, 0)
     assert json.loads((exchange / 'agentmesh-package.json').read_text()) == result
+
+
+def test_every_local_module_imported_by_packaged_sources_is_packaged():
+    import ast
+    root = Path(__file__).parent
+    spec = importlib.util.spec_from_file_location('package_builder', root / 'build_package.py')
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    packaged = {name for name in builder.FILES if name.endswith('.py')}
+
+    def imports(path):
+        names = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.split('.')[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and not node.level:
+                names.add(node.module.split('.')[0])
+            elif (isinstance(node, ast.Call) and getattr(node.func, 'id', None) == '__import__'
+                    and node.args and isinstance(node.args[0], ast.Constant)):
+                names.add(node.args[0].value.split('.')[0])
+        return {name + '.py' for name in names if (root / (name + '.py')).is_file()}
+
+    pending, seen = list(packaged), set()
+    while pending:
+        name = pending.pop()
+        if name not in seen:
+            seen.add(name)
+            pending.extend(imports(root / name))
+    assert sorted(seen - packaged) == []

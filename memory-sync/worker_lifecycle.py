@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from install_adopt import absolute, load
+from install_adopt import absolute, load, security_paths
 from runtime_lock import lock
 from signed_packets import parse, private_directory, read_local, windows_private, write_local
 
@@ -133,6 +133,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     runtime = absolute(runtime)
     runtime_bytes = read_local(runtime, private=True)
     config, scope = load(runtime)
+    # Bootstrap runtimes omit security paths; use the wizard's defaults.
+    security_dir, security_state = security_paths(config, runtime)
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly; acknowledge unsigned policy')
     directory = control(config, create=True)
@@ -181,8 +183,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                     raise ValueError('database scope or signing key changed')
                 report = sync_worker.run_once(config['database'], config['exchange'],
                     workflow_config=config.get('workflow_config'), force_summary=False,
-                    security_dir=config.get('security_dir') if scope['policy'] == 'required' else None,
-                    security_state=config.get('security_state'), preflight=preflight)
+                    security_dir=security_dir if scope['policy'] == 'required' else None,
+                    security_state=security_state, preflight=preflight)
                 result = int(sync_worker.failed(report))
                 record['cycles'] += 1
                 record['last_error'] = 'CycleFailed' if result else None

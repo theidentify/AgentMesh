@@ -341,3 +341,20 @@ def test_stop_request_is_consumed_and_a_stale_one_is_cleared_at_start(tmp_path, 
     write_local(directory / 'stop.json', {'nonce': str(uuid.uuid4())})  # left by an older instance
     assert worker.run(args['runtime'], legacy_drained=True, once=True) == 0
     assert not (directory / 'stop.json').exists()
+
+
+def test_bootstrap_runtime_without_security_paths_runs_after_signing_activation(tmp_path, monkeypatch):
+    # Bootstrap runtimes never record security paths; the wizard uses the
+    # default identity beside data/, so the managed worker must find it too.
+    import memory_sync
+    import worker_lifecycle
+    from signed_packets import Security, init_identity, write_local
+    args = existing(tmp_path)
+    init_identity(args['security_dir'], '00000000-0000-4000-8000-000000000001', 'mac')
+    with memory_sync.connect(args['database']) as c, c:
+        Security(args['security_dir']).guard(c, args['exchange'])
+    write_local(args['runtime'], {'database': str(args['database']), 'exchange': str(args['exchange']),
+                                  'node': 'mac', 'app': str(args['app_root'] / 'app')})
+    assert worker_lifecycle.run(args['runtime'], once=True) == 0
+    report = json.loads((args['exchange'] / 'status/mac.json').read_text())
+    assert report['security']['policy'] == 'required'

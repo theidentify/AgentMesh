@@ -21,7 +21,10 @@ FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest
          'runtime_lock.py', 'ota_update.py', 'OTA-UPDATES.md',
          'schema.sql', 'bootstrap_windows.py', 'platform_service.py',
          'START-WINDOWS.cmd', 'README-WINDOWS.md', 'README-SETUP.md',
-         'setup_macos.sh', 'setup_linux.sh', 'SYNC.md']
+         'setup_macos.sh', 'setup_linux.sh', 'SYNC.md', 'build_package.py',
+         'cli_errors.py', 'worker_error_details.py', 'console_prompt.py', 'install_adopt.py',
+         'install_inspect.py', 'install_setup.py', 'mac_replace.py', 'windows_install.py',
+         'windows_task.py', 'worker_diagnostics.py', 'worker_lifecycle.py']
 TABLES = ['source_sessions', 'observation_events', 'ingestion_cursors',
           'ingestion_errors', 'memory_items', 'memory_sources',
           'memory_summaries', 'summary_state']

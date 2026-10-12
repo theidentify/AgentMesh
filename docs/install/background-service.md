@@ -12,6 +12,12 @@ Stop the foreground worker with Ctrl-C first. Use the installed paths from `data
 
 The generator writes a private configuration file but does not register it. It refuses to overwrite an existing file. Inspect the interpreter, script, database, exchange, interval and log paths in the generated file, and ensure they match this installation before running the registration commands; stop an old service before explicitly removing its configuration to regenerate it.
 
+## Unlock a protected key before unattended startup
+
+For signed sync with a passphrase-protected device key, [enable and verify OS unlock](./security#enable-unattended-os-unlock) under the account that runs the configured managed worker before enabling login startup. A service does not inherit an unlock from `wizard-resume`, and workers never ask for a passphrase. Without a working OS-unlock path they refuse before sync writes; there is no plaintext or unsigned fallback.
+
+The supported backends are the logged-in macOS user’s login keychain and Windows Credential Manager for the task’s user. Linux has no OS-unlock backend. These are user-session mechanisms, not a guarantee of operation before login or after logout. OS-store access is attempted at most once per identity per worker process, including a refusal: fix account/store access and restart the worker. Disabling OS unlock does not clear keys already held by running processes; stop workers before changing policy. The macOS/Linux generated service examples below remain **unsigned** examples and do not configure signing or unlock.
+
 ## macOS LaunchAgent
 
 Generate and validate the configuration:

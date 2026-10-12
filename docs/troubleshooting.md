@@ -90,6 +90,37 @@ For the default bootstrap installation, reopen **START-WINDOWS.cmd** after confi
 
 Copying initialized local state duplicates the device identity. Stop the duplicate worker and preserve both databases; do not overwrite either during recovery. Review [device identity](./getting-started/concepts#device-identity) before proceeding. Eligible unsigned `setup-new` groups now use [origin-issued invitations](./install/new-group#adding-another-device); copying a database or creating a fresh baseline is not that procedure.
 
+## Protected key or OS unlock refuses
+
+First stop the affected worker, confirm its runtime selects the intended security directory, and inspect [OS-unlock status](./install/security#enable-unattended-os-unlock) as the worker’s account. Status reads the store but does not change it; exit `0` alone is not success when `available: false` or a `reason` is present. Public identity/status checks may work while signing remains locked. Some cycle reports expose only an error class; use the managed worker’s error details and the key commands’ fixed reasons below.
+
+| Refusal or status | What to do |
+| --- | --- |
+| `passphrase-protected identity is locked; enable OS unlock or unlock interactively` | For unattended signed operation, explicitly enable OS unlock after protecting the identity, then start a new worker process. `wizard-resume` can unlock interactively for that run; it does not unlock a later worker. Do not remove protection or fall back to unsigned policy. |
+| `protected identity could not be unlocked: wrong passphrase or damaged file` | Verify the intended identity and passphrase; wrong input and authenticated-file damage deliberately have the same error. Preserve the file and any trusted backup. Retry the interactive operation with the correct passphrase; if it still fails, request operator review. A lost passphrase has no recovery; replacement requires coordinated pairing, not automatic key generation. |
+| `passphrase entry requires an interactive console` | Run `identity-protect`, OS-unlock enable or the interactive wizard from a real console. Passphrases are not accepted through arguments, environment variables, files or pipes. |
+| `passphrase must be at least 12 characters` / `passphrases do not match; nothing was changed` | Retry protection with a long unique passphrase entered identically twice. |
+| `identity must be passphrase-protected before enabling OS unlock` | Stop workers and run `identity-protect` on the existing identity first. |
+| `OS unlock is already enabled` | Inspect status. To replace the persisted unlock path, stop workers, disable it and explicitly enable it again with the passphrase. |
+| `OS unlock item is not available for this account` | Confirm the worker uses the intended OS account and store. A copied identity directory does not carry the account’s wrapping key. Use the interactive passphrase path if needed; then disable/re-enable OS unlock under the intended worker account and restart. |
+| `OS key store refused access` / `OS key store did not respond` | Restore the logged-in account’s store access; on macOS resolve a locked or password-out-of-sync login keychain or system dialog. Restart after correction. A timeout does not guarantee the system dialog closed. |
+| `OS unlock could not open the identity: wrong key or damaged file` | Preserve the identity and inspect a trusted backup with the operator. Use the passphrase path and explicitly recreate OS unlock if appropriate; do not edit envelope fields or overwrite the identity with a new key. |
+| `OS unlock is not supported on this platform` | Use the matching supported OS/account. Linux has no backend. An interactive wizard unlock is available with the passphrase, but is not an unattended worker solution. |
+| `OS unlock item could not be removed` / `stray_item: true` | Disable removed the envelope but an OS item may remain, or status found an item without an envelope. Restore store access, run disable again and inspect status. Stop existing workers: they may still hold the key in memory. |
+| `OS unlock is already in progress` | Wait for the other enable/disable operation to finish, then retry. Do not bypass its lock. |
+
+The disposable identity test reproduced locked-signing and wrong-passphrase refusals. With the repository’s in-memory store helper, two worker cycles made one store read; a missing-item refusal stayed cached after the helper’s store was repaired. A fresh process is required after a real refusal. Do not expect repeated cycles or a successful status command in another process to clear that cache.
+
+After a failed OS-item deletion, status can show this excerpt:
+
+Output (example from code)
+
+```json
+{"protected":true,"os_unlock":"absent","backend":null,"available":false,"reason":null,"stray_item":true}
+```
+
+`stray_item: true` is not successful cleanup. Retry the [disable/status commands](./install/security#disable-os-unlock-and-check-cleanup) after fixing store access. Require no store error and `stray_item: false` for the current key ID. Status does not enumerate or clean up items for old/rotated key IDs. A leftover wrapping key plus an older identity backup containing its envelope can still unlock that identity. Keep backups private and follow the [key-protection limits](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md#threats-and-portability); never share passphrases, identity files or OS-store contents with a help request.
+
 ## Invitation join is refused or incomplete
 
 Use the [invitation procedure](./install/new-group#adding-another-device) from the same source revision on both devices. For guard failures, the CLI exits `1` and prints JSON on stderr with `reason`, `code`, `stage` and `next_action`. A replay can instead return `status: pending` (exit `2`) or `blocked` (exit `1`) on stdout. Preserve the origin database, reservations, original transfer files and the recipient’s private prepared state before investigating.

@@ -122,6 +122,14 @@ Output (run on macOS)
 
 `"state": "stopped"`, exit `0`. Stop requests cooperation and waits for the worker to release its lifetime lock; it never kills a PID read from metadata. Missing metadata also returns stopped, so use the original terminal or service controls for unmanaged execution.
 
+## Run with a protected signing key
+
+A signed worker using a passphrase-protected identity needs [OS unlock enabled](../install/security#enable-unattended-os-unlock) for its own account. This applies to managed foreground/detached execution, login-started workers and signed `once`/`watch` paths. They do not prompt for a passphrase and refuse a locked identity before ingestion or sync writes, with no plaintext or unsigned fallback. Public identity checks and verification can still work while signing is locked; a successful status query is not proof that the key can sign.
+
+`wizard-resume` tries OS unlock first, then uses an interactive passphrase if needed, asked at most once per run. Its unlocked key is not shared with the next worker process. Each worker process reads the OS store at most once per identity and caches either success or refusal. After fixing a refused store/account, start a **new process**; waiting for more cycles in the same process does not retry that store read. A foreground loop may continue reporting errors, which is not successful operation.
+
+Stop workers before protecting the key or enabling/disabling OS unlock. Disabling removes the persisted unlock path but does not erase keys already in process memory. After restart, a protected signed worker without OS unlock refuses; Linux has no supported OS-unlock backend. Follow [locked-key troubleshooting](../troubleshooting#protected-key-or-os-unlock-refuses), without removing protection, changing policy or generating replacement keys as a retry shortcut.
+
 ## Respond to failures and timeouts
 
 | Result | Meaning and next action |

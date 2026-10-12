@@ -140,11 +140,27 @@ WINDOWS_REASONS = frozenset({
     'worker changed while draining',
     'worker must be proven stopped; stale or running refused',
 })
+KEY_REASONS = frozenset({
+    'identity is already passphrase-protected',
+    'passphrase must be at least 12 characters',
+    'passphrases do not match; nothing was changed',
+    'passphrase entry requires an interactive console',
+    'protected identity verification failed; nothing was changed',
+    'protected identity readback failed',
+    'protected identity could not be unlocked: wrong passphrase or damaged file',
+    'invalid protected identity parameters',
+    'passphrase-protected identity is locked; enable OS unlock or unlock interactively',
+    'invalid private identity',
+    'local signing key is not authorized',
+    'security directory must be owner-only (chmod 700)',
+})
+from os_unlock import REASONS as OS_UNLOCK_REASONS
+KEY_REASONS = KEY_REASONS | OS_UNLOCK_REASONS | {'invalid OS unlock envelope'}
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'protocol_activation', 'conflict_commands', 'resolution_apply','install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task', 'install_join'})
+                           'windows_install', 'windows_task', 'key_protection', 'os_unlock', 'install_join'})
 
 
 def report(exc, action):
@@ -154,11 +170,13 @@ def report(exc, action):
                     next_action='Choose a new dedicated Syncthing exchange folder; retain the existing group files.')
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
     is_protocol = action in ('conflicts','resolve','receive-only','activate-protocol','protocol-capability')
+    is_key = action in ('identity-protect', 'identity-os-unlock')
     is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
-    if not is_windows and not is_join and not is_protocol and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    if not is_windows and not is_key and not is_join and not is_protocol and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
-    known = message in SAFE_REASONS or message in PROTOCOL_REASONS or (is_windows and message in WINDOWS_REASONS)
+    known = (message in SAFE_REASONS or message in PROTOCOL_REASONS or message in KEY_REASONS
+             or (is_windows and message in WINDOWS_REASONS))
     if is_join:
         from install_join import REASONS
         known = known or message in REASONS

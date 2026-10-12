@@ -1,0 +1,127 @@
+{
+  "title": "Join with an origin-issued invitation, not a copied database",
+  "groups": [
+    {
+      "label": "Device B · joining device",
+      "cols": [
+        0,
+        0
+      ],
+      "rows": [
+        0,
+        2
+      ]
+    },
+    {
+      "label": "Device A · origin only",
+      "cols": [
+        2,
+        2
+      ],
+      "rows": [
+        0,
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "prepare",
+      "col": 0,
+      "row": 0,
+      "title": "1 · B: prepare-join",
+      "lines": [
+        "Type REQUEST",
+        "Keep private prepared state"
+      ]
+    },
+    {
+      "id": "request",
+      "col": 1,
+      "row": 0,
+      "kind": "external",
+      "title": "Request file",
+      "lines": [
+        "Trusted channel → A",
+        "Outside the exchange"
+      ]
+    },
+    {
+      "id": "invite",
+      "col": 2,
+      "row": 0,
+      "title": "2 · A: invite-peer",
+      "lines": [
+        "Type INVITE",
+        "Permanently reserve identity"
+      ]
+    },
+    {
+      "id": "invitation",
+      "col": 1,
+      "row": 1,
+      "kind": "external",
+      "title": "Invitation file",
+      "lines": [
+        "Trusted channel → B",
+        "Unsigned · one-time · expires"
+      ]
+    },
+    {
+      "id": "join",
+      "col": 0,
+      "row": 1,
+      "kind": "highlight",
+      "title": "3 · B: setup-join",
+      "lines": [
+        "Type JOIN",
+        "Replay full exchange history"
+      ],
+      "muted": "Incomplete? --resume / RESUME"
+    },
+    {
+      "id": "verify",
+      "col": 0,
+      "row": 2,
+      "title": "4 · Start and verify",
+      "lines": [
+        "Start worker · check status",
+        "Recall an A-only record on B"
+      ]
+    },
+    {
+      "id": "copy",
+      "col": 2,
+      "row": 1,
+      "kind": "rejected",
+      "title": "Copy the origin database",
+      "lines": [
+        "Duplicates device identity",
+        "Never clone prepared state"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "prepare",
+      "to": "request"
+    },
+    {
+      "from": "request",
+      "to": "invite"
+    },
+    {
+      "from": "invite",
+      "to": "invitation",
+      "route": "v"
+    },
+    {
+      "from": "invitation",
+      "to": "join"
+    },
+    {
+      "from": "join",
+      "to": "verify"
+    }
+  ]
+}

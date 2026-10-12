@@ -189,3 +189,17 @@ therefore cannot add a second device today. Decision (option A′):
 - A separate feature (implemented by Codex, reviewed by Claude) adds a supported way
   to export a SQLite database to a bootstrap snapshot that preserves baseline
   revisions. When it lands, the guide gains the full "second device" procedure.
+
+## Expected output and prerequisites depth (added 2026-10-12)
+
+- **Every command block is followed by what the reader should see.** Outputs are
+  captured by actually running the command against disposable temp directories on
+  macOS, then redacted (UUIDs, paths, timestamps → placeholders). Commands that cannot
+  run here (Windows, systemd) show output derived from code, labelled as an example.
+  Each output says how to tell success from failure.
+- **Prerequisites** covers, per OS with links to official installers: installing
+  Python (3.10+ for bootstrap, 3.11+ for `setup-new`) with expected check output;
+  installing Syncthing; opening its GUI; adding a device; sharing and accepting the
+  exchange folder; recognising **Up to Date**.
+- **Quick start** contains its own short checklist with the check commands, and ends
+  with an A → B test proving a record written on one device is recalled on another.

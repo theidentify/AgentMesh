@@ -24,7 +24,9 @@ The counters identify the problem class, not the affected records. To inspect lo
 python3 -c "import sqlite3,sys; from pathlib import Path; c=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True); print(c.execute('SELECT path, kind, message FROM _sync_diagnostics ORDER BY path').fetchall()); c.close()" "/path/to/memory.db"
 ```
 
-This query was run against a disposable invalid-packet fixture and returned its private packet path, `invalid` and diagnostic message, exit `0`. An empty result is `[]`; a traceback/nonzero exit means inspection failed. **Keep this output private:** paths and messages may reveal deployment or memory details. Signed-packet messages are deliberately less detailed.
+Output (run on macOS)
+
+The invalid-packet fixture returned its private packet path, `invalid` and diagnostic message, exit `0`. An empty result is `[]`; a traceback/nonzero exit means inspection failed. **Keep this output private:** paths and messages may reveal deployment or memory details. Signed-packet messages are deliberately less detailed.
 
 | Diagnostic | What to investigate |
 | --- | --- |
@@ -32,15 +34,33 @@ This query was run against a disposable invalid-packet fixture and returned its 
 | `conflict` | Divergent ancestry, baseline mismatch or unique-key collision; retries do not merge independent edits. |
 | `invalid` | Malformed/foreign packet, checksum/signature failure or another validation rejection; preserve the original bytes. |
 
-A diagnostic is cleared when that path is successfully processed, not merely when its file disappears. Before operator-led reconciliation, preserve the packet files, diagnostics, runtime configuration and a consistent SQLite backup made through the SQLite backup API—not a copy of only a live main database file. Stop affected sync workers and coordinate writers for the recovery procedure. The [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md#safety-and-conflicts) provides the data model; there is no automatic conflict-resolution command.
+A diagnostic is cleared when that path is successfully processed, not merely when its file disappears. Before operator-led reconciliation, preserve the packet files, diagnostics, runtime configuration and a [consistent SQLite backup](#preserve-a-consistent-database-backup) made through the backup API—not a copy of only a live main database file. Stop affected sync workers and coordinate writers for the recovery procedure. The [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md#safety-and-conflicts) provides the data model; there is no automatic conflict-resolution command.
 
 After an approved repair, require successful packet application, reviewed/cleared diagnostics, a cycle without permanent failure and destination recall before resuming normal operation. Do not reset history or diagnostics to make counters look clean.
+
+## Preserve a consistent database backup
+
+First stop the relevant worker and coordinate other writers as described above. Choose a new filename in a private directory outside the exchange. This uses SQLite’s backup API, as the bootstrap installer does, to include committed database state without copying an incomplete live main file. In macOS/Linux:
+
+```sh
+python3 -c "import os,sqlite3,sys; from pathlib import Path; src=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True); fd=os.open(sys.argv[2],os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); os.close(fd); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close(); print('Backup complete')" "/path/to/memory.db" "/path/to/private-backup.db"
+```
+
+In Windows Command Prompt, use `py -3` and Windows paths on the same line. Verify the destination directory’s access controls on that host.
+
+Output (run on macOS)
+
+```text
+Backup complete
+```
+
+Exit `0` confirms the backup call completed. An existing target is refused; any traceback/nonzero exit means no confirmed backup, and a partial target may remain. Preserve it separately before trying a new filename. This backs up only SQLite: also retain transcripts, runtime/workflow configuration, signing/trust state and exchange files privately. It is evidence preservation, not a supported restore or reconciliation procedure.
 
 ## Exchange packets were deleted
 
 Published packets are not automatically recreated. Deleting the newest packet can silently deprive a peer of data without leaving a pending dependency; deleting an intermediate packet can leave later packets pending. A Syncthing **Up to Date** indication does not detect this lost history.
 
-Never delete packets to reclaim space. Preserve remaining exchange files and retained outbox/history. Recovery requires operator review of backups or the retained outbox, keeping the original packet UUID and exact bytes. Restarting or waiting alone does not repair missing publication. No general safe reconstruction command is supplied here; do not hand-edit packets or create new UUIDs for old changes.
+Never delete packets to reclaim space. Preserve remaining exchange files, a consistent database backup with retained outbox/history/receipts, runtime configuration and existing backups from all affected devices. Recovery requires operator review of backups or the retained outbox, keeping the original packet UUID and exact bytes. Restarting or waiting alone does not repair missing publication. The code has no supported general safe reconstruction command. Report the last known successful delivery, which devices lack the record, whether later packets are pending, and sanitized counts through the [help template](#request-help-without-sharing-memory); do not hand-edit packets or create new UUIDs for old changes.
 
 ## Installer says the checksum does not match
 
@@ -58,9 +78,13 @@ Ingestion can commit valid events while reporting errors. Inspect [partial inges
 
 Signed packets have [size and structure limits](./install/security#respect-packet-limits). A backlog already exceeding them is not fixed by reducing the next wait interval. Retain the database, outbox and original input for operator review; no automatic split/recovery command is documented.
 
+## Previously accepted signed packets become invalid
+
+Revoking a key also rejects its retained, previously accepted packets on the next cycle. The managed worker stops on that permanent failure; existing rows and receipts are retained. Preserve the original packets, database/history/receipts and trust state, and follow [rotation and revocation](./install/security#understand-the-protection) with the operator. No general command resolves retained revoked packets automatically. Do not delete history or diagnostics to make the worker appear healthy.
+
 ## Windows window closed and sync stopped
 
-If you installed with **START-WINDOWS.cmd**, reopen that file after confirming there is no other worker. For automatic sign-in startup, use the separate [Windows program installation path](./install/background-service#windows-sign-in-start). Its program bundle is different from the private bootstrap ZIP.
+For the default bootstrap installation, reopen **START-WINDOWS.cmd** after confirming there is no other worker. With a custom local directory or device identity, repeat the [Python installer command](./install/windows#use-a-different-device-identity) with the same explicit `--local-dir` and `--node` values. For automatic sign-in startup, use the separate [Windows program installation path](./install/background-service#windows-sign-in-start). Its program bundle is different from the private bootstrap ZIP.
 
 ## I copied my database to another machine
 

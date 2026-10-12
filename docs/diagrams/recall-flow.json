@@ -7,7 +7,7 @@
     {"id": "cli", "col": 1, "row": 0, "kind": "highlight", "title": "agentmesh.py recall",
      "lines": ["query with --limit 12", "--project optional"]},
     {"id": "db", "col": 2, "row": 0, "title": "Local database",
-     "lines": ["opened read-only", "memories · summaries"], "muted": "evidence IDs"},
+     "lines": ["opened read-only", "memories · summaries"], "muted": "source IDs (evidence IDs)"},
     {"id": "exec", "col": 0, "row": 1, "kind": "rejected", "title": "Obey recalled text",
      "lines": ["memory is data,", "not instructions"]}
   ],

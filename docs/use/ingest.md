@@ -10,7 +10,9 @@ Run from the installed `app` directory or checkout's `memory-sync` directory:
 python3 agentmesh.py --database "/path/to/memory.db" ingest
 ```
 
-Expected from code: JSON with `found`, `processed`, `skipped`, `inserted`, `errors` and `error_classes`. Exit `0` means no ingestion errors, but `inserted: 0` may mean nothing new was found. Exit `1` means at least one error or invocation failure; some valid records may already have been committed. The controlled custom-root run below shows actual output without reading private sessions.
+Output (example from code)
+
+JSON with `found`, `processed`, `skipped`, `inserted`, `errors` and `error_classes`. Exit `0` means no ingestion errors, but `inserted: 0` may mean nothing new was found. Exit `1` means at least one error or invocation failure; some valid records may already have been committed. The controlled custom-root run below shows actual output without reading private sessions.
 
 | Agent | Default root |
 | --- | --- |
@@ -19,6 +21,10 @@ Expected from code: JSON with `found`, `processed`, `skipped`, `inserted`, `erro
 | Claude | `~/.claude/projects` |
 
 Hermes is recall-only in this integration; its transcripts are not discovered. Discovery skips symlinks, Claude `subagents` directories, and unchanged fully consumed files. Codex requires supported session metadata and skips reviewer/subagent sources. Only complete newline-terminated records are consumed. The unified command refuses a database owned by the PostgreSQL transcript mirror.
+
+## Before the first bootstrap cycle
+
+Before running a bootstrap installer, coordinate which device will ingest each source and check for identical absolute transcript paths across devices. Review all three default roots above for private or duplicated sessions. Bootstrap installation enables default ingestion and starts the worker immediately; `--once` still runs ingestion once. There is no installer option to pause for root selection before that cycle. If those defaults are unsafe, do not run the installer yet: request an operator-reviewed configuration. For a synthetic-only local trial, use [New sync group](../install/new-group), which starts with ingestion disabled, then manually ingest only the test directory. That local route does not support adding B.
 
 ## Use a custom location
 
@@ -29,13 +35,17 @@ python3 agentmesh.py --database "/path/to/memory.db" ingest \
   --root "omp=/absolute/path/to/test-transcripts" --project GuideCheck
 ```
 
-Observed with one tiny synthetic OMP transcript, exit `0`:
+For one tiny synthetic OMP transcript (exit `0`):
+
+Output (run on macOS)
 
 ```json
 {"error_classes":[],"errors":0,"found":1,"inserted":1,"processed":1,"skipped":0}
 ```
 
 Repeating that command on the unchanged file returned exit `0` and:
+
+Output (run on macOS)
 
 ```json
 {"error_classes":[],"errors":0,"found":1,"inserted":0,"processed":0,"skipped":1}
@@ -47,13 +57,33 @@ Explicit roots replace **all** defaults. Repeat `--root` for different supported
 
 After appending one malformed JSON line to the test transcript, the same command exited `1` with:
 
+Output (run on macOS)
+
 ```json
 {"error_classes":["JSONDecodeError"],"errors":1,"found":1,"inserted":0,"processed":1,"skipped":0}
 ```
 
 `errors` counts failed files/directories, not every bad line. A file can contribute valid records and an error in the same attempt. Malformed consumed lines are recorded in `ingestion_errors`, and the cursor still advances. Fixing bytes in place and rerunning is not a reliable replay: an unchanged file identity/size can be skipped.
 
-Preserve the original transcript, error record and cursor before recovery. Do not reset cursors, rewrite event IDs or import another copy independently on a peer. No general provenance-preserving replay command is provided here; request operator review and verify the recovered event by recall. Empty `error_classes` after a retry does not prove previously skipped material was recovered.
+Preserve the original transcript, error record and cursor before recovery. Do not reset cursors, rewrite event IDs or import another copy independently on a peer. The code provides no supported general provenance-preserving replay command. Preserve a [consistent database backup](../troubleshooting#preserve-a-consistent-database-backup) along with the original transcript, error records and cursors; report the ingestion exit code, `errors`, `error_classes` and whether the intended record is missing through the [help template](../troubleshooting#request-help-without-sharing-memory). Request operator review before attempting a repair, then verify any recovered event by recall. Empty `error_classes` after a retry does not prove previously skipped material was recovered.
+
+## Inspect errors and cursors
+
+An ingestion cursor records a transcript’s file identity and the byte/line position already consumed. Read the error locations and consumed positions without modifying the database (macOS/Linux):
+
+```sh
+python3 -c "import sqlite3,sys,json; from pathlib import Path; c=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True); c.row_factory=sqlite3.Row; print(json.dumps({t:[dict(r) for r in c.execute(sql)] for t,sql in [('errors','SELECT source_path,byte_offset,line_number,error_type FROM ingestion_errors ORDER BY source_path,line_number'),('cursors','SELECT source_path,byte_offset,line_number FROM ingestion_cursors ORDER BY source_path')]})); c.close()" "/path/to/memory.db"
+```
+
+In Windows Command Prompt, use the same one-line command with `py -3` and a Windows database path. No shell continuation is needed.
+
+Output (run on macOS)
+
+```json
+{"errors":[{"source_path":"/path/to/test/transcripts/test.jsonl","byte_offset":164,"line_number":2,"error_type":"invalid_json"}],"cursors":[{"source_path":"/path/to/test/transcripts/test.jsonl","byte_offset":173,"line_number":2}]}
+```
+
+Exit `0` means inspection succeeded. This synthetic fixture’s malformed second line begins at byte 164, while its cursor has advanced through byte 173 and line 2. Inspect that location in the original transcript privately. Empty arrays mean no stored entries, not proof that every transcript was discovered; a traceback/nonzero exit means the query failed. Paths and error records remain private. The query omits raw error messages, hashes and file identities; retain the full database for review.
 
 ## Configure automatic ingestion
 
@@ -63,7 +93,11 @@ Preserve the original transcript, error record and cursor before recovery. Do no
 {"ingest":true,"summarize":false,"roots":{"omp":"/absolute/path/to/owned-transcripts"}}
 ```
 
-Expected from `workflow.py`: the next worker cycle uses only this root. Check `workflow.ingestion.errors` and the inserted count in its cycle report. A bootstrap already enables default ingestion; a new empty group does not. Choose non-overlapping sources before enabling discovery on several devices. See the [Workflow reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md).
+Output (example from code)
+
+The next worker cycle uses only this root. Check `workflow.ingestion.errors` and the inserted count in its cycle report. A new empty group starts with ingestion disabled. For bootstrap, complete the [source review before installation](#before-the-first-bootstrap-cycle).
+
+The [Workflow reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) describes configuration, but its current “one logical node per OS” and “Mac” wording conflicts with the code. Device identities are OS-independent. The summary writer is selected by `summary.primary_node`, default `mac`, regardless of its operating system; do not enable independent summary writers on other identities.
 
 ## Windows single transcript
 
@@ -73,6 +107,8 @@ From Command Prompt, using your actual database path:
 py -3 "%LOCALAPPDATA%\AgentMesh\app\sqlite_memory.py" ingest "%LOCALAPPDATA%\AgentMesh\data\windows.db" "C:\path\to\transcript.jsonl" --agent codex --project GuideCheck
 ```
 
-Expected example derived from `sqlite_memory.py`, not run on Windows: a JSON report with `inserted`, `lines_processed` and `next_offset` (or `skipped: true` for an unsupported Codex session). The path shown is the wrapper default; replace it if your runtime selects another database. This low-level command is **not** the unified ingest health check: malformed lines can be recorded while it exits `0`. Check `ingestion_errors` and recall the intended event; do not infer complete success from its exit code alone.
+Output (example from code)
+
+A JSON report with `inserted`, `lines_processed` and `next_offset` (or `skipped: true` for an unsupported Codex session). The path shown is the wrapper default; replace it if your runtime selects another database. This low-level command is **not** the unified ingest health check: malformed lines can be recorded while it exits `0`. Check `ingestion_errors` and recall the intended event; do not infer complete success from its exit code alone.
 
 After ingestion, a running worker can export the resulting records. Peers import them when transport, worker availability and packet validation permit. Next, [check sync status](./status).

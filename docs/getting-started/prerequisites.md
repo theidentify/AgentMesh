@@ -22,7 +22,9 @@ On macOS/Linux, run:
 python3 -c "import sys,sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sys.version.split()[0]); print('FTS5: ok'); print('JSON:',c.execute(\"select json_valid('{}')\").fetchone()[0])"
 ```
 
-Observed on macOS, exit `0`:
+For macOS (exit `0`):
+
+Output (run on macOS)
 
 ```text
 3.14.8
@@ -30,9 +32,13 @@ FTS5: ok
 JSON: 1
 ```
 
-Your version can differ; it must meet the minimum for your route. A missing command, traceback or missing success lines means this interpreter is not ready. Install a Python build with SQLite FTS5/JSON support and rerun the check using the interpreter that will run AgentMesh.
+Your version can differ; it must meet the minimum for your route. A missing command, traceback or missing success lines means this interpreter is not ready. Install a Python build with SQLite FTS5/JSON support from the platform links above, then rerun this check with its explicit interpreter path. Reuse that interpreter for AgentMesh and service configuration; a different Python on PATH can have a different SQLite build. AgentMesh has no command to repair an interpreter’s SQLite capabilities. If the replacement still fails, report the Python version, platform and failing capability without private paths.
 
-On Windows, run the same check with `py -3` in place of `python3`. Expected result derived from the same Python code, not a native Windows run: a suitable version, `FTS5: ok`, `JSON: 1`, and exit `0`. The macOS/Linux setup wrappers perform prerequisite checks; **START-WINDOWS.cmd only finds a runnable Python command**. It does not verify the minimum version, FTS5, JSON or Syncthing for you.
+On Windows, use the [Command Prompt version of this check](./quick-start#check-install-and-query).
+
+Output (example from code)
+
+A suitable version, `FTS5: ok`, `JSON: 1`, and exit `0`. The macOS/Linux setup wrappers perform prerequisite checks; **START-WINDOWS.cmd only finds a runnable Python command**. It does not verify the minimum version, FTS5, JSON or Syncthing for you.
 
 ## Install and start Syncthing
 
@@ -48,12 +54,12 @@ For a supplied bootstrap, the person administering the group must assign an unus
 4. On the receiving device, accept the offered folder and choose a private local folder path outside AgentMesh's application and database directories.
 5. Wait for the folder to show **Up to Date** and resolve any folder errors before installing.
 
-For a first device starting alone, add a local folder in Syncthing; no remote invitation is required. Syncthing creates its `.stfolder` marker. Do not manufacture a marker to bypass an unavailable folder. See the [official getting-started guide](https://docs.syncthing.net/intro/getting-started.html) for the GUI steps and [folder settings](https://docs.syncthing.net/users/config.html#folder-element) for details.
+Use a dedicated exchange folder for each sync group; a group UUID does not partition a shared folder. For a first device starting alone, add a new local folder in Syncthing; no remote invitation is required. Syncthing creates its `.stfolder` marker. Do not manufacture a marker to bypass an unavailable folder. See the [official getting-started guide](https://docs.syncthing.net/intro/getting-started.html) for the GUI steps and [folder settings](https://docs.syncthing.net/users/config.html#folder-element) for details.
 
 ## Check the supplied files
 
 A bootstrap exchange contains `AgentMesh-bootstrap-v1.zip`, its matching `agentmesh-package.json`, `bootstrap_windows.py`, `setup_macos.sh`, `setup_linux.sh` and `START-WINDOWS.cmd`, plus supporting files such as `brand.py`, `terminal_progress.py` and `assets/`. Keep the supplied set together; do not unzip the bootstrap yourself. The installer compares the ZIP's hash with the manifest, then checks the snapshot hash.
 
-Both ZIP member sizes combined after decompression and the separately gunzipped baseline must each be at most **200,000,000 bytes**. Oversized material fails with `unsafe archive size` or `unsafe baseline size`; see [troubleshooting](../troubleshooting#bootstrap-is-too-large). Free disk space alone does not remove these limits.
+Two separate limits apply: the total uncompressed size of all ZIP members must not exceed **200,000,000 bytes**, and the decompressed baseline must not exceed **200,000,000 bytes**. Oversized material fails with `unsafe archive size` or `unsafe baseline size`; see [troubleshooting](../troubleshooting#bootstrap-is-too-large). Free disk space alone does not remove these limits.
 
 Next, follow [Quick start](./quick-start) if you received a bootstrap, or [New sync group](../install/new-group) if you are starting alone.

@@ -4,7 +4,7 @@ Distinguish file delivery from completed record imports before relying on shared
 
 ![Basic cycle: ingest supported sessions, export records, exchange packets, import peer packets and write a report; a conflict quarantines the whole packet.](/diagrams/worker-cycle.svg)
 
-**Ingest** reads supported sessions when enabled. **Export** captures record changes; the **Exchange folder** carries their packets through independently running Syncthing. **Import** validates and applies whole packets or leaves them pending; **Report** publishes observations. The highlighted folder connects peers. The red box rejects silent overwrite: one conflicting row prevents every change in that packet from applying. Configured summarization can add more work after this simplified flow.
+**Ingest** reads supported sessions when enabled. **Export** captures record changes by comparing local records with the last synchronized view; the **Exchange folder** carries their packets through independently running Syncthing. **Import** validates and applies whole packets or leaves them pending; **Report** publishes observations. The highlighted folder connects peers. The red box rejects silent overwrite: one conflicting row prevents every change in that packet from applying. When enabled, summarization runs after the initial import and before **Report**; committed summaries trigger another export/import cycle before reporting.
 
 Open a second terminal if the foreground worker occupies the first. Commands below run from the installed `app` directory or checkout's `memory-sync` directory.
 
@@ -14,7 +14,9 @@ Open a second terminal if the foreground worker occupies the first. Commands bel
 python3 agentmesh.py --database "/path/to/memory.db" status
 ```
 
-Observed excerpt from an empty test database, exit `0`:
+For an empty test database (exit `0`):
+
+Output (run on macOS)
 
 ```json
 {"counts":{"ingestion_cursors":0,"ingestion_errors":0,"memory_items":0,"memory_sources":0,"memory_summaries":0,"observation_events":0,"source_sessions":0,"summary_state":0},"sync":{"conflict":0,"invalid":0,"outbox":0,"pending":0,"received":0}}
@@ -23,7 +25,7 @@ Observed excerpt from an empty test database, exit `0`:
 This excerpt omits device/group and security metadata. Exit `0` means status was read, not that syncing succeeded. Omitting `--database` exits `2`; database errors exit `1`.
 
 - `outbox` counts captured packets not yet published. It excludes local changes not captured by a worker cycle; `outbox: 0` does not mean nothing remains to send. Published outbox records are retained.
-- `received` counts local packet receipts, not proof of two-way convergence.
+- `received` counts local packet receipts (accepted packet identifiers and checksums stored in the local database), not proof of two-way convergence.
 - `pending`, `conflict` and `invalid` count diagnostic file paths, not rows. Run a cycle before interpreting incoming files: status itself does not scan or import them.
 - Equal record counts do not prove equal contents. Verify a distinctive record by recall on the receiving device.
 
@@ -39,7 +41,9 @@ One-shot workers now exit `1` for both transient exchange failure and permanent 
 python3 agentmesh.py diagnose --runtime "/path/to/runtime.json" --json
 ```
 
-Observed excerpt before a managed record existed, exit `0`:
+Before a managed record existed (exit `0`):
+
+Output (run on macOS)
 
 ```json
 {"read_only":true,"status":"ok","worker":{"cycles":0,"process_observation":"no_record","state":"stopped"}}
@@ -47,7 +51,11 @@ Observed excerpt before a managed record existed, exit `0`:
 
 `ok` does not mean a worker is running. After a managed worker ran and stopped, diagnosis returned `status: attention`, a worker check with `code: WORKER_NOT_RUNNING`, and exit `1`. An invalid installation can fail an earlier check and skip worker inspection. Neither diagnosis nor inspection repairs state.
 
-Omit `--json` for the human-readable report. Expected from the same renderer: staged check results, `Result: OK` or `Result: ATTENTION`, and limitations. Exit `0` is only for `ok`; all other report statuses exit `1`. For exchange retries, inspect `worker-status` too: the diagnostic projection does not expose the new `failure_kind`/`warning` fields and may stop at an unavailable-exchange installation check.
+Omit `--json` for the human-readable report.
+
+Output (example from code)
+
+Staged check results, `Result: OK` or `Result: ATTENTION`, and limitations. Exit `0` is only for `ok`; all other report statuses exit `1`. For exchange retries, inspect `worker-status` too: the diagnostic projection does not expose the new `failure_kind`/`warning` fields and may stop at an unavailable-exchange installation check.
 
 ## Managed worker
 
@@ -55,13 +63,17 @@ Omit `--json` for the human-readable report. Expected from the same renderer: st
 python3 agentmesh.py worker-status --runtime "/path/to/runtime.json"
 ```
 
-Observed before managed execution, exit `0`:
+Before managed execution (exit `0`):
+
+Output (run on macOS)
 
 ```json
 {"cycles":0,"state":"stopped"}
 ```
 
 After a transient one-shot failure, the observed excerpt was:
+
+Output (run on macOS)
 
 ```json
 {"state":"failed","cycles":1,"failure_kind":"transient","warning":"exchange unavailable","last_error":"ExchangeUnavailable"}

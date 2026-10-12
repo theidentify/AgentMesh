@@ -8,7 +8,11 @@ These procedures concern the AgentMesh memory-sync application, not Hermes or ot
 
 ## Update a bootstrap installation
 
-On macOS or Linux, stop the foreground worker or its [background service](./background-service), wait for the supplied package to finish syncing, then rerun the same [macOS](./macos) or [Linux](./linux) installer with the same local directory and device identity. On Windows, stop the current worker using its foreground, managed or service controls and rerun **START-WINDOWS.cmd**, as described in [Windows setup](./windows#updating). If you chose a different device identity through the Python installer, repeat that explicit selection instead of reverting to the platform default.
+On macOS or Linux, stop the foreground worker or its [background service](./background-service), wait for the supplied package to finish syncing, then rerun the same [macOS](./macos) or [Linux](./linux) installer with the same local directory and device identity. On Windows, stop the current worker using its foreground, managed or service controls and rerun **START-WINDOWS.cmd**, as described in [Windows setup](./windows#updating). If you chose a custom local directory or device identity through the Python installer, repeat the same explicit `--local-dir` and `--node` values instead of reverting to the platform default; the Windows launcher remembers neither.
+
+::: warning
+The current bootstrap restart does not resolve the wizard’s default signing paths unless they are already explicit in runtime configuration. For signed installations, the unsigned bootstrap update recipe is not a verified restart procedure. Preserve the existing identity/trust and request the operator’s signed-update review; the managed worker resolves those defaults, but that does not fix the bootstrap loop.
+:::
 
 The bootstrap extracts application files and preserves an existing database only when its group and device identity match the supplied package. It retains existing workflow settings and recorded security paths. Do not delete a database to get past a mismatch. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) and [Windows bootstrap reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#console-progress).
 
@@ -20,7 +24,7 @@ A macOS standalone replacement has a different ownership and service model; use 
 
 ## Update a source checkout
 
-For the [local empty-group route](./new-group), your stable checkout supplies the application. Stop workers, retain private database/runtime/workflow files outside the checkout, and review the intended source revision before replacing code. Keep the application path stable or update your recall rules and service paths deliberately. Inspect the existing runtime and run a controlled cycle before resuming recurring work; do not run `setup-new` again as an update. No automated source-checkout upgrade or rollback command is provided.
+For the [local empty-group route](./new-group), your stable checkout supplies the application. Stop workers, retain private database/runtime/workflow files outside the checkout, and review the intended source revision before replacing code. Record the current and intended revisions and review their changes for database/runtime compatibility; this guide has no verified recommended release or automated compatibility guarantee. If compatibility is uncertain, keep the current revision and request maintainer guidance. Keep the application path stable or update your recall rules and service paths deliberately. Inspect the existing runtime and run a controlled cycle before resuming recurring work; do not run `setup-new` again as an update. No automated source-checkout upgrade or rollback command is provided.
 
 ## Update a separately installed Windows program
 
@@ -30,7 +34,9 @@ These commands require an existing program installation tracked and managed by t
 .\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --dry-run
 ```
 
-Expected example derived from `windows_install.py`, not run on Windows: JSON with `status: planned`, exit `0`, with no changes. Any error must be investigated before execution.
+Output (example from code)
+
+JSON with `status: planned`, exit `0`, with no changes. Any error must be investigated before execution.
 
 For a basic unsigned installation, stop prior workers using [worker control](../use/worker) or their original foreground/service controls. Then run:
 
@@ -38,7 +44,9 @@ For a basic unsigned installation, stop prior workers using [worker control](../
 .\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --legacy-drained
 ```
 
-Expected example derived from code: one confirmation and then `status: selected` (or `unchanged` when already selected), exit `0`. Cancellation exits `2`; errors exit `1`. Review the plan and its single interactive confirmation. This stopped-worker upgrade selects the new program and updates an owned login-task binding; it does not start a worker. Start the selected installed version using [worker control](../use/worker), then check its cycles.
+Output (example from code)
+
+One confirmation and then `status: selected` (or `unchanged` when already selected), exit `0`. Cancellation exits `2`; errors exit `1`. Review the plan and its single interactive confirmation. This stopped-worker upgrade selects the new program and updates an owned login-task binding; it does not start a worker. Start the selected installed version using [worker control](../use/worker), then check its cycles.
 
 For signed policy, omit `--legacy-drained`. If there is no managed record, `--unmanaged-drained` is a separate acknowledgment that prior source workers really exited. A dry run does not perform the later stopped-worker precheck, so a successful plan alone does not prove execution is ready. Live replacement is a separate operator procedure in the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md#upgrade-program-rollback-uninstall).
 
@@ -51,7 +59,9 @@ Use an external extracted bundle, not an executable running inside the owned pro
 .\agentmesh.exe windows-uninstall --runtime 'C:\path\to\runtime.json' --legacy-drained --dry-run
 ```
 
-Expected examples derived from code, not run on Windows: each dry run returns `status: planned`, exit `0`, or an error for invalid prerequisites. The commands only preview separate alternatives.
+Output (example from code)
+
+ each dry run returns `status: planned`, exit `0`, or an error for invalid prerequisites. The commands only preview separate alternatives.
 
 Run only the chosen command again without `--dry-run` after reviewing it. Interactive rollback requires `ROLLBACK`; removal requires `UNINSTALL`. The signed-policy drain rules above also apply.
 
@@ -59,11 +69,13 @@ After confirmation, expected from code: rollback returns `status: selected`; uni
 
 Rollback selects a previous intact version owned by this installer, changes only program/task selection and does not restart the worker. It does not restore a database. Uninstall removes only the verified owned program files and task; it keeps private data, configuration and ownership/recovery records. Unknown files, changed hashes or uncertain ownership block removal. Preserve incomplete-operation state for operator review instead of deleting it or recreating the installation.
 
-## Remove a macOS or Linux source installation
+## Remove a bootstrap or source-checkout installation
 
 Stop the foreground worker and disable any configured [background service](./background-service). On macOS, move the unloaded LaunchAgent plist to private storage outside the LaunchAgents directory so it cannot load at login. On Linux, disable the user service and retain its unit privately for possible reuse.
 
-Once no worker or service references it, remove only the application's code directory identified by your installation. Keep the sibling data directory and all private state listed above; do not delete the whole installation root. No unified macOS/Linux uninstall action is provided by this CLI. For an operator-managed macOS bundle, follow [Uninstall while keeping data](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md#uninstall-while-keeping-data) instead.
+For a Windows bootstrap, stop its foreground window with Ctrl-C, or stop the managed worker through its own controls. Retire any startup configuration you added; bootstrap alone does not register one. Confirm execution has stopped before removing files. `windows-uninstall` does not manage this bootstrap layout.
+
+Once no worker or service references it, remove only the application directory identified by your installation. For a bootstrap installation, preserve its private baseline and manifest before removing `app`, and retain the `data` directory beside it. On default Windows installations these are `%LOCALAPPDATA%\AgentMesh\app` and `%LOCALAPPDATA%\AgentMesh\data`; use your chosen root for custom installations. For a source-checkout installation, retain the separate local installation directory created by `setup-new`. In both cases, preserve all private state listed above; do not delete the whole installation root. [Remove the recall rules](#remove-agent-recall-rules) as a separate step. No unified bootstrap/source-checkout uninstall action is provided by this CLI. For an operator-managed macOS bundle, follow [Uninstall while keeping data](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md#uninstall-while-keeping-data) instead.
 
 ::: warning
 These instructions were checked against source and CLI help, not executed against a native Windows or Linux installation. Verify the resulting worker and service state on the target host.

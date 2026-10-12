@@ -8,13 +8,15 @@ AgentMesh manages memory sync, not installation of Hermes or other agents. `setu
 
 ## Prepare the source and storage
 
-Obtain the [AgentMesh repository](https://github.com/theidentify/AgentMesh) and open its `memory-sync` directory in a terminal. Keep this checkout at a stable local path outside the exchange folder; it supplies the application for this route. Use that directory wherever this guide says “installed app or repository source.” There is no generated `app` directory to point service examples at.
+Obtain the [AgentMesh repository](https://github.com/theidentify/AgentMesh) and open its `memory-sync` directory in a terminal. Keep this checkout at a stable local path outside the exchange folder; it supplies the application for this route. Use that directory wherever this guide says “installed app or repository source.” There is no generated `app` directory to point service examples at. Select a source revision reviewed for your deployment and record it before creating state; this guide has not verified a recommended release or compatibility matrix. Do not assume an arbitrary latest checkout is a tested upgrade.
 
-Add a private local folder in Syncthing and let Syncthing create `.stfolder`, as described in [prerequisites](../getting-started/prerequisites#share-the-private-exchange-folder). The new local installation directory must not exist, and its parent must already exist. The local installation and exchange folder must not be nested inside one another. Use absolute paths without parent traversal or symlink components, including in ancestor directories.
+Use a dedicated exchange folder for each sync group, with no packets or history from another group. The current setup checks do not reject that mix; a successful setup is not proof that reuse is safe. Do not clear an existing group’s folder to reuse it. Add a new private local folder in Syncthing and let Syncthing create `.stfolder`, as described in [prerequisites](../getting-started/prerequisites#share-the-private-exchange-folder). The new local installation directory must not exist, and its parent must already exist. The local installation and exchange folder must not be nested inside one another. Use absolute paths without parent traversal or symlink components, including in ancestor directories.
 
 ## Create local memory
 
 From `memory-sync`:
+
+macOS/Linux:
 
 ```sh
 python3 agentmesh.py setup-new \
@@ -22,7 +24,15 @@ python3 agentmesh.py setup-new \
   --exchange "/absolute/path/to/exchange" --node mac
 ```
 
-The prompt asks you to type `NEW`. Observed result after confirming, with private values redacted, exit `0`:
+Windows Command Prompt:
+
+```bat
+py -3 agentmesh.py setup-new --local-dir "C:\absolute\path\to\new-installation" --exchange "C:\absolute\path\to\exchange" --node mac
+```
+
+The prompt asks you to type `NEW`. After confirmation, exit `0`:
+
+Output (run on macOS)
 
 ```json
 {"format":"agentmesh-setup-new-v1","group":"<UUID>","node":"mac","runtime":"/path/to/new-installation/data/runtime.json","status":"created"}
@@ -30,15 +40,25 @@ The prompt asks you to type `NEW`. Observed result after confirming, with privat
 
 Success is `status: created`. Declining leaves `status: pending` and exits `2`; a validation or setup error exits `1`. The `--node` value selects the node slot independently of OS; the command creates a new group UUID. Running it again on another device creates a different group.
 
-The new directory contains `data/memory.db`, `data/runtime.json` and `data/workflow.json`, with ingestion and summarization disabled. There are no signing keys or running services. If `.setup-pending.json` remains, preserve the entire partial directory and [request help](../troubleshooting#request-help-without-sharing-memory); do not delete its marker to bypass validation.
+The new directory contains `data/memory.db`, `data/runtime.json` and `data/workflow.json`, with ingestion and summarization disabled. There are no signing keys or running services. If `.setup-pending.json` remains, preserve the entire partial directory and [request help](../troubleshooting#request-help-without-sharing-memory); do not delete its marker to bypass validation. There is no supported generic partial-setup repair command. Report the failed action, exit code and presence of the marker without sharing its contents or paths.
 
 ## Inspect and use the database
+
+macOS/Linux:
 
 ```sh
 python3 agentmesh.py inspect-install --runtime "/path/to/new-installation/data/runtime.json"
 ```
 
-Observed result, redacted, exit `0`:
+Windows Command Prompt:
+
+```bat
+py -3 agentmesh.py inspect-install --runtime "C:\path\to\new-installation\data\runtime.json"
+```
+
+Exit `0`:
+
+Output (run on macOS)
 
 ```json
 {"database":"/path/to/new-installation/data/memory.db","exchange":"/path/to/exchange","format":"agentmesh-install-inspect-v1","group":"<UUID>","identity":"absent","node":"mac","policy":"legacy","status":"ready"}

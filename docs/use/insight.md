@@ -21,18 +21,22 @@ From the repository root:
 python3 -u insight/server.py --port 0
 ```
 
-Expected example derived from `insight/server.py` (server not run here): JSON containing `url` on `127.0.0.1`, `pid` and `readonly: true`. The server chooses an available port. A bind error or missing URL is startup failure; an open page with unavailable sources means the server works but the data source needs checking. Open that URL locally. Stop the server with Ctrl-C.
+Output (example from code)
+
+JSON containing `url` on `127.0.0.1`, `pid` and `readonly: true`. The server chooses an available port. A bind error or missing URL is startup failure; an open page with unavailable sources means the server works but the data source needs checking. Open that URL locally. Stop the server with Ctrl-C.
 
 ## Point it at your data
 
-Use `--sqlite` for an existing database and `--home` for the Hermes profile containing metrics/job files; that profile is not the directory containing `runtime.json`. If you use only Codex, omit `--home` and supply just `--sqlite`; missing Hermes metrics/jobs may remain unavailable:
+Use `--sqlite` for an existing database and `--home` for the Hermes profile containing metrics/job files; this selects metrics/job data, whereas the runtime identifies the worker installation. Choose each path for its role; they are not required to be different directories. If you use only Codex, omit `--home` and supply just `--sqlite`; missing Hermes metrics/jobs may remain unavailable:
 
 ```sh
 python3 -u insight/server.py --port 0 \
   --sqlite "/path/to/node.db" --home "/absolute/path/to/profile"
 ```
 
-Expected from the same server code: the local URL/PID/`readonly` startup JSON, then a read-only dashboard. Inspect Memory Browser connection availability; an absent database is not created or repaired.
+Output (example from code)
+
+The local URL/PID/`readonly` startup JSON, then a read-only dashboard. Inspect Memory Browser connection availability; an absent database is not created or repaired.
 
 `--home` defaults to `HERMES_HOME`, or `~/.hermes` if unset. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. To label a backend authoritative in Insight, configure its role explicitly; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
 

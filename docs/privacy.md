@@ -8,11 +8,11 @@ Never commit or publish:
 
 - Memories, transcripts and database snapshots.
 - SQLite databases and their WAL/SHM files.
-- Bootstrap ZIPs and manifests, including as release assets.
+- Bootstrap ZIPs and manifests, including as release assets; installed `app/baseline.jsonl.gz`, `app/bootstrap-manifest.json` and `data/baseline.jsonl`.
 - Change packets, raw status reports and logs.
 - Credentials, DSNs and device-specific deployment files.
 
-The repository contains code, tests and documentation. A private bootstrap contains real memory; it is not a public software download.
+The repository contains code, tests and documentation. A private bootstrap contains real memory; it is not a public software download. Its extracted `app` directory also contains private snapshot material. Protect the entire installation root and never share `app` as a code-only bundle.
 
 ## Separate local storage from exchange
 

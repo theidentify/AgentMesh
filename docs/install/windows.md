@@ -14,7 +14,13 @@ Complete the [prerequisites](../getting-started/prerequisites). Keep Syncthing r
 py -3 --version
 ```
 
-Expected example from the launcher code, not run on Windows: `Python` followed by the interpreter version, exit `0`. Confirm it is at least 3.10 and run the full [FTS5/JSON check](../getting-started/prerequisites#install-and-check-python); the launcher does not check those capabilities or Syncthing.
+Output (example from code)
+
+`Python` followed by the interpreter version, exit `0`. Confirm it is at least 3.10 and run the full [FTS5/JSON check](../getting-started/prerequisites#install-and-check-python); the launcher does not check those capabilities or Syncthing.
+
+::: warning
+Before running a bootstrap installer, coordinate which device will ingest each source and check for identical absolute transcript paths across devices. A fresh bootstrap enables default ingestion and starts the worker immediately, including with `--once`. Review the [default roots and first-cycle boundary](../use/ingest#before-the-first-bootstrap-cycle) now.
+:::
 
 ## Run the installer
 
@@ -26,7 +32,9 @@ Alternatively, run this from that folder in Command Prompt:
 py -3 bootstrap_windows.py --exchange .
 ```
 
-Expected example derived from bootstrap code, not a native Windows run: checksum/import stages, `Ready: local database installed; starting synchronization`, then cycle JSON and a countdown. Errors or `Sync needs attention` require investigation.
+Output (example from code)
+
+Checksum/import stages, `Ready: local database installed; starting synchronization`, then cycle JSON and a countdown. Errors or `Sync needs attention` require investigation.
 
 For installation followed by only one sync pass:
 
@@ -34,7 +42,9 @@ For installation followed by only one sync pass:
 py -3 bootstrap_windows.py --exchange . --once
 ```
 
-Expected from code: installation progress and one cycle JSON, then exit `0` on success or `1` for transient/permanent cycle failure. Read `failure_kind`, `warning` and the sync counters as well as the exit code.
+Output (example from code)
+
+Installation progress and one cycle JSON, then exit `0` on success or `1` for [transient or permanent cycle failure](../use/worker#respond-to-failures-and-timeouts). Read `failure_kind`, `warning` and the sync counters as well as the exit code.
 
 ## Use a different device identity
 
@@ -44,9 +54,13 @@ The platform setup wrapper uses the Python installer's `--node windows` default;
 py -3 bootstrap_windows.py --exchange "C:\path\to\exchange" --local-dir "C:\path\to\installation" --node mac
 ```
 
-Expected from the same bootstrap code: progress followed by cycle reports, or a nonzero setup failure. This example is not a native Windows execution capture. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+Output (example from code)
+
+Progress followed by cycle reports, or a nonzero setup failure. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
 
 The same [bootstrap size limits](../getting-started/prerequisites#check-the-supplied-files) apply on this platform. Fresh packages contain the CLI modules used in this guide and write `runtime.json` owner-only; older installations must [re-bootstrap once](./update-remove#update-a-bootstrap-installation) from an updated package.
+
+Treat the **whole installation root as private**. In addition to the database, it contains `app/baseline.jsonl.gz`, `app/bootstrap-manifest.json` and `data/baseline.jsonl`: the baseline contains memory and the manifest contains private snapshot metadata. Never share the installed `app` directory as a code bundle. Check access permissions across the entire root, including `app`; owner-only runtime permissions do not establish privacy for all extracted files.
 
 ## What gets installed
 
@@ -60,11 +74,13 @@ The installer checks the package and snapshot, preserves an existing matching da
 
 ## Keep the window open
 
-Closing the window stops memory import/export, even if Syncthing continues transferring files. If you installed with START-WINDOWS.cmd, run START-WINDOWS.cmd again after login to resume. Open a second terminal for checks while the worker occupies the first. This launcher does not configure autostart; [sign-in startup](./background-service#windows-sign-in-start) requires separate program installation.
+Closing the window stops memory import/export, even if Syncthing continues transferring files. For the default installation, rerun **START-WINDOWS.cmd** after login. If you selected a custom local directory or device identity, rerun the Python installer with the same explicit `--local-dir` and `--node` values from [your installation command](#use-a-different-device-identity). The launcher does not remember those custom values. Open a second terminal for checks while the worker occupies the first. This launcher does not configure autostart; [sign-in startup](./background-service#windows-sign-in-start) requires separate program installation.
 
 ## Reading the progress line
 
-Example derived from `terminal_progress.py`, not a Windows capture: for a 40,000-row import, the progress renderer can show the following line, followed later by a sync countdown:
+For a 40,000-row import, the progress renderer can show this line, followed later by a sync countdown:
+
+Output (example from code)
 
 ```text
 [4/6] Importing 40,000 rows into SQLite | [############--------] 60% | 24,000/40,000 rows | elapsed 0s
@@ -75,7 +91,7 @@ Your counts and timing will differ. Unknown-duration work uses a spinner and ela
 
 ## Updating
 
-For this bootstrap-based setup, wait for Syncthing to finish, stop the current worker using its foreground, managed or service controls, and run **START-WINDOWS.cmd** again. It loads the supplied application while keeping your matching database. Separately installed program bundles use the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md), which also explains confirmation prompts.
+For this bootstrap-based setup, wait for Syncthing to finish, stop the current worker using its foreground, managed or service controls, and rerun **START-WINDOWS.cmd** only for the default installation. For a custom local directory or device identity, repeat the Python installer command with the same explicit `--local-dir` and `--node` values, even if only the directory changed. It loads the supplied application while keeping your matching database. Separately installed program bundles use the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md), which also explains confirmation prompts.
 
 ::: warning
 This guide does not establish operation on your Windows host. Verify the Python/SQLite checks, Syncthing connection through the host firewall, private local file permissions, successive worker cycles and the [A → B recall test](../getting-started/quick-start#prove-a-record-travels-from-a-to-b). If enabling sign-in startup, test a real sign-out/sign-in and reboot, then inspect worker cycles; task registration alone is insufficient.

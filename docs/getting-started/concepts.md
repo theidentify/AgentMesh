@@ -12,7 +12,7 @@ Each device keeps a local database and exchanges record changes. The diagram sum
 
 The highlighted exchange folder carries packets and reports. Direct Syncthing exchange between two devices requires overlapping online time. The red box shows an unsafe shortcut: copying live SQLite database files and their WAL/SHM companions during writes can produce an inconsistent or corrupted copy. WAL and SHM are SQLite's write-ahead log and shared-memory sidecar files.
 
-A bootstrap enables ingestion; an empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
+A bootstrap enables default ingestion and starts the worker immediately; [review source ownership and paths before installing](../use/ingest#before-the-first-bootstrap-cycle). An empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
 
 ## Device identity
 
@@ -22,15 +22,15 @@ A group supports at most three active devices with different identities. Two Mac
 
 ## Exchange folder and bootstrap
 
-The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. A group created with `setup-new` [cannot add another device yet](../install/new-group#adding-another-device).
+Use a dedicated private exchange folder for each sync group: a group UUID does not isolate several groups sharing one folder. The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. A group created with `setup-new` [cannot add another device yet](../install/new-group#adding-another-device).
 
 ## Conflicts affect whole packets
 
-A packet can contain several changed records. If one conflicts with an independent edit or a natural unique key, the **entire packet** is quarantined: unrelated records inside it do not apply either. Later packets depending on it may remain pending. Other independent packets can still apply during that cycle, but a managed worker stops after a permanent failure. [Inspect the failure](../troubleshooting#records-are-quarantined) before restarting.
+A packet can contain several changed records. If one conflicts with an independent edit or a natural unique key, the **entire packet** is quarantined: unrelated records inside it do not apply either. Later packets depending on it may remain pending. Other independent packets can still apply during that cycle, but a managed worker stops after a [permanent failure](../use/worker#respond-to-failures-and-timeouts), an error requiring review rather than automatic retry. [Inspect the failure](../troubleshooting#records-are-quarantined) before restarting.
 
 ## Plan for growth
 
-Capture scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packets, receipts, history and published outbox records are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
+**Capture** compares local records with the last synchronized view and packages their changes. It scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packet files live under `changes/<node>/` in the exchange folder. Receipts (accepted packet identifiers/checksums), history (record revision ancestry) and outbox records (outgoing packets and publication state) live in the local SQLite database as `_sync_receipts`, `_sync_history` and `_sync_outbox`. All are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
 
 ## What setup does not include
 

@@ -10,6 +10,10 @@ This installs the AgentMesh memory-sync application, not Hermes or other agents.
 
 Complete the [prerequisites](../getting-started/prerequisites) and wait for the private exchange folder to finish syncing.
 
+::: warning
+Before running a bootstrap installer, coordinate which device will ingest each source and check for identical absolute transcript paths across devices. A fresh bootstrap enables default ingestion and starts the worker immediately, including with `--once`. Review the [default roots and first-cycle boundary](../use/ingest#before-the-first-bootstrap-cycle) now.
+:::
+
 ## Run the installer
 
 Open a terminal in the supplied private exchange folder containing `setup_macos.sh` and `bootstrap_windows.py`. Confirm the assigned device identity is unused before running the wrapper:
@@ -18,7 +22,9 @@ Open a terminal in the supplied private exchange folder containing `setup_macos.
 sh setup_macos.sh "/absolute/path/to/exchange"
 ```
 
-Expected from the wrapper/bootstrap code (the Python bootstrap was exercised in disposable storage): numbered checksum/import stages, a `Ready: local database installed; starting synchronization` message, then cycle JSON and a countdown. A checksum/validation error or `Sync needs attention` is not success; inspect the error and [status](../use/status). The foreground loop keeps the terminal occupied.
+Output (example from code)
+
+Numbered checksum/import stages, a `Ready: local database installed; starting synchronization` message, then cycle JSON and a countdown. A checksum/validation error or `Sync needs attention` is not success; inspect the error and [status](../use/status). The foreground loop keeps the terminal occupied.
 
 An optional second argument selects the local installation directory. Keep it outside the exchange folder.
 
@@ -31,9 +37,13 @@ python3 bootstrap_windows.py --exchange "/absolute/path/to/exchange" \
   --local-dir "/absolute/path/to/installation" --node windows
 ```
 
-Expected from the same installer: verified local state followed by worker cycle reports, or a nonzero failure before successful setup. Despite its filename, `bootstrap_windows.py` is cross-platform. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+Output (example from code)
+
+Verified local state followed by worker cycle reports, or a nonzero failure before successful setup. Despite its filename, `bootstrap_windows.py` is cross-platform. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
 
 The same [bootstrap size limits](../getting-started/prerequisites#check-the-supplied-files) apply on this platform. Fresh packages contain the CLI modules used in this guide and write `runtime.json` owner-only; older installations must [re-bootstrap once](./update-remove#update-a-bootstrap-installation) from an updated package.
+
+Treat the **whole installation root as private**. In addition to the database, it contains `app/baseline.jsonl.gz`, `app/bootstrap-manifest.json` and `data/baseline.jsonl`: the baseline contains memory and the manifest contains private snapshot metadata. Never share the installed `app` directory as a code bundle. Check access permissions across the entire root, including `app`; owner-only runtime permissions do not establish privacy for all extracted files.
 
 ## What gets installed
 
@@ -62,7 +72,9 @@ PYTHON="$(command -v python3)"
 "$PYTHON" "$LOCAL/app/sync_worker.py" "$LOCAL/data/mac.db" "$EXCHANGE" --interval 60
 ```
 
-Expected from `sync_worker.py`: cycle JSON on stdout and progress/countdown on stderr. Inspect `failure_kind` and `warning`; a running loop can still be reporting failures. With `--once`, a successful cycle exits `0`, while transient or permanent failure exits `1`.
+Output (example from code)
+
+Cycle JSON on stdout and progress/countdown on stderr. Inspect `failure_kind` and `warning`; a running loop can still be reporting failures. With `--once`, a successful cycle exits `0`, while [transient (retryable exchange) or permanent (review required) failure](../use/worker#respond-to-failures-and-timeouts) exits `1`.
 
 Append `--once` to run one cycle and exit. These commands cover the basic setup; installations with signed sync enabled should use their configured managed worker.
 

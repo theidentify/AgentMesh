@@ -16,15 +16,15 @@ AgentMesh installs the memory-sync application, not the agents themselves. The s
 
 For the project scope, see the [repository overview](https://github.com/theidentify/AgentMesh/blob/main/README.md). Operator procedures and developer details are collected in [Reference](./reference/index).
 
-## Follow the guide in order
+## Choose a reading route
 
 ![Reading path from Concepts through Prerequisites, Install, Use and Help, with Install highlighted.](/diagrams/reading-path.svg)
 
 Start with **Concepts** to understand local memory and sync. The **Prerequisites** page explains how to prepare Python and Syncthing. **Install**, the highlighted step, sets up this device. **Use** takes you through status checks and recall. **Help** covers troubleshooting and protecting your data.
 
-1. Read [Concepts](./getting-started/concepts).
+1. Read [Concepts](./getting-started/concepts) if the terms are new; otherwise start with your setup route above.
 2. Prepare the [prerequisites](./getting-started/prerequisites).
-3. Install on [macOS](./install/macos), [Linux](./install/linux) or [Windows](./install/windows).
+3. With a supplied bootstrap, install on [macOS](./install/macos), [Linux](./install/linux) or [Windows](./install/windows). Starting alone, create a [new local group](./install/new-group) instead.
 4. [Check status](./use/status), then [recall memory and connect agents](./use/recall).
 5. Use [Troubleshooting](./troubleshooting) and [Privacy](./privacy) when you need help.
 

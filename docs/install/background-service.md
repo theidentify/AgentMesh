@@ -8,7 +8,7 @@ These steps configure background operation for the AgentMesh memory-sync applica
 
 ## Before you enable a service
 
-Stop the foreground worker with Ctrl-C first. Use the installed paths from `data/runtime.json`, and an absolute Python interpreter path available at login. The macOS and Linux commands below cover the basic setup and run from the supplied setup source directory. Their database filenames match the wrapper defaults; if you selected another device identity, use the database path from your runtime instead.
+Stop the foreground worker with Ctrl-C first. Use the installed paths from `data/runtime.json`, and an absolute Python interpreter path available at login. The macOS and Linux service examples below are for unsigned sync and run from the supplied setup source directory. For an installation with signed sync required, use a service configuration that starts the [configured managed worker](../use/worker#use-managed-execution); these generated examples do not supply signing configuration. Their database filenames match the wrapper defaults; if you selected another device identity, use the database path from your runtime instead.
 
 The generator writes a private configuration file but does not register it. It refuses to overwrite an existing file. Inspect the interpreter, script, database, exchange, interval and log paths in the generated file, and ensure they match this installation before running the registration commands; stop an old service before explicitly removing its configuration to regenerate it.
 
@@ -27,7 +27,9 @@ PLIST="$HOME/Library/LaunchAgents/org.agentmesh.sync.plist"
 plutil -lint "$PLIST"
 ```
 
-Observed on a disposable macOS configuration: the generator exits `0` with no stdout and `plutil` prints `/path/to/agentmesh.plist: OK`. A generator error (exit `2`) or failed lint is a stop condition. Lint checks syntax, not that the selected paths are correct.
+Output (run on macOS)
+
+The generator exits `0` with no stdout and `plutil` prints `/path/to/agentmesh.plist: OK`. A generator error (exit `2`) or failed lint is a stop condition. Lint checks syntax, not that the selected paths are correct.
 
 After inspecting it, load the service and check it:
 
@@ -36,15 +38,19 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl print "gui/$(id -u)/org.agentmesh.sync"
 ```
 
-Expected example from the generated configuration and setup reference, not a `launchctl` execution capture: `print` should find the loaded service with the intended program arguments. An OS command failure or repeated failed cycles is not successful setup; inspect private logs and perform the A → B test.
+Output (example from code)
 
-The LaunchAgent runs at login/loading and restarts the worker. Private logs are `agentmesh.stdout.log` and `agentmesh.stderr.log` in the local `data` directory. To stop and unregister it in the same shell:
+`print` should find the loaded service with the intended program arguments. An OS command failure or repeated failed cycles is not successful setup; inspect private logs and perform the A → B test.
+
+The LaunchAgent runs at login/loading and restarts the worker. Private logs are `agentmesh.stdout.log` and `agentmesh.stderr.log` in the local `data` directory. To stop and unload it for the current login session, run the following command. To prevent it from loading at a later login, also move the plist out of the LaunchAgents directory after unloading it:
 
 ```sh
 launchctl bootout "gui/$(id -u)" "$PLIST"
 ```
 
-Expected from the setup reference, not executed here: `bootout` unloads this exact service. Verify it is no longer loaded and no worker from it remains; a failed command does not establish that it stopped.
+Output (example from code)
+
+`bootout` unloads this exact service. Verify it is no longer loaded and no worker from it remains; a failed command does not establish that it stopped.
 
 ## Linux systemd user service
 
@@ -61,7 +67,13 @@ UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agentmesh.service"
 systemd-analyze --user verify "$UNIT"
 ```
 
-Observed generator result on disposable storage: exit `0`, no stdout, a unit with the selected `ExecStart` arguments. The `systemd-analyze` step was not run here; expected from the setup reference is successful unit verification. Errors require correction before enabling.
+Output (run on macOS)
+
+The generator exits `0` with no stdout and writes a unit with the selected `ExecStart` arguments.
+
+Output (example from code)
+
+The `systemd-analyze` step should verify the unit successfully. Errors require correction before enabling.
 
 After inspecting it, enable the service and view its status and logs:
 
@@ -72,7 +84,9 @@ systemctl --user status agentmesh.service
 journalctl --user -u agentmesh.service
 ```
 
-Expected example from the generated unit and setup reference, not a systemd capture: status should identify the intended service as active and logs should show recurring successful cycles. A failed/inactive service or recurring cycle errors requires investigation. Registration alone is not a memory-delivery test.
+Output (example from code)
+
+Status should identify the intended service as active and logs should show recurring successful cycles. A failed/inactive service or recurring cycle errors requires investigation. Registration alone is not a memory-delivery test.
 
 To stop and disable it:
 
@@ -80,7 +94,9 @@ To stop and disable it:
 systemctl --user disable --now agentmesh.service
 ```
 
-Expected from the setup reference, not executed here: the service stops and is disabled for future startup. Check status again; a failed disable operation is not evidence of stopped execution.
+Output (example from code)
+
+The service stops and is disabled for future startup. Check status again; a failed disable operation is not evidence of stopped execution.
 
 ::: warning
 Linux-host service verification remains outstanding. This requires a working systemd user session and may stop on logout. This guide configures login-session operation only; no lingering is enabled. For SSH/headless operation that must survive logout, have the host administrator configure the user manager lifetime deliberately using the [systemd loginctl reference](https://github.com/systemd/systemd/blob/main/man/loginctl.xml), then test logout and reboot. Do not assume an active SSH session proves unattended operation.
@@ -96,7 +112,9 @@ For an existing basic, unsigned installation, run this read-only preview from Co
 py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --enable --legacy-drained --dry-run
 ```
 
-Expected example derived from `windows_install.py`, not run on Windows: JSON with `status: planned`, exit `0`, and no changes. An error blocks progress; a successful dry run does not execute the later stopped-worker precheck.
+Output (example from code)
+
+JSON with `status: planned`, exit `0`, and no changes. An error blocks progress; a successful dry run does not execute the later stopped-worker precheck.
 
 After reviewing the preview, enable it interactively:
 
@@ -104,7 +122,9 @@ After reviewing the preview, enable it interactively:
 py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --enable --legacy-drained
 ```
 
-Expected example derived from code: a confirmation prompt, then `status: enabled` and exit `0` after successful task registration. Cancel returns exit `2`; errors return `1`. This is not proof of a running worker.
+Output (example from code)
+
+A confirmation prompt, then `status: enabled` and exit `0` after successful task registration. Cancel returns exit `2`; errors return `1`. This is not proof of a running worker.
 
 `--legacy-drained` explicitly acknowledges that prior legacy workers have stopped. For an installation with signed sync required, omit `--legacy-drained` from the enable command; missing managed-worker metadata needs a separate `--unmanaged-drained` acknowledgment after confirming source workers have exited. Follow the [startup prerequisites and confirmations](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md#opt-in-start-at-login) for your installation.
 
@@ -114,7 +134,9 @@ Enabling schedules the installed program for the next matching user sign-in; it 
 py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --disable
 ```
 
-Expected example derived from code, not a Windows capture: after confirmation, `status: disabled`, exit `0`. Cancel/error is not successful removal of startup. Disabling does not stop an already running worker. These commands use the runtime to find the database, so `--database` is unnecessary.
+Output (example from code)
+
+After confirmation, `status: disabled`, exit `0`. Cancel/error is not successful removal of startup. Disabling does not stop an already running worker. These commands use the runtime to find the database, so `--database` is unnecessary.
 
 ::: warning
 Actual Windows sign-in behavior remains a separate host-verification step. A scheduled task's state alone does not establish worker health; [check the worker](../use/status).

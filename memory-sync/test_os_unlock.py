@@ -162,3 +162,88 @@ def test_mac_timeout_discards_secret_bearing_context(tmp_path):
     with pytest.raises(ou.OSUnlockError) as caught:
         backend.load(KEY_ID)
     assert caught.value.__context__ is None
+
+def enabled(tmp_path, backend):
+    directory, public = protected(tmp_path)
+    raw = json.loads((directory / 'identity.json').read_text())
+    secret = signed.Security(directory, unlock=lambda: PASS).key.private_bytes_raw()
+    key = os.urandom(32)
+    backend.store(public['key_id'], key)
+    signed.write_local(directory / 'identity.json', {**raw, 'os_unlock': ou.seal(public, secret, backend.name, key)})
+    backend.calls.clear()
+    ou.reset_cache()
+    return directory, public
+
+
+def test_worker_path_unlocks_through_the_os_store_only(tmp_path):
+    backend = FakeBackend()
+    directory, public = enabled(tmp_path, backend)
+    security = signed.Security(directory, os_unlock=True, backend=backend)
+    assert not security.locked and security.public == public
+    security.sign_bytes(b'probe')
+    assert signed.Security(directory).locked  # without the opt-in there is no OS call
+
+
+def test_missing_item_locks_with_the_specific_reason_and_is_asked_once_per_process(tmp_path):
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    backend.items.clear()
+    for _ in range(3):
+        security = signed.Security(directory, os_unlock=True, backend=backend)
+        assert security.locked and security.lock_reason == ou.MISSING
+        with pytest.raises(ValueError, match=ou.MISSING):
+            security.require_unlocked()
+    assert backend.calls.count('load') == 1
+
+
+def test_wrong_key_is_reported_as_damage_not_skipped(tmp_path):
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    key_id = next(iter(backend.items))
+    backend.items[key_id] = os.urandom(32)
+    security = signed.Security(directory, os_unlock=True, backend=backend)
+    assert security.locked and security.lock_reason == ou.DAMAGED
+
+
+def test_wizard_falls_back_to_the_passphrase_when_the_os_path_fails(tmp_path):
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    backend.fail['load'] = ou.REFUSED
+    assert not signed.Security(directory, unlock=lambda: PASS, os_unlock=True, backend=backend).locked
+
+
+def test_backend_of_another_os_is_locked_and_unknown_backend_is_invalid(tmp_path):
+    backend = FakeBackend('windows-credential')
+    directory, _ = enabled(tmp_path, backend)
+    other = FakeBackend('macos-keychain-file')
+    other.items.update(backend.items)
+    security = signed.Security(directory, os_unlock=True, backend=other)
+    assert security.locked and security.lock_reason == ou.UNSUPPORTED and other.calls == []
+    data = json.loads((directory / 'identity.json').read_text())
+    data['os_unlock']['backend'] = 'linux-secret-service'
+    signed.write_local(directory / 'identity.json', data)
+    with pytest.raises(ValueError, match='invalid'):
+        signed.Security(directory, os_unlock=True, backend=other)
+
+
+def test_os_unlock_without_protection_is_invalid(tmp_path):
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    data = json.loads((directory / 'identity.json').read_text())
+    del data['protection']
+    signed.write_local(directory / 'identity.json', data)
+    with pytest.raises(ValueError, match='invalid private identity'):
+        signed.Security(directory, os_unlock=True, backend=backend)
+
+
+@pytest.mark.parametrize('field,value', [('nonce', '00' * 12), ('backend', 'windows-credential')])
+def test_cached_success_cannot_hide_tampering(tmp_path, field, value):
+    backend = FakeBackend()
+    directory, _ = enabled(tmp_path, backend)
+    assert not signed.Security(directory, os_unlock=True, backend=backend).locked
+    raw = json.loads((directory / 'identity.json').read_text())
+    raw['os_unlock'][field] = value
+    signed.write_local(directory / 'identity.json', raw)
+    security = signed.Security(directory, os_unlock=True, backend=backend)
+    assert security.locked
+    assert backend.calls.count('load') == 1

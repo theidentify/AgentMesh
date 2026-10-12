@@ -21,8 +21,7 @@ SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 17, 8, 1  # ~128 MiB, about half a second to
 MIN_N, MAX_N = 2 ** 14, 2 ** 20
 MIN_PASSPHRASE = 12
 FIELDS = {'format', 'kdf', 'n', 'r', 'p', 'salt', 'cipher', 'nonce', 'ciphertext'}
-LOCKED = ('passphrase-protected identity is locked; unattended unlock is not available yet '
-          '(requires OS-protected key access)')
+LOCKED = 'passphrase-protected identity is locked; enable OS unlock or unlock interactively'
 
 
 def _primitives():

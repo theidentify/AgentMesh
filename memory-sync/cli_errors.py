@@ -126,16 +126,18 @@ KEY_REASONS = frozenset({
     'protected identity readback failed',
     'protected identity could not be unlocked: wrong passphrase or damaged file',
     'invalid protected identity parameters',
-    'passphrase-protected identity is locked; unattended unlock is not available yet (requires OS-protected key access)',
+    'passphrase-protected identity is locked; enable OS unlock or unlock interactively',
     'invalid private identity',
     'local signing key is not authorized',
     'security directory must be owner-only (chmod 700)',
 })
+from os_unlock import REASONS as OS_UNLOCK_REASONS
+KEY_REASONS = KEY_REASONS | OS_UNLOCK_REASONS | {'invalid OS unlock envelope'}
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task', 'key_protection'})
+                           'windows_install', 'windows_task', 'key_protection', 'os_unlock'})
 
 
 def report(exc, action):

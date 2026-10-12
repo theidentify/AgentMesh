@@ -227,3 +227,39 @@ class WindowsCredential:
         ctypes, _, advapi = self._api()
         if not advapi.CredDeleteW(self.target(key_id), 1, 0) and ctypes.get_last_error() != self.ERROR_NOT_FOUND:
             raise OSUnlockError(NOT_REMOVED) from None
+
+
+from threading import RLock
+
+_RESULTS = {}
+_CACHE_LOCK = RLock()
+
+
+def reset_cache():
+    with _CACHE_LOCK:
+        _RESULTS.clear()
+
+
+def unlock(directory, public, envelope, backend=None, *, cache=True):
+    """Cache a result per identity; changed envelopes fail closed without another OS read."""
+    check(envelope)
+    backend = backend if backend is not None else current_backend()
+    entry = (str(directory), public['key_id'])
+    fingerprint = signed.typed({'public': public, 'envelope': envelope})
+    with _CACHE_LOCK:
+        if cache and entry in _RESULTS:
+            previous, result = _RESULTS[entry]
+            if not isinstance(result, str) and previous != fingerprint:
+                result = DAMAGED
+        elif backend is None or backend.name != envelope['backend']:
+            result = UNSUPPORTED
+        else:
+            try:
+                result = open_envelope(public, envelope, backend.load(public['key_id']))
+            except OSUnlockError as exc:
+                result = str(exc)
+            if cache:
+                _RESULTS[entry] = (fingerprint, result)
+    if isinstance(result, str):
+        raise OSUnlockError(result) from None
+    return result

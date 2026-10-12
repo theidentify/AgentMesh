@@ -292,7 +292,7 @@ def test_mac_load_maps_failures_to_fixed_reasons_without_chaining(tmp_path, resu
         backend.load(KEY_ID)
     assert str(caught.value) == reason
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
-    assert 'ab' * 32 not in repr(caught.value) and 'ab' * 32 not in str(caught.value.__context__ or '')[:0] + str(caught.value)
+    assert 'ab' * 32 not in repr(caught.value) and 'ab' * 32 not in str(caught.value)
 
 
 def test_mac_delete_treats_missing_as_success_and_other_failures_as_not_removed(tmp_path):
@@ -320,9 +320,6 @@ def test_current_backend_by_platform(monkeypatch):
     monkeypatch.setattr(ou.sys, 'platform', 'darwin')
     assert ou.current_backend().name == 'macos-keychain-file'
 ```
-
-The `__context__` assertion only needs to prove that the message carries no secret and `__cause__` is
-None with the context suppressed. Simplify that assertion if it reads awkwardly, but keep its intent.
 
 - [ ] **Step 2: Run and confirm they fail.**
 
@@ -505,8 +502,7 @@ def test_worker_path_unlocks_through_the_os_store_only(tmp_path):
     security = signed.Security(directory, os_unlock=True, backend=backend)
     assert not security.locked and security.public == public
     security.sign_bytes(b'probe')
-    assert not signed.Security(directory).locked is False  # default stays locked: no OS call without opt-in
-    assert signed.Security(directory).locked
+    assert signed.Security(directory).locked  # without the opt-in there is no OS call
 
 
 def test_missing_item_locks_with_the_specific_reason_and_is_asked_once_per_process(tmp_path):
@@ -564,9 +560,6 @@ def test_os_unlock_without_protection_is_invalid(tmp_path):
   (`enable` comes in Task 4. Write these tests now, and expect them to fail until Task 4 lands. Run only
   the Task 3 subset with `-k` once Task 4 exists, or write Task 3 and Task 4 together. Either is fine; the
   commit after Task 4 must have everything green.)
-
-  Remove the odd double-negative line in the first test (`assert not ... is False`). Keep only
-  `assert signed.Security(directory).locked`.
 
 - [ ] **Step 2: Implement the cache and unlock helper** in `os_unlock.py`:
 

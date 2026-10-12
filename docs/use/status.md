@@ -1,5 +1,11 @@
 # Check sync status
 
+Sync problems are quiet: files can arrive while records never import. This page shows how to tell what actually happened in the last worker cycle.
+
+![One worker cycle: ingest new sessions, export local changes as packets, exchange through the shared folder, import peer packets, then write a status report. A row edited on two devices is quarantined rather than silently overwritten.](/diagrams/worker-cycle.svg)
+
+Each cycle runs in arrow order. **Ingest** stores new agent sessions locally. **Export** turns local changes into change packets. The **exchange folder** carries packets from every peer. **Import** validates peer packets and applies them, or keeps them pending until their dependencies arrive. **Report** writes counts and sync health to `status/<node>.json`. The red box is what AgentMesh refuses to do: when the same row was edited on two devices, it quarantines the change instead of overwriting either one.
+
 Run these commands from the installed `app` directory.
 
 ## Local status
@@ -44,4 +50,4 @@ python3 agentmesh.py worker-status --runtime /path/to/runtime.json
 
 This inspects managed-worker lifecycle state. It does not establish whether an unrelated foreground worker is running; missing managed metadata is not proof that all workers are stopped.
 
-See [troubleshooting](../troubleshooting) and the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for interpreting conflicts and recovery limits.
+To browse the same information in a dashboard, open [Insight](./insight). See [troubleshooting](../troubleshooting) and the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for interpreting conflicts and recovery limits.

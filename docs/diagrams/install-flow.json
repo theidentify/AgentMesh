@@ -1,0 +1,23 @@
+{
+  "title": "Install once per device, then let the worker run",
+  "nodes": [
+    {"id": "pre", "col": 0, "row": 0, "title": "1 · Prerequisites",
+     "lines": ["Python 3.10+ with FTS5", "Syncthing on PATH"]},
+    {"id": "pair", "col": 1, "row": 0, "title": "2 · Pair devices",
+     "lines": ["accept the exchange", "folder"], "muted": "wait for Up to Date"},
+    {"id": "setup", "col": 2, "row": 0, "kind": "highlight", "title": "3 · Run the installer",
+     "lines": ["setup_macos.sh", "setup_linux.sh", "START-WINDOWS.cmd"]},
+    {"id": "fg", "col": 2, "row": 1, "title": "4 · Foreground worker",
+     "lines": ["syncs every 60 s"], "muted": "stops on Ctrl-C / close"},
+    {"id": "bg", "col": 1, "row": 1, "title": "5 · Background (optional)",
+     "lines": ["LaunchAgent · systemd", "Windows sign-in start"], "muted": "stop step 4 first"},
+    {"id": "unzip", "col": 0, "row": 1, "kind": "rejected", "title": "Unzip bootstrap by hand",
+     "lines": ["skips checksum checks"], "muted": "let the installer do it"}
+  ],
+  "edges": [
+    {"from": "pre", "to": "pair"},
+    {"from": "pair", "to": "setup"},
+    {"from": "setup", "to": "fg"},
+    {"from": "fg", "to": "bg"}
+  ]
+}

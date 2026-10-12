@@ -41,3 +41,5 @@ Optional PostgreSQL access takes its DSN only from the `INSIGHT_PG_DSN` environm
 ::: warning
 Insight binds only to `127.0.0.1` and is not an authenticated network service. Do not expose it through a tunnel. Memory excerpts and screenshots remain private; redaction does not guarantee that prose contains no secrets.
 :::
+
+If a view shows something unexpected, start with [troubleshooting](../troubleshooting).

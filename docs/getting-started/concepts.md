@@ -2,13 +2,15 @@
 
 ## How AgentMesh works
 
-Each device keeps a local SQLite memory database. A worker exports record changes into a private Syncthing exchange folder and imports changes from other devices. Agents can then recall memory from their local database.
+AgentMesh never moves a database between machines. Each device keeps its own memory and shares only small record changes, so the picture below is the whole system.
 
-```text
-[Mac: mac.db] --packets--> [Syncthing exchange folder] <--packets-- [Windows: windows.db]
-                                      ^
-                                      |-- packets -- [Linux: linux.db]
-```
+![Your agents feed a local sync worker that keeps mac.db and exchanges change packets with other devices through a private Syncthing folder; syncing database files directly is forbidden.](/diagrams/architecture.svg)
+
+Follow the arrows from left to right. **Your agents** (Claude, Codex, Hermes, OMP) write session transcripts as they work. The **sync worker** picks up new sessions, stores them in the local database, **mac.db** on a Mac, and every 60 seconds exports local changes and imports changes from peers. The **exchange folder** is the only thing the devices share: a private Syncthing folder of change packets and status reports. **Other devices** run the same worker against their own `windows.db` or `linux.db`.
+
+The exchange folder is highlighted because everything depends on it, and it is also the reason both devices must be online at the same time. The red box is the shortcut people try first: putting the database file itself in Syncthing. Never do that; live SQLite files and their WAL/SHM companions corrupt when copied mid-write.
+
+The rest of this page defines each piece in more detail.
 
 ## Node
 
@@ -34,4 +36,4 @@ Direct Syncthing exchange needs both devices online at the same time. Offline wr
 
 The setup wrappers install the memory-sync application, not Hermes or other agents. They do not run OS package managers or register services. Background operation is a [separate step](../install/background-service). Peer edits do not write back to PostgreSQL.
 
-Read the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details and limitations.
+Read the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details and limitations. When the model is clear, check the [prerequisites](./prerequisites) for your devices.

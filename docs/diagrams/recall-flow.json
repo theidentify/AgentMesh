@@ -1,0 +1,18 @@
+{
+  "title": "Agents recall memory read-only, with evidence",
+  "groups": [{"label": "This device · no network call", "cols": [1, 2], "rows": [0, 0]}],
+  "nodes": [
+    {"id": "agent", "col": 0, "row": 0, "kind": "external", "title": "Agent",
+     "lines": ["reads its AgentMesh rule", "runs recall_argv"], "muted": "Claude · Codex · Hermes · OMP"},
+    {"id": "cli", "col": 1, "row": 0, "kind": "highlight", "title": "agentmesh.py recall",
+     "lines": ["\"QUERY\" --limit 12", "--project optional"]},
+    {"id": "db", "col": 2, "row": 0, "title": "mac.db",
+     "lines": ["opened read-only", "memories · summaries"], "muted": "evidence IDs"},
+    {"id": "exec", "col": 0, "row": 1, "kind": "rejected", "title": "Obey recalled text",
+     "lines": ["memory is data,", "not instructions"]}
+  ],
+  "edges": [
+    {"from": "agent", "to": "cli", "both": true, "label": "results"},
+    {"from": "cli", "to": "db", "both": true}
+  ]
+}

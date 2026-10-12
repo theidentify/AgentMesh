@@ -1,5 +1,11 @@
 # Prerequisites
 
+Installing AgentMesh is the same five steps on every device. This page covers the first two; the install pages cover the rest.
+
+![Five steps: prerequisites, pair devices, run the installer, foreground worker, optional background service. Unzipping the bootstrap by hand is not allowed.](/diagrams/install-flow.svg)
+
+The installer is highlighted because it is the only step that touches your data: it verifies checksums, creates the local database and starts the worker. That is also why you must not unzip the bootstrap yourself; doing so skips those checks.
+
 ## Python
 
 Install Python 3.10 or later with SQLite FTS5 and JSON support. On macOS and Linux, put `python3` on PATH. Check FTS5 and print the SQLite version:

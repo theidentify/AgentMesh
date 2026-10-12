@@ -15,3 +15,5 @@ code does not support or that are stated imprecisely; missing failure modes and
 recovery steps; ordering problems you would hit when actually operating it; limits
 (number of devices, identities, intervals) that are wrong or missing.
 End with: could you operate this system from the guide alone? What is missing?
+
+Write the entire report in Thai. Keep quoted guide text, file:line locations, commands, flags, code identifiers and suggested English wording exactly as they are, untranslated.

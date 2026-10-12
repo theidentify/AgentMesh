@@ -173,5 +173,5 @@ run (`codex exec -s read-only`) with a persona prompt kept in
 | University professor proofreading a thesis | `professor.md` | wrong or inconsistent wording, grammar, terminology drift, unclear claims |
 | Industry computer-science and mathematics practitioner who must operate it | `practitioner.md` | technical imprecision, unverifiable claims, missing failure modes, things they could not actually run |
 
-Reviewers only report; they do not edit. Findings are triaged against this spec and
+Reviewers write their reports in Thai (quotes, locations, commands and suggested English wording stay verbatim). They only report; they do not edit. Findings are triaged against this spec and
 the code before any change; a finding that conflicts with the code is rejected.

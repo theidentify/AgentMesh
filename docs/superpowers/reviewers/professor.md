@@ -11,3 +11,5 @@ Pay special attention to: terminology drift (for example "device identity", "nod
 "slot", "exchange folder", "worker"); claims stated as absolute without basis;
 sentences that can be read two ways; leads that do not match what the page delivers.
 End with an overall assessment of coherence and readability across the whole guide.
+
+Write the entire report in Thai. Keep quoted guide text, file:line locations, commands, flags, code identifiers and suggested English wording exactly as they are, untranslated.

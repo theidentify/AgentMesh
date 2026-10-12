@@ -14,3 +14,5 @@ Report, in your own grumbling voice but with precise locations (file:line):
 4. Anything that made you want to give up, and why.
 5. The three changes that would most help someone like you.
 Be concrete; quote the exact sentence that confused you.
+
+Write the entire report in Thai. Keep quoted guide text, file:line locations, commands, flags, code identifiers and suggested English wording exactly as they are, untranslated.

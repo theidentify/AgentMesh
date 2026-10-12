@@ -108,9 +108,18 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
     return report
 
 
+def _exchange_failed(cycle):
+    # An unwritable or missing exchange leaves the outbox undelivered.
+    cycle = cycle or {}
+    return any((cycle.get(step) or {}).get('unavailable') or (cycle.get(step) or {}).get('error')
+               for step in ('publish', 'receive'))
+
+
 def failed(report):
     workflow = report.get('workflow') or {}
     return bool('error' in report or
+                _exchange_failed(report.get('cycle')) or
+                _exchange_failed(workflow.get('summary_sync')) or
                 (report.get('postgres_mirror') or {}).get('error') or
                 (workflow.get('ingestion') or {}).get('error') or
                 (workflow.get('ingestion') or {}).get('errors') or

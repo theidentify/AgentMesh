@@ -66,8 +66,10 @@ START-WINDOWS.cmd again to load a new application version without deleting data.
   changes into the Mac SQLite copy. Windows edits sync into Mac SQLite, **not back
   into production PostgreSQL**. Reason/digest callers have not been cut over.
 - Two-way additions and changes are tested, but independent edits to the same row
-  or natural unique key are quarantined. A zero process exit code does not mean
-  there are no conflicts; inspect `status/windows.json` and `status/mac.json`.
+  or natural unique key are quarantined. `--once` exits 1 when the cycle has
+  conflicts, invalid packets or an unwritable exchange; the foreground watcher
+  keeps running and exits 0 on Ctrl-C, so inspect `status/windows.json` and
+  `status/mac.json` rather than its exit code.
 - The initial implementation supports one logical node per `mac`, `windows` and
   `linux` identity. Do not reuse an identity across multiple active writers.
 - Keep live SQLite DB/WAL/SHM, PostgreSQL dumps and credentials outside the exchange.

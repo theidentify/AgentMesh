@@ -176,3 +176,16 @@ def test_bootstrap_progress_has_real_row_bar(capsys):
     assert '[######--------------] 30%' in text
     assert '30/100 rows' in text
     assert text.isascii()
+
+
+@pytest.mark.parametrize('sync, expected', [({'conflict': 0, 'invalid': 0}, 0),
+                                            ({'conflict': 1, 'invalid': 0}, 1),
+                                            ({'conflict': 0, 'invalid': 2}, 1)])
+def test_once_exit_status_matches_cycle_report(tmp_path, monkeypatch, capsys, sync, expected):
+    import json
+    import sync_worker
+    module = load_bootstrap()
+    monkeypatch.setattr(module, 'install', lambda *a, **k: {'database': 'db', 'exchange': 'ex'})
+    monkeypatch.setattr(sync_worker, 'run_once', lambda *a, **k: {'sync': sync})
+    assert module.main(['--exchange', str(tmp_path), '--local-dir', str(tmp_path / 'local'), '--once']) == expected
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {'sync': sync}

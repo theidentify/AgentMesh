@@ -341,3 +341,21 @@ def test_stop_request_is_consumed_and_a_stale_one_is_cleared_at_start(tmp_path, 
     write_local(directory / 'stop.json', {'nonce': str(uuid.uuid4())})  # left by an older instance
     assert worker.run(args['runtime'], legacy_drained=True, once=True) == 0
     assert not (directory / 'stop.json').exists()
+
+
+@pytest.mark.parametrize('report', [
+    {'sync': {'conflict': 1, 'invalid': 0}},
+    {'sync': {'conflict': 0, 'invalid': 0}, 'cycle': {'publish': {'published': 0, 'unavailable': True, 'error': 'denied'}}}])
+def test_managed_worker_stops_after_failed_cycle_unlike_foreground_watch(tmp_path, monkeypatch, report):
+    import worker_lifecycle as worker
+    import sync_worker
+    args = bound(tmp_path, monkeypatch)
+    calls = []
+    def cycle(*a, **kw):
+        calls.append(1)
+        if len(calls) > 1:
+            raise AssertionError('managed worker continued after a failed cycle')
+        return report
+    monkeypatch.setattr(sync_worker, 'run_once', cycle)
+    assert worker.run(args['runtime'], interval=0.01, legacy_drained=True) == 1
+    assert len(calls) == 1

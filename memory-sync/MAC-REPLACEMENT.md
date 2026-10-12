@@ -181,3 +181,7 @@ or open setup. Stop uses private nonce-bound metadata and a cooperative request;
 it waits for acknowledgement and lifetime-lock drain, never kills a PID read
 from a file. Stale/corrupt/foreign metadata refuses safely. A managed worker
 exits nonzero on a failed cycle rather than silently claiming healthy status.
+A failed cycle includes quarantined conflict/invalid packets and an exchange
+that could not be published to or read; unlike the foreground `watch`, the
+managed worker stops and stays stopped until an operator reviews the
+diagnostics and starts it again.

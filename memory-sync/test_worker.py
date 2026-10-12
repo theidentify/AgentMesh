@@ -99,3 +99,15 @@ def test_ingestion_error_count_marks_worker_cycle_failed():
     assert sync_worker.failed({'workflow': {'ingestion': {'errors': 1, 'error_classes': ['JSONDecodeError']}}})
     assert not sync_worker.failed({'workflow': {'ingestion': {'errors': 0}}})
     assert sync_worker.failed({'workflow': {'summary': {'status': 'stale'}}})
+
+
+def test_publish_or_exchange_unavailable_marks_worker_cycle_failed():
+    import sync_worker
+    healthy = {'publish': {'published': 0, 'unavailable': False},
+               'receive': {'applied': 0, 'pending': 0, 'conflict': 0, 'invalid': 0, 'unavailable': False}}
+    assert not sync_worker.failed({'cycle': healthy})
+    assert sync_worker.failed({'cycle': {**healthy, 'publish': {'published': 0, 'unavailable': True,
+                                                               'error': 'Permission denied'}}})
+    assert sync_worker.failed({'cycle': {**healthy, 'receive': {**healthy['receive'], 'unavailable': True}}})
+    assert sync_worker.failed({'cycle': healthy, 'workflow': {'summary': {'status': 'committed'},
+        'summary_sync': {**healthy, 'publish': {'published': 1, 'unavailable': True, 'error': 'disk full'}}}})

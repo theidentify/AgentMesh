@@ -737,10 +737,31 @@ def test_final_release_version_upgrades_from_an_rc_and_rolls_back(existing, monk
     assert command(existing, monkeypatch, 'rollback', 'ROLLBACK\n', legacy_drained=True)['status'] == 'selected'
 
 
+def test_next_minor_release_upgrades_from_the_previous_release_and_rolls_back(existing, monkeypatch):
+    command(existing, monkeypatch)
+    previous = package(existing['binary'].parent.parent, '0.2.0', 'd' * 40, launcher=True, onedir=True)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=previous, legacy_drained=True)['status'] == 'selected'
+    following = package(existing['binary'].parent.parent, '0.3.0', 'f' * 40, launcher=True, onedir=True)
+    assert command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', binary=following, legacy_drained=True)['status'] == 'selected'
+    state = installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')
+    assert state['active'] == '0.3.0-' + 'f' * 40 and installer.short(state['active']) == '0.3.0 (fffffff)'
+    assert command(existing, monkeypatch, 'rollback', 'ROLLBACK\n', legacy_drained=True)['status'] == 'selected'
+    state = installer.read_state(existing['program_root'], existing['program_root'] / 'installed.json')
+    assert state['active'] == '0.2.0-' + 'd' * 40
+
+
+@pytest.mark.parametrize('version', ['0.3.0', '0.3.0-rc.1', '0.10.2'])
+def test_later_minor_versions_are_accepted_with_their_claim(existing, version):
+    assert installer.bundle(package(existing['binary'].parent.parent, version, 'f' * 40))
+
+
 @pytest.mark.parametrize('version,distribution', [
     ('0.2.0', 'unsigned development trial; not a final or trusted-publisher release'),
     ('0.2.0-rc.12', 'unsigned release; not signed by a trusted publisher'),
-    ('0.2.0-rc.4', None), ('0.3.0', None), ('0.2.0-beta', None), ('0.2.0-rc.12', 'signed by Example Corp'),
+    ('0.2.0-rc.4', None), ('0.2.0-beta', None), ('0.2.0-rc.12', 'signed by Example Corp'),
+    ('0.3.0', 'unsigned development trial; not a final or trusted-publisher release'),
+    ('0.3.0-rc.1', 'unsigned release; not signed by a trusted publisher'),
+    ('0.1.9', None), ('1.0.0', None), ('0.3.01', None), ('0.03.0', None), ('0.3.0-rc.0', None),
 ])
 def test_bundle_rejects_mismatched_claims_and_unknown_versions(existing, monkeypatch, version, distribution):
     bad = package(existing['binary'].parent.parent, version, 'e' * 40, distribution=distribution)
@@ -768,3 +789,4 @@ def test_activated_database_blocks_owned_rollback_before_changes(existing,monkey
     with pytest.raises(ValueError,match='capability'):
         command(existing,monkeypatch,'rollback','ROLLBACK\n',legacy_drained=True)
     assert snapshot(existing['program_root'])==before
+

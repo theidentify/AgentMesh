@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Package version: 0.2.0-rc.N (development trial) or 0.2.N (release)'
+        description: 'Package version: 0.N.0-rc.M (development trial) or 0.N.P (release)'
         required: false
         default: '0.2.0-rc.12'
 
@@ -73,12 +73,14 @@ jobs:
         env:
           AGENTMESH_VERSION: ${{ inputs.version || '0.2.0-rc.12' }}
         run: |
-          import hashlib, json, os, pathlib, platform, re, zipfile
+          import hashlib, json, os, pathlib, platform, re, sys, zipfile
           dist = pathlib.Path(os.environ['RUNNER_TEMP']) / 'agentmesh-dist'
           out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'agentmesh-rc'
           out.mkdir()
           version = os.environ['AGENTMESH_VERSION']
-          assert re.fullmatch(r'0\.2\.(?:0-rc\.(?:[5-9]|[1-9][0-9]+)|[0-9]+)', version), version
+          sys.path.insert(0, 'memory-sync')
+          from windows_install import VERSION  # one version rule for packaging and the installer
+          assert re.fullmatch(VERSION, version), version
           trial = '-rc.' in version
           # Installer accepts exactly these two claims; neither asserts a trusted publisher.
           distribution = ('unsigned development trial; not a final or trusted-publisher release' if trial

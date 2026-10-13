@@ -121,3 +121,58 @@ without it.
   - the DB and exchange are byte for byte unchanged
 - **Regression:** the existing #9 tests are updated from RESIGN to PUBLISH; the full suite runs from
   `memory-sync/` and from the repo root.
+
+## Amendments from the security review (2026-10-13), binding
+
+1. **H1: the manifest binds `envelope_digest`, not `receipt_digest`.**
+   - **Why:** `receipt_digest` leaves the signature out. Someone holding the old key can produce another
+     valid Ed25519 signature for the same unsigned content and swap that variant into the exchange.
+     A peer then commits the variant's `envelope_digest`, rejects A's real file later, and every
+     resolution referencing `(uuid, A's digest)` breaks for good.
+   - **The manifest value** is `signed.envelope_digest(p)`, computed over A's exact outbox packet.
+   - **`verify_rotated`** compares `envelope_digest(p)`.
+   - **Versioning:** bump the proposal format to `agentmesh-key-rotation-v2` and the registry format to
+     `agentmesh-rotations-v2`. A v1 proposal or registry entry is **refused**, never accepted alongside
+     v2. It's OK to refuse, because no deployment has rotated yet.
+   - **`compromise-report`'s `in_manifest`** compares `envelope_digest`.
+   - **Test:** a signature variant of a manifest packet (same uuid and unsigned content, different
+     signature, signed with the old key) is refused at the peer, and A's real file is still accepted
+     afterwards.
+2. **H2: resume during the publish step.**
+   - **While a journal exists**, a pending uuid's exchange file counts as already written only when
+     `read_local(file) == row text encoded`. Different bytes refuse with the specific reason
+     `pending packet file differs from the outbox; see compromise-report`.
+   - **Without a journal**, keep the existing check that the file is absent.
+   - **Test:** crash after some files are written, before the commit, then `--resume` completes.
+3. **M1: tie publishing to the signed manifest.**
+   - Inside the publish transaction, check that every old-key pending row's
+     `(uuid, envelope_digest)` equals its entry in the journal's staged manifest.
+   - Check that the set of pending old-key rows equals the manifest's pending subset exactly.
+   - Otherwise refuse, and change nothing.
+4. **M2: review before a compromise.**
+   - With `--reason compromised`, before `PUBLISH`, list each pending packet: uuid, format, `kind`
+     (v3), table/op and `key_sha256`. Never row contents.
+   - **Option `--drop-pending UUID`** (repeatable, compromised only): the named pending rows are
+     neither published nor put on the manifest.
+     - They stay in the outbox marked `published=0`. Record them in the journal; on finish, move them
+       to a local `_sync_rotation_dropped(uuid, packet, dropped_at)` table instead of deleting them.
+     - The report lists them.
+     - Dropping a row that another pending packet references as evidence/covers refuses.
+5. **M3: recovering from a collision.**
+   - A pending uuid whose exchange file has **different** bytes during a journal is a likely
+     compromise artifact.
+   - `identity-rotate --resume --quarantine-collision UUID` shows both envelope digests. After the
+     operator types `QUARANTINE`, it moves the exchange file to
+     `EXCHANGE/pairing/rotations/quarantine/<uuid>.<digest>.json` and continues.
+   - A's outbox stays authoritative.
+6. **M4: compromise-report.**
+   - `superseded` is true only when a `_sync_packet_dispositions` row matches this file's
+     `envelope_digest`. A disposition for the same uuid with a different digest is reported as
+     `variant_superseded`.
+   - v3 rows are validated with `packet_versions` (the v3 validator), not the legacy projection.
+   - The `forged_candidates` byte check also runs for v3.
+7. **Nice to have, include:**
+   - `verify_rotated` does not cache a missing registry entry across a `rotations.json` change: key the
+     cache on the registry's mtime and size.
+   - SIGNED-SYNC.md says that manifest acceptance gives authorization state `verified`, not `applied`.
+   - Test: a resolution plan prepared before rotation is refused after it (stale trust digest).

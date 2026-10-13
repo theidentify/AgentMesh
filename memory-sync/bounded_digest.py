@@ -243,6 +243,9 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                     metric[field] = sum(values) if all(type(v) is int and v >= 0 for v in values) else None
                 totals = [(r.get('usage') or {}).get('input_total_tokens') for r in results]
                 metric['context_max_input_tokens'] = max(totals) if all(type(v) is int for v in totals) else None
+                # Cost is known only when every call reports it (e.g. Claude Code); never partial.
+                costs = [(r.get('usage') or {}).get('actual_cost_usd') for r in results]
+                metric['actual_cost_usd'] = round(sum(costs), 6) if all(type(v) in (int, float) and v >= 0 for v in costs) else None
                 return result
             result = call(model)
             try:
@@ -255,6 +258,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                 for field in usage_fields:
                     metric[field] = None
                 metric['context_max_input_tokens'] = None
+                metric['actual_cost_usd'] = None
                 result = call(conflict_model)
                 validate(copy.deepcopy(result['payload']), task['events'], task['related'])
             metric['accepted_items'] = len(result['payload']['items'])

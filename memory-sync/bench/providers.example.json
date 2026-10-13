@@ -1,0 +1,6 @@
+{
+  "claude-code": ["/path/to/agentmesh/venv/bin/python", "/path/to/agentmesh/claude_digest_worker.py",
+                  "--claude", "/path/to/claude"],
+  "codex": ["/path/to/resolver/venv/bin/python", "/path/to/agentmesh/digest_worker.py",
+            "--resolver-root", "/path/to/resolver/source"]
+}

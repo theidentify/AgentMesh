@@ -15,9 +15,9 @@ import key_protection as kp
 import memory_sync as sync
 import signed_packets as signed
 
-FORMAT = 'agentmesh-key-rotation-v1'
+FORMAT = 'agentmesh-key-rotation-v2'
 DOMAIN = FORMAT.encode() + b'\0'
-ROTATIONS = 'agentmesh-rotations-v1'
+ROTATIONS = 'agentmesh-rotations-v2'
 MAX_MANIFEST_BYTES = 200 * 1024 * 1024
 INVALID = 'invalid rotation proposal'
 INVALID_MANIFEST = 'invalid rotation manifest'
@@ -342,7 +342,7 @@ def _read_plan(directory, db, *, old_key=None, journal=None):
                     if p['uuid'] != row['uuid']: raise ValueError(PENDING_INVALID)
                     validate_packet(p, scope['group'], scope['node'])
                     if p['sender'] != scope['sender']: raise ValueError(PENDING_INVALID)
-                    manifest.append((p['uuid'], signed.receipt_digest(p)))
+                    manifest.append((p['uuid'], signed.envelope_digest(p)))
                 continue
             if p.get('key_id') != key_id: raise ValueError(UNEXPECTED)
             validate_packet(p, scope['group'], scope['node'])
@@ -352,7 +352,7 @@ def _read_plan(directory, db, *, old_key=None, journal=None):
                 try: verify_old(p, verifier)
                 except Exception: raise ValueError(PENDING_INVALID) from None
             pending.append(p)
-            manifest.append((p['uuid'], signed.receipt_digest(p)))
+            manifest.append((p['uuid'], signed.envelope_digest(p)))
             texts[p['uuid']] = hashlib.sha256(row['packet'].encode('utf-8')).hexdigest()
         if journal is not None:
             expected = journal['manifest']['pending_packets']
@@ -557,7 +557,7 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
             p = signed.parse(row['packet'])
             validate_packet(p, new['group'], new['node'])
             if (p['uuid'] != uid or p['sender'] != new['sender'] or p['key_id'] != journal['old_key_id']
-                    or manifest.get(uid) != signed.receipt_digest(p)):
+                    or manifest.get(uid) != signed.envelope_digest(p)):
                 raise ValueError(PENDING_INVALID)
             if journal['old_public'] is not None: verify_old(p, journal['old_public'])
             no_pending_files(exchange, new['node'], [p], expected=expected)
@@ -764,7 +764,7 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                 item = dict(uuid=p['uuid'], node=p['node'], file_mtime=when,
                     changes=[dict(table=ch['table'], op='delete' if ch['row'] is None else 'upsert',
                                   key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16]) for ch in p['body']],
-                    in_manifest=None if manifest is None else manifest.get(p['uuid']) == digest)
+                    in_manifest=None if manifest is None else manifest.get(p['uuid']) == signed.envelope_digest(p))
                 if p['format'] == signed.RESOLUTION_FORMAT:
                     item['kind'] = p['kind']
                     for change in item['changes']: change['kind'] = p['kind']

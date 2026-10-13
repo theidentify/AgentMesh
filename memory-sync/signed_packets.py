@@ -384,7 +384,7 @@ class Security:
                     self.directory / 'rotations' / (key_id + '.manifest'), private=True,
                     sha256=rotation['manifest_sha256'], count=rotation['manifest_count'])['packets']
         packets = self._rotation_manifests[key_id]
-        if packets is None or packets.get(p['uuid']) != receipt_digest(p):
+        if packets is None or packets.get(p['uuid']) != envelope_digest(p):
             raise ValueError('unknown or revoked signing key')
         return self._verify(p, group, folder, historical=True)
 

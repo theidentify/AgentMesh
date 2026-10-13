@@ -93,7 +93,7 @@ def test_proposal_roundtrip_and_registry(peers):
     a, b, ex, sa, sb = peers
     path, p = publish(peers)
     manifest = ex / 'test.manifest'
-    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
     doc = rotation.proposal(sa, sb.public['key_id'], 'planned', manifest)
     assert rotation.check_proposal(doc, manifest) == doc
     rotation.add_rotation(sb.directory, doc['old_key_id'], sa.public['key_id'], manifest)
@@ -176,7 +176,7 @@ def test_revoked_manifest_receive(peers, case):
     a, b, ex, sa, sb = peers
     path, p = publish(peers)
     manifest = ex / 'approved.manifest'
-    digest = '0'*64 if case == 'digest' else signed.receipt_digest(p)
+    digest = '0'*64 if case == 'digest' else signed.envelope_digest(p)
     rotation.write_manifest(manifest, [] if case == 'absent' else [(p['uuid'], digest)])
     if case != 'no-registry':
         rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
@@ -199,7 +199,7 @@ def test_manifest_causality_and_lazy_cache(peers, monkeypatch):
     first.unlink()
     second, q = publish(peers, 'second')
     manifest = ex / 'approved.manifest'
-    pairs = sorted([(p['uuid'], signed.receipt_digest(p)), (q['uuid'], signed.receipt_digest(q))])
+    pairs = sorted([(p['uuid'], signed.envelope_digest(p)), (q['uuid'], signed.envelope_digest(q))])
     rotation.write_manifest(manifest, pairs)
     rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
     signed.revoke(sb.directory, sa.public['key_id'])
@@ -439,7 +439,7 @@ def rotation_offer(peers):
     for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
         backup.private_mkdir(parent)
     manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
-    rotation.write_manifest(manifest, [(packet['uuid'], signed.receipt_digest(packet))])
+    rotation.write_manifest(manifest, [(packet['uuid'], signed.envelope_digest(packet))])
     doc = rotation.proposal(new, sa.public['key_id'], 'compromised', manifest)
     proposal = manifest.with_suffix('.json')
     signed.write_local(proposal, doc)
@@ -509,7 +509,7 @@ def test_compromise_report_readonly_and_redacted(peers):
     path, p = publish(peers, 'row-content-must-never-appear')
     assert sync.receive(b, ex, security=sb)['applied'] == 1
     manifest = ex / 'review.manifest'
-    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
     rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
     fake = dict(p, uuid=str(uuid.uuid4()))
     fake = sa.sign({k: v for k, v in fake.items() if k not in ('signature', 'key_id', 'sender')})
@@ -671,7 +671,7 @@ def test_large_manifest_peer_approval_and_receive(peers):
     with sync.connect(peers[0]) as c:
         packet = signed.parse(c.execute('SELECT packet FROM _sync_outbox').fetchone()[0])
     pairs = [(str(uuid.UUID(int=i)), 'a'*64) for i in range(59999)]
-    pairs.append((packet['uuid'], signed.receipt_digest(packet)))
+    pairs.append((packet['uuid'], signed.envelope_digest(packet)))
     rotation.write_manifest(path.with_suffix('.manifest'), sorted(pairs))
     signed.write_local(path, rotation.proposal(new, sa.public['key_id'], 'planned', path.with_suffix('.manifest')))
     report = rotation.peer_rotate(sb.directory, path, confirm=lambda: new.public['key_id'])
@@ -1121,7 +1121,7 @@ def test_publish_rotation_pending_v3_converges(indexed_peers, monkeypatch, lost,
     for uid, text in pending.items():
         assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
     manifest = rotation.read_manifest((ex / report['proposal']).with_suffix('.manifest'))['packets']
-    assert manifest == {v['uuid']: signed.receipt_digest(v) for v in (p, r)}
+    assert manifest == {v['uuid']: signed.envelope_digest(v) for v in (p, r)}
     # B has never committed P: it has its own conflicting Q only.
     with sync.connect(b) as c:
         assert not c.execute('SELECT 1 FROM _sync_receipts WHERE uuid=?', (p['uuid'],)).fetchone()
@@ -1150,7 +1150,7 @@ def test_publish_rotation_manifest_evidence_authorization(indexed_peers, monkeyp
         backup.private_mkdir(parent)
     manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
     packets = [r, p] if approved else [r]
-    rotation.write_manifest(manifest, sorted((v['uuid'], signed.receipt_digest(v)) for v in packets))
+    rotation.write_manifest(manifest, sorted((v['uuid'], signed.envelope_digest(v)) for v in packets))
     proposal = manifest.with_suffix('.json')
     signed.write_local(proposal, rotation.proposal(new, sa.public['key_id'], 'planned', manifest))
     rotation.peer_rotate(sb.directory, proposal, confirm=lambda: new.public['key_id'])
@@ -1487,3 +1487,69 @@ def test_publish_rotation_resume_skips_committed_outbox_rows(indexed_peers):
     report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
     assert report['published_pending'] == 1
     assert a.read_bytes() == before
+
+
+def alternate_signature(key, message):
+    """Test-only affine Ed25519 signing with a chosen nonce; no extra dependency."""
+    field, order = 2**255 - 19, 2**252 + 27742317777372353535851937790883648493
+    d = -121665 * pow(121666, -1, field) % field
+    y = 4 * pow(5, -1, field) % field
+    xx = (y*y-1) * pow(d*y*y+1, -1, field) % field
+    x = pow(xx, (field+3)//8, field)
+    if x*x % field != xx: x = x * pow(2, (field-1)//4, field) % field
+    if x & 1: x = field-x
+    def add(p, q):
+        a,b = p; c,e = q
+        z = d*a*b*c*e % field
+        return ((a*e+b*c)*pow(1+z,-1,field)%field,
+                (b*e+a*c)*pow(1-z,-1,field)%field)
+    def mul(n):
+        p, q = (0,1), (x,y)
+        while n:
+            if n & 1: p = add(p,q)
+            q = add(q,q); n >>= 1
+        return p
+    def encode(p):
+        return (p[1] | ((p[0]&1)<<255)).to_bytes(32,'little')
+    h = bytearray(hashlib.sha512(key.private_bytes_raw()).digest())
+    h[0] &= 248; h[31] = (h[31] & 63) | 64
+    scalar = int.from_bytes(h[:32], 'little')
+    nonce = 42
+    R = encode(mul(nonce))
+    public = key.public_key().public_bytes_raw()
+    challenge = int.from_bytes(hashlib.sha512(R+public+message).digest(),'little') % order
+    return R + ((nonce+challenge*scalar)%order).to_bytes(32,'little')
+
+
+def test_round2_signature_variant_refused_then_original_accepted(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    path,p = publish(indexed_peers)
+    variant = dict(p)
+    variant['signature'] = alternate_signature(sa.key, signed.packet_domain(p) +
+        signed.typed({k:v for k,v in p.items() if k != 'signature'})).hex()
+    assert variant['signature'] != p['signature']
+    assert sb.verify(variant, GROUP, 'mac') == variant
+    manifest = ex / 'variant.manifest'
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
+    rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    path.write_bytes(signed.wire(variant))
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    path.write_bytes(signed.wire(p))
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+
+
+def test_round2_refuses_v1_formats(peers):
+    import key_rotation as rotation
+    assert rotation.FORMAT == 'agentmesh-key-rotation-v2'
+    assert rotation.ROTATIONS == 'agentmesh-rotations-v2'
+    path,new = rotation_offer(peers)
+    p = signed.parse(path.read_bytes())
+    p['format'] = 'agentmesh-key-rotation-v1'
+    with pytest.raises(ValueError, match='invalid rotation proposal'):
+        rotation.check_proposal(p, path.with_suffix('.manifest'))
+    signed.write_local(peers[4].directory / 'rotations.json',
+                       dict(format='agentmesh-rotations-v1', rotations={}))
+    with pytest.raises(ValueError, match='invalid rotation registry'):
+        rotation.read_rotations(peers[4].directory)

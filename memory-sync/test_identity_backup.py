@@ -633,3 +633,12 @@ def test_windows_volume_permission_capability(tmp_path, monkeypatch, flags, succ
         assert backup.supports_private_permissions(tmp_path) is bool(flags & 8)
     else:
         with pytest.raises(OSError): backup.supports_private_permissions(tmp_path)
+
+
+def test_restore_target_inside_exchange_is_refused_even_without_a_sync_marker(tmp_path):
+    exchange = tmp_path / 'exchange'
+    exchange.mkdir()
+    with pytest.raises(ValueError, match='restore target must be outside the exchange'):
+        backup.check_target(exchange / 'identity', exchange)
+    with pytest.raises(ValueError, match='restore target must be outside the exchange'):
+        backup.check_target(exchange, exchange)

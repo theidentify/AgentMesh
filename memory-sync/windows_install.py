@@ -29,8 +29,11 @@ TOP_LEVEL = {'agentmesh.exe', LAUNCHER, 'BUILD.json'}
 INTERRUPTED = ('in_progress', 'recovery_required')
 DEVELOPMENT = 'unsigned development trial; not a final or trusted-publisher release'
 RELEASE = 'unsigned release; not signed by a trusted publisher'
-# 0.2.0-rc.5+ development trials or 0.2.N releases; each must carry its own claim.
-VERSION = r'0\.2\.(?:0-rc\.(?:[5-9]|[1-9][0-9]+)|[0-9]+)'
+# 0.2.0-rc.5+ trials, 0.N.0-rc.M trials for N >= 3, or 0.N.P releases for N >= 2;
+# each must carry its own claim. Numbers have no leading zeros.
+VERSION = (r'0\.2\.0-rc\.(?:[5-9]|[1-9][0-9]+)'
+           r'|0\.(?:[3-9]|[1-9][0-9]+)\.0-rc\.[1-9][0-9]*'
+           r'|0\.(?:[2-9]|[1-9][0-9]+)\.(?:0|[1-9][0-9]*)')
 
 
 def digest(path):
@@ -294,7 +297,8 @@ def read_state(root, state_path, *, recovering=False):
     if not isinstance(programs, dict) or state['active'] not in programs or set(state['history']) - set(programs):
         raise ValueError('invalid owned version inventory')
     for key, entry in programs.items():
-        if (not re.fullmatch(r'0\.2\.[0-9]+(?:-rc\.[0-9]+)?-[0-9a-f]{40}', key)
+        # Every installer since the first accepted only versions VERSION still accepts.
+        if (not re.fullmatch(r'(?:' + VERSION + r')-[0-9a-f]{40}', key)
                 or set(entry) != {'identity', 'files'} or not valid_files(entry['files'])
                 or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{64}', v) for v in entry['files'].values())):
             raise ValueError('invalid owned program manifest')

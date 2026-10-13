@@ -14,12 +14,14 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import subprocess
 import sys
 import urllib.request
 
 WEBHOOK = re.compile(r'^https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$')
 SAFE = re.compile(r'^[A-Za-z0-9_.:-]{1,80}$')
+SYSTEM_CA = ('/etc/ssl/cert.pem', '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
 
 
 def summary_fields(text):
@@ -51,11 +53,22 @@ def read_webhook(path):
     return url
 
 
+def tls_context():
+    """Verified TLS; python.org builds may lack a CA bundle, so fall back to the OS one."""
+    context = ssl.create_default_context()
+    if not context.get_ca_certs() and not os.path.exists(ssl.get_default_verify_paths().cafile or ''):
+        for bundle in SYSTEM_CA:
+            if os.path.exists(bundle):
+                context.load_verify_locations(bundle)
+                break
+    return context
+
+
 def post(url, content, timeout=15):
     data = json.dumps({'content': content, 'allowed_mentions': {'parse': []}}).encode('utf-8')
     request = urllib.request.Request(url, data=data, method='POST',
                                      headers={'Content-Type': 'application/json', 'User-Agent': 'AgentMesh-job-notify/1'})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=tls_context()) as response:
         return response.status
 
 

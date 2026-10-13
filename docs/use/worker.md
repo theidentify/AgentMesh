@@ -130,6 +130,10 @@ A signed worker using a passphrase-protected identity needs [OS unlock enabled](
 
 Stop workers before protecting the key or enabling/disabling OS unlock. Disabling removes the persisted unlock path but does not erase keys already in process memory. After restart, a protected signed worker without OS unlock refuses; Linux has no supported OS-unlock backend. Follow [locked-key troubleshooting](../troubleshooting#protected-key-or-os-unlock-refuses), without removing protection, changing policy or generating replacement keys as a retry shortcut.
 
+## Notice peer key rotation
+
+An already running peer worker notices approved [peer rotation](../install/security#approve-the-new-key-on-every-peer) without a restart: the changed local rotation registry invalidates cached manifest authorization. Approval does not start a stopped worker or revive one that already failed. The rotating device must still be stopped for `identity-rotate` and explicitly started after recovery, peer approvals and required OS-unlock setup. This does not change the restart requirement after a cached OS-unlock refusal.
+
 ## Recover from a conflict
 
 Use [Resolve conflicts](./resolve-conflicts) for supported same-lineage edits after all peers are upgraded and operator activation is complete. Stop unmanaged execution through its original controls and coordinate other writers. `resolve`, confirmed `activate-protocol` and `receive-only` cooperatively stop an owned running worker and hold recovery locks; none restarts it. `receive-only` captures local edits and imports packets without ingestion, summarization or publication, preserving failed/stopped worker metadata.

@@ -43,9 +43,11 @@ Backup verification and drill evidence records past checks, not current file ava
 
 ## Keep compromise reports private
 
-[Compromise review](./install/security#review-suspected-compromise-before-resuming-work) shows packet identifiers, device identity, file modification times, table names, upsert/delete operations and a 16-hex SHA-256 prefix for each row key. It omits row contents and raw row keys, but the remaining metadata is sensitive and key hashes are not anonymization. Do not publish raw reports or rotation proposals/manifests; they expose identity relationships and packet history. Share only deliberately redacted counts and fixed refusal reasons.
+[Compromise review](./install/security#review-suspected-compromise-before-resuming-work) shows packet identifiers, device identity, file modification times, table names, upsert/delete operations and a 16-hex SHA-256 prefix for each row key. V3 report entries also show `kind`; when resolution dispositions exist, `superseded` identifies an exact-envelope match and `variant_superseded` identifies a different envelope for the same UUID. Manifest membership compares the complete envelope, including its signature. It omits row contents and raw row keys, but the remaining metadata is sensitive and key hashes are not anonymization. Do not publish raw reports or rotation proposals/manifests; they expose identity relationships and packet history. Share only deliberately redacted counts and fixed refusal reasons.
 
 The report compares local evidence; it does not independently authenticate signatures or prove that a listed change is malicious. File times are mutable, and receipt totals cannot all be attributed to the selected key. The read-only report does not undo committed changes or erase evidence.
+
+Compromised-rotation pending reviews show UUID, format, v3 kind and table/operation/key-hash metadata without row contents. Dropped packets retain their full bytes in the local database archive. Quarantined collisions retain their full bytes under `pairing/rotations/quarantine/` in the private exchange and may be synced to peers; this is evidence preservation, not redaction or erasure.
 
 Rotation journals contain the sealed new identity and public recovery metadata. Keep them private and intact until recovery finishes. Create and drill a backup of the new active key; retire backups of revoked keys under your custody policy. Neither unlinking a file nor Python process cleanup guarantees that old secret material has been securely erased.
 

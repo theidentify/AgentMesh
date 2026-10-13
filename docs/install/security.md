@@ -295,17 +295,35 @@ If the entire security directory is lost, add `--old-key "$OLD_KEY"`, using the 
 
 Type **STOPPED** only after all copies have stopped. The exchange must have `.stfolder` and genuine status for this group. Rotation refuses recent activity within 15 minutes, future-dated files or unreadable entries in this device identity's exchange paths, using the [same activity check as restore](#restore-only-after-stopping-the-old-device). Do not change timestamps or delete packets to bypass it. If a supposedly unpublished pending packet already exists in the exchange, stop and inspect the refusal.
 
-When pending packets are present, review `pending_packets` and `operations_by_table`, then type **RESIGN** to authorize re-signing. Enter a new identity passphrase twice, at least 12 characters, at the interactive console. There is no passphrase or `--yes` automation option. A refusal is not authorization to edit outbox records manually.
+For a compromised key, first [review each pending packet and decide whether to exclude any](#review-or-exclude-compromised-pending-packets) before approving publication. When pending packets remain selected for publication, review `pending_packets`, `packets_by_format` and `operations_by_table`, then type **PUBLISH** to authorize publication. Enter a new identity passphrase twice, at least 12 characters, at the interactive console. There is no passphrase or `--yes` automation option. A refusal is not authorization to edit outbox records manually.
 
 Output (run on macOS; disposable OS store)
 
 ```json
-{"manifest_packets":1,"os_unlock_item_removed":true,"reason":"compromised","resigned":1,"status":"rotated","trust_restored":true}
+{"dropped_pending":[],"manifest_packets":2,"os_unlock_item_removed":true,"published_pending":1,"reason":"compromised","status":"rotated","trust_restored":true}
 ```
 
-This exit-`0` excerpt came from a test with ordinary change packets; it omits fingerprints and paths. The full report includes `old_key_id`, `new_key_id`, the complete `new_fingerprint`, `proposal` and `next`. It publishes a proposal and adjacent `.manifest` under `pairing/rotations/` in the exchange. Use the actual proposal path from the report. The new identity is protected, OS unlock remains off, and no worker is started. The test used the repository's fake OS backend for old-item removal, not the login keychain.
+This exit-`0` excerpt came from a test with one previously published and one pending ordinary change packet; it omits fingerprints and paths. The full report includes `old_key_id`, `new_key_id`, the complete `new_fingerprint`, `proposal` and `next`. It publishes a proposal and adjacent `.manifest` under `pairing/rotations/` in the exchange. Use the actual proposal path from the report. The new identity is protected, OS unlock remains off, and no worker is started. Selected pending v2/v3 packets, including resolution packets, are published byte for byte with their original old-key signatures and included in the manifest. Rotation does not re-sign them or change their evidence references. The test used the repository's fake OS backend for old-item removal, not the login keychain.
 
 `trust_restored: false` means prior local trust was unavailable. Re-pin every peer through the operator's [explicit trust procedure](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md#explicit-pairing-cli), independently confirming fingerprints and scope. Do not infer peer authorization from proposal files.
+
+### Review or exclude compromised pending packets
+
+With `--reason compromised`, `pending_review` lists every pending packet before the publication confirmation: `uuid`, `format`, `changes` with `table`, `op` and `key_sha256`, plus `kind` for v3 packets. Operation values are `upsert` or `delete`; v3 kind is `change` or `resolution`. The key hash is a 16-hex prefix, not the raw row key. Row contents are not displayed. Review this local metadata before typing **PUBLISH**.
+
+If you decide to exclude a packet after viewing the list, cancel at **PUBLISH** before a journal is created, then repeat the fresh compromised rotation with its actual UUID:
+
+```sh
+printf 'Reviewed pending packet UUID to archive: '
+read -r DROP_PACKET
+python3 agentmesh.py identity-rotate --security-dir "/path/to/identity" \
+  --db "/path/to/memory.db" --exchange "/path/to/exchange" \
+  --runtime "/path/to/runtime.json" --reason compromised --drop-pending "$DROP_PACKET"
+```
+
+Repeat `--drop-pending` for additional reviewed UUIDs. It is accepted only on a fresh `--reason compromised` rotation, never with `--resume`. A selected packet must be pending; the command refuses if another pending packet references it through `covers` or `evidence`. It does not silently drop dependants.
+
+Excluded packets are not published or listed in the manifest. At successful completion their exact stored bytes move from the outbox to the local `_sync_rotation_dropped` archive, and `dropped_pending` lists their UUIDs. This preserves evidence and does not undo local memory changes. `published_pending` counts the remaining pending packets published by this rotation; if none remain, there is no **PUBLISH** prompt. Do not edit the archive or outbox to force a different outcome.
 
 ### Approve the new key on every peer
 
@@ -321,10 +339,14 @@ Replace the proposal placeholder with the actual file. Review the displayed fing
 Output (run on macOS)
 
 ```json
-{"competing_proposals":0,"manifest_packets":1,"reason":"compromised","status":"peer-rotated"}
+{"competing_proposals":0,"manifest_packets":2,"reason":"compromised","status":"peer-rotated"}
 ```
 
-Exit `0` means this peer revoked the old entry and pinned the new key. It does not update other peers or all application pins. Re-run wizard pairing to update its saved peer identity; if you use the separate profile-memory prototype, update its `SignedChannel` peer fingerprint too. Rotation does not rewrite either pin. Check [trust in every direction](#check-trust-in-every-direction) before restarting.
+Exit `0` means this peer revoked the old entry and pinned the new key. It does not update other peers or all application pins. Re-run wizard pairing to update its saved peer identity; if you use the separate profile-memory prototype, update its `SignedChannel` peer fingerprint too. Rotation does not rewrite either pin. Check [trust in every direction](#check-trust-in-every-direction) before resuming normal work. A running peer worker does not need a restart merely to notice `peer-rotate`: changed registry metadata invalidates its cached manifest authorization, including a cached missing entry. A worker already stopped or failed still needs explicit startup after review; the rotating device remains stopped until you start it.
+
+Proposals use `agentmesh-key-rotation-v2` and local registries use `agentmesh-rotations-v2`. V1 proposals and registries are refused. If you hold v1 material, preserve it and request operator inspection; there is no documented conversion command, and changing its format label cannot make it a valid v2 proposal.
+
+After approval, a manifest-listed packet can authorize resolution evidence even if it was never committed on this peer before revocation. Its UUID and complete envelope digest, including the signature, must match, and historical signature verification must pass. This gives authorization state `verified`, not `applied`; it creates no receipt and does not reactivate the old key. See [Resolve conflicts](../use/resolve-conflicts#handle-refusals-without-rewriting-history).
 
 ### Review suspected compromise before resuming work
 
@@ -337,7 +359,7 @@ python3 agentmesh.py compromise-report --db "/path/to/memory.db" \
 
 The command is read-only; it does not unlock the identity. It scans old-key-labelled exchange files and compares local receipt, outbox and approved-manifest evidence. It does not independently verify packet signatures, so it is an investigation report, not proof that the old key signed every listed file or that its contents were legitimate.
 
-On the receiving test device, one old-key packet appeared in `committed` with `in_manifest: true`. This excerpt omits that record's identifiers, file time and change metadata:
+On the receiving test device, two old-key packets appeared in `committed` with `in_manifest: true`. This excerpt omits those records' identifiers, file time and change metadata:
 
 Output (run on macOS)
 
@@ -348,12 +370,13 @@ Output (run on macOS)
 Exit `0` means the report completed, not that compromise is absent. Interpret the full report:
 
 - `committed` matches local receipts; `uncommitted` lists other observed files for the selected key. A sender's own publication need not have a local receive receipt.
-- `in_manifest` compares packet identity/digest with the locally approved manifest. Without `--security-dir` it is `null`; with no registered manifest it is `false`. Investigate committed entries outside the manifest; inclusion is not a verdict on the legitimacy of the original data.
+- `in_manifest` compares the UUID and complete envelope digest (including the signature) with the locally approved manifest. Without `--security-dir` it is `null`; with no registered manifest it is `false`. Investigate committed entries outside the manifest; inclusion is not a verdict on the legitimacy of the original data.
+- V3 packet entries and their change summaries include `kind: change` or `kind: resolution`. When the resolution store exists, `superseded` means a committed disposition matches this exact envelope; `variant_superseded` means a disposition exists for a different envelope with the same UUID. A changed file cannot inherit the original's superseded status.
 - `forged_candidates` flags files claiming this device identity that differ from its outbox bytes. Investigate them rather than treating the label as a verdict.
 - `receipts_without_file` counts full-envelope receipt records without an observed packet file; `legacy_receipts` counts receipts without a full-envelope record. Both are database-wide counts, not attribution to the selected key. `unreadable` counts files that could not be inspected.
 - Optional `--since` takes a UTC ISO timestamp and filters **file modification times**; `filtered_by_since` counts excluded old-key files. A writer can change these times, so this is not a trusted incident-time boundary.
 
-The report never removes, quarantines or undoes records. Published packet files and historical receipts remain unchanged by rotation; successfully re-signed pending packets keep their UUID, body and checksum. Records already committed remain committed, including malicious changes. Review and repair data separately through supported data procedures. Do not delete exchange history or roll back the database to make a key usable.
+The report never removes, quarantines or undoes records. Published packet files and historical receipts remain unchanged by rotation; selected pending packets are published byte-identically, retaining their UUID, body, checksum and old-key signature. Records already committed remain committed, including malicious changes. Review and repair data separately through supported data procedures. Do not delete exchange history or roll back the database to make a key usable.
 
 ### Finish or resume recovery
 
@@ -369,7 +392,23 @@ python3 agentmesh.py identity-rotate --security-dir "/path/to/identity" \
   --runtime "/path/to/runtime.json" --resume
 ```
 
-Resume repeats **STOPPED**, locks and exchange checks, then asks for `New identity passphrase:`—the passphrase chosen for the interrupted rotation. It completes the journaled operation; do not start a second rotation or choose another new key. Ordinary signing/publishing refuses while the journal exists. Never delete the journal or restore older trust/identity/SQLite files to bypass it. If only staging remains without a journal, request inspection; `--resume` requires a valid journal. See [rotation refusals](../troubleshooting#key-rotation-or-peer-approval-refuses).
+Resume repeats **STOPPED**, locks and exchange checks, then asks for `New identity passphrase:`—the passphrase chosen for the interrupted rotation. It completes publication of the journaled original bytes; `published_pending` retains the original count even on a retry. Identical files already published by this journal are accepted. Do not start a second rotation or choose another new key. Ordinary signing/publishing refuses while the journal exists. Never delete the journal or restore older trust/identity/SQLite files to bypass it. If only staging remains without a journal, request inspection; `--resume` requires a valid journal. Old re-signing journals are refused as `invalid rotation journal`; preserve them for inspection rather than deleting or reinterpreting them. See [rotation refusals](../troubleshooting#key-rotation-or-peer-approval-refuses).
+
+### Quarantine a differing file during resume
+
+If a journal-bound exchange file differs from the authoritative outbox, resume refuses with `pending packet file differs from the outbox; see compromise-report`. Inspect the evidence first. For a reviewed collision, repeat the resume with the affected packet UUID:
+
+```sh
+printf 'Journal-bound colliding packet UUID: '
+read -r COLLISION_PACKET
+python3 agentmesh.py identity-rotate --security-dir "/path/to/identity" \
+  --db "/path/to/memory.db" --exchange "/path/to/exchange" \
+  --runtime "/path/to/runtime.json" --resume --quarantine-collision "$COLLISION_PACKET"
+```
+
+Repeat `--quarantine-collision` for additional collisions. It is accepted only with `--resume`, for differing files bound to that journal's pending packets. After **STOPPED**, the command displays `uuid`, `exchange_envelope_digest` and `outbox_envelope_digest`; review both digests and type **QUARANTINE** for each selected collision. Cancelling leaves the conflicting file in place.
+
+The confirmed bytes are preserved under `pairing/rotations/quarantine/` in the exchange, in a filename formed from the packet UUID and exchange envelope digest. The conflicting file leaves the publication path, and resume continues with the original outbox bytes. Quarantine does not authorize the moved packet. Supported envelope JSON can be quarantined even if it claims a different UUID or scope; malformed JSON or unsupported formats require separate operator inspection. Unrelated recent exchange activity still refuses recovery.
 
 ## Check trust in every direction
 

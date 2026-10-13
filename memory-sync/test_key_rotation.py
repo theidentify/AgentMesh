@@ -86,3 +86,85 @@ def test_own_packet_requires_exact_bytes(peers, damage):
         with sync.connect(peers[0]) as c, c:
             c.execute('DELETE FROM _sync_outbox')
     assert sync.receive(peers[0], peers[2], security=peers[3])['invalid'] == 1
+
+
+def test_proposal_roundtrip_and_registry(peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    path, p = publish(peers)
+    manifest = ex / 'test.manifest'
+    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    doc = rotation.proposal(sa, sb.public['key_id'], 'planned', manifest)
+    assert rotation.check_proposal(doc, manifest) == doc
+    rotation.add_rotation(sb.directory, doc['old_key_id'], sa.public['key_id'], manifest)
+    entry = rotation.read_rotations(sb.directory)['rotations'][doc['old_key_id']]
+    assert entry['manifest_count'] == 1
+    assert entry['manifest_sha256'] == doc['manifest_sha256']
+
+
+@pytest.mark.parametrize('field', ['old_key_id', 'new', 'reason', 'created_at', 'manifest_sha256', 'manifest_count', 'signature', 'extra', 'missing', 'domain'])
+def test_proposal_tampering(peers, field):
+    import key_rotation as rotation
+    sa, sb = peers[3:]
+    manifest = peers[2] / 'test.manifest'
+    rotation.write_manifest(manifest, [])
+    doc = rotation.proposal(sa, sb.public['key_id'], 'planned', manifest)
+    if field == 'new': doc['new'] = {**doc['new'], 'sender': str(uuid.uuid4())}
+    elif field == 'missing': del doc['reason']
+    elif field == 'extra': doc['extra'] = True
+    elif field == 'manifest_count': doc[field] = True
+    elif field == 'reason': doc[field] = 'lost'
+    elif field == 'created_at': doc[field] = '2020-01-01T00:00:00Z'
+    elif field == 'domain':
+        doc['signature'] = sa.sign_bytes(signed.DOMAIN + signed.typed({k: v for k, v in doc.items() if k != 'signature'})).hex()
+    else: doc[field] = '0' * len(doc[field])
+    with pytest.raises(ValueError, match='^invalid rotation proposal$'):
+        rotation.check_proposal(doc, manifest)
+
+
+@pytest.mark.parametrize('damage', ['order', 'duplicate', 'uuid', 'digest', 'newline', 'oversize', 'sha', 'count'])
+def test_manifest_refusals(tmp_path, damage):
+    import key_rotation as rotation
+    path = Path(os.path.realpath(tmp_path)) / 'manifest'
+    pairs = [(str(uuid.UUID(int=i)), 'a'*64) for i in (1, 2)]
+    rotation.write_manifest(path, pairs)
+    expected = rotation.read_manifest(path)
+    raw = path.read_bytes()
+    if damage == 'order': raw = b''.join(reversed(raw.splitlines(keepends=True)))
+    elif damage == 'duplicate': raw += raw.splitlines(keepends=True)[-1]
+    elif damage == 'uuid': raw = raw.replace(b'00000000-', b'zzzzzzzz-')
+    elif damage == 'digest': raw = raw.replace(b'aaaa', b'zzzz')
+    elif damage == 'newline': raw = raw[:-1]
+    path.write_bytes(raw)
+    kwargs = dict(sha256=expected['sha256'], count=expected['count'])
+    if damage == 'oversize': kwargs['_max_bytes'] = 10
+    elif damage == 'sha': kwargs['sha256'] = '0'*64
+    elif damage == 'count': kwargs['count'] = 3
+    with pytest.raises(ValueError, match='^invalid rotation manifest$'):
+        rotation.read_manifest(path, **kwargs)
+
+
+def test_streamed_manifest_exceeds_typed_limit(tmp_path):
+    import key_rotation as rotation
+    path = Path(os.path.realpath(tmp_path)) / 'manifest'
+    pairs = [(str(uuid.UUID(int=i)), 'a'*64) for i in range(60000)]
+    rotation.write_manifest(path, pairs)
+    result = rotation.read_manifest(path)
+    assert result['count'] == 60000
+    assert result['packets'] == dict(pairs)
+
+
+@pytest.mark.parametrize('damage', ['extra', 'format', 'entry', 'key', 'count'])
+def test_registry_strict_schema(peers, damage):
+    import key_rotation as rotation
+    directory = peers[3].directory
+    key = peers[4].public['key_id']
+    doc = {'format': rotation.ROTATIONS, 'rotations': {key: dict(new_key_id=peers[3].public['key_id'], approved_at=backup.now(), manifest_sha256='a'*64, manifest_count=0)}}
+    if damage == 'extra': doc['extra'] = 1
+    elif damage == 'format': doc['format'] = 'bad'
+    elif damage == 'entry': doc['rotations'][key]['extra'] = 1
+    elif damage == 'key': doc['rotations']['bad'] = doc['rotations'].pop(key)
+    else: doc['rotations'][key]['manifest_count'] = True
+    signed.write_local(directory / 'rotations.json', doc)
+    with pytest.raises(ValueError, match='^invalid rotation registry$'):
+        rotation.read_rotations(directory)

@@ -8,7 +8,7 @@ Execute Tasks 1–11 in order, test first, verify from memory-sync and repositor
 
 ## Task 1
 
-Added sealed disposable fixtures and five R1 regressions. Red: two failures, three passes. Green: 129 passed from memory-sync; root result pending.
+Added sealed disposable fixtures and five R1 regressions. Red: two failures, three passes. Green: 129 passed from memory-sync; 129 passed from the repository root.
 
 Spec-over-plan correction: own-node byte mismatches are rejected immediately with the existing fixed reason. Falling through as the plan suggests accepts whitespace-different files through `_seen`'s JSON equality. Own-packet matches clear diagnostics and do not record a signature verification attempt.
 
@@ -20,4 +20,8 @@ Spec-over-plan correction: own-node byte mismatches are rejected immediately wit
 
 ## Remaining
 
-Tasks 2–11 are not yet completed. No final full-suite result yet.
+Tasks 3–11 are not yet completed. No final full-suite result yet.
+
+## Task 2
+
+Task 1 commit: `0aae4a5`. Added streaming manifest IO, domain-separated proposals, and strict private rotation registry. Red: 25 failed / 5 passed; green: 30 passed from each working directory. A 60,000-entry manifest passes without packet parse/typed limits. Errors are raised outside exception handlers with fixed reasons.

@@ -115,3 +115,33 @@ def test_permissions_unsupported(tmp_path, monkeypatch):
     def unsupported(*a): raise OSError(errno.ENOTSUP, 'unsupported')
     monkeypatch.setattr(backup.os, 'chmod', unsupported)
     assert backup.write_new(tmp_path / 'backup', b'ciphertext') == 'unsupported-by-filesystem'
+
+@pytest.fixture
+def live(tmp_path, material, secret):
+    root = Path(os.path.realpath(tmp_path)) / 'security'
+    root.mkdir(mode=0o700)
+    public, raw, trust = material
+    signed.write_local(root / 'identity.json', {**public, 'protection': kp.seal(public, raw, secret, n=2**14)})
+    signed.write_local(root / 'trust.json', trust)
+    return root
+
+
+def test_evidence(live, material):
+    key_id = material[0]['key_id']
+    assert backup.status(live)['state'] == 'none'
+    digest = hashlib.sha256(b'encrypted').hexdigest()
+    backup.record(live, key_id, digest, 'verified_at', backup.now())
+    result = backup.status(live)
+    assert result['state'] == 'verified'
+    assert result['backups'][0]['verified_age_seconds'] >= 0
+    backup.record(live, key_id, digest, 'drilled_at', backup.now())
+    assert backup.status(live)['state'] == 'drilled'
+    assert signed.Security(live).public == material[0]
+    assert signed.read_trust(live) == material[2]
+
+
+def test_stale_and_malformed_status(live):
+    signed.write_local(live / 'backup-status.json', {'format': 'agentmesh-backup-status-v1', 'key_id': '0'*64, 'backups': {}})
+    assert backup.status(live)['state'] == 'none'
+    signed.write_local(live / 'backup-status.json', {})
+    with pytest.raises(ValueError, match='invalid backup status'): backup.status(live)

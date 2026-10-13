@@ -201,3 +201,65 @@ def write_new(path, data):
     if reason:
         raise ValueError(reason)
     return permissions
+
+
+STATUS_FORMAT = 'agentmesh-backup-status-v1'
+STATUS_INVALID = 'invalid backup status'
+EVIDENCE_FIELDS = {'created_at', 'verified_at', 'drilled_at'}
+REASONS |= {STATUS_INVALID}
+
+
+def evidence(directory, key_id):
+    path = Path(directory) / 'backup-status.json'
+    empty = {'format': STATUS_FORMAT, 'key_id': key_id, 'backups': {}}
+    if not path.exists():
+        return empty
+    result = None
+    try:
+        doc = signed.parse(signed.read_local(path, private=True))
+        if type(doc) is dict and set(doc) == {'format', 'key_id', 'backups'} and doc['format'] == STATUS_FORMAT:
+            signed.hex_bytes(doc['key_id'], 32)
+            if type(doc['backups']) is not dict:
+                raise ValueError(STATUS_INVALID)
+            for digest, entry in doc['backups'].items():
+                signed.hex_bytes(digest, 32)
+                if type(entry) is not dict or set(entry) != EVIDENCE_FIELDS:
+                    raise ValueError(STATUS_INVALID)
+                for value in entry.values():
+                    if value is not None:
+                        timestamp(value)
+            result = doc if doc['key_id'] == key_id else empty
+    except (ValueError, OSError, TypeError):
+        pass
+    if result is None:
+        raise ValueError(STATUS_INVALID)
+    return result
+
+
+def record(security_dir, key_id, file_sha256, field, when):
+    if field not in EVIDENCE_FIELDS:
+        raise ValueError(STATUS_INVALID)
+    signed.hex_bytes(file_sha256, 32)
+    timestamp(when)
+    if signed.Security(security_dir).public['key_id'] != key_id:
+        return
+    doc = evidence(security_dir, key_id)
+    doc['backups'].setdefault(file_sha256, dict.fromkeys(sorted(EVIDENCE_FIELDS)))[field] = when
+    signed.write_local(Path(security_dir) / 'backup-status.json', doc)
+
+
+def status(security_dir):
+    key_id = signed.Security(security_dir).public['key_id']
+    doc = evidence(security_dir, key_id)
+    rows, state = [], 'none'
+    current = timestamp(now())
+    for digest, entry in sorted(doc['backups'].items()):
+        row = {'file_sha256': digest, **entry}
+        for field, value in entry.items():
+            row[field.removesuffix('_at') + '_age_seconds'] = max(0, (current - timestamp(value)).total_seconds()) if value else None
+        rows.append(row)
+        if entry['drilled_at']:
+            state = 'drilled'
+        elif entry['verified_at'] and state == 'none':
+            state = 'verified'
+    return {'key_id': key_id, 'backups': rows, 'state': state}

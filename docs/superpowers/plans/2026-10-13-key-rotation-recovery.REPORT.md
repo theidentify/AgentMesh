@@ -29,3 +29,9 @@ Task 1 commit: `0aae4a5`. Added streaming manifest IO, domain-separated proposal
 ## Task 3
 
 Task 2 commit: `5544210`. R2 red: two failures / five passes. Green: 131 tests passed in memory-sync and repository root (recovery, signed-packet, and security-regression suites). Revoked trust selects manifest verification after committed receipts and before validation/application. Membership never bypasses historical signature verification. Lazy caches include failed loads to bound hostile repeated reads.
+
+## Task 4
+
+Task 3 commit: `15d9a1d`. Preparation tests red: 20 failures. Green: 57 tests passed from each location. Refusals snapshot security directory, DB/sidecars and exchange bytes. Locks stay held for the context. Read-only preparation rechecks DB state after acquiring the fence.
+
+Small corrections: pending-file refusal uses a fixed reason without interpolated UUID, honoring the strict fixed-error rule. Runtime status calls `Security` internally and therefore fails for lost/revoked identities and journals; in that case recovery reads the same owned worker metadata and liveness directly, still taking both locks. Lock infrastructure can create its usual lock files outside the security directory, DB and exchange; this is necessary to acquire the specified fence.

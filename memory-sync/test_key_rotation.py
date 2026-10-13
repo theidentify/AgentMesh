@@ -215,3 +215,90 @@ def test_manifest_causality_and_lazy_cache(peers, monkeypatch):
     assert len(calls) == 1
     with sync.connect(b) as c:
         assert c.execute('SELECT content FROM memory_items WHERE id=1').fetchone()[0] == 'second'
+
+
+def ready(peers):
+    import time
+    a, b, ex, sa, sb = peers
+    publish(peers)
+    backup.private_mkdir(ex / 'status')
+    signed.write_local(ex / 'status' / 'windows.json', {'group': GROUP})
+    for path in (ex / 'signed-changes' / 'mac').glob('*.json'):
+        os.utime(path, (time.time() - 1000, time.time() - 1000))
+    with sync.connect(a) as c, c:
+        c.execute("UPDATE memory_items SET content='pending' WHERE id=1")
+    sync.capture(a, security=sa)
+
+
+def snapshot(peers):
+    a, b, ex, sa, sb = peers
+    paths = [a, Path(str(a)+'-wal'), Path(str(a)+'-shm')]
+    paths += list(sa.directory.rglob('*')) + list(ex.rglob('*'))
+    return {str(p): p.read_bytes() for p in paths if p.is_file()}
+
+
+@pytest.mark.parametrize('case', ['ok', 'lost-identity', 'lost-all'])
+def test_prepare_derives_old_key_and_keeps_state(peers, case):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    if case != 'ok': (sa.directory / 'identity.json').unlink()
+    if case == 'lost-all': (sa.directory / 'trust.json').unlink()
+    before = snapshot(peers)
+    with rotation.prepare(sa.directory, a, ex, old_key=sa.public['key_id'] if case == 'lost-all' else ('0'*64 if case == 'ok' else None), confirm=lambda w: w) as plan:
+        assert plan['old_key_id'] == sa.public['key_id']
+        assert len(plan['pending']) == 1
+        assert len(plan['manifest']) == 1
+    assert snapshot(peers) == before
+
+
+@pytest.mark.parametrize('case', ['journal', 'stage', 'restore', 'pre-restore', 'legacy', 'binding', 'unexpected', 'STOPPED', 'RESIGN', 'exchange', 'legacy-exchange', 'signature', 'recent', 'lost-no-key', 'cycle-lock', 'lifetime-lock', 'running'])
+def test_prepare_refusals_unchanged(peers, case, monkeypatch):
+    import key_rotation as rotation
+    import worker_lifecycle as worker
+    import runtime_lock
+    from contextlib import ExitStack
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    expected = None
+    runtime = None
+    if case in ('journal', 'stage', 'restore', 'pre-restore'):
+        name = {'journal': 'rotation-journal.json', 'stage': '.rotate-test', 'restore': '.restore-test', 'pre-restore': 'trust.json.pre-restore'}[case]
+        (sa.directory / name).write_bytes(b'{}')
+    if case == 'legacy':
+        with sync.connect(a) as c, c: c.execute('DROP TABLE _sync_security')
+    if case == 'binding':
+        with sync.connect(a) as c, c: c.execute("UPDATE _sync_security SET node='linux'")
+    if case in ('unexpected', 'signature', 'exchange', 'legacy-exchange'):
+        with sync.connect(a) as c, c:
+            row = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchone()
+            p = signed.parse(row[1])
+            if case in ('unexpected', 'signature'):
+                p['key_id' if case == 'unexpected' else 'signature'] = '0' * (64 if case == 'unexpected' else 128)
+                c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?', (sync.canonical(p), row[0]))
+            else:
+                dest = ex / ('changes' if case == 'legacy-exchange' else 'signed-changes')
+                if not dest.exists(): backup.private_mkdir(dest)
+                if not (dest / 'mac').exists(): backup.private_mkdir(dest / 'mac')
+                file = dest / 'mac' / (row[0] + '.json')
+                file.write_bytes(row[1].encode())
+                os.utime(file, (1, 1))
+    if case == 'recent':
+        next((ex / 'signed-changes' / 'mac').glob('*.json')).touch()
+    if case == 'lost-no-key':
+        (sa.directory / 'identity.json').unlink()
+        (sa.directory / 'trust.json').unlink()
+    if case in ('running', 'lifetime-lock'):
+        runtime = a.parent / 'runtime.json'
+        signed.write_local(runtime, {'database': str(a), 'exchange': str(ex), 'node': 'mac'})
+        monkeypatch.setattr(worker, 'status', lambda p: {'state': 'running' if case == 'running' else 'stopped'})
+    with ExitStack() as stack:
+        if case == 'cycle-lock': stack.enter_context(runtime_lock.lock(a.parent / 'worker.lock', timeout=0))
+        if case == 'lifetime-lock':
+            directory = worker.control({'database': str(a)}, create=True)
+            stack.enter_context(runtime_lock.lock(directory / 'lifetime.lock', timeout=0))
+        before = snapshot(peers)
+        with pytest.raises(ValueError):
+            with rotation.prepare(sa.directory, a, ex, runtime=runtime, confirm=lambda word: '' if word == case else word):
+                pytest.fail('refusal required')
+        assert snapshot(peers) == before

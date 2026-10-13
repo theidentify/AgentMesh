@@ -495,13 +495,14 @@ def drill(file, security_dir=None, *, ask=kp.console_passphrase):
 TARGET_EXISTS = 'restore target already contains an identity'
 TARGET_EXCHANGE = 'restore target must be outside the exchange'
 RESTORE_LEFTOVER = 'unfinished restore exists; inspect and remove .restore-* and trust.json.pre-restore before retrying'
+ROTATION_LEFTOVER = 'unfinished rotation exists; run identity-rotate --resume before restoring'
 SELF_REVOKED = 'this key is revoked in the current trust; rotate instead (#9)'
 TRUST_CONFLICT = 'current trust conflicts with the backup identity'
 EXCHANGE_GROUP = 'exchange does not belong to this group'
 ACTIVE = 'the old device looks active: recent exchange activity for this identity'
 TRUST_CHANGED = 'current trust changed during restore; retry after inspection'
 RESTORE_READBACK = 'restored identity readback failed'
-REASONS |= {TARGET_EXISTS, TARGET_EXCHANGE, RESTORE_LEFTOVER, SELF_REVOKED, TRUST_CONFLICT,
+REASONS |= {TARGET_EXISTS, TARGET_EXCHANGE, RESTORE_LEFTOVER, ROTATION_LEFTOVER, SELF_REVOKED, TRUST_CONFLICT,
             EXCHANGE_GROUP, ACTIVE, TRUST_CHANGED, RESTORE_READBACK}
 # Fixed, secret-free refusals raised by the modules this one builds on; the operator needs them to act.
 UPSTREAM_REASONS = frozenset({
@@ -531,6 +532,8 @@ def check_target(target, exchange):
         raise ValueError(TARGET_EXISTS)
     if target.exists():
         signed.private_directory(target)
+        if list(target.glob('.rotate-*')) or os.path.lexists(target / 'rotation-journal.json'):
+            raise ValueError(ROTATION_LEFTOVER)
         if list(target.glob('.restore-*')) or os.path.lexists(target / 'trust.json.pre-restore'):
             raise ValueError(RESTORE_LEFTOVER)
     return target

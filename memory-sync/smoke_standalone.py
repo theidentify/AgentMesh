@@ -19,12 +19,70 @@ import signed_packets
 import security_wizard
 
 
+def smoke_recovery(command, root):
+    """Recovery smoke shared by source tests and frozen CI; sealed keys only."""
+    import hashlib
+    import identity_backup as backup
+    import key_rotation as rotation
+    root = Path(os.path.realpath(root))
+    group = str(uuid.uuid4())
+    def identity(name, node, sender=None):
+        directory = root / name
+        backup.private_mkdir(directory)
+        key = signed_packets.crypto()[0].generate()
+        public_bytes = key.public_key().public_bytes_raw()
+        public = dict(format='agentmesh-peer-key-v1', group=group, node=node, sender=sender or str(uuid.uuid4()),
+                      key_id=hashlib.sha256(public_bytes).hexdigest(), public_key=public_bytes.hex())
+        phrase = os.urandom(32).hex()
+        signed_packets.write_local(directory / 'identity.json', backup.sealed_identity(public, key.private_bytes_raw(), phrase, 2**14))
+        signed_packets.write_local(directory / 'trust.json', {'format': 'agentmesh-trust-v1', 'peers': {public['key_id']: {**public, 'revoked': False}}})
+        return signed_packets.Security(directory, unlock=lambda: phrase)
+    sa, sb = identity('recovery-a', 'mac'), identity('recovery-b', 'windows')
+    new = identity('recovery-new', 'mac', sa.public['sender'])
+    signed_packets.approve(sb.directory, sa.public, sa.public['key_id'], group, 'mac', sa.public['sender'])
+    db, exchange = root / 'recovery.db', root / 'recovery-exchange'
+    sqlite_memory.init_database(db)
+    memory_sync.initialize(db, 'mac', group)
+    memory_sync.capture(db, security=sa)
+    backup.private_mkdir(exchange)
+    backup.private_mkdir(exchange / '.stfolder')
+    backup.private_mkdir(exchange / 'status')
+    signed_packets.write_local(exchange / 'status' / 'windows.json', {'group': group})
+    proposal_path = exchange / (new.public['key_id'] + '.json')
+    manifest = proposal_path.with_suffix('.manifest')
+    rotation.write_manifest(manifest, [])
+    signed_packets.write_local(proposal_path, rotation.proposal(new, sa.public['key_id'], 'planned', manifest))
+    def snapshot():
+        return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    def run(*args, expected=0):
+        result = subprocess.run([*map(str, command), *map(str, args)], cwd=root, input='', text=True,
+                                capture_output=True, timeout=120)
+        assert result.returncode == expected, 'recovery smoke command failed'
+        return result
+    for action in ('identity-rotate', 'peer-rotate', 'compromise-report'):
+        assert '--help' in run(action, '--help').stdout
+    before = snapshot()
+    for args in (('identity-rotate', '--security-dir', sa.directory, '--db', db, '--exchange', exchange, '--reason', 'planned'),
+                 ('peer-rotate', '--security-dir', sb.directory, '--proposal', proposal_path)):
+        result = run(*args, expected=1)
+        assert not result.stdout
+        assert 'passphrase entry requires an interactive console' in result.stderr
+        assert snapshot() == before
+    report = json.loads(run('compromise-report', '--db', db, '--exchange', exchange, '--key', sa.public['key_id']).stdout)
+    assert report == dict(committed=[], uncommitted=[], forged_candidates=[], receipts_without_file=0,
+                          legacy_receipts=0, filtered_by_since=0, unreadable=0)
+    assert snapshot() == before
+
+
 def main():
     dist = Path(os.environ.get('AGENTMESH_DIST', str(Path(os.environ['RUNNER_TEMP']) / 'agentmesh-dist')))
     binary = dist / ('agentmesh.exe' if os.name == 'nt' else 'agentmesh')
     assert binary.is_file(), f'missing standalone binary: {binary}'
     with tempfile.TemporaryDirectory(prefix='agentmesh-native-smoke-', dir=os.environ['RUNNER_TEMP']) as scratch:
         root = Path(scratch)
+        recovery_root = root / 'recovery-smoke'
+        __import__('identity_backup').private_mkdir(recovery_root)
+        smoke_recovery([str(binary)], recovery_root)
         db = root / 'data' / 'mac.db'
         db.parent.mkdir()
         sqlite_memory.init_database(db)

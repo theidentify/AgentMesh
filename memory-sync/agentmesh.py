@@ -98,6 +98,22 @@ def main(argv=None):
     restore_parser = subs.add_parser('identity-restore', help='restore a backup after fencing the old device')
     for option in ('file', 'security-dir', 'exchange'):
         restore_parser.add_argument('--' + option, required=True)
+    rotate_parser = subs.add_parser('identity-rotate', help='rotate a lost or compromised signing key; never roll back the database')
+    for option in ('security-dir', 'db', 'exchange'):
+        rotate_parser.add_argument('--' + option, required=True)
+    rotate_parser.add_argument('--reason', choices=('lost', 'compromised', 'planned'))
+    rotate_parser.add_argument('--old-key')
+    rotate_parser.add_argument('--runtime')
+    rotate_parser.add_argument('--resume', action='store_true')
+    peer_parser = subs.add_parser('peer-rotate', help='approve a key rotation with an out-of-band fingerprint')
+    for option in ('security-dir', 'proposal'):
+        peer_parser.add_argument('--' + option, required=True)
+    peer_parser.add_argument('--exchange')
+    report_parser = subs.add_parser('compromise-report', help='read-only review of old-key packets and receipts')
+    for option in ('db', 'exchange', 'key'):
+        report_parser.add_argument('--' + option, required=True)
+    report_parser.add_argument('--security-dir')
+    report_parser.add_argument('--since')
     replacement = subs.add_parser('mac-replace', help='operator-confirmed Mac replacement; planning is read-only')
     replacement.add_argument('--manifest', required=True, help='private explicit existing-install manifest')
     replacement.add_argument('--binary', help='bundled standalone executable; defaults to this frozen executable')
@@ -229,6 +245,18 @@ def main(argv=None):
                 prompt.result(True, verb + ' complete', done.get(report['status'], report['status'])
                               + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
             return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
+        if args.action in ('identity-rotate', 'peer-rotate', 'compromise-report'):
+            import key_rotation
+            if args.action == 'identity-rotate':
+                report = key_rotation.identity_rotate(args.security_dir, args.db, args.exchange,
+                    reason=args.reason, old_key=args.old_key, runtime=args.runtime, resume=args.resume)
+            elif args.action == 'peer-rotate':
+                report = key_rotation.peer_rotate(args.security_dir, args.proposal, exchange=args.exchange)
+            else:
+                report = key_rotation.compromise_report(args.db, args.exchange, args.key,
+                    security_dir=args.security_dir, since=args.since)
+            print(json.dumps(report, sort_keys=True))
+            return 0
         if args.action in ('identity-backup', 'identity-restore'):
             import identity_backup
             if args.action == 'identity-restore':

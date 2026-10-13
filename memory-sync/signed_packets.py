@@ -262,6 +262,7 @@ class Security:
     def __init__(self, directory, unlock=None, *, os_unlock=False, backend=None):
         Private, _, _ = crypto()
         self.directory = private_directory(directory)
+        self._rotation_manifests = {}
         read_trust(self.directory)  # Reject unsafe trust storage before loading any key material.
         raw = parse(read_local(self.directory / 'identity.json', private=True))
         if type(raw) is not dict or set(raw) not in (PUBLIC_FIELDS | {'private_key'}, PUBLIC_FIELDS | {'protection'},
@@ -301,6 +302,11 @@ class Security:
         return self.require_unlocked().key.sign(data)
 
     def check_self(self):
+        if (self.directory / 'rotation-journal.json').exists():
+            raise ValueError('rotation in progress; run identity-rotate --resume')
+        self._check_self_authorized()
+
+    def _check_self_authorized(self):
         private_directory(self.directory)
         windows_private(self.directory / 'identity.json')
         entry = read_trust(self.directory)['peers'].get(self.public['key_id'])
@@ -361,6 +367,26 @@ class Security:
 
     def verify(self, p, group, folder):
         return self._verify(p, group, folder, historical=False)
+
+    def verify_rotated(self, p, group, folder):
+        """Authorize only operator-approved historical content, then verify its signature."""
+        from key_rotation import read_rotations, read_manifest
+        entry = read_trust(self.directory)['peers'].get(p['key_id'])
+        if entry is None or not entry['revoked']:
+            raise ValueError('unknown or revoked signing key')
+        key_id = p['key_id']
+        if key_id not in self._rotation_manifests:
+            # Cache failures too: a hostile stream cannot force repeated large-file reads.
+            self._rotation_manifests[key_id] = None
+            rotation = read_rotations(self.directory)['rotations'].get(key_id)
+            if rotation is not None:
+                self._rotation_manifests[key_id] = read_manifest(
+                    self.directory / 'rotations' / (key_id + '.manifest'), private=True,
+                    sha256=rotation['manifest_sha256'], count=rotation['manifest_count'])['packets']
+        packets = self._rotation_manifests[key_id]
+        if packets is None or packets.get(p['uuid']) != receipt_digest(p):
+            raise ValueError('unknown or revoked signing key')
+        return self._verify(p, group, folder, historical=True)
 
     def verify_received(self, p, group, folder, receipt_checksum):
         """Upgrade a committed pre-envelope receipt, never authorize a new packet.

@@ -430,3 +430,71 @@ def test_transaction_exchange_race_rolls_back_and_resumes(peers):
         assert [tuple(r) for r in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0')] == before
     file.unlink()
     assert rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)['status'] == 'rotated'
+
+
+def rotation_offer(peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    path, packet = publish(peers)
+    new = sealed_identity(sa.directory.with_name('offer-key'), 'mac', sender=sa.public['sender'])
+    for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
+        backup.private_mkdir(parent)
+    manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
+    rotation.write_manifest(manifest, [(packet['uuid'], signed.receipt_digest(packet))])
+    doc = rotation.proposal(new, sa.public['key_id'], 'compromised', manifest)
+    proposal = manifest.with_suffix('.json')
+    signed.write_local(proposal, doc)
+    return proposal, new
+
+
+@pytest.mark.parametrize('revoked', [False, True])
+def test_peer_rotation_success_order_and_competition(peers, revoked, monkeypatch, capsys):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    sa, sb = peers[3:]
+    if revoked: signed.revoke(sb.directory, sa.public['key_id'])
+    signed.write_local(path.with_name('competing.json'), signed.parse(path.read_bytes()))
+    writes = []
+    original = signed.write_local
+    def record(path, value, **kw):
+        writes.append(Path(path).name)
+        return original(path, value, **kw)
+    monkeypatch.setattr(signed, 'write_local', record)
+    report = rotation.peer_rotate(sb.directory, path, confirm=lambda: new.public['key_id'])
+    assert report['status'] == 'peer-rotated'
+    assert report['competing_proposals'] == 1
+    assert 'more than one rotation' in capsys.readouterr().err
+    assert writes.index('rotations.json') < writes.index('trust.json')
+    trust = signed.read_trust(sb.directory)
+    assert trust['peers'][sa.public['key_id']]['revoked']
+    assert not trust['peers'][new.public['key_id']]['revoked']
+    assert sync.receive(peers[1], peers[2], security=sb)['applied'] == 1
+
+
+@pytest.mark.parametrize('case', ['fingerprint', 'unknown', 'already', 'new-revoked', 'own-key', 'own-node', 'group', 'tampered', 'oversize', 'slot'])
+def test_peer_refusals_no_changes(peers, case):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    sa, sb = peers[3:]
+    doc = signed.parse(path.read_bytes())
+    trust = signed.read_trust(sb.directory)
+    if case == 'unknown': del trust['peers'][sa.public['key_id']]
+    elif case in ('already', 'new-revoked'):
+        trust['peers'][new.public['key_id']] = {**new.public, 'revoked': case == 'new-revoked'}
+    elif case in ('own-key', 'own-node', 'group'):
+        if case == 'own-key': doc['old_key_id'] = sb.public['key_id']
+        elif case == 'own-node': doc['new']['node'] = sb.public['node']
+        else: doc['new']['group'] = str(uuid.uuid4())
+        doc['signature'] = new.sign_bytes(rotation.DOMAIN + signed.typed({k: v for k, v in doc.items() if k != 'signature'})).hex()
+    elif case == 'tampered': doc['reason'] = 'lost'
+    elif case == 'slot':
+        other = sealed_identity(sa.directory.with_name('other-slot'), 'mac')
+        trust['peers'][other.public['key_id']] = {**other.public, 'revoked': False}
+    signed.write_local(sb.directory / 'trust.json', trust)
+    signed.write_local(path, doc)
+    if case == 'oversize': path.write_bytes(b' ' * (signed.MAX_BYTES + 1))
+    before = {p.name: p.read_bytes() for p in sb.directory.iterdir() if p.is_file()}
+    with pytest.raises(ValueError):
+        rotation.peer_rotate(sb.directory, path, confirm=lambda: '0'*64 if case == 'fingerprint' else new.public['key_id'])
+    assert {p.name: p.read_bytes() for p in sb.directory.iterdir() if p.is_file()} == before
+    assert not (sb.directory / 'rotations').exists()

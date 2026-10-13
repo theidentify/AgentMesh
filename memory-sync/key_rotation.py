@@ -158,12 +158,12 @@ def read_rotations(directory):
 
 
 @safe_operation
-def add_rotation(directory, old_key_id, new_key_id, manifest_path):
+def add_rotation(directory, old_key_id, new_key_id, manifest_path, *, sha256=None, count=None):
     signed.hex_bytes(old_key_id, 32)
     signed.hex_bytes(new_key_id, 32)
     if old_key_id == new_key_id: raise ValueError(INVALID_REGISTRY)
     registry = read_rotations(directory)
-    manifest = read_manifest(manifest_path)
+    manifest = read_manifest(manifest_path, sha256=sha256, count=count)
     target = Path(directory) / 'rotations'
     if not target.exists(): backup.private_mkdir(target)
     signed.private_directory(target)
@@ -555,3 +555,67 @@ def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, ru
             phrase = ask('New identity passphrase: ')
             kp.open_sealed(public_fields(journal['new_identity']), journal['new_identity']['protection'], phrase)
         return _replay(directory, db, exchange, plan, journal, phrase, backend, _after_step)
+
+
+OWN_KEY = "a rotation proposal cannot replace this device's own key"
+UNKNOWN_OLD = 'unknown old key'
+ALREADY = 'already rotated'
+NEW_REVOKED = 'new key is revoked here'
+GROUP_MISMATCH = 'rotation group does not match this device'
+FINGERPRINT = 'rotation fingerprint does not match'
+TRUST_CHANGED = 'local trust changed during rotation approval'
+REASONS |= {OWN_KEY, UNKNOWN_OLD, ALREADY, NEW_REVOKED, GROUP_MISMATCH, FINGERPRINT, TRUST_CHANGED}
+
+
+def console_fingerprint():
+    import console_prompt
+    prompt = console_prompt.ConsolePrompt()
+    if not prompt.interactive(): raise ValueError('passphrase entry requires an interactive console')
+    prompt.show('Read the full new fingerprint from the rotating device out of band, then type it here:')
+    # Do not display or ghost the expected fingerprint from the exchange.
+    return prompt.stdin.readline().strip()
+
+
+@fixed(INVALID)
+def read_proposal(path):
+    return check_proposal(signed.parse(signed.read_local(path, private=False)), Path(path).with_suffix('.manifest'))
+
+
+@safe_operation
+def peer_rotate(security_dir, proposal_file, *, exchange=None, confirm=console_fingerprint):
+    directory = signed.private_directory(security_dir)
+    own = signed.Security(directory).public
+    path = signed.no_symlinks(proposal_file)
+    doc = read_proposal(path)
+    new, old = doc['new'], doc['old_key_id']
+    if old == own['key_id'] or new['node'] == own['node']: raise ValueError(OWN_KEY)
+    if new['group'] != own['group']: raise ValueError(GROUP_MISMATCH)
+    trust = signed.read_trust(directory)
+    entry = trust['peers'].get(old)
+    if entry is None or any(entry[k] != new[k] for k in ('group', 'node', 'sender')): raise ValueError(UNKNOWN_OLD)
+    if new['key_id'] in trust['peers']:
+        raise ValueError(NEW_REVOKED if trust['peers'][new['key_id']]['revoked'] else ALREADY)
+    updated = rotated_trust(trust, old, new, public_fields(entry))
+    folder = signed.no_symlinks(Path(exchange) / 'pairing' / 'rotations') if exchange is not None else path.parent
+    competing = 0
+    for candidate in folder.glob('*.json'):
+        if candidate == path: continue
+        try:
+            other = signed.parse(signed.read_local(candidate))
+            if type(other) is dict and other.get('format') == FORMAT and other.get('old_key_id') == old:
+                competing += 1
+        except (OSError, ValueError):
+            continue
+    if competing:
+        backup.show({'warning': 'more than one rotation was proposed for this key; verify with the device owner'})
+    backup.show({'old_fingerprint': old[:16], 'new_fingerprint': new['key_id'][:16],
+                 'reason': doc['reason'], 'created_at': doc['created_at'], 'manifest_packets': doc['manifest_count']})
+    if confirm() != new['key_id']: raise ValueError(FINGERPRINT)
+    if signed.read_trust(directory) != trust: raise ValueError(TRUST_CHANGED)
+    add_rotation(directory, old, new['key_id'], path.with_suffix('.manifest'),
+                 sha256=doc['manifest_sha256'], count=doc['manifest_count'])
+    signed.write_local(directory / 'trust.json', updated)
+    next_steps = ['Re-run wizard pairing to update security_state.peer; update the profile-memory SignedChannel peer fingerprint.']
+    if doc['reason'] == 'compromised': next_steps.insert(0, 'Run compromise-report --key ' + old + ' on this device.')
+    return dict(status='peer-rotated', old_key_id=old, new_key_id=new['key_id'], reason=doc['reason'],
+                manifest_packets=doc['manifest_count'], competing_proposals=competing, next=next_steps)

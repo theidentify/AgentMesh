@@ -43,3 +43,7 @@ Task 4 commit: `b983cc6`. Ten new tests failed before implementation and passed 
 Replay uses a private internal Security subclass bound to the exact sealed journal identity, with unchanged live trust authorization. Ordinary Security refuses while the journal exists. This resolves the spec's simultaneous journal guard and in-journal signing/verification requirements without a public bypass option. On cleanup failure the report explicitly requests manual removal of the old fingerprint: current `identity-os-unlock disable` targets the new identity and cannot remove an old item.
 
 Process deviation: Task 4's commit was issued after both test processes started but before their final output was collected. Both subsequently completed successfully (57 each); later commits wait for completed results. One initial shell invocation used unavailable `python`; it did not edit files. The stale Task 1 report line was corrected in Task 2.
+
+## Task 6
+
+Task 5 commit: `9e0faec`. Twelve peer-rotation tests failed first. Green: 79 recovery tests passed from each location. Peer approval rechecks manifest bytes against the approved hash when copying; wrong fingerprint makes no changes. Competing-proposal count is the number of *other* proposal files, and any positive count triggers the warning. The console never supplies the expected full fingerprint as ghost text.

@@ -145,3 +145,77 @@ def test_stale_and_malformed_status(live):
     assert backup.status(live)['state'] == 'none'
     signed.write_local(live / 'backup-status.json', {})
     with pytest.raises(ValueError, match='invalid backup status'): backup.status(live)
+
+
+def answers(*values):
+    it = iter(values)
+    return lambda *a: next(it)
+
+
+def test_create_verify(live, material, secret, tmp_path):
+    phrase = os.urandom(32).hex()
+    output = Path(os.path.realpath(tmp_path)) / 'backup.json'
+    result = backup.create(live, output, ask=answers(secret, phrase, phrase), confirm=lambda word: word, _test_n=2**14)
+    assert result['status'] == 'created'
+    assert set(result) == {'status', 'key_id', 'file_sha256', 'verified_at', 'permissions'}
+    doc = signed.parse(signed.read_local(output))
+    assert backup.public(doc['manifest']) == material[0]
+    assert backup.status(live)['state'] == 'verified'
+    result = backup.verify(output, live, ask=answers(phrase))
+    assert result['status'] == 'verified'
+    assert 'warning' in result
+
+
+@pytest.mark.parametrize('case', ['confirmation', 'short', 'mismatch', 'equal', 'readback', 'cloud'])
+def test_create_refusals(live, secret, tmp_path, monkeypatch, case):
+    phrase = os.urandom(32).hex()
+    output = Path(os.path.realpath(tmp_path)) / 'backup.json'
+    confirm = lambda word: word
+    values = [secret, phrase, phrase]
+    if case == 'confirmation': confirm = lambda word: ''
+    if case == 'short': values[1] = ''
+    if case == 'mismatch': values[2] = os.urandom(32).hex()
+    if case == 'equal': values = [secret, secret, secret]
+    if case == 'cloud':
+        monkeypatch.setattr(backup, 'CLOUD_ROOTS', (output.parent,))
+        confirm = lambda word: ''
+    if case == 'readback':
+        def fail(*a): raise ValueError(backup.OPEN_FAILED)
+        monkeypatch.setattr(backup, 'open_backup', fail)
+    with pytest.raises(ValueError):
+        backup.create(live, output, ask=answers(*values), confirm=confirm, _test_n=2**14)
+    assert not output.exists()
+    assert not (live / 'backup-status.json').exists()
+
+
+def test_raw_create_in_memory(live, material, secret, tmp_path, monkeypatch):
+    original = signed.read_local
+    def read(path, **kw):
+        if Path(path) == live / 'identity.json':
+            return signed.wire({**material[0], 'private_key': material[1].hex()})
+        return original(path, **kw)
+    monkeypatch.setattr(signed, 'read_local', read)
+    output = Path(os.path.realpath(tmp_path)) / 'backup'
+    assert backup.create(live, output, ask=answers(secret, secret), confirm=lambda w: w, _test_n=2**14)['status'] == 'created'
+
+
+def test_no_console(live, tmp_path):
+    with pytest.raises(ValueError, match='interactive console'):
+        backup.create(live, tmp_path / 'backup')
+    assert not (tmp_path / 'backup').exists()
+
+
+def test_verify_mismatch_and_failure(live, material, secret, tmp_path):
+    doc = document(material, secret)
+    output = Path(os.path.realpath(tmp_path)) / 'backup'
+    backup.write_new(output, signed.wire(doc))
+    with pytest.raises(ValueError): backup.verify(output, live, ask=answers(os.urandom(32).hex()))
+    assert not (live / 'backup-status.json').exists()
+    # A different live public identity needs no unlock and gains no evidence.
+    other = signed.crypto()[0].generate()
+    pub = other.public_key().public_bytes_raw()
+    p = {**material[0], 'public_key': pub.hex(), 'key_id': hashlib.sha256(pub).hexdigest()}
+    signed.write_local(live / 'identity.json', {**p, 'protection': kp.seal(p, other.private_bytes_raw(), secret, n=2**14)})
+    signed.write_local(live / 'trust.json', {'format': 'agentmesh-trust-v1', 'peers': {p['key_id']: {**p, 'revoked': False}}})
+    assert backup.verify(output, live, ask=answers(secret))['key_id_mismatch']
+    assert not (live / 'backup-status.json').exists()

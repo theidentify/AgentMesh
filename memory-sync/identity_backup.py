@@ -263,3 +263,139 @@ def status(security_dir):
         elif entry['verified_at'] and state == 'none':
             state = 'verified'
     return {'key_id': key_id, 'backups': rows, 'state': state}
+
+
+import functools
+import hashlib
+import json
+
+CANCELLED = 'backup or restore confirmation was not supplied'
+PASSPHRASE_SHORT = 'passphrase must be at least 12 characters'
+PASSPHRASE_MISMATCH = 'passphrases do not match; nothing was changed'
+PASSPHRASE_REUSED = 'backup and identity passphrases must be different'
+OPERATION_FAILED = 'identity backup or restore failed'
+READBACK_FAILED = 'backup readback verification failed'
+PARENT_MISSING = 'backup parent directory does not exist'
+REASONS |= {CANCELLED, PASSPHRASE_SHORT, PASSPHRASE_MISMATCH, PASSPHRASE_REUSED,
+            OPERATION_FAILED, READBACK_FAILED, PARENT_MISSING,
+            'passphrase entry requires an interactive console'}
+
+
+def safe_operation(function):
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        reason = None
+        try:
+            return function(*args, **kwargs)
+        except Exception as exc:
+            reason = str(exc) if type(exc) is ValueError and str(exc) in REASONS else OPERATION_FAILED
+        # Outside the handler: no underlying exception containing secret data survives as context.
+        raise ValueError(reason)
+    return wrapped
+
+
+def show(value):
+    print(json.dumps(value, sort_keys=True), file=sys.stderr)
+
+
+def console_confirm(word):
+    import console_prompt
+    prompt = console_prompt.ConsolePrompt()
+    if not prompt.interactive():
+        raise ValueError('passphrase entry requires an interactive console')
+    return word if prompt.typed(word, 'Continue') else ''
+
+
+def require_confirmation(word, confirm):
+    if confirm(word) != word:
+        raise ValueError(CANCELLED)
+
+
+def location_confirmation(path, confirm):
+    if unsafe_location(path) == 'cloud':
+        show({'warning': 'This file will be uploaded by cloud sync and permits offline passphrase guessing.'})
+        require_confirmation('CLOUD', confirm)
+
+
+def new_passphrase(ask, previous, label):
+    phrase = ask('New ' + label + ' passphrase (at least 12 characters): ')
+    if len(phrase) < kp.MIN_PASSPHRASE:
+        raise ValueError(PASSPHRASE_SHORT)
+    if phrase == previous:
+        raise ValueError(PASSPHRASE_REUSED)
+    if ask('Repeat the passphrase: ') != phrase:
+        raise ValueError(PASSPHRASE_MISMATCH)
+    return phrase
+
+
+def read_backup(path):
+    result = None
+    try:
+        data = signed.read_local(path, private=False)
+        result = signed.parse(data)
+    except (OSError, ValueError, TypeError):
+        pass
+    if result is None:
+        raise ValueError(OPEN_FAILED)
+    return result, hashlib.sha256(data).hexdigest()
+
+
+def match_live(security_dir, manifest):
+    if security_dir is None:
+        return False
+    return signed.Security(security_dir).public == public(manifest)
+
+
+@safe_operation
+def create(security_dir, output, *, ask=kp.console_passphrase, confirm=console_confirm, backend=None, _test_n=None):
+    output = Path(output).expanduser()
+    location_confirmation(output, confirm)
+    if os.path.lexists(output):
+        raise ValueError(EXISTS)
+    if not output.parent.is_dir():
+        raise ValueError(PARENT_MISSING)
+    current = signed.Security(security_dir)
+    identity_phrase = None
+    if current.locked:
+        identity_phrase = ask('Identity passphrase: ')
+        current = signed.Security(security_dir, unlock=lambda: identity_phrase)
+    manifest = {k: current.public[k] for k in MANIFEST - {'created_at'}} | {'created_at': now()}
+    show(manifest)
+    require_confirmation('BACKUP', confirm)
+    phrase = new_passphrase(ask, identity_phrase, 'backup')
+    raw = current.key.private_bytes_raw()
+    doc = seal(manifest, raw, signed.read_trust(security_dir), phrase, n=kp.SCRYPT_N if _test_n is None else _test_n)
+    permissions = write_new(output, signed.wire(doc))
+    verified = False
+    try:
+        reread, digest = read_backup(output)
+        restored, _, _ = open_backup(reread, phrase)
+        verified = restored == raw and public(reread['manifest']) == current.public
+    finally:
+        if not verified:
+            output.unlink(missing_ok=True)
+    if not verified:
+        raise ValueError(READBACK_FAILED)
+    when = now()
+    record(security_dir, current.public['key_id'], digest, 'created_at', manifest['created_at'])
+    record(security_dir, current.public['key_id'], digest, 'verified_at', when)
+    return {'status': 'created', 'key_id': current.public['key_id'], 'file_sha256': digest,
+            'verified_at': when, 'permissions': permissions}
+
+
+@safe_operation
+def verify(file, security_dir=None, *, ask=kp.console_passphrase):
+    phrase = ask('Backup passphrase: ')
+    doc, digest = read_backup(file)
+    open_backup(doc, phrase)
+    show(doc['manifest'])
+    when = now()
+    matched = match_live(security_dir, doc['manifest'])
+    if matched:
+        record(security_dir, doc['manifest']['key_id'], digest, 'verified_at', when)
+    result = {'status': 'verified', 'key_id': doc['manifest']['key_id'], 'file_sha256': digest, 'verified_at': when}
+    if security_dir is not None and not matched:
+        result['key_id_mismatch'] = True
+    if doc['n'] < kp.SCRYPT_N:
+        result['warning'] = 'backup uses a lower-than-production scrypt work factor'
+    return result

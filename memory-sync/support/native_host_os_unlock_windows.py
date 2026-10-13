@@ -25,6 +25,7 @@ import time
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # memory-sync modules
 import key_protection as kp
 import memory_sync
 import os_unlock as ou

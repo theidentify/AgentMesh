@@ -423,7 +423,7 @@ def test_transaction_exchange_race_rolls_back_and_resumes(peers):
         if step == 'identity':
             file.write_bytes(b'different immutable bytes')
             os.utime(file, (1, 1))
-    with pytest.raises(ValueError, match='pending packet is already'):
+    with pytest.raises(ValueError, match='pending packet file differs from the outbox'):
         rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=race, **kwargs)
     with sync.connect(a) as c:
         assert [tuple(r) for r in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0')] == before
@@ -1547,6 +1547,7 @@ def test_round2_refuses_v1_formats(peers):
     path,new = rotation_offer(peers)
     p = signed.parse(path.read_bytes())
     p['format'] = 'agentmesh-key-rotation-v1'
+    p['signature'] = new.sign_bytes(b'agentmesh-key-rotation-v1\0' + signed.typed({k:v for k,v in p.items() if k != 'signature'})).hex()
     with pytest.raises(ValueError, match='invalid rotation proposal'):
         rotation.check_proposal(p, path.with_suffix('.manifest'))
     signed.write_local(peers[4].directory / 'rotations.json',
@@ -1626,7 +1627,7 @@ def test_round2_drop_refuses(indexed_peers, monkeypatch, case):
         uid = next(iter(pending_texts(a))) if case == 'planned' else str(uuid.uuid4())
     before = snapshot(indexed_peers)
     _,kwargs = rotate_args(indexed_peers)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='drop-pending requires unreferenced pending packets'):
         rotation.identity_rotate(sa.directory,a,ex,reason='planned' if case == 'planned' else 'compromised',
                                  drop_pending=[uid],**kwargs)
     assert snapshot(indexed_peers) == before
@@ -1724,3 +1725,68 @@ def test_round2_report_variant_and_version_validation(indexed_peers, monkeypatch
     item = next(v for v in report['uncommitted']+report['committed'] if v['uuid'] == r['uuid'])
     assert item['superseded'] is True and item['variant_superseded'] is False
     assert item['in_manifest'] is True and item not in report['forged_candidates']
+
+
+def test_round2_registry_change_invalidates_missing_cache(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    path,p = publish(indexed_peers)
+    signed.revoke(sb.directory,sa.public['key_id'])
+    with pytest.raises(ValueError): sb.verify_rotated(p,GROUP,'mac')
+    manifest = ex/'late.manifest'
+    rotation.write_manifest(manifest,[(p['uuid'],signed.envelope_digest(p))])
+    rotation.add_rotation(sb.directory,sa.public['key_id'],sb.public['key_id'],manifest)
+    assert sb.verify_rotated(p,GROUP,'mac') == p
+
+
+def test_round2_pre_rotation_resolution_plan_is_stale(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import ref, choices
+    a,b,ex,sa,sb = indexed_peers
+    p,q,r = pending_resolution(indexed_peers,monkeypatch)
+    with sync.connect(a) as c,c:
+        plan = apply.prepare_resolution(c,[ref(r)],choices(x=7,y=2,z=4),security=sa)
+    phrase,kwargs = rotate_args(indexed_peers)
+    rotation.identity_rotate(sa.directory,a,ex,reason='planned',**kwargs)
+    new = signed.Security(sa.directory,unlock=lambda:phrase)
+    assert apply._trust(new) != plan.trust_digest
+    before = snapshot(indexed_peers)
+    with sync.connect(a) as c,c:
+        assert apply._state(c) == plan.state_digest
+        with pytest.raises(ValueError,match='stale resolution plan'):
+            apply.commit_resolution(c,plan,security=new,operation_id='round2-stale')
+    assert snapshot(indexed_peers) == before
+
+
+def test_round2_cli_flags_and_fixed_reasons(peers, monkeypatch):
+    import agentmesh
+    import cli_errors
+    import key_rotation as rotation
+    a,b,ex,sa,sb = peers
+    calls = []
+    def rotate(*args, **kwargs):
+        calls.append(kwargs)
+        return {'status':'rotated'}
+    monkeypatch.setattr(rotation,'identity_rotate',rotate)
+    base = ['identity-rotate','--security-dir',str(sa.directory),'--db',str(a),'--exchange',str(ex)]
+    ids = [str(uuid.uuid4()),str(uuid.uuid4())]
+    assert agentmesh.main(base+['--reason','compromised','--drop-pending',ids[0],'--drop-pending',ids[1]]) == 0
+    assert calls[-1]['drop_pending'] == ids
+    assert agentmesh.main(base+['--resume','--quarantine-collision',ids[0]]) == 0
+    assert calls[-1]['resume'] and calls[-1]['quarantine_collision'] == ids[:1]
+    for reason in (rotation.PENDING_DIFFERS,rotation.DROP_INVALID,rotation.QUARANTINE_INVALID):
+        assert reason in cli_errors.KEY_REASONS
+        assert cli_errors.report(ValueError(reason),'identity-rotate')['reason'] == reason
+
+
+@pytest.mark.parametrize('option', ['drop_pending','quarantine_collision'])
+def test_round2_option_scope_refuses_without_writes(indexed_peers, option):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    before = snapshot(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',**{option:[str(uuid.uuid4())]},**kwargs)
+    assert snapshot(indexed_peers) == before

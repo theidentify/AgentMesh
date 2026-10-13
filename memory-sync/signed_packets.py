@@ -375,6 +375,15 @@ class Security:
         if entry is None or not entry['revoked']:
             raise ValueError('unknown or revoked signing key')
         key_id = p['key_id']
+        registry = no_symlinks(self.directory / 'rotations.json')
+        try:
+            info = registry.stat()
+            stamp = (info.st_mtime_ns, info.st_size)
+        except FileNotFoundError:
+            stamp = None
+        if getattr(self, '_rotation_registry_stamp', object()) != stamp:
+            self._rotation_manifests.clear()
+            self._rotation_registry_stamp = stamp
         if key_id not in self._rotation_manifests:
             # Cache failures too: a hostile stream cannot force repeated large-file reads.
             self._rotation_manifests[key_id] = None

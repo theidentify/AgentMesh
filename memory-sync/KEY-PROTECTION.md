@@ -404,7 +404,9 @@ OS cleanup precedes final journal removal. Restore also refuses rotation journal
 
 Publication uses journal format `agentmesh-rotation-journal-v2`. An unfinished journal from the older
 re-sign implementation is refused as `invalid rotation journal`; inspect that recovery state instead
-of deleting or reinterpreting it. Existing approved proposal and manifest formats remain unchanged.
+of deleting or reinterpreting it. Proposals use `agentmesh-key-rotation-v2` and registries use `agentmesh-rotations-v2`.
+V1 proposals and registries are refused; their signature-excluding digest is not accepted.
+Round-1 journals without drop metadata or a v2 proposal also require separate inspection.
 
 ### 5. What happens to packets
 
@@ -419,13 +421,13 @@ of deleting or reinterpreting it. Existing approved proposal and manifest format
 The new key signs the small proposal's manifest SHA-256 and count. The separate sorted manifest is
 streamed with a 200 MiB ceiling (roughly 1.9 million packets), not parsed as a JSON packet. Peer approval
 stores it privately. A revoked-key packet must match its approved UUID/digest and still pass historical
-signature verification. Each Security instance loads a manifest lazily at most once; start a fresh
-worker cycle after approval. Signing a new forged packet with the stolen key cannot add it to the
+signature verification. Each Security instance caches manifests lazily against the registry's mtime and size;
+a changed registry invalidates cached entries, including missing entries. Signing a new forged packet with the stolen key cannot add it to the
 approved manifest.
 
 **Approved manifests authorize resolution evidence.** After fingerprint approval, a listed packet
 counts as authorized `covers`/`evidence` even if the peer never committed it before revocation. This
-includes an old-key v3 resolution packet. UUID/receipt-digest matching and historical signature
+includes an old-key v3 resolution packet. UUID/envelope-digest matching and historical signature
 verification still apply; rotation never changes packet bytes or evidence references.
 Everything outside an approved manifest retains strict revocation: merely held or previously verified
 uncommitted packets are refused. Exact committed receipts and superseded dispositions retain their

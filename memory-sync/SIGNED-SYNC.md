@@ -170,9 +170,11 @@ history. Replacing a lost key is explicit recovery, not auto-generation.
 
 An **approved rotation manifest authorizes resolution evidence** as well as ordinary receipt of its
 listed packets. After the operator approves the new fingerprint, a revoked-key packet must match the
-manifest's UUID and receipt digest and still pass historical signature verification with the retained
+manifest's UUID and envelope digest (signature included) and still pass historical signature verification with the retained
 old public key. This includes `covers`/`evidence` never committed at that peer before revocation and
-v3 resolution packets signed by the old key. The approval is explicit authorization of that history;
+v3 resolution packets signed by the old key. Manifest acceptance gives authorization state
+`verified`, not `applied`; only a real commit establishes an applied receipt. Proposals use
+`agentmesh-key-rotation-v2` and registries use `agentmesh-rotations-v2`; v1 is refused. The approval is explicit authorization of that history;
 it does not reactivate the old key. Packets outside the approved manifest remain subject to strict
 revocation, including previously verified but uncommitted evidence. Existing exact committed-receipt
 and superseded-disposition exceptions are unchanged. No synthetic receipt bypasses verification.
@@ -277,7 +279,7 @@ field sets, filename/folder/scope checks and bounded proof validation still appl
 
 A resolver signs its own decision; it does not impersonate either source sender.
 Previously verified but uncommitted evidence must still pass **current authorization**: active pinned
-trust, or an approved rotation manifest with matching UUID/receipt digest and historical signature
+trust, or an approved rotation manifest with matching UUID/envelope digest and historical signature
 verification, as described above. Without that approval, strict revocation can stop a pending resolution.
 Exact committed receipts and superseded dispositions retain their historical-replay exception;
 a changed envelope/signature with the same UUID is rejected. No synthetic receipt is used to bypass

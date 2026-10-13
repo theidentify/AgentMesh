@@ -59,8 +59,9 @@ Give operators explicit, separate paths for each situation:
 
 In `memory_sync.receive`, when `p['node']` equals this database's node:
 1. Look up `_sync_outbox` by `p['uuid']`.
-2. If the stored packet equals `p` exactly, treat it as seen (`continue`) **before** any signature
-   verification. It's byte-identical to what this device signed and published itself.
+2. If the **file bytes** equal `stored_text.encode('utf-8')`, treat it as seen (`continue`) **before**
+   any signature verification. That's byte-identical to what `publish` wrote. The comparison is on
+   bytes, not `json.loads(...) == p`, because Python treats `1 == 1.0 == True` as equal.
 3. A local-node packet that doesn't match keeps today's behaviour: `unknown packet claiming local node`
    (`invalid`).
 
@@ -69,24 +70,50 @@ any old-key file with the same uuid can't exist, because rotation refuses that c
 
 ### R2: legitimate old-key packets are accepted through a signed manifest
 
-- **What the manifest is.** The rotation proposal carries a **manifest**: every `(uuid, receipt_digest)`
-  pair for the **published** outbox rows signed by the old key. It is signed (with the rest of the
-  proposal) by the **new** key.
-- **What peers do with it.** After the operator approves the new fingerprint, `peer-rotate` stores the
-  manifest in `DIR/rotations.json` (a private file written with `write_local`):
-  `{"format": "agentmesh-rotations-v1", "rotations": {<old_key_id>: {"new_key_id", "approved_at", "packets": {<uuid>: <receipt_digest>}}}}`.
-- **How receive uses it.** When `security.verify` refuses because the key is revoked, receive checks
-  that file. If `p['key_id']` has an entry and `packets[p['uuid']] == receipt_digest(p)`, the packet is
-  verified **historically** against the old public key (`Security._verify(..., historical=True)`
-  through a new public method, `verify_rotated(p, group, folder, rotations)`) and then applied as
-  usual. Anything else stays refused.
+- **What the manifest is.** Every `(uuid, receipt_digest)` pair for the **published** outbox rows
+  signed by the old key. It's a **separate file**, because `signed_packets` caps `parse`/`read_local`
+  at `MAX_BYTES` (8 MiB) and `typed` at `MAX_VALUES` (100,000 values). A one-packet-per-minute worker
+  goes past that in about 35 days.
+  - **Format:** UTF-8 text, one line per packet: `<uuid> <receipt_digest>\n`. The lines are sorted by
+    uuid with no duplicates, and each must match `^[0-9a-f-]{36} [0-9a-f]{64}$` with a canonical UUID.
+  - **Parsing:** a dedicated streaming parser, **not** `parse`/`typed`, with a hard limit of 200 MiB
+    (about 1.9 million packets).
+  - **Location:** `EXCHANGE/pairing/rotations/<new_key_id>.manifest`, next to the proposal.
+- **What the proposal signs:** only `manifest_sha256` and `manifest_count`, together with the other
+  fields. The signature is by the **new** key.
+- **What peers do with it.** After the operator approves the new fingerprint, `peer-rotate`:
+  1. Streams the manifest and checks its sha256, its count, the line format and the sort order.
+  2. Copies it to `DIR/rotations/<old_key_id>.manifest` (private, written atomically).
+  3. Records it in `DIR/rotations.json` (private, small):
+     `{"format": "agentmesh-rotations-v1", "rotations": {<old_key_id>: {"new_key_id", "approved_at", "manifest_sha256", "manifest_count"}}}`.
+- **How receive uses it** (placement and trigger are fixed):
+  1. It runs after `validate_envelope`, the filename check and `_received_signed`, so committed
+     packets keep their historical path.
+  2. It runs before `_validate`, `_seen` and `_apply`, and **replaces** the `security.verify` call
+     for this case.
+  3. The path is chosen from the trust entry, **not** by catching an error, because `_verify` raises
+     the same message for unknown and revoked keys:
+     - if `trust['peers'][p['key_id']]` exists and is `revoked: true`, call
+       `security.verify_rotated(p, group, folder)`
+     - otherwise call `security.verify` as today
+  4. `verify_rotated`:
+     - requires an entry in `rotations.json` for `p['key_id']`
+     - loads that manifest (checking the sha256 again) **once per `Security` instance**, into an
+       in-memory dict, lazily, on the first revoked-key packet. So each cycle reads it at most once.
+     - requires `manifest[p['uuid']] == receipt_digest(p)`
+     - verifies historically with `_verify(..., historical=True)`
+     
+     Anything else stays refused (`invalid`).
+- **Why the binding holds.** `receipt_digest` covers every field except the signature, and Ed25519 is
+  effectively non-malleable. A second valid signature over the same content is the same packet, and
+  the peer pins `envelope_digest` when it commits.
 - **Why this matters for compromise.** An attacker can sign with the stolen key, but can't get a forged
   packet onto the manifest: the manifest comes from the real device's own outbox and is approved by
   fingerprint. So peers keep every legitimate packet and still refuse forgeries made after the theft.
 - **Limit (documented).** A forgery made **before** the rotation and already committed by a peer stays
   committed. That is what `compromise-report` is for.
-- **Size.** `rotations.json` and the proposal are limited to 16 MiB. A manifest entry is about 110
-  bytes.
+- **Size.** The proposal JSON is small, well under `MAX_BYTES`, and is read with `read_local`. Only
+  the manifest file is large, and it never goes through `parse`.
 
 ### Single active key per identity
 
@@ -100,7 +127,7 @@ The proposal is written exclusively to `EXCHANGE/pairing/rotations/<new_key_id>.
 ```
 { "format": "agentmesh-key-rotation-v1", "old_key_id": <hex>, "new": <PUBLIC_FIELDS of the new key>,
   "reason": "lost" | "compromised" | "planned", "created_at": <ISO-8601 UTC>,
-  "manifest": {<uuid>: <receipt_digest>, ...},
+  "manifest_sha256": <hex>, "manifest_count": <int>,
   "signature": <hex Ed25519 by the NEW key over b'agentmesh-key-rotation-v1\0' + typed(all other fields)> }
 ```
 
@@ -112,7 +139,9 @@ The proposal is written exclusively to `EXCHANGE/pairing/rotations/<new_key_id>.
 - **Validation:** read with `read_local(private=False)`. Check:
   - the size limit and the exact field set
   - `check_public(new)`
-  - the hex lengths, and the uuid and digest formats in the manifest
+  - the hex lengths
+  - the manifest file: it exists, its sha256 and count match, and its format and order are correct,
+    checked by streaming
   - the reason value
   - the signature
 
@@ -185,7 +214,16 @@ Runs on the device that gets the new key.
 8. **New key.** Generate a new Ed25519 key in memory. Ask for a new identity passphrase twice (at
    least 12 characters). Seal it in the #6 form with production N.
 
-**Journal, then idempotent steps.** Write `DIR/rotation-journal.json` exclusively (it is private):
+**Journal, then idempotent steps.** Write `DIR/rotation-journal.json` exclusively (it is private). Step 1
+(trust) runs **immediately** after it, with the fence still held.
+
+- **The worker refuses mid-rotation.** While `rotation-journal.json` exists, `Security.check_self`
+  refuses with `rotation in progress; run identity-rotate --resume`. So no worker, wizard or
+  `memory_sync` process can sign or publish with either key.
+- **`--resume` re-runs the whole fence** before replaying anything: both locks, `STOPPED`,
+  `exchange_activity`, and the check that no exchange file exists for each pending uuid. Then it
+  replays the journal from step 1.
+- **What the journal holds:**
 
 ```
 {"format": "agentmesh-rotation-journal-v1", "old_key_id", "old_public": <PUBLIC_FIELDS or null>,
@@ -216,12 +254,15 @@ replays the journal from the start. A crash at any point leaves state that `--re
    Rows already carrying the new key_id are skipped, which makes the step idempotent.
 4. **Verify.** `Security(DIR, unlock=new passphrase)` loads and `check_self` passes. Every pending row
    verifies with the new key and fails with the old one.
-5. **Proposal.** Write it exclusively. If it already exists with identical content, skip it.
-6. **Finish.**
-   - Delete `rotation-journal.json`.
-   - Remove the old key's #7 OS-unlock item through an injectable backend. `current_backend()` may be
-     None (Linux): skip it. A removal failure is reported **prominently**: `os_unlock_item_removed:
-     false` plus a next step to run `identity-os-unlock disable`, or remove it by hand.
+5. **Proposal.** Write the manifest file first, then the proposal, both exclusively. If a file
+   already exists with identical content, skip it. The manifest's exact bytes are kept in the journal
+   as a separate private file, `DIR/.rotate-<new_key_id>.manifest`, so `--resume` can rewrite it
+   byte-identically.
+6. **Finish, in this order:**
+   1. Remove the old key's #7 OS-unlock item through an injectable backend. `current_backend()` may be
+      None (Linux): skip it. A removal failure is reported **prominently**: `os_unlock_item_removed:
+      false` plus a next step to run `identity-os-unlock disable`, or remove it by hand.
+   2. **Last**, delete `rotation-journal.json`.
 
 **Rollback.** Before the journal exists, nothing has changed. After it exists, the only direction is
 forward (`--resume`). The documentation says so.
@@ -285,8 +326,11 @@ Runs on every other device.
     suspects.
   - `forged_candidates`: files in **this device's own node folder** carrying `OLD_KEY_ID` that match no
     outbox row exactly. On the compromised device itself, this is the strongest signal.
-  - `receipts_without_file`: the count of local receipts whose file is no longer in the exchange. It
-    can't be attributed to a key, because receipts store neither key nor node.
+  - `receipts_without_file`: the count of uuids in `_sync_receipt_envelopes` (signed-era receipts)
+    whose file is no longer in `signed-changes/`. It can't be attributed to a key, because receipts
+    store neither key nor node.
+  - `legacy_receipts`: the count of other receipts (unsigned `changes/` era), reported separately so
+    they don't add noise.
   - `filtered_by_since`: how many files `--since` filtered out. `--since` uses the exchange file
     mtime, which a writer can set, so it is documented as approximate.
   - `unreadable`: a count.
@@ -328,7 +372,9 @@ Runs on every other device.
    - periodic restore drills: monthly, and after every rotation or restore
 8. **Limits:**
    - forgeries committed before the rotation remain
-   - a DB clone elsewhere can't be fenced
+   - a DB clone elsewhere can't be fenced. If a clone writes an old-key file under a re-signed uuid,
+     this device gets a permanent `immutable packet path collision` and `invalid`. The operator has
+     to inspect it and remove the clone's file
    - `--since` is approximate
    - unlinking a file is not secure erase
    - Python can't wipe memory
@@ -338,10 +384,15 @@ Runs on every other device.
 Unit tests use disposable identities and DBs, and the fast KDF is test-only.
 
 - **R1:**
+  - a local-node file equal to the outbox by `json.loads` but different in bytes (`1` vs `1.0`) is
+    `invalid`
   - after rotation, a receive cycle on the rotated device reports `invalid == 0` and doesn't fail
     permanently, with its old published files present
   - a local-node file that doesn't match the outbox is still `invalid`
 - **R2:**
+  - a manifest of 60,000 entries (above the `typed` limit) works end to end, built with a test helper
+    without real packets for the bulk
+  - a manifest file whose sha256, count, order or line format is wrong → refused
   - a peer accepts a not-yet-received legitimate old-key packet listed in the manifest after
     peer-rotate
   - it refuses an old-key packet signed after rotation that is not in the manifest (the forgery case)
@@ -363,6 +414,8 @@ Unit tests use disposable identities and DBs, and the fast KDF is test-only.
   - re-signed rows keep uuid, body and checksum, and verify only with the new key
   - published rows are byte for byte unchanged
   - the manifest equals the published old-key rows
+  - while the journal exists, `Security(...).sign` refuses with `rotation in progress`
+  - `--resume` re-runs the fence: a held lock and a missing `STOPPED` are refused
   - **crash injection** after each journal step, then `--resume`, gives the same final state as an
     uninterrupted run
   - exactly one active key per sender

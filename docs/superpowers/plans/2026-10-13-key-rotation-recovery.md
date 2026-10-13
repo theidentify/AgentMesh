@@ -70,8 +70,8 @@
     still `invalid` (`unknown packet claiming local node`)
 - [ ] **Implement:** in `receive`, after `validate_envelope` and the filename check, and **before**
   `_received_signed`/`security.verify`, when `p['node'] == config(c)['node']`:
-  - an exact outbox match (`json.loads(row) == p`) means `continue`, the same way `_received_signed`
-    `cached` is handled
+  - when the **file bytes** equal `stored_text.encode('utf-8')`, `continue`, the same way
+    `_received_signed` `cached` is handled. Read the bytes once and parse from them
   - a mismatch falls through to the existing code
 - [ ] Run the full `test_memory_sync.py`, `test_signed_packets.py` and `test_security_regressions.py`
   and expect green. Commit.
@@ -82,13 +82,15 @@
   - build, sign and validate round trip
   - tampering with each field (old_key_id, new.*, reason, created_at, a manifest entry, the signature)
     → `invalid rotation proposal`
-  - the exact field set, the size limit (16 MiB; use a small test override hook rather than building
-    16 MiB)
+  - the exact field set
+  - the separate manifest file: streaming parser, sha256 and count bound in the proposal, sort order
+    and line format checks, the 200 MiB limit (use a small test override hook)
   - `check_public(new)`
   - the domain separation: a signature over the same bytes with the packet `DOMAIN` doesn't validate
   - `rotations.json` read and write, with strict schema validation
-- [ ] **Implement** the constants, `proposal(...)`, `check_proposal(doc)`, `read_rotations(dir)` and
-  `add_rotation(dir, old_key_id, new_key_id, manifest)`.
+- [ ] **Implement** the constants, `write_manifest`/`read_manifest` (streaming, never `parse`/`typed`),
+  `proposal(...)`, `check_proposal(doc, manifest_path)`, `read_rotations(dir)` and
+  `add_rotation(dir, old_key_id, new_key_id, manifest_path)`.
 - [ ] Commit.
 
 ### Task 3: R2, manifest acceptance in receive
@@ -110,8 +112,9 @@
   
   Then it calls `_verify(..., historical=True)`.
   
-  In `receive`, call it only when `security.verify` raises the revoked-key error. Restructure as an
-  explicit check, not by catching every exception: check `entry['revoked']` up front.
+  Place it exactly as the spec says: after `_received_signed` and before `_validate`/`_seen`/`_apply`.
+  Choose the path from the trust entry (`revoked: true` → `verify_rotated`), not by catching errors.
+  The manifest is loaded lazily once per `Security` instance.
 - [ ] Commit.
 
 ### Task 4: `identity-rotate` preparation (read-only checks)
@@ -154,7 +157,12 @@
   - **No raw key on disk:** record every `write_local` and `os.open` payload.
   - **Lost-everything path:** the new trust holds only the new self entry, and the report has
     `trust_restored: false` and the re-pin step.
-- [ ] **Implement** following the spec exactly (journal format, step order, idempotency, forward-only).
+- [ ] **Implement** following the spec exactly:
+  - the journal format, with the trust written immediately after the journal
+  - `check_self` refuses while the journal exists
+  - `--resume` re-runs the full fence
+  - the step order, idempotency, forward-only
+  - finishing: remove the OS item, then delete the journal last
 - [ ] Commit.
 
 ### Task 6: `peer-rotate`

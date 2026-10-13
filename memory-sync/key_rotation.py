@@ -394,6 +394,8 @@ def _check_dropped(c, dropped):
 
 
 def packet_summary(p):
+    if any(ch['table'] not in sync.TABLES for ch in p['body']):
+        raise ValueError(PENDING_INVALID)
     item = dict(uuid=p['uuid'], format=p['format'], changes=[
         dict(table=ch['table'], op='delete' if ch['row'] is None else 'upsert',
              key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16])
@@ -678,10 +680,11 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
             c.execute('BEGIN IMMEDIATE')
             _check_dropped(c, dropped)
             c.execute('CREATE TABLE IF NOT EXISTS _sync_rotation_dropped(uuid TEXT PRIMARY KEY, packet TEXT NOT NULL, dropped_at TEXT NOT NULL)')
+            dropped_at = backup.now()
             for uid in dropped:
                 row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
                 if row is not None:
-                    c.execute('INSERT INTO _sync_rotation_dropped VALUES(?,?,?)', (uid, row[0], journal['proposal']['created_at']))
+                    c.execute('INSERT INTO _sync_rotation_dropped VALUES(?,?,?)', (uid, row[0], dropped_at))
                     c.execute('DELETE FROM _sync_outbox WHERE uuid=?', (uid,))
             security.guard(c, exchange)
     after_step('drop')

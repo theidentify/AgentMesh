@@ -1790,3 +1790,24 @@ def test_round2_option_scope_refuses_without_writes(indexed_peers, option):
     with pytest.raises(ValueError):
         rotation.identity_rotate(sa.directory,a,ex,reason='planned',**{option:[str(uuid.uuid4())]},**kwargs)
     assert snapshot(indexed_peers) == before
+
+
+def test_round2_compromise_review_rejects_untrusted_labels(indexed_peers, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    p = signed.parse(text)
+    marker = 'untrusted-table-label-must-not-appear'
+    p['body'][0]['table'] = marker
+    p['checksum'] = hashlib.sha256(signed.typed(p['body'])).hexdigest()
+    p['signature'] = sa.sign_bytes(signed.packet_domain(p)+signed.typed(
+        {k:v for k,v in p.items() if k != 'signature'})).hex()
+    with sync.connect(a) as c,c:
+        c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?',(sync.canonical(p),uid))
+    before = snapshot(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError,match='invalid pending outbox packet'):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',**kwargs)
+    assert marker not in capsys.readouterr().err
+    assert snapshot(indexed_peers) == before

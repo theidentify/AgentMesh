@@ -502,3 +502,134 @@ def test_packaged_backup():
     import standalone_build
     assert 'identity_backup.py' in build_package.FILES
     assert 'identity_backup' in standalone_build.HIDDEN_MODULES
+
+
+def test_core_errors_drop_secret_context(material, secret, monkeypatch):
+    doc = document(material, secret)
+    def broken(*a): raise RuntimeError(secret)
+    monkeypatch.setattr(kp, '_derive', broken)
+    error = None
+    try: backup.open_backup(doc, secret)
+    except Exception as caught: error = caught
+    valid = type(error) is ValueError and str(error) in backup.REASONS and error.__context__ is None
+    assert valid, 'unsafe error boundary'
+
+
+def test_restore_does_not_remove_foreign_recovery_copy(restore_case, secret, monkeypatch):
+    target = restore_case[1]
+    target.mkdir(mode=0o700)
+    original = backup.check_target
+    count = 0
+    def check(*args):
+        nonlocal count
+        count += 1
+        if count == 2: (target / 'trust.json.pre-restore').write_bytes(b'concurrent recovery')
+        return original(*args)
+    monkeypatch.setattr(backup, 'check_target', check)
+    with pytest.raises(ValueError): restore_call(restore_case, secret)
+    assert (target / 'trust.json.pre-restore').read_bytes() == b'concurrent recovery'
+
+
+def test_write_new_permission_denial(tmp_path, monkeypatch):
+    import errno
+    def denied(*a): raise OSError(errno.EACCES, 'denied')
+    monkeypatch.setattr(backup.os, 'chmod', denied)
+    with pytest.raises(ValueError, match=backup.WRITE_FAILED): backup.write_new(tmp_path / 'backup', b'encrypted')
+    assert not list(tmp_path.iterdir())
+
+
+def test_production_kdf_and_no_os_export(live, secret, tmp_path, monkeypatch):
+    import os_unlock
+    def forbidden(): raise AssertionError('OS backend consulted')
+    monkeypatch.setattr(os_unlock, 'current_backend', forbidden)
+    phrase = os.urandom(32).hex()
+    output = Path(os.path.realpath(tmp_path)) / 'backup'
+    backup.create(live, output, ask=answers(secret, phrase, phrase), confirm=lambda w: w, backend=FakeBackend())
+    assert signed.parse(signed.read_local(output))['n'] == kp.SCRYPT_N
+
+
+@pytest.mark.parametrize('marker', ['.git', '.stfolder'])
+def test_marker_directory(tmp_path, marker):
+    (tmp_path / marker).mkdir()
+    with pytest.raises(ValueError): backup.unsafe_location(tmp_path / 'file')
+
+
+def test_status_reads_only_local_evidence(live, monkeypatch):
+    original = signed.read_local
+    def guard(path, **kw):
+        assert Path(path).parent == live
+        return original(path, **kw)
+    monkeypatch.setattr(signed, 'read_local', guard)
+    assert backup.status(live)['state'] == 'none'
+
+
+def test_unreadable_exchange_entry(restore_case, secret, monkeypatch):
+    import time
+    p = restore_case[2] / 'status' / 'mac.json'
+    p.write_bytes(b'{}')
+    os.utime(p, (time.time()-3600, time.time()-3600))
+    original = signed.read_local
+    def denied(path, **kw):
+        if Path(path) == p: raise PermissionError('denied')
+        return original(path, **kw)
+    monkeypatch.setattr(signed, 'read_local', denied)
+    with pytest.raises(ValueError, match=backup.ACTIVE): restore_call(restore_case, secret)
+
+
+def test_malformed_open_never_derives(material, secret, monkeypatch):
+    doc = document(material, secret)
+    doc['n'] = 2**30
+    def forbidden(*a): raise AssertionError('KDF called')
+    monkeypatch.setattr(kp, '_derive', forbidden)
+    with pytest.raises(ValueError, match=backup.OPEN_FAILED): backup.open_backup(doc, secret)
+
+
+def test_restored_identity_supports_explicit_fake_os_enable(restore_case, secret):
+    import os_unlock
+    from test_os_unlock import FakeBackend as Store
+    _, phrase = restore_call(restore_case, secret)
+    target = restore_case[1]
+    store = Store()
+    os_unlock.reset_cache()
+    try:
+        assert os_unlock.enable(target, ask=answers(phrase), backend=store)['status'] == 'enabled'
+        assert not signed.Security(target, os_unlock=True, backend=store).locked
+    finally:
+        os_unlock.reset_cache()
+
+
+def test_restore_production_kdf(restore_case, secret):
+    phrase = os.urandom(32).hex()
+    backup.restore(*restore_case, ask=answers(secret, phrase, phrase), confirm=lambda w: w, backend=FakeBackend())
+    doc = signed.parse(signed.read_local(restore_case[1] / 'identity.json', private=True))
+    assert doc['protection']['n'] == kp.SCRYPT_N
+
+
+def test_filesystem_without_private_permissions(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, 'supports_private_permissions', lambda path: False)
+    def forbidden(*a, **kw): raise AssertionError('permission setter called on unsupported filesystem')
+    monkeypatch.setattr(backup.os, 'chmod', forbidden)
+    assert backup.write_new(tmp_path / 'backup', b'encrypted') == 'unsupported-by-filesystem'
+
+
+@pytest.mark.parametrize('flags,success', [(0, True), (8, True), (0, False)])
+def test_windows_volume_permission_capability(tmp_path, monkeypatch, flags, success):
+    import ctypes
+    from types import SimpleNamespace
+    class API:
+        def __init__(self, function): self.function = function
+        def __call__(self, *args): return self.function(*args)
+    def volume_path(path, buffer, length):
+        buffer.value = 'C:\\'
+        return True
+    def volume_info(root, name, length, serial, maximum, output_flags, fs_name, fs_length):
+        output_flags._obj.value = flags
+        return success
+    fake = SimpleNamespace(GetVolumePathNameW=API(volume_path), GetVolumeInformationW=API(volume_info))
+    monkeypatch.setattr(backup, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **kw: fake, raising=False)
+    monkeypatch.setattr(ctypes, 'get_last_error', lambda: 5, raising=False)
+    if success:
+        assert backup.supports_private_permissions(tmp_path) is bool(flags & 8)
+    else:
+        with pytest.raises(OSError): backup.supports_private_permissions(tmp_path)

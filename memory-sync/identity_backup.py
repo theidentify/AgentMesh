@@ -1,6 +1,18 @@
 """Explicit encrypted identity backup and operator-fenced restore."""
+import copy
 import datetime as dt
+import errno
+import functools
+import hashlib
+import json
 import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+import tempfile
+import time
+import uuid
 
 import key_protection as kp
 import signed_packets as signed
@@ -12,6 +24,19 @@ MAX_CIPHERTEXT = 1 << 20
 OPEN_FAILED = 'backup could not be opened: wrong passphrase or damaged file'
 INVALID = 'invalid backup file'
 REASONS = frozenset({OPEN_FAILED, INVALID})
+
+
+def safe_operation(function):
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        reason = None
+        try:
+            return function(*args, **kwargs)
+        except Exception as exc:
+            reason = str(exc) if type(exc) is ValueError and str(exc) in REASONS else OPERATION_FAILED
+        # Outside the handler: no underlying exception containing secret data survives as context.
+        raise ValueError(reason)
+    return wrapped
 
 
 def now():
@@ -60,6 +85,7 @@ def check(doc):
     return doc
 
 
+@safe_operation
 def seal(manifest, private_bytes, trust, passphrase, *, n=kp.SCRYPT_N):
     AESGCM, _, _ = kp._primitives()
     salt, nonce = os.urandom(16), os.urandom(12)
@@ -72,6 +98,7 @@ def seal(manifest, private_bytes, trust, passphrase, *, n=kp.SCRYPT_N):
     return check(doc)
 
 
+@safe_operation
 def open_backup(doc, passphrase):
     # Keep structural validation separate; opening never reveals which authenticated field failed.
     checked = False
@@ -110,11 +137,6 @@ def open_backup(doc, passphrase):
     return raw, result['trust'], result['trust_captured_at']
 
 
-import errno
-from pathlib import Path
-import sys
-import tempfile
-
 CLOUD_ROOTS = tuple(Path.home() / p for p in (
     'Library/Mobile Documents', 'Library/CloudStorage', 'Dropbox', 'OneDrive', 'Google Drive'
 )) + ((Path(os.environ['OneDrive']),) if os.environ.get('OneDrive') else ())
@@ -152,15 +174,41 @@ def unsafe_location(path):
     return 'cloud' if cloud else None
 
 
+def supports_private_permissions(path):
+    if os.name != 'nt':
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    volume_path = kernel.GetVolumePathNameW
+    volume_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    volume_path.restype = wintypes.BOOL
+    volume_info = kernel.GetVolumeInformationW
+    volume_info.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD,
+                           ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+                           ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD]
+    volume_info.restype = wintypes.BOOL
+    root, flags = ctypes.create_unicode_buffer(32768), wintypes.DWORD()
+    if not volume_path(str(Path(path).absolute()), root, len(root)):
+        raise OSError(ctypes.get_last_error(), WRITE_FAILED)
+    if not volume_info(root.value, None, 0, None, None, ctypes.byref(flags), None, 0):
+        raise OSError(ctypes.get_last_error(), WRITE_FAILED)
+    return bool(flags.value & 0x8)  # FILE_PERSISTENT_ACLS; FAT/exFAT cannot enforce private ACLs.
+
+
 def file_permissions(path):
+    if not supports_private_permissions(path):
+        return 'unsupported-by-filesystem'
     try:
         if os.name == 'nt':
             signed.windows_private(path, provision=True)
         else:
             os.chmod(path, 0o600)
         return 'owner-only'
-    except (OSError, ValueError):
-        return 'unsupported-by-filesystem'
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS):
+            return 'unsupported-by-filesystem'
+        raise
 
 
 def write_new(path, data):
@@ -265,10 +313,6 @@ def status(security_dir):
     return {'key_id': key_id, 'backups': rows, 'state': state}
 
 
-import functools
-import hashlib
-import json
-
 CANCELLED = 'backup or restore confirmation was not supplied'
 PASSPHRASE_SHORT = 'passphrase must be at least 12 characters'
 PASSPHRASE_MISMATCH = 'passphrases do not match; nothing was changed'
@@ -279,19 +323,6 @@ PARENT_MISSING = 'backup parent directory does not exist'
 REASONS |= {CANCELLED, PASSPHRASE_SHORT, PASSPHRASE_MISMATCH, PASSPHRASE_REUSED,
             OPERATION_FAILED, READBACK_FAILED, PARENT_MISSING,
             'passphrase entry requires an interactive console'}
-
-
-def safe_operation(function):
-    @functools.wraps(function)
-    def wrapped(*args, **kwargs):
-        reason = None
-        try:
-            return function(*args, **kwargs)
-        except Exception as exc:
-            reason = str(exc) if type(exc) is ValueError and str(exc) in REASONS else OPERATION_FAILED
-        # Outside the handler: no underlying exception containing secret data survives as context.
-        raise ValueError(reason)
-    return wrapped
 
 
 def show(value):
@@ -401,10 +432,6 @@ def verify(file, security_dir=None, *, ask=kp.console_passphrase):
     return result
 
 
-import shutil
-import uuid
-
-
 def sealed_identity(public_fields, raw, phrase, n):
     return {**public_fields, 'protection': kp.seal(public_fields, raw, phrase, n=n)}
 
@@ -464,10 +491,6 @@ def drill(file, security_dir=None, *, ask=kp.console_passphrase):
         result['warning'] = 'backup uses a lower-than-production scrypt work factor'
     return result
 
-
-import copy
-import stat
-import time
 
 TARGET_EXISTS = 'restore target already contains an identity'
 TARGET_EXCHANGE = 'restore target must be outside the exchange'
@@ -640,7 +663,7 @@ def restore(file, security_dir, exchange, *, ask=kp.console_passphrase, confirm=
     stage = target / ('.restore-' + str(uuid.uuid4()))
     previous = target / 'trust.json.pre-restore'
     had_trust = os.path.lexists(target / 'trust.json')
-    replaced, adopted, success = False, False, False
+    replaced, adopted, success, previous_owned = False, False, False, False
     try:
         check_target(target, exchange)
         private_mkdir(stage)
@@ -654,10 +677,17 @@ def restore(file, security_dir, exchange, *, ask=kp.console_passphrase, confirm=
         if had_trust:
             signed.no_symlinks(target / 'trust.json')
             os.link(target / 'trust.json', previous)
+            previous_owned = True
         replaced = True
         signed.write_local(target / 'trust.json', trust)
         os.link(stage / 'identity.json', target / 'identity.json')
         adopted = True
+        if os.name != 'nt':
+            fd = os.open(target, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         reread = signed.Security(target, unlock=lambda: replacement)
         if reread.public != own or reread.key.private_bytes_raw() != raw:
             raise ValueError(RESTORE_READBACK)
@@ -673,7 +703,8 @@ def restore(file, security_dir, exchange, *, ask=kp.console_passphrase, confirm=
                     signed.replace(previous, target / 'trust.json')
                 else:
                     (target / 'trust.json').unlink(missing_ok=True)
-            previous.unlink(missing_ok=True)
+            if previous_owned:
+                previous.unlink(missing_ok=True)
         if stage.exists():
             shutil.rmtree(stage)
         if not success and created_target:

@@ -399,3 +399,67 @@ def verify(file, security_dir=None, *, ask=kp.console_passphrase):
     if doc['n'] < kp.SCRYPT_N:
         result['warning'] = 'backup uses a lower-than-production scrypt work factor'
     return result
+
+
+import shutil
+import uuid
+
+
+def sealed_identity(public_fields, raw, phrase, n):
+    return {**public_fields, 'protection': kp.seal(public_fields, raw, phrase, n=n)}
+
+
+def private_mkdir(path):
+    path.mkdir(mode=0o700)
+    signed.windows_private(path, provision=True)
+    signed.private_directory(path)
+
+
+@safe_operation
+def drill(file, security_dir=None, *, ask=kp.console_passphrase):
+    import security_wizard
+    phrase = ask('Backup passphrase: ')
+    doc, digest = read_backup(file)
+    raw, _, _ = open_backup(doc, phrase)
+    show(doc['manifest'])
+    parent = signed.private_directory(security_dir).parent if security_dir is not None else None
+    root = Path(os.path.realpath(tempfile.mkdtemp(prefix='.backup-drill-', dir=parent)))
+    try:
+        signed.windows_private(root, provision=True)
+        signed.private_directory(root)
+        restored, peer_dir = root / 'restored', root / 'peer'
+        private_mkdir(restored)
+        private_mkdir(peer_dir)
+        own = public(doc['manifest'])
+        peer_key = signed.crypto()[0].generate()
+        peer_bytes = peer_key.public_key().public_bytes_raw()
+        peer = {'format': 'agentmesh-peer-key-v1', 'group': own['group'],
+                'node': next(n for n in signed.SLOTS if n != own['node']), 'sender': str(uuid.uuid4()),
+                'key_id': hashlib.sha256(peer_bytes).hexdigest(), 'public_key': peer_bytes.hex()}
+        unlock = os.urandom(32).hex()
+        for directory, fields, key_bytes in ((restored, own, raw), (peer_dir, peer, peer_key.private_bytes_raw())):
+            signed.write_local(directory / 'identity.json', sealed_identity(fields, key_bytes, unlock, kp.MIN_N), exclusive=True)
+            signed.write_local(directory / 'trust.json', {'format': 'agentmesh-trust-v1',
+                               'peers': {fields['key_id']: {**fields, 'revoked': False}}}, exclusive=True)
+        for directory, fields in ((restored, peer), (peer_dir, own)):
+            signed.approve(directory, fields, fields['key_id'], fields['group'], fields['node'], fields['sender'])
+        origin = signed.Security(restored, unlock=lambda: unlock)
+        destination = signed.Security(peer_dir, unlock=lambda: unlock)
+        packet = origin.sign({'group': own['group'], 'node': own['node'], 'uuid': str(uuid.uuid4()),
+                              'body': [{'probe': 'identity-backup-drill'}]})
+        destination.verify(packet, own['group'], own['node'])
+        receipt = signed.receipt_digest(packet)
+        ack = security_wizard.signed_ack(destination, packet, receipt)
+        security_wizard.verify_ack(origin, ack, {'uuid': packet['uuid'], 'digest': receipt}, peer)
+    finally:
+        shutil.rmtree(root)
+    when = now()
+    matched = match_live(security_dir, doc['manifest'])
+    if matched:
+        record(security_dir, own['key_id'], digest, 'drilled_at', when)
+    result = {'status': 'drill-passed', 'key_id': own['key_id'], 'file_sha256': digest, 'drilled_at': when}
+    if security_dir is not None and not matched:
+        result['key_id_mismatch'] = True
+    if doc['n'] < kp.SCRYPT_N:
+        result['warning'] = 'backup uses a lower-than-production scrypt work factor'
+    return result

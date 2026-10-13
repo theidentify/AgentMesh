@@ -219,3 +219,41 @@ def test_verify_mismatch_and_failure(live, material, secret, tmp_path):
     signed.write_local(live / 'trust.json', {'format': 'agentmesh-trust-v1', 'peers': {p['key_id']: {**p, 'revoked': False}}})
     assert backup.verify(output, live, ask=answers(secret))['key_id_mismatch']
     assert not (live / 'backup-status.json').exists()
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_drill(live, material, secret, tmp_path, monkeypatch, fail):
+    import security_wizard
+    output = Path(os.path.realpath(tmp_path)) / 'backup'
+    backup.write_new(output, signed.wire(document(material, secret)))
+    before = {p.name: p.read_bytes() for p in live.iterdir()}
+    original = signed.write_local
+    writes = []
+    def guarded(path, value, **kw):
+        payload = signed.wire(value)
+        assert material[1].hex().encode() not in payload, 'plaintext key write'
+        assert secret.encode() not in payload, 'passphrase write'
+        assert 'private_key' not in value, 'raw identity write'
+        writes.append(Path(path))
+        return original(path, value, **kw)
+    monkeypatch.setattr(signed, 'write_local', guarded)
+    if fail:
+        def broken(*a): raise ValueError('injected failure')
+        monkeypatch.setattr(security_wizard, 'verify_ack', broken)
+        with pytest.raises(ValueError, match=backup.OPERATION_FAILED): backup.drill(output, live, ask=answers(secret))
+    else:
+        assert backup.drill(output, live, ask=answers(secret))['status'] == 'drill-passed'
+        assert backup.status(live)['state'] == 'drilled'
+    assert all(p.name == 'backup-status.json' or not p.exists() for p in writes)
+    for name, data in before.items(): assert (live / name).read_bytes() == data
+    assert not list(live.parent.glob('.backup-drill-*'))
+
+
+def test_drill_symlink_temp(material, secret, tmp_path, monkeypatch):
+    real = Path(os.path.realpath(tmp_path))
+    alias = real / 'alias'
+    alias.symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(backup.tempfile, 'tempdir', str(alias))
+    output = real / 'backup'
+    backup.write_new(output, signed.wire(document(material, secret)))
+    assert backup.drill(output, ask=answers(secret))['status'] == 'drill-passed'
+    assert not list(real.glob('.backup-drill-*'))

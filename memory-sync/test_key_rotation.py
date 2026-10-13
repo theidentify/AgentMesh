@@ -1553,3 +1553,26 @@ def test_round2_refuses_v1_formats(peers):
                        dict(format='agentmesh-rotations-v1', rotations={}))
     with pytest.raises(ValueError, match='invalid rotation registry'):
         rotation.read_rotations(peers[4].directory)
+
+
+@pytest.mark.parametrize('same', [False, True])
+def test_round2_resume_file_bytes(indexed_peers, same):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',_after_step=crash,**kwargs)
+    path = ex/'signed-changes'/'mac'/(uid+'.json')
+    path.write_bytes(text.encode() if same else b'collision')
+    if same:
+        assert rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)['status'] == 'rotated'
+    else:
+        before = snapshot(indexed_peers)
+        with pytest.raises(ValueError, match='^pending packet file differs from the outbox; see compromise-report$'):
+            rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)
+        assert snapshot(indexed_peers) == before
+

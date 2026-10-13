@@ -199,10 +199,11 @@ UNEXPECTED = 'pending outbox is signed by an unexpected key'
 BUSY = 'a worker or cycle is using this database'
 CANCELLED = 'rotation confirmation was not supplied'
 PENDING_EXCHANGE = 'pending packet is already in the exchange; publish or inspect it before rotating'
+PENDING_DIFFERS = 'pending packet file differs from the outbox; see compromise-report'
 PENDING_INVALID = 'invalid pending outbox packet'
 RUNTIME = 'runtime does not match rotation paths'
 INCOMPLETE_WAL = 'database WAL sidecars are incomplete; inspect or checkpoint the stopped database before retrying'
-REASONS |= {LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
+REASONS |= {PENDING_DIFFERS, LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
 UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GROUP, backup.TARGET_EXCHANGE,
     backup.PASSPHRASE_SHORT, backup.PASSPHRASE_MISMATCH, 'passphrase entry requires an interactive console'}
 
@@ -255,9 +256,9 @@ def no_pending_files(exchange, node, pending, *, expected=None):
             path = signed.no_symlinks(Path(exchange) / namespace / node / (p['uuid'] + '.json'))
             if os.path.lexists(path):
                 if (namespace == 'signed-changes' and expected is not None
-                        and expected.get(p['uuid']) == hashlib.sha256(signed.read_local(path)).hexdigest()):
+                        and expected.get(p['uuid']) == signed.read_local(path)):
                     continue
-                raise ValueError(PENDING_EXCHANGE)
+                raise ValueError(PENDING_DIFFERS if expected is not None else PENDING_EXCHANGE)
 
 
 def validate_packet(p, group, node):
@@ -384,7 +385,11 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
         rotation_files = None if expected is None else {
             Path(exchange) / 'signed-changes' / initial['binding']['node'] / (uid + '.json'): digest
             for uid, digest in expected.items()}
+        expected_bytes = None
         if expected is not None:
+            with readonly(db) as c:
+                expected_bytes = {uid: c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()[0].encode('utf-8') for uid in expected}
+            no_pending_files(exchange, initial['binding']['node'], initial['pending'], expected=expected_bytes)
             # A process kill may leave a partial temporary file. Exempt only
             # this journal's exact staging names with a matching outbox prefix;
             # cleanup happens later under both locks, in the shared writer.
@@ -399,7 +404,7 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
         with fence(db, exchange, initial['binding'], runtime, confirm, rotation_files=rotation_files):
             plan = _read_plan(directory, db, old_key=old_key, journal=_journal)
             if plan['binding'] != initial['binding'] or plan['old_key_id'] != initial['old_key_id']: raise ValueError(BINDING)
-            no_pending_files(exchange, plan['binding']['node'], plan['pending'], expected=expected)
+            no_pending_files(exchange, plan['binding']['node'], plan['pending'], expected=expected_bytes)
             if plan['pending'] and _journal is None:
                 tables, formats = {}, {}
                 for packet in plan['pending']:
@@ -560,7 +565,7 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
                     or manifest.get(uid) != signed.envelope_digest(p)):
                 raise ValueError(PENDING_INVALID)
             if journal['old_public'] is not None: verify_old(p, journal['old_public'])
-            no_pending_files(exchange, new['node'], [p], expected=expected)
+            no_pending_files(exchange, new['node'], [p], expected={uid: row['packet'].encode('utf-8')})
             sync.write_packet(Path(exchange) / 'signed-changes' / new['node'], uid, row['packet'],
                               signed_packet=True, staging_id=new['key_id'])
             if not row['published']:

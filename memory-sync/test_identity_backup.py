@@ -51,7 +51,7 @@ def test_wrong_passphrase(material, secret):
 
 @pytest.mark.parametrize('field,value', [('n', 2**30), ('n', 1000), ('r', 1), ('p', 2), ('salt', '00'),
     ('cipher', 'unknown'), ('kdf', 'unknown'), ('format', 'unknown'), ('extra', True),
-    ('ciphertext', '00' * ((1 << 20) + 1))])
+    pytest.param('ciphertext', '00' * ((1 << 20) + 1), id='ciphertext-oversize')])
 def test_invalid_before_kdf(material, secret, monkeypatch, field, value):
     doc = document(material, secret)
     doc[field] = value
@@ -111,6 +111,7 @@ def test_write_new(tmp_path, monkeypatch, fallback):
     assert list(tmp_path.iterdir()) == [path]
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX chmod path; Windows uses the volume ACL capability test')
 def test_permissions_unsupported(tmp_path, monkeypatch):
     import errno
     def unsupported(*a): raise OSError(errno.ENOTSUP, 'unsupported')
@@ -120,7 +121,7 @@ def test_permissions_unsupported(tmp_path, monkeypatch):
 @pytest.fixture
 def live(tmp_path, material, secret):
     root = Path(os.path.realpath(tmp_path)) / 'security'
-    root.mkdir(mode=0o700)
+    backup.private_mkdir(root)  # provisions the Windows ACL, like production
     public, raw, trust = material
     signed.write_local(root / 'identity.json', {**public, 'protection': kp.seal(public, raw, secret, n=2**14)})
     signed.write_local(root / 'trust.json', trust)
@@ -308,7 +309,7 @@ def test_restore_success(restore_case, material, secret, present):
     'revoked', 'fields', 'newer', 'group', 'no-marker', 'wrong-exchange', 'fenced', 'equal'])
 def test_restore_refuses(restore_case, material, secret, kind):
     file, target, exchange = restore_case
-    target.mkdir(mode=0o700)
+    backup.private_mkdir(target)
     trust = copy.deepcopy(material[2])
     if kind == 'identity': (target / 'identity.json').touch()
     if kind == 'git': (target / '.git').touch()
@@ -362,7 +363,7 @@ def test_restore_peers(restore_case, material, secret, choice):
     file.unlink()
     backup.write_new(file, signed.wire(document((material[0], material[1], trust), secret)))
     if choice in ('conflict', 'current', 'current-revoked'):
-        target.mkdir(mode=0o700)
+        backup.private_mkdir(target)
         current = new_peer(material[0]) if choice == 'conflict' else peer
         signed.write_local(target / 'trust.json', {'format': 'agentmesh-trust-v1',
              'peers': {current['key_id']: {**current, 'revoked': choice == 'current-revoked'}}})
@@ -384,7 +385,7 @@ def test_restore_peers(restore_case, material, secret, choice):
 @pytest.mark.parametrize('existing', [False, True])
 def test_restore_rollback(restore_case, material, secret, monkeypatch, existing):
     file, target, exchange = restore_case
-    target.mkdir(mode=0o700)
+    backup.private_mkdir(target)
     if existing: signed.write_local(target / 'trust.json', material[2])
     before = {p.name: p.read_bytes() for p in target.iterdir()}
     original = backup.os.link
@@ -426,7 +427,8 @@ def test_restore_writes_and_fresh_process(restore_case, material, secret, monkey
     _, phrase = restore_call(restore_case, secret)
     target = restore_case[1]
     code = "import sys; import signed_packets as s; p=sys.stdin.buffer.read().decode(); x=s.Security(sys.argv[1], unlock=lambda:p); x.sign_bytes(b'fresh-process'); print('loaded-and-signed')"
-    process = subprocess.run([sys.executable, '-c', code, str(target)], input=phrase.encode(), capture_output=True)
+    process = subprocess.run([sys.executable, '-c', code, str(target)], input=phrase.encode(), capture_output=True,
+                             cwd=Path(__file__).resolve().parent)
     if process.returncode or process.stdout.strip() != b'loaded-and-signed':
         raise AssertionError('fresh-process validation failed')
     assert all(p.parent == target or not p.exists() for p in writes)
@@ -448,7 +450,7 @@ def test_restore_no_console_changes_nothing(restore_case):
 
 def test_restore_readback_rollback(restore_case, material, secret, monkeypatch):
     file, target, _ = restore_case
-    target.mkdir(mode=0o700)
+    backup.private_mkdir(target)
     signed.write_local(target / 'trust.json', material[2])
     original = signed.Security
     def broken(directory, *args, **kwargs):
@@ -517,7 +519,7 @@ def test_core_errors_drop_secret_context(material, secret, monkeypatch):
 
 def test_restore_does_not_remove_foreign_recovery_copy(restore_case, secret, monkeypatch):
     target = restore_case[1]
-    target.mkdir(mode=0o700)
+    backup.private_mkdir(target)
     original = backup.check_target
     count = 0
     def check(*args):
@@ -530,6 +532,7 @@ def test_restore_does_not_remove_foreign_recovery_copy(restore_case, secret, mon
     assert (target / 'trust.json.pre-restore').read_bytes() == b'concurrent recovery'
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX chmod path; Windows uses the volume ACL capability test')
 def test_write_new_permission_denial(tmp_path, monkeypatch):
     import errno
     def denied(*a): raise OSError(errno.EACCES, 'denied')

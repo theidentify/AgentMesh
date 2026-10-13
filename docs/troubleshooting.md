@@ -72,7 +72,7 @@ Signed packets have [size and structure limits](./install/security#respect-packe
 
 ## Signed packets are invalid after revocation
 
-Revocation alone no longer invalidates previously committed packets or stops the managed worker. Exact retained packets remain accepted against local receipts and full envelope digests. New, unapplied packets from the revoked key and tampered replays remain invalid; a managed worker stops for that permanent failure. Preserve original packets, database/history/receipts and trust state, including revoked public-key records needed to verify older receipts. A pending resolution also requires current trust for never-committed evidence; only exact committed receipts or superseded dispositions permit historical replay. Follow [rotation and revocation](./install/security#understand-the-protection) with the operator; do not delete history or diagnostics to hide a validation failure.
+Revocation alone no longer invalidates previously committed packets or stops the managed worker. Exact retained packets remain accepted against local receipts and full envelope digests. Before explicit rotation approval, new, unapplied packets from the revoked key and tampered replays remain invalid; a managed worker stops for that permanent failure. Preserve original packets, database/history/receipts and trust state, including revoked public-key records needed to verify older receipts. An approved v2 rotation manifest can authorize listed resolution evidence after matching the UUID and complete envelope digest and verifying the historical signature. This gives `verified` authorization, not an applied receipt. Outside that approval, never-committed evidence still requires current trust; exact committed receipts and superseded dispositions retain their historical-replay rules. For key recovery, follow [rotation and peer approval](./install/security#recover-a-lost-or-compromised-key) with the operator; do not delete history or diagnostics to hide a validation failure.
 
 ## Windows window closed and sync stopped
 
@@ -89,8 +89,8 @@ First stop the affected worker, confirm its runtime selects the intended securit
 | Refusal or status | What to do |
 | --- | --- |
 | `passphrase-protected identity is locked; enable OS unlock or unlock interactively` | For unattended signed operation, explicitly enable OS unlock after protecting the identity, then start a new worker process. `wizard-resume` can unlock interactively for that run; it does not unlock a later worker. Do not remove protection or fall back to unsigned policy. |
-| `protected identity could not be unlocked: wrong passphrase or damaged file` | Verify the intended identity and passphrase; wrong input and authenticated-file damage deliberately have the same error. Preserve the file and any trusted backup. Retry the interactive operation with the correct passphrase; if it still fails, request operator review. A lost passphrase has no recovery; replacement requires coordinated pairing, not automatic key generation. |
-| `passphrase entry requires an interactive console` | Run `identity-protect`, OS-unlock enable or the interactive wizard from a real console. Passphrases are not accepted through arguments, environment variables, files or pipes. |
+| `protected identity could not be unlocked: wrong passphrase or damaged file` | Verify the intended identity and passphrase; wrong input and authenticated-file damage deliberately have the same error. Preserve the file and any trusted backup. Retry the interactive operation with the correct passphrase; if it still fails, request operator review. A lost identity passphrase cannot be recovered. If you have an encrypted identity backup and its separate backup passphrase, use [verified restore](./install/security#restore-only-after-stopping-the-old-device) after fencing the old installation. Without that recovery material, use [explicit key rotation and peer approval](./install/security#recover-a-lost-or-compromised-key); do not generate an unrelated key automatically. |
+| `passphrase entry requires an interactive console` | Run protection, OS-unlock enable, backup/restore or the interactive wizard from a real console. Passphrases are not accepted through arguments, environment variables, files or pipes. |
 | `passphrase must be at least 12 characters` / `passphrases do not match; nothing was changed` | Retry protection with a long unique passphrase entered identically twice. |
 | `identity must be passphrase-protected before enabling OS unlock` | Stop workers and run `identity-protect` on the existing identity first. |
 | `OS unlock is already enabled` | Inspect status. To replace the persisted unlock path, stop workers, disable it and explicitly enable it again with the passphrase. |
@@ -112,6 +112,91 @@ Output (example from code)
 ```
 
 `stray_item: true` is not successful cleanup. Retry the [disable/status commands](./install/security#disable-os-unlock-and-check-cleanup) after fixing store access. Require no store error and `stray_item: false` for the current key ID. Status does not enumerate or clean up items for old/rotated key IDs. A leftover wrapping key plus an older identity backup containing its envelope can still unlock that identity. Keep backups private and follow the [key-protection limits](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md#threats-and-portability); never share passphrases, identity files or OS-store contents with a help request.
+
+## Identity backup or restore refuses
+
+Use [Back up and verify the device identity](./install/security#back-up-and-verify-the-device-identity) for the commands and [verified restore](./install/security#restore-only-after-stopping-the-old-device) for the fencing/trust sequence. Errors exit `1`; inspect the fixed `reason` as well as the exit status. Refusal is not permission to erase a current identity or trust state.
+
+The disposable CLI run reproduced an existing-file refusal and a wrong-passphrase refusal:
+
+Output (run on macOS)
+
+```json
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"backup file already exists"}
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"backup could not be opened: wrong passphrase or damaged file"}
+```
+
+Each line is an excerpt from a separate failed command. The following refusal text is verified against code:
+
+| Reason or result | What to do |
+| --- | --- |
+| `backup file already exists` | Keep the existing backup; use a new output filename. Creation never overwrites it. |
+| `backup parent directory does not exist` | Choose an existing private parent on the intended offline medium. |
+| `backup location is inside a Syncthing folder` / `backup location is inside a git work tree` | Use a location outside synced folders and repositories. These guards also apply to restore targets. |
+| `backup could not be opened: wrong passphrase or damaged file` | Confirm the intended file and backup passphrase. Authentication failures deliberately do not distinguish a wrong passphrase from corruption. Preserve the file; do not edit it or guess replacement fields. |
+| `invalid backup file` | The backup or decrypted payload failed validation. Preserve it and request review; do not bypass validation. |
+| `backup and identity passphrases must be different` | Choose a separate backup passphrase for creation, or a different new identity passphrase for restore. Both new passphrases must be at least 12 characters and entered identically twice. |
+| `backup or restore confirmation was not supplied` | Read the displayed identity and conditions, then retry from an interactive console only when you can truthfully confirm `BACKUP`, `FENCED` or the additional cloud-storage `CLOUD` acknowledgement. |
+| `restore target already contains an identity` | Inspect the existing identity and configured installation. Restore cannot overwrite it; do not delete it just to retry. |
+| `restore target must be outside the exchange` | Select the intended private security directory outside the exchange, Git and Syncthing. |
+| `exchange does not belong to this group` | Confirm the correct accepted exchange, its `.stfolder` and genuine group status delivery. Do not fabricate a status file or change group fields. |
+| `the old device looks active: recent exchange activity for this identity` | Actually stop/wipe the old installation and prevent its restart. Inspect the last 15 minutes of activity, future modification times and unreadable entries in this device identity's exchange paths. A quiet interval alone cannot prove an offline device is fenced. Do not alter timestamps or delete packets to bypass the guard. |
+| `this key is revoked in the current trust; rotate instead (#9)` | Preserve revocation and arrange operator-led rotation/re-pairing. A backup cannot make a revoked or compromised key safe. Use the [explicit rotation procedure](./install/security#recover-a-lost-or-compromised-key); `identity-rotate` replaces the key and peers must separately approve it. |
+| `current trust conflicts with the backup identity` | Review own public fields, any newer active key for this device identity and group membership. Retain current trust; do not use an empty directory to evade it. |
+| `current trust changed during restore; retry after inspection` | Coordinate trust changes, inspect the resulting state and then retry. |
+| `unfinished restore exists; inspect and remove .restore-* and trust.json.pre-restore before retrying` | Preserve and inspect the interrupted restore. Decide which trust state to retain before removing those recovery artifacts; do not blindly delete them. Request operator help if uncertain. |
+| `backup readback verification failed` / `restored identity readback failed` / `identity backup or restore failed` | Do not treat the operation as successful. Preserve available evidence and inspect the destination with the operator before retrying; a generic failure does not identify a safe repair. |
+| `key_id_mismatch: true` after verify/drill | The file passed its check but did not match the supplied live public identity, so no evidence was recorded for it. Select the correct file/directory; do not relabel the backup. |
+| `stray_os_unlock_item: true` after restore | Explicitly disable or enable OS unlock for the restored identity to remove or replace the leftover item, then inspect OS-unlock status. Restore itself leaves OS unlock off. |
+
+Backup status `none` means no recorded evidence for this identity. `verified` or `drilled` records a past check, not current file availability; rerun verify/drill against the stored backup when needed. A drill uses disposable peers and cannot prove acceptance by a real peer. Require a fresh live signed wizard roundtrip before normal operation after restore; remote revocations can still prevent it. The wizard can reuse an old saved probe/receipt and has no force-new-probe option. If that applies, seek operator review before restarting; do not reset state to make the check appear fresh.
+
+## Key rotation or peer approval refuses
+
+Follow [key recovery and rotation](./install/security#recover-a-lost-or-compromised-key) with workers and other copies stopped. A refusal exits `1`; keep the journal and evidence while inspecting the fixed `reason`. Do not start another rotation or roll back SQLite to bypass a refusal.
+
+A wrong independently supplied fingerprint and a repeated successful approval produced these separate excerpts:
+
+Output (run on macOS)
+
+```json
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"rotation fingerprint does not match"}
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"already rotated"}
+```
+
+The remaining refusal text below is verified against code:
+
+| Reason or result | Supported next step |
+| --- | --- |
+| `rotation requires a signed (required-policy) database; there is no key to rotate` | Confirm the intended existing signed database. Rotation does not activate signing or initialize a group. |
+| `signed database binding mismatch` / `runtime does not match rotation paths` | Inspect the configured database, identity, group and runtime paths; do not edit binding fields to force agreement. |
+| `old signing key cannot be determined; supply --old-key` | Obtain the full old fingerprint from trusted records and supply `--old-key` when needed. Do not guess it from an untrusted proposal. |
+| `a worker or cycle is using this database` | Stop the owning managed/foreground/service execution and wait for it to release its locks. Stop clones separately; local locks cannot fence them. |
+| `rotation confirmation was not supplied` | Retry only after you can truthfully type `STOPPED`, and approve `PUBLISH` for selected pending packets or `QUARANTINE` for reviewed resume collisions when prompted. No `--yes` bypass exists. |
+| `the old device looks active: recent exchange activity for this identity` / `exchange does not belong to this group` | Check the accepted exchange and actual stopped execution, including clones. Keep genuine status/history; do not alter timestamps, delete packets or fabricate status. |
+| `pending packet is already in the exchange; publish or inspect it before rotating` | Inspect the publication state with the operator. In a compromise incident, do not resume an unsafe signer merely to clear this guard. Do not delete the exchange copy or edit the outbox. |
+| `pending packet file differs from the outbox; see compromise-report` | Inspect the differing file. For a reviewed, journal-bound collision, use [resume with quarantine](./install/security#quarantine-a-differing-file-during-resume); compare both displayed envelope digests and type `QUARANTINE`. Do not overwrite the file manually. |
+| `quarantine-collision requires a journal-bound differing packet on resume` | Use repeatable `--quarantine-collision` only with `--resume` and a differing file belonging to that journal. Identical files need no quarantine. Malformed JSON or unsupported formats require separate inspection. |
+| `drop-pending requires unreferenced pending packets and reason compromised` | Use repeatable `--drop-pending` only on a fresh compromised rotation. Verify the UUID is pending and no pending packet references it through `covers` or `evidence`; do not edit dependencies to bypass the guard. |
+| `pending outbox is signed by an unexpected key` / `invalid pending outbox packet` | Preserve the database and packet evidence for review. Do not re-sign or repair packet bytes by hand. |
+| `unfinished rotation or restore exists; inspect or run identity-rotate --resume` | Inspect whether this is rotation or restore recovery. Resume a valid rotation journal; restore artifacts or staging without a journal require review, not blind deletion. |
+| `rotation in progress; run identity-rotate --resume` | Use the same paths with `--resume`, confirm stopped execution again and enter the new identity passphrase chosen before interruption. Signing stays blocked until recovery finishes. |
+| `invalid rotation journal` / `invalid rotation registry` | Preserve the private files and request review. Old journals from the re-signing implementation and v1 registries are refused; there is no documented conversion. Do not reinterpret them or remove the journal to start the worker. |
+| `invalid rotation proposal` / `invalid rotation manifest` | Preserve both files and verify delivery of the matching v2 proposal/manifest pair with the device owner. V1 proposals are refused; seek operator inspection rather than changing the format label or inventing a conversion. |
+| `rotation conflicts with an active identity or allocation slot` | Review existing trust assignments with the operators. Do not remove revocations or create two active keys for one device identity. |
+| `a rotation proposal cannot replace this device's own key` | Run peer approval on the receiving peer; use local rotation for this device's own key. |
+| `unknown old key` / `rotation group does not match this device` | Confirm the intended group and peer's existing trusted old identity. A rotation proposal is not a shortcut for pairing an unknown peer. |
+| `rotation fingerprint does not match` | Reconfirm the entire fingerprint directly with the rotating device owner. Never copy the approving value from the proposal. |
+| `already rotated` | Inspect the already approved new identity and remaining wizard/application pins. Repeating approval is not needed. |
+| `new key is revoked here` | Preserve local revocation and review with the operator; approval must not un-revoke it. |
+| `local trust changed during rotation approval` | Coordinate trust changes, review the current state and then retry approval. |
+| `database WAL sidecars are incomplete; inspect or checkpoint the stopped database before retrying` | Preserve the database and existing sidecars. Request inspection of the stopped database; do not delete sidecars or ignore uncheckpointed data. |
+| `invalid compromise report timestamp` | Supply a UTC ISO timestamp to `--since`, or omit the filter. It filters mutable file times, not authenticated incident times. |
+| `key rotation operation failed` | Keep evidence and inspect which stage completed before retrying. A generic error does not establish a safe rollback or cleanup procedure. |
+| `os_unlock_item_removed: false` | Arrange cleanup of the old fingerprint's OS-store item. After rotation, `identity-os-unlock disable` targets the new key, not the old item. |
+| `trust_restored: false` | Independently re-pin every peer using the explicit trust procedure before resuming incoming sync. |
+
+A competing-proposal warning requires independent confirmation with the device owner. `compromise-report` never removes malicious records automatically; read [its evidence and privacy limits](./install/security#review-suspected-compromise-before-resuming-work) before interpreting counts.
 
 ## Invitation join is refused or incomplete
 

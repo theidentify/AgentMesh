@@ -22,6 +22,16 @@ Old OTA consumers enforce an exact release file list and reject packages built w
 
 A macOS standalone replacement has a different ownership and service model; use the operator's [Mac replacement reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md). Do not rerun bootstrap over that deployment as an upgrade shortcut.
 
+## Keep the identity when reinstalling a device
+
+Before removing an installation, [create and drill an encrypted identity backup](./security#back-up-and-verify-the-device-identity). Also preserve the database, original exchange history, runtime/workflow configuration and wizard state separately. An identity backup includes the signing key and trust snapshot only; it cannot recreate the rest of the installation.
+
+Keep the existing identity and trust when they remain intact. If they are lost and a trustworthy backup is available with no suspicion of compromise, use [verified restore](./security#restore-only-after-stopping-the-old-device) after fencing the old installation, with the intended security path selected by the preserved installation configuration. The target must contain no identity; restore does not overwrite a key or rewrite runtime/wizard bindings. Never restore as a shortcut to adding another active device, and do not remove current revocations to force adoption.
+
+A restored identity uses a new identity passphrase and has OS unlock off. Complete a fresh live wizard probe with a real peer, explicitly configure unattended OS unlock if needed, then start the worker and make a new encrypted backup. A native OS-store item may need explicit cleanup or replacement. Review [restore refusals](../troubleshooting#identity-backup-or-restore-refuses) before retrying an interrupted or rejected operation.
+
+If no usable backup exists, or compromise is suspected, use [key rotation](./security#recover-a-lost-or-compromised-key) instead of restoring the old key. For compromise, revoke on every peer immediately, then rotate and review evidence. Preserve the database and published history; rotation is not a database rollback. Finish any rotation journal with `identity-rotate --resume` before restarting. Retain a verified backup of the active key and retire backups of revoked keys under your custody policy.
+
 ## Update a source checkout
 
 For the [local empty-group route](./new-group), your stable checkout supplies the application. Stop workers, retain private database/runtime/workflow files outside the checkout, and review the intended source revision before replacing code. Record the current and intended revisions and review their changes for database/runtime compatibility; this guide has no verified recommended release or automated compatibility guarantee. If compatibility is uncertain, keep the current revision and request maintainer guidance. Keep the application path stable or update your recall rules and service paths deliberately. Inspect the existing runtime and run a controlled cycle before resuming recurring work; do not run `setup-new` again as an update. No automated source-checkout upgrade or rollback command is provided.

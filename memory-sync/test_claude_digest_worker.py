@@ -24,6 +24,23 @@ def test_command_is_noninteractive_and_uses_request_schema():
     assert args[args.index('--effort') + 1] == 'low'
 
 
+def test_schema_patterns_are_unicode_js_regex_and_keep_python_meaning():
+    import re
+    import claude_digest_worker as worker
+    batch = [{'id': 7, 'kind': 'user_request', 'project': 'Agent-Mesh.claude-wt 1', 'content': 'use sqlite',
+              'occurred_at': '2026-10-13T00:00:00Z'}]
+    args = worker.command(build_request(batch, []), model='claude-haiku-5-5')
+    schema = args[args.index('--json-schema') + 1]
+    patterns = re.findall(r'"pattern": "((?:[^"\\]|\\.)*)"', schema)
+    assert patterns
+    for raw in patterns:
+        pattern = json.loads('"' + raw + '"')
+        assert '\\-' not in pattern and '\\ ' not in pattern
+        if 'project' in pattern:
+            assert re.match(pattern, 'project.Agent-Mesh.claude-wt 1.constraint.x')
+            assert not re.match(pattern, 'project.AgentXMesh.claude-wt 1.constraint.x')
+
+
 def test_rejects_requests_with_extra_options():
     import claude_digest_worker as worker
     req = dict(request(), tools=[])

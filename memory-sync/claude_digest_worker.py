@@ -7,12 +7,14 @@ Authentication is the local Claude Code login; no credentials are stored here.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 
 from memory_sync import canonical, load_packet
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+JS_SYNTAX = '^$\\.*+?()[]{}|/'
 
 
 def check_request(request):
@@ -30,8 +32,24 @@ def check_request(request):
     return messages[0]['content'], schema
 
 
+def js_pattern(pattern):
+    """Python re.escape output -> Unicode-mode JS regex (rejects escapes like `\\-`)."""
+    return re.sub(r'\\(.)', lambda m: m.group(0) if m.group(1).isalnum() or m.group(1) in JS_SYNTAX
+                  else m.group(1), pattern)
+
+
+def js_schema(value):
+    if isinstance(value, dict):
+        return {k: js_pattern(v) if k == 'pattern' and isinstance(v, str) else js_schema(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [js_schema(v) for v in value]
+    return value
+
+
 def command(request, *, executable='claude', model, budget=1.0):
     _, schema = check_request(request)
+    schema = js_schema(schema)
     args = [executable, '--print', '--safe-mode', '--tools', '',
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--no-session-persistence', '--no-chrome', '--disable-slash-commands',

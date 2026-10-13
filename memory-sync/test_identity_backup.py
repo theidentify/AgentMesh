@@ -645,3 +645,18 @@ def test_restore_target_inside_exchange_is_refused_even_without_a_sync_marker(tm
         backup.check_target(exchange / 'identity', exchange)
     with pytest.raises(ValueError, match='restore target must be outside the exchange'):
         backup.check_target(exchange, exchange)
+
+
+def test_upstream_fixed_reasons_reach_the_operator(live, secret, tmp_path):
+    output = Path(os.path.realpath(tmp_path)) / 'backup'
+    with pytest.raises(ValueError, match='^protected identity could not be unlocked: wrong passphrase or damaged file$'):
+        backup.create(live, output, ask=answers('wrong identity passphrase'), confirm=lambda w: w, _test_n=2**14)
+    if os.name != 'nt':
+        live.chmod(0o755)
+        with pytest.raises(ValueError, match=r'^security directory must be owner-only \(chmod 700\)$'):
+            backup.status(live)
+
+
+def test_upstream_passthrough_is_limited_to_fixed_strings():
+    assert all(type(r) is str and '{' not in r for r in backup.UPSTREAM_REASONS)
+    assert 'Windows private owner/type mismatch' in backup.UPSTREAM_REASONS

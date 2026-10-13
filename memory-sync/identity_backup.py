@@ -503,6 +503,20 @@ TRUST_CHANGED = 'current trust changed during restore; retry after inspection'
 RESTORE_READBACK = 'restored identity readback failed'
 REASONS |= {TARGET_EXISTS, TARGET_EXCHANGE, RESTORE_LEFTOVER, SELF_REVOKED, TRUST_CONFLICT,
             EXCHANGE_GROUP, ACTIVE, TRUST_CHANGED, RESTORE_READBACK}
+# Fixed, secret-free refusals raised by the modules this one builds on; the operator needs them to act.
+UPSTREAM_REASONS = frozenset({
+    'protected identity could not be unlocked: wrong passphrase or damaged file',
+    'invalid protected identity parameters', 'invalid private identity', 'invalid public identity',
+    'invalid local trust store', 'invalid pinned trust entry', 'trust key mismatch',
+    'private/public identity mismatch', 'local signing key is not authorized',
+    'security directory must be owner-only (chmod 700)', 'security directory required',
+    'symlink path not permitted', 'reparse path not permitted',
+    'unverifiable Windows ACL', 'unsupported Windows user SID', 'Windows private owner/type mismatch',
+    'Windows private ACL must be protected', 'Windows private ACL has no explicit grants',
+    'unsupported Windows ACE', 'unapproved Windows ACL principal or ACE type',
+    'unsupported or inherited Windows ACE', 'unsupported Windows ACL rights',
+    'Windows private ACL requires user full control'})
+REASONS |= UPSTREAM_REASONS
 
 
 def empty_trust():

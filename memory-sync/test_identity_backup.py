@@ -468,3 +468,37 @@ def test_restore_error_has_no_secret_context(restore_case, secret):
     assert str(error.value) == backup.OPERATION_FAILED
     assert error.value.__context__ is None
     assert not restore_case[1].exists()
+
+
+def test_cli(live, tmp_path, monkeypatch, capsys, secret):
+    import agentmesh
+    import cli_errors
+    import json
+    assert agentmesh.main(['identity-backup', 'status', '--security-dir', str(live)]) == 0
+    assert json.loads(capsys.readouterr().out)['state'] == 'none'
+    assert agentmesh.main(['identity-backup', 'create', '--security-dir', str(live), '--output', str(tmp_path / 'backup')]) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert json.loads(captured.err)['reason'] == 'passphrase entry requires an interactive console'
+    for action in ('identity-backup', 'identity-restore'):
+        assert cli_errors.report(ValueError(backup.ACTIVE), action)['reason'] == backup.ACTIVE
+        result = cli_errors.report(ValueError(secret), action)
+        safe = secret not in json.dumps(result)
+        assert safe
+    assert 'identity_backup' in cli_errors.TRUSTED_MODULES
+
+
+def test_cli_mode_requirements(capsys):
+    import agentmesh
+    for args in (['identity-backup', 'create'], ['identity-backup', 'verify'],
+                 ['identity-backup', 'drill'], ['identity-backup', 'status'], ['identity-restore']):
+        with pytest.raises(SystemExit) as error: agentmesh.main(args)
+        assert error.value.code == 2
+        capsys.readouterr()
+
+
+def test_packaged_backup():
+    import build_package
+    import standalone_build
+    assert 'identity_backup.py' in build_package.FILES
+    assert 'identity_backup' in standalone_build.HIDDEN_MODULES

@@ -219,6 +219,18 @@ def main():
         assert refused.returncode == 1 and not refused.stdout, refused.stderr
         assert 'identity is already passphrase-protected' in refused.stderr, refused.stderr
         assert {p.name: p.read_bytes() for p in locked_identity.iterdir()} == locked_before
+        # Backup/restore (#8): disposable paths only; non-console operations make no changes.
+        assert 'create' in run('identity-backup', '--help')
+        assert '--exchange' in run('identity-restore', '--help')
+        assert json.loads(run('identity-backup', 'status', '--security-dir', locked_identity))['state'] == 'none'
+        backup_file, restore_target = root / 'identity-backup.json', root / 'restore-target'
+        assert not run('identity-backup', 'create', '--security-dir', locked_identity,
+                       '--output', backup_file, inputs='', expected=1)
+        assert not backup_file.exists()
+        assert not run('identity-restore', '--file', backup_file, '--security-dir', restore_target,
+                       '--exchange', exchange, inputs='', expected=1)
+        assert not restore_target.exists()
+        assert {p.name: p.read_bytes() for p in locked_identity.iterdir()} == locked_before
         # Prepare real two-peer receipts, then decline ACTIVATE in the binary.
         peer_db = root / 'data' / 'windows.db'
         sqlite_memory.init_database(peer_db)

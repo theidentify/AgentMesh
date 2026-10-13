@@ -12,7 +12,7 @@ import sys
 HIDDEN_MODULES = (
     'brand', 'recall_memory', 'ingest_sessions', 'workflow', 'summarize_memory',
     'sqlite_memory', 'memory_sync', 'sync_worker', 'bounded_digest', 'install_inspect', 'install_setup', 'security_wizard',
-    'install_adopt', 'worker_lifecycle', 'worker_diagnostics', 'worker_error_details', 'mac_replace', 'windows_install', 'windows_task', 'console_prompt', 'terminal_progress', 'key_protection', 'os_unlock',
+    'install_adopt', 'worker_lifecycle', 'worker_diagnostics', 'worker_error_details', 'mac_replace', 'windows_install', 'windows_task', 'console_prompt', 'terminal_progress', 'key_protection', 'os_unlock', 'identity_backup',
     'omp_memory.parser', 'omp_memory.codex_parser', 'omp_memory.claude_parser',
     'cryptography.hazmat.primitives.asymmetric.ed25519',
     'cryptography.hazmat.primitives.ciphers.aead', 'cryptography.hazmat.primitives.kdf.scrypt',

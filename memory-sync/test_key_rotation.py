@@ -1467,3 +1467,23 @@ def test_compromise_report_v3_hostile_envelopes(indexed_peers, monkeypatch, dama
     else:
         assert report['unreadable'] == 1
         assert all(v['uuid'] != r['uuid'] for v in report['committed'] + report['uncommitted'])
+
+
+def test_publish_rotation_resume_skips_committed_outbox_rows(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'publish': raise RuntimeError('crash after publication commit')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=crash, **kwargs)
+    # Enforce the specified replay boundary: already-published immutable rows
+    # are skipped, rather than even updating them to the same values again.
+    with sync.connect(a) as c, c:
+        c.execute("""CREATE TRIGGER fixture_published_is_immutable BEFORE UPDATE ON _sync_outbox
+            WHEN OLD.published=1 BEGIN SELECT RAISE(ABORT, 'published packet update'); END""")
+    before = a.read_bytes()
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['published_pending'] == 1
+    assert a.read_bytes() == before

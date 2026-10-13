@@ -467,8 +467,24 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
                 if destination.exists():
                     if signed.read_local(destination) != raw: raise ValueError(QUARANTINE_INVALID)
                 else:
-                    os.link(path, destination)
-                    _sync_directory(target)
+                    # Snapshot the confirmed bytes: linking the hostile source itself
+                    # would let an in-place writer alter the quarantined evidence.
+                    temp = target / ('.' + uid + '.' + str(uuid.uuid4()) + '.tmp')
+                    try:
+                        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(fd, 'wb') as stream:
+                            signed.windows_private(temp, provision=True)
+                            stream.write(raw)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        try:
+                            os.link(temp, destination)
+                        except FileExistsError:
+                            if signed.read_local(destination) != raw:
+                                raise ValueError(QUARANTINE_INVALID)
+                        _sync_directory(target)
+                    finally:
+                        temp.unlink(missing_ok=True)
                 if signed.read_local(path) != raw: raise ValueError(PENDING_DIFFERS)
                 path.unlink()
                 _sync_directory(path.parent)

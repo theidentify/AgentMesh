@@ -213,7 +213,10 @@ def private_directory(directory):
 
 def read_trust(directory):
     private_directory(directory)
-    trust = parse(read_local(Path(directory) / 'trust.json', private=True))
+    return check_trust(parse(read_local(Path(directory) / 'trust.json', private=True)))
+
+
+def check_trust(trust):
     if type(trust) is not dict or set(trust) != {'format', 'peers'} or trust['format'] != 'agentmesh-trust-v1' or type(trust['peers']) is not dict:
         raise ValueError('invalid local trust store')
     for key_id, entry in trust['peers'].items():

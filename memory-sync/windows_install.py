@@ -542,6 +542,13 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
             'task_name': name, 'autostart': bool(report['task'] and report['task']['binding']['enabled']),
             'worker': managed.status(runtime)['state'], 'policy': scope['policy'],
             'publisher': 'checksum consistency only; not trusted publisher identity'}
+    def protocol_check():
+        if action=='uninstall' or (action=='autostart' and disable): return
+        selected=(candidate['binary'] if candidate else
+                  str(root / (state['history'][-1] if action=='rollback' else state['active']) / 'agentmesh.exe'))
+        from protocol_activation import require_program_capability
+        require_program_capability(config['database'],[selected])
+    protocol_check()
     if dry_run:
         return plan
     token = {'install': 'INSTALL', 'upgrade': 'UPGRADE', 'rollback': 'ROLLBACK', 'recover': 'RECOVER',
@@ -570,6 +577,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
     def apply():
         nonlocal state
         def revalidate():
+            protocol_check()
             if (identity(root.parent) != parent_identity or validate_root(root, config, runtime) != root
                     or load(runtime) != (config, scope) or preservation(config, runtime) != baseline
                     or (candidate is not None and bundle(binary) != candidate)):
@@ -636,6 +644,7 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                 managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
                 restarting = True
             with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
+                protocol_check()
                 if (load(runtime) != (config, scope) or preservation(config, runtime) != baseline
                         or identity(root) != state['root_identity'] or adapter.read(name) != report
                         or parse(read_local(state_path, private=True)) != state):

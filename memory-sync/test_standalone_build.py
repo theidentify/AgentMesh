@@ -136,6 +136,10 @@ def test_windows_autostart_helper_stops_cooperatively_before_enable(tmp_path):
     assert 'programs\\' not in text  # no version-pinned installed path
 
 
+def test_gate2_readers_are_hidden_imports():
+    assert {'resolution_protocol', 'resolution_store', 'packet_versions', 'resolution_apply', 'conflict_commands', 'protocol_activation', 'key_protection', 'os_unlock'} <= set(standalone_build.HIDDEN_MODULES)
+
+
 def test_os_unlock_is_frozen_and_test_hooks_are_explicit(tmp_path):
     root = Path(__file__).resolve().parent
     normal = standalone_build.build_command(root, tmp_path / 'dist', tmp_path / 'work')
@@ -148,7 +152,7 @@ def test_os_unlock_is_frozen_and_test_hooks_are_explicit(tmp_path):
     assert repr(str(hook)) in spec.read_text() and 'runtime_hooks=' in spec.read_text()
 
 
-def test_frozen_smoke_hook_binds_only_the_disposable_store(tmp_path, monkeypatch):
+def test_frozen_smoke_hook_binds_only_the_disposable_store(tmp_path):
     import runpy
     import os_unlock as ou
     import smoke_os_unlock
@@ -159,4 +163,17 @@ def test_frozen_smoke_hook_binds_only_the_disposable_store(tmp_path, monkeypatch
         runpy.run_path(str(path))
         assert ou.current_backend().prefix == backend.prefix
     finally:
-        monkeypatch.setattr(ou, 'current_backend', original)
+        ou.current_backend = original
+
+
+def test_recovery_and_key_modules_in_both_frozen_builds(tmp_path):
+    root=Path(__file__).resolve().parent
+    modules={'conflict_commands','protocol_activation','key_protection','os_unlock'}
+    command=standalone_build.build_command(root,tmp_path/'dist',tmp_path/'work')
+    assert modules <= {command[i+1] for i,v in enumerate(command) if v=='--hidden-import'}
+    spec,_=standalone_build.windows_build(root,tmp_path/'win',tmp_path/'win-work')
+    import ast
+    tree=ast.parse(spec.read_text())
+    analysis=tree.body[0].value
+    hidden=next(k.value for k in analysis.keywords if k.arg=='hiddenimports')
+    assert modules <= set(ast.literal_eval(hidden))

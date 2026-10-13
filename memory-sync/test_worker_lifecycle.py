@@ -429,3 +429,48 @@ def test_bootstrap_runtime_without_security_paths_runs_after_signing_activation(
     assert worker_lifecycle.run(args['runtime'], once=True) == 0
     report = json.loads((args['exchange'] / 'status/mac.json').read_text())
     assert report['security']['policy'] == 'required'
+
+
+def test_managed_worker_refuses_future_protocol_database(tmp_path,monkeypatch):
+    args=bound(tmp_path,monkeypatch)
+    import resolution_store as store
+    import memory_sync as sync
+    import worker_lifecycle as worker
+    with sync.connect(args['database']) as c,c:
+        store.migrate(c);c.execute('UPDATE _sync_protocol SET schema_version=999')
+    with pytest.raises(ValueError,match='capability'): worker.run(args['runtime'],once=True,legacy_drained=True)
+    assert not (args['database'].parent/'.agentmesh-worker/process.json').exists()
+
+
+@pytest.mark.parametrize('action',['start','run'])
+def test_legacy_drain_refusal_precedes_capability_snapshot(tmp_path,monkeypatch,action):
+    import worker_lifecycle as worker
+    import protocol_activation as activation
+    args=bound(tmp_path,monkeypatch)
+    def forbidden(*args): raise AssertionError('snapshot must not run before cheap refusal')
+    monkeypatch.setattr(activation,'require_capability',forbidden)
+    with pytest.raises(ValueError,match='legacy worker must be drained'):
+        getattr(worker,action)(args['runtime'])
+
+
+def test_running_start_refuses_without_snapshot(tmp_path,monkeypatch):
+    import worker_lifecycle as worker
+    import protocol_activation as activation
+    args=bound(tmp_path,monkeypatch)
+    monkeypatch.setattr(worker,'status',lambda runtime:dict(state='running'))
+    def forbidden(*args): raise AssertionError('snapshot must not run for running worker')
+    monkeypatch.setattr(activation,'require_capability',forbidden)
+    with pytest.raises(ValueError,match='already running'):
+        worker.start(args['runtime'],legacy_drained=True)
+
+
+def test_run_lifetime_lock_refusal_precedes_snapshot(tmp_path,monkeypatch):
+    import worker_lifecycle as worker
+    import protocol_activation as activation
+    from runtime_lock import lock
+    args=bound(tmp_path,monkeypatch)
+    directory=worker.control(json.loads(args['runtime'].read_text()),create=True)
+    def forbidden(*args): raise AssertionError('snapshot must not run before exclusive ownership')
+    monkeypatch.setattr(activation,'require_capability',forbidden)
+    with lock(directory/'lifetime.lock',timeout=0):
+        with pytest.raises(TimeoutError): worker.run(args['runtime'],once=True,legacy_drained=True)

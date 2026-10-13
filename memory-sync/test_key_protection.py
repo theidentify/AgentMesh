@@ -2,6 +2,7 @@
 from contextlib import closing
 import io
 import json
+from pathlib import Path
 import uuid
 
 import pytest
@@ -172,7 +173,8 @@ def test_protected_identity_stays_locked_across_restarts_and_the_restarted_worke
     identity_bytes = (args['security_dir'] / 'identity.json').read_bytes()
     def child(code, *extra):
         return subprocess.run([sys.executable, '-c', code, str(args['security_dir']), *extra],
-                              capture_output=True, text=True, timeout=NATIVE_TIMEOUT)
+                              capture_output=True, text=True, timeout=NATIVE_TIMEOUT,
+                              cwd=Path(__file__).resolve().parent)
     # An interactive unlock lives only in its own process.
     unlocked = child('import sys, signed_packets as s\n'
                      's.Security(sys.argv[1], unlock=lambda: sys.argv[2]).sign_bytes(b"probe")\n'

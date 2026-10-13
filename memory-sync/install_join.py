@@ -138,23 +138,22 @@ reservations cover invited peers that have not published any packets yet.
             p = parse(read_local(path))
             if not isinstance(p, dict) or p.get('group') != group:
                 raise ValueError('foreign group in exchange')
-            if (set(p) != {'format', 'group', 'node', 'uuid', 'body', 'checksum'}
-                    or p['format'] != memory_sync.FORMAT or p['node'] != slot.name
-                    or not canonical_uuid(p['uuid']) or path.name != p['uuid'] + '.json'
-                    or not isinstance(p['body'], list) or not p['body']
-                    or p['checksum'] != memory_sync.digest(p['body'])):
-                raise ValueError('invalid exchange history')
-            for change in p['body']:
-                if not isinstance(change, dict):
-                    raise ValueError('invalid exchange history')
-                parent = change.get('parent')
-                if isinstance(parent, str) and parent.startswith('baseline:'):
-                    raise ValueError(BASELINE_ERROR)
-            if connection is not None:
-                try:
-                    memory_sync._validate(connection, p)
-                except (ValueError, TypeError, KeyError) as exc:
-                    raise ValueError('invalid exchange history') from exc
+            from packet_versions import validate_wire, is_new, _validate_rows
+            try:
+                validate_wire(p,group=group,folder=slot.name)
+                if p['format'] not in (memory_sync.FORMAT,'omp-memory-changes-v2') or path.name!=p['uuid']+'.json':
+                    raise ValueError('invalid unsigned history')
+                for change in p['body']:
+                    parents=change['parents'] if is_new(p) else [change['parent']]
+                    if (any(isinstance(parent,str) and parent.startswith('baseline:') for parent in parents)
+                            or (is_new(p) and change['origin'] is not None)):
+                        raise ValueError(BASELINE_ERROR)
+                if connection is not None:
+                    if is_new(p): _validate_rows(connection,p)
+                    else: memory_sync._validate(connection,p)
+            except (ValueError,TypeError,KeyError) as exc:
+                if str(exc)==BASELINE_ERROR: raise
+                raise ValueError('invalid exchange history') from exc
     return used
 
 

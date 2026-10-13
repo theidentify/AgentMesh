@@ -145,6 +145,8 @@ def read_plan(manifest, binary, supervisor):
     if not live['loaded'] or live['arguments'] != args:
         raise ValueError('expected service not loaded or live command mismatch')
     binary = owned(binary)
+    from protocol_activation import require_program_capability
+    require_program_capability(config['database'],[binary])
     if not os.access(binary, os.X_OK):
         raise ValueError('bundled executable required')
     exchange = absolute(config['exchange'])
@@ -287,6 +289,10 @@ def _restore(backup, recovery, supervisor, timeout):
         raise ValueError('recovery descriptor changed')
     if digest(backup / 'old-code.json') != recovery['old_code_sha256'] or parse(read_local(backup / 'old-code.json', private=True)) != code_descriptor(old['ProgramArguments']):
         raise ValueError('old code changed; manual recovery required')
+    from protocol_activation import require_program_capability
+    arguments=old['ProgramArguments']
+    prefix=arguments[:2] if len(arguments)>1 and Path(arguments[1]).suffix=='.py' else arguments[:1]
+    require_program_capability(config['database'],prefix)
     live = supervisor.inspect(old['Label'])
     allowed = [old['ProgramArguments'], recovery.get('new_args')]
     if live['loaded']:
@@ -437,6 +443,10 @@ def replace(manifest, binary, *, supervisor=None, timeout=300, dry_run=False):
                         or code_descriptor(service['ProgramArguments']) != old_code
                         or validate(config, runtime) != scope):
                     raise ValueError('old code or database scope changed; service remains stopped')
+                from protocol_activation import require_program_capability
+                arguments=service['ProgramArguments']
+                prefix=arguments[:2] if len(arguments)>1 and Path(arguments[1]).suffix=='.py' else arguments[:1]
+                require_program_capability(config['database'],prefix)
                 supervisor.bootstrap(config['plist'])
                 live = supervisor.inspect(service['Label'])
                 if not live['loaded'] or live['arguments'] != service['ProgramArguments']:

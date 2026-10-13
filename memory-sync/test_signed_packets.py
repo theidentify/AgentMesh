@@ -461,3 +461,49 @@ def test_managed_worker_continues_with_retained_revoked_packet(secure_peers, tmp
     assert worker.run(runtime, interval=0.001) == 0
     assert worker.status(runtime)['state'] == 'stopped'
     assert sync.status(db)['invalid'] == 0
+
+
+def test_gate2_signed_capture_remains_v2(secure_peers):
+    import resolution_store
+    a, b, ex, sa, sb = secure_peers
+    with sync.connect(a) as c, c:
+        resolution_store.migrate(c)
+    path, p = packet(secure_peers)
+    assert p['format'] == 'agentmesh-signed-changes-v2'
+    assert set(p) == signed.FIELDS
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+
+
+def test_resolution_signing_fence_and_stale_trust_plan(secure_peers):
+    import resolution_apply as apply
+    import resolution_store as store
+    from test_resolution_apply import edit, retain, activate, ref, choices
+    a,b,ex,sa,sb=secure_peers
+    p=edit(a,dict(x=1),sa); q=edit(b,dict(x=2),sb)
+    retain(a,[p,q],sa)
+    with sync.connect(a) as c, pytest.raises(ValueError,match='emission disabled'):
+        sa._sign_resolution(c,{})
+    activate(a,sa)
+    with sync.connect(a) as c:
+        plan=apply.prepare_resolution(c,[ref(p),ref(q)],choices(x=3),security=sa)
+    signed.revoke(sa.directory,sb.public['key_id'])
+    with sync.connect(a) as c, pytest.raises(ValueError,match='stale'):
+        apply.commit_resolution(c,plan,security=sa,operation_id='trust-changed')
+    # Public legacy signer stays fenced even with a test-activated database.
+    with pytest.raises(ValueError,match='emission disabled'): sa.sign({'kind':'resolution'})
+
+
+def test_resolution_trust_change_during_row_transaction_rolls_back(secure_peers,monkeypatch):
+    import resolution_apply as apply
+    from test_resolution_apply import edit, retain, resolve, snapshot
+    a,b,ex,sa,sb=secure_peers
+    p=edit(a,dict(x=1),sa); q=edit(b,dict(x=2),sb)
+    r=resolve(apply,a,[p,q],dict(x=3),sa)
+    retain(b,[p,q,r],sb)
+    before=snapshot(b)
+    def revoke_after_write(boundary):
+        if boundary=='rows': signed.revoke(sb.directory,sa.public['key_id'])
+    monkeypatch.setattr(apply,'_checkpoint',revoke_after_write)
+    with sync.connect(b) as c, pytest.raises(ValueError,match='trust changed'):
+        apply.apply_resolution(c,r,security=sb)
+    assert snapshot(b)==before

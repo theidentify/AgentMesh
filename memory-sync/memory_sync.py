@@ -302,6 +302,15 @@ def _receipt_checksum(p):
     from packet_versions import receipt_identity
     return receipt_identity(p)
 
+def _verify_signed(c, p, security, folder):
+    """New-input signature check shared by both receive paths: a revoked key passes only
+    through an operator-approved rotation manifest (verify_rotated), never plain verify."""
+    from signed_packets import read_trust
+    entry = read_trust(security.directory)['peers'].get(p['key_id'])
+    if entry is not None and entry['revoked']:
+        return security.verify_rotated(p, config(c)['group_id'], folder)
+    return security.verify(p, config(c)['group_id'], folder)
+
 def _received_signed(c, p, security, folder):
     """Return cached/verified for a committed receipt, else None for new input."""
     from signed_packets import envelope_digest, receipt_digest
@@ -454,12 +463,7 @@ def receive(db, exchange, *, security=None):
                             verified_signature = True if received == 'verified' else None
                             c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
                             continue
-                        from signed_packets import read_trust
-                        entry = read_trust(security.directory)['peers'].get(p['key_id'])
-                        if entry is not None and entry['revoked']:
-                            security.verify_rotated(p, config(c)['group_id'], path.parent.name)
-                        else:
-                            security.verify(p, config(c)['group_id'], path.parent.name)
+                        _verify_signed(c, p, security, path.parent.name)
                         verified_signature = True
                         legacy = {k: p[k] for k in ('group','node','uuid','body')}
                         legacy.update(format=FORMAT, checksum=digest(p['body']))

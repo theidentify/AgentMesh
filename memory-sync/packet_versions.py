@@ -104,13 +104,15 @@ def _authorize(c, p, security, folder):
         if security is not None:
             sync._received_signed(c, p, security, folder)
         return store.Authorization(complete, 'applied')
-    if security is not None:
-        security.verify(p, sync.config(c)['group_id'], folder)
     if p['node'] == sync.config(c)['node']:
+        # Own packets are proven by the outbox, before any signature check: after a key rotation
+        # this device's published old-key packets are revoked here but remain its own history.
         own = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (p['uuid'],)).fetchone()
         if not own or sync.load_packet(own[0]) != p:
             raise ValueError('unknown packet claiming local node')
         return store.Authorization(complete, 'local')
+    if security is not None:
+        sync._verify_signed(c, p, security, folder)
     return store.Authorization(complete, 'verified')
 
 

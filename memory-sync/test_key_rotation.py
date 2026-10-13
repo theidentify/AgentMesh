@@ -987,3 +987,25 @@ def test_resign_refuses_a_signature_that_changes_the_body(peers, monkeypatch):
         rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
     with sync.connect(a) as c:
         assert [tuple(r) for r in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid')] == before
+
+
+@pytest.mark.parametrize('protocol', ['legacy', 'indexed'])
+def test_rotation_converges_with_and_without_the_indexed_protocol(peers, protocol):
+    # The indexed (conflict-resolution) receive path authorizes packets separately; R1/R2 must hold there too.
+    import key_rotation as rotation
+    import resolution_store as store
+    a, b, ex, sa, sb = peers
+    if protocol == 'indexed':
+        for db in (a, b):
+            with sync.connect(db) as c, c:
+                store.migrate(c)
+    ready(peers)  # one published old-key packet b has not received, plus one pending packet
+    phrase, kwargs = rotate_args(peers)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='compromised', **kwargs)
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    new_a = signed.Security(sa.directory, unlock=lambda: phrase)
+    sync.publish(a, ex, security=new_a)
+    received_b = sync.receive(b, ex, security=sb)
+    received_a = sync.receive(a, ex, security=new_a)
+    assert not received_a.get('invalid') and not received_b.get('invalid'), (received_a, received_b)
+    assert received_b['applied'] == 2

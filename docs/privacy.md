@@ -41,6 +41,14 @@ Disable failures can leave a wrapping key in the OS store. That key plus an olde
 
 Backup verification and drill evidence records past checks, not current file availability; same-user code can forge it. Decrypted backup keys and passphrases remain in process memory, which Python cannot reliably wipe. Encryption does not protect against malicious code running as that user.
 
+## Keep compromise reports private
+
+[Compromise review](./install/security#review-suspected-compromise-before-resuming-work) shows packet identifiers, device identity, file modification times, table names, upsert/delete operations and a 16-hex SHA-256 prefix for each row key. It omits row contents and raw row keys, but the remaining metadata is sensitive and key hashes are not anonymization. Do not publish raw reports or rotation proposals/manifests; they expose identity relationships and packet history. Share only deliberately redacted counts and fixed refusal reasons.
+
+The report compares local evidence; it does not independently authenticate signatures or prove that a listed change is malicious. File times are mutable, and receipt totals cannot all be attributed to the selected key. The read-only report does not undo committed changes or erase evidence.
+
+Rotation journals contain the sealed new identity and public recovery metadata. Keep them private and intact until recovery finishes. Create and drill a backup of the new active key; retire backups of revoked keys under your custody policy. Neither unlinking a file nor Python process cleanup guarantees that old secret material has been securely erased.
+
 ## Handle status and screenshots carefully
 
 Peer status reports contain operational metadata rather than memory record bodies. They still include sync identifiers, and publication errors can expose filesystem paths. Do not treat raw status JSON as guaranteed safe to publish.

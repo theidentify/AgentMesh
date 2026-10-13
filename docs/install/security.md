@@ -15,7 +15,7 @@ Ed25519 signatures authenticate packet metadata against an approved peer key, in
 Keep private keys and trust files outside Git and the exchange. Peer proposals are not automatically trusted: verify the full fingerprint and scope through an independent authenticated channel. See [Signed sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md) for the trust boundary and dependency setup.
 
 ::: warning
-Before revoking a peer key, follow the operator’s [rotation and revocation procedure](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md#rotation-and-revocation). Revocation blocks new, unapplied packets from that key. Previously committed packets remain accepted when they match the recorded receipt and complete envelope digest, including the signature; retaining those exact packets does not make them invalid or stop the managed worker. New packets from a revoked key and tampered replays remain invalid and can stop managed execution. Preserve packets, receipts/history, database backups and trust state; never delete history to hide a failure. Older receipts need the retained pinned public key to verify their first replay and record the full envelope digest, so keep revoked public-key records.
+Before revoking a peer key, follow the operator’s [rotation and revocation procedure](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md#rotation-and-revocation). Before any explicit rotation approval, revocation blocks new, unapplied packets from that key. For lost or compromised keys, follow the [recovery decision and peer approval procedure](#recover-a-lost-or-compromised-key). Previously committed packets remain accepted when they match the recorded receipt and complete envelope digest, including the signature; retaining those exact packets does not make them invalid or stop the managed worker. New packets from a revoked key and tampered replays remain invalid and can stop managed execution. Preserve packets, receipts/history, database backups and trust state; never delete history to hide a failure. Older receipts need the retained pinned public key to verify their first replay and record the full envelope digest, so keep revoked public-key records.
 :::
 
 ## Inspect readiness
@@ -60,7 +60,7 @@ Use passphrase protection when copies of the signing identity directory or its b
 
 Use this order before relying on a protected key in a worker:
 
-1. If no signing identity exists, create it through the coordinated `wizard-resume` procedure above first. Do not generate a replacement for an existing identity. Stop/drain all workers before changing protection or unlock policy.
+1. If no signing identity exists, create it through the coordinated `wizard-resume` procedure above first. Do not generate an unrelated replacement during setup; use [explicit rotation](#recover-a-lost-or-compromised-key) when key replacement is needed. Stop/drain all workers before changing protection or unlock policy.
 2. Protect the existing identity using the command below. Use an [encrypted identity backup](#back-up-and-verify-the-device-identity) for portable recovery. Keep older security-directory copies private because they may contain the raw key.
 3. For unattended signed workers on macOS or Windows, explicitly enable OS unlock under the **same account that runs the worker**, then inspect its status.
 4. Resume any unfinished pairing/activation with `wizard-resume`. It tries OS unlock first and, if necessary, asks for the passphrase at most once per run. That interactive unlock is confined to the wizard process; it does not unlock a subsequently started worker.
@@ -253,6 +253,123 @@ The current wizard can reuse its saved probe and an existing signed receipt; it 
 :::
 
 Restore refuses an existing identity, unfinished restore artifacts, incompatible current trust or a locally revoked own key. It does not make a compromised key safe, recover a missing backup or restore SQLite data. Keep evidence and follow [restore refusal guidance](../troubleshooting#identity-backup-or-restore-refuses); do not overwrite identities, remove revocations or manufacture an exchange status file to make a restore pass.
+
+## Recover a lost or compromised key
+
+Choose recovery according to whether the old key is still trustworthy. Rotation replaces the signing key while preserving the sender, group and device identity; it does not add a device or restore memory. The database must already use required signed policy. Never roll back SQLite to repair a key.
+
+| Situation | Procedure |
+| --- | --- |
+| Lost/damaged key, usable trustworthy backup, no suspicion of compromise | [Restore the same identity](#restore-only-after-stopping-the-old-device) after fencing the old installation. |
+| Lost/unavailable key without a usable backup | Rotate with `--reason lost`. |
+| Suspected compromise | Immediately revoke on **every peer**, then rotate with `--reason compromised` and review evidence everywhere. |
+| Planned replacement of a usable key | Rotate with `--reason planned`. |
+
+A backup cannot make a compromised or revoked key safe. Restoring into empty local trust does not authorize that key on remote peers. Do not reactivate a compromised key to clear a backlog.
+
+### Revoke a compromised key first
+
+Get the full old fingerprint from trusted records. On every peer, run from the installed `app` or checkout's `memory-sync` directory:
+
+```sh
+printf 'Old fingerprint from trusted records: '
+read -r OLD_KEY
+python3 signed_packets.py --security-dir "/path/to/peer-identity" revoke --fingerprint "$OLD_KEY"
+```
+
+These are POSIX shell examples. On Windows use `py -3`, Windows paths and your shell's input/variable syntax; enter multiline commands on one line without backslashes. Revocation returned exit `0` in the disposable test. The response contains trust metadata, so keep it private. `peer-rotate` can approve replacement of an already revoked old key.
+
+### Stop execution and rotate locally
+
+Stop the rotating device's managed worker through [worker control](../use/worker), stop foreground/service execution through its own controls, and stop any database clones elsewhere. Local locks cannot fence a clone on another machine. Keep those copies stopped throughout recovery.
+
+```sh
+python3 agentmesh.py identity-rotate --security-dir "/path/to/identity" \
+  --db "/path/to/memory.db" --exchange "/path/to/exchange" \
+  --runtime "/path/to/runtime.json" --reason compromised
+```
+
+Use `lost` or `planned` instead when appropriate. `--runtime` is optional, but include the installation's runtime when available so rotation checks managed execution and holds its lifetime lock as well as the database cycle lock. It must name the same database and exchange. These actions use `--db`, not the global `--database` argument.
+
+If the entire security directory is lost, add `--old-key "$OLD_KEY"`, using the old full fingerprint from trusted records. With an identity file present, its public key ID takes precedence; otherwise the explicit old key or a single matching active trust entry identifies the key. The old private key need not be available or unlockable. Do not delete an identity or trust store to force a different selection.
+
+Type **STOPPED** only after all copies have stopped. The exchange must have `.stfolder` and genuine status for this group. Rotation refuses recent activity within 15 minutes, future-dated files or unreadable entries in this device identity's exchange paths, using the [same activity check as restore](#restore-only-after-stopping-the-old-device). Do not change timestamps or delete packets to bypass it. If a supposedly unpublished pending packet already exists in the exchange, stop and inspect the refusal.
+
+When pending packets are present, review `pending_packets` and `operations_by_table`, then type **RESIGN** to authorize re-signing. Enter a new identity passphrase twice, at least 12 characters, at the interactive console. There is no passphrase or `--yes` automation option. A refusal is not authorization to edit outbox records manually.
+
+Output (run on macOS; disposable OS store)
+
+```json
+{"manifest_packets":1,"os_unlock_item_removed":true,"reason":"compromised","resigned":1,"status":"rotated","trust_restored":true}
+```
+
+This exit-`0` excerpt came from a test with ordinary change packets; it omits fingerprints and paths. The full report includes `old_key_id`, `new_key_id`, the complete `new_fingerprint`, `proposal` and `next`. It publishes a proposal and adjacent `.manifest` under `pairing/rotations/` in the exchange. Use the actual proposal path from the report. The new identity is protected, OS unlock remains off, and no worker is started. The test used the repository's fake OS backend for old-item removal, not the login keychain.
+
+`trust_restored: false` means prior local trust was unavailable. Re-pin every peer through the operator's [explicit trust procedure](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md#explicit-pairing-cli), independently confirming fingerprints and scope. Do not infer peer authorization from proposal files.
+
+### Approve the new key on every peer
+
+Read the **full new fingerprint from the rotating device's terminal report** to each peer operator by phone or in person. Never obtain the approving fingerprint from the exchange or proposal. Once the proposal and its matching adjacent manifest arrive, run on every other device:
+
+```sh
+python3 agentmesh.py peer-rotate --security-dir "/path/to/peer-identity" \
+  --proposal "/path/to/rotation-proposal.json" --exchange "/path/to/exchange"
+```
+
+Replace the proposal placeholder with the actual file. Review the displayed fingerprint prefixes, reason, creation time and manifest count. At the prompt, type the complete new fingerprint received independently. A mismatch refuses without approving it. If there is a warning about competing proposals, contact the device owner before choosing; the warning does not identify which proposal is legitimate.
+
+Output (run on macOS)
+
+```json
+{"competing_proposals":0,"manifest_packets":1,"reason":"compromised","status":"peer-rotated"}
+```
+
+Exit `0` means this peer revoked the old entry and pinned the new key. It does not update other peers or all application pins. Re-run wizard pairing to update its saved peer identity; if you use the separate profile-memory prototype, update its `SignedChannel` peer fingerprint too. Rotation does not rewrite either pin. Check [trust in every direction](#check-trust-in-every-direction) before restarting.
+
+### Review suspected compromise before resuming work
+
+Run this on **every device, including the rotating device**, with the old fingerprint from trusted records:
+
+```sh
+python3 agentmesh.py compromise-report --db "/path/to/memory.db" \
+  --exchange "/path/to/exchange" --key "$OLD_KEY" --security-dir "/path/to/identity"
+```
+
+The command is read-only; it does not unlock the identity. It scans old-key-labelled exchange files and compares local receipt, outbox and approved-manifest evidence. It does not independently verify packet signatures, so it is an investigation report, not proof that the old key signed every listed file or that its contents were legitimate.
+
+On the receiving test device, one old-key packet appeared in `committed` with `in_manifest: true`. This excerpt omits that record's identifiers, file time and change metadata:
+
+Output (run on macOS)
+
+```json
+{"filtered_by_since":0,"forged_candidates":[],"legacy_receipts":0,"receipts_without_file":0,"uncommitted":[],"unreadable":0}
+```
+
+Exit `0` means the report completed, not that compromise is absent. Interpret the full report:
+
+- `committed` matches local receipts; `uncommitted` lists other observed files for the selected key. A sender's own publication need not have a local receive receipt.
+- `in_manifest` compares packet identity/digest with the locally approved manifest. Without `--security-dir` it is `null`; with no registered manifest it is `false`. Investigate committed entries outside the manifest; inclusion is not a verdict on the legitimacy of the original data.
+- `forged_candidates` flags files claiming this device identity that differ from its outbox bytes. Investigate them rather than treating the label as a verdict.
+- `receipts_without_file` counts full-envelope receipt records without an observed packet file; `legacy_receipts` counts receipts without a full-envelope record. Both are database-wide counts, not attribution to the selected key. `unreadable` counts files that could not be inspected.
+- Optional `--since` takes a UTC ISO timestamp and filters **file modification times**; `filtered_by_since` counts excluded old-key files. A writer can change these times, so this is not a trusted incident-time boundary.
+
+The report never removes, quarantines or undoes records. Published packet files and historical receipts remain unchanged by rotation; successfully re-signed pending packets keep their UUID, body and checksum. Records already committed remain committed, including malicious changes. Review and repair data separately through supported data procedures. Do not delete exchange history or roll back the database to make a key usable.
+
+### Finish or resume recovery
+
+If `os_unlock_item_removed: false`, arrange removal of the **old fingerprint's** OS-store item with the operator. After rotation, `identity-os-unlock disable` targets the **new installed key**, so it cannot clean up the old item. `null` means no supported OS backend was selected. Do not infer old-item cleanup from successful rotation alone.
+
+After peer approvals and review, create and drill a [new encrypted backup](#back-up-and-verify-the-device-identity). Retire/delete backups of the revoked key under your custody policy; deletion is not guaranteed secure erasure. Enable [OS unlock for the new key](#enable-unattended-os-unlock) if unattended workers need it, then explicitly [start the worker](../use/worker#use-managed-execution) and inspect its cycles.
+
+If interrupted after `rotation-journal.json` was written, recovery is forward only:
+
+```sh
+python3 agentmesh.py identity-rotate --security-dir "/path/to/identity" \
+  --db "/path/to/memory.db" --exchange "/path/to/exchange" \
+  --runtime "/path/to/runtime.json" --resume
+```
+
+Resume repeats **STOPPED**, locks and exchange checks, then asks for `New identity passphrase:`—the passphrase chosen for the interrupted rotation. It completes the journaled operation; do not start a second rotation or choose another new key. Ordinary signing/publishing refuses while the journal exists. Never delete the journal or restore older trust/identity/SQLite files to bypass it. If only staging remains without a journal, request inspection; `--resume` requires a valid journal. See [rotation refusals](../troubleshooting#key-rotation-or-peer-approval-refuses).
 
 ## Check trust in every direction
 

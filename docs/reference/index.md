@@ -21,11 +21,11 @@ For the task sequence, use [Resolve conflicts](../use/resolve-conflicts): activa
 | [Workflow](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) | Configure ingestion, primary summarization, exchange and recall. |
 | [OTA updates](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md) | Set up opt-in signed worker updates and recovery. |
 | [Signed sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md) | Understand packet authentication, pinned peer trust and strict revocation for uncommitted resolution evidence. |
-| [Key protection, OS unlock and identity backup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md) | Protect device keys, configure account-bound unattended unlock, and create, verify, drill or restore encrypted identity backups with fencing and trust checks. |
+| [Key protection and recovery](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md) | Protect device keys, configure account-bound unattended unlock, and create, verify, drill or restore encrypted identity backups with fencing and trust checks; recover lost keys, rotate compromised keys and review old-key evidence. |
 | [Security wizard](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SECURITY-WIZARD.md) | Review explicit identity, pairing and activation steps. |
 | [Mac replacement](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md) | Plan operator-led program replacement and rollback. |
 
-For the user procedure, see [Back up and verify the device identity](../install/security#back-up-and-verify-the-device-identity) and [Restore only after stopping the old device](../install/security#restore-only-after-stopping-the-old-device). Identity recovery does not restore SQLite data.
+For the user procedure, see [Back up and verify the device identity](../install/security#back-up-and-verify-the-device-identity) and [Restore only after stopping the old device](../install/security#restore-only-after-stopping-the-old-device). For lost keys without a backup or suspected compromise, use [key recovery and rotation](../install/security#recover-a-lost-or-compromised-key). Identity recovery does not restore SQLite data.
 
 ## Developers
 

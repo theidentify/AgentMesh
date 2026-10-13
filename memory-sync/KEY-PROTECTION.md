@@ -254,3 +254,162 @@ exchange. An offline drill is not a substitute for the live peer check.
 
 A backup cannot make a compromised or revoked key safe. Rotate and re-pair after compromise (#9);
 this feature does not recover missing backups or restore SQLite data.
+
+## Lost or compromised keys
+
+### 1. Choose the recovery path
+
+| Situation | Action |
+|---|---|
+| Lost or damaged key, trustworthy backup, no suspicion of compromise | `identity-restore`; confirm `FENCED` and pass the exchange-activity check. |
+| Lost/unavailable key without a usable backup | `identity-rotate --reason lost`; generate a new key. |
+| Suspected compromise | Immediately revoke on every peer, then rotate with `--reason compromised`, then review packets everywhere. |
+| Planned replacement of a usable key | `identity-rotate --reason planned`. |
+
+**A restore never makes a compromised key safe.** Restore refuses a key revoked in the local trust.
+Restoring the same key into an empty trust can succeed locally, but remote peers still refuse its
+new packets. A successful local restore is not remote authorization.
+
+### 2. Compromise: revoke first
+
+On **every peer**, close the exposure window immediately, before rotation:
+
+```text
+python signed_packets.py --security-dir PEER_DIR revoke --fingerprint OLD_FULL_FINGERPRINT
+```
+
+Use the old fingerprint from your trusted records. `peer-rotate` accepts an old key that is already
+revoked. Until the approved rotation manifest arrives, unseen and causally pending old-key packets
+are refused; this is intentional. Do not reactivate the compromised key to clear that backlog.
+
+### 3. Rotate and approve on peers
+
+1. Stop the worker and every unmanaged cycle on the rotating device. Stop any DB clones elsewhere.
+2. On that device, run:
+
+   ```text
+   agentmesh identity-rotate --security-dir DIR --db DB --exchange EXCH --reason compromised --runtime RUNTIME
+   ```
+
+   Use `lost` or `planned` when appropriate. The database must already use required signed policy;
+   rotation never activates signing. Sender, group and node remain unchanged; only the key changes.
+   Supply `--old-key OLD_KEY_ID` if the whole security directory was lost. With an identity present,
+   its public key ID takes precedence; otherwise `--old-key`, then a single active trust entry is
+   used. The old key need not be unlockable or locally active.
+
+   Type `STOPPED` to attest that all copies are stopped. The command holds the database cycle lock
+   and, when `--runtime` is supplied, the managed worker lifetime lock. It refuses running workers
+   and activity in this node's exchange slot within 15 minutes. The exchange must contain its
+   `.stfolder` marker and a status file for the database group. Pending packets already present in
+   either `signed-changes/` or `changes/` refuse rotation; inspect or publish them first.
+
+   If pending packets exist, review the packet and per-table operation counts and type `RESIGN`.
+   Enter a new identity passphrase twice, at least 12 characters, through the interactive console.
+   No passphrase flag or environment-variable input is supported. The new identity is always sealed;
+   rotation does not enable OS unlock or start a worker.
+
+   The report includes the full `new_fingerprint`, old/new key IDs, pending re-sign count, published
+   manifest count and `pairing/rotations/NEW_KEY_ID.json`. If `trust_restored` is false, only the new
+   self entry exists locally. Re-pin every peer with `signed_packets trust`, using out-of-band
+   fingerprints; incoming peer packets are safely refused until then.
+
+3. Read the **full new fingerprint from the rotating device's terminal report** to each peer operator
+   by phone or in person. Never obtain the approving fingerprint from the exchange or proposal file.
+4. On every peer, run:
+
+   ```text
+   agentmesh peer-rotate --security-dir PEER_DIR --proposal EXCH/pairing/rotations/NEW_KEY_ID.json --exchange EXCH
+   ```
+
+   Review the short fingerprints, reason, timestamp and manifest count. Type the full new fingerprint
+   delivered out of band. A wrong fingerprint changes nothing. A warning about competing proposals
+   means multiple files claim to replace the old key: verify with the device owner before approving.
+   `competing_proposals` counts other proposal files. Approval revokes the old entry and pins the new
+   key, enforcing one active identity key and the allocation-slot rule.
+
+5. For compromise, run this on **every device, including the rotating device**:
+
+   ```text
+   agentmesh compromise-report --db DB --exchange EXCH --key OLD_KEY_ID --security-dir DIR
+   ```
+
+   `committed` lists matching local receipts, timestamps and table/operation metadata. Row keys are
+   represented only by a 16-hex SHA-256 prefix; row contents and raw keys are never emitted.
+   `in_manifest` means the UUID and receipt digest match this device's approved manifest; it is null
+   without `--security-dir`. Committed packets outside that manifest deserve particular attention.
+   `uncommitted` shows other observed old-key files. On the originating device, `forged_candidates`
+   identifies own-node files that do not match the outbox byte for byte. These are evidence for
+   investigation, not an automatic verdict. Missing signed-envelope receipts are counted separately
+   from legacy receipts because receipts do not retain key/node attribution. Malformed files increase
+   `unreadable`. The report never writes, deletes, quarantines or automatically undoes changes.
+
+6. Update remaining pins: re-run the wizard pairing step to update `security_state.peer`, and update
+   the profile-memory `SignedChannel` peer fingerprint. Rotation does not rewrite either pin.
+7. Restart workers explicitly. If `os_unlock_item_removed` is false, the report prominently identifies
+   failed removal of the **old** OS item: remove that fingerprint's item by hand. The existing
+   `identity-os-unlock disable` command targets the currently installed identity, so after rotation
+   it does not remove the old item. A null result means no supported OS backend was available.
+   Optionally run `identity-os-unlock enable` for the new identity before restarting unattended work.
+8. Create a new encrypted backup and run a restore drill. Backups of the revoked key are revoked
+   material; delete them under your custody policy.
+
+### 4. Resume an interrupted rotation
+
+```text
+agentmesh identity-rotate --security-dir DIR --db DB --exchange EXCH --runtime RUNTIME --resume
+```
+
+Before the journal exists, there has been no identity/trust/DB replacement. A failure while staging
+can leave a private `.rotate-*.manifest`; inspect that leftover if there is no journal to replay.
+Once `rotation-journal.json` exists, recovery is **forward only**. Do not roll back trust, identity or
+SQLite and do not delete the journal to make the worker start. Ordinary signing and publishing refuse
+while the journal exists. The journal contains a sealed new identity and public recovery metadata,
+never a raw key or passphrase; its manifest is kept in a separate private staging file.
+
+`--resume` repeats `STOPPED`, the locks, exchange inactivity and pending-path checks before replay. It
+asks for the new identity passphrase and replays trust, identity, the atomic DB re-sign transaction,
+verification and proposal publication. Completed steps are idempotent. OS cleanup precedes the final
+journal removal. Restore also refuses rotation journals/staging; finish or inspect recovery first.
+
+### 5. What happens to packets
+
+| Packet/evidence | Result |
+|---|---|
+| Pending unpublished packets | Re-signed only after `RESIGN`; UUID, body and checksum stay unchanged. |
+| Published old-key packets | Unchanged. Peers accept approved contents through the signed manifest and historical signature verification. |
+| Historical committed receipts | Unchanged; the historical receipt path continues to validate retained files. |
+| Own published files | Seen before signature verification only when file bytes exactly match the stored outbox text. |
+| Forgeries already committed | Remain committed; investigate with the report and correct through normal edits. |
+
+The new key signs the small proposal's manifest SHA-256 and count. The separate sorted manifest is
+streamed with a 200 MiB ceiling (roughly 1.9 million packets), not parsed as a JSON packet. Peer approval
+stores it privately. A revoked-key packet must match its approved UUID/digest and still pass historical
+signature verification. Each Security instance loads a manifest lazily at most once; start a fresh
+worker cycle after approval. Signing a new forged packet with the stolen key cannot add it to the
+approved manifest.
+
+### 6. Key recovery is separate from SQLite recovery
+
+**Never roll back the database to fix a key.** Rotation preserves the signed database binding and
+history. If data also needs repair, investigate and use the normal data-recovery process separately.
+
+### 7. Backup destinations and custody
+
+- Use offline media; do not put identity backups in Syncthing, git or cloud sync.
+- Retain the latest verified backup for each active key. Delete backups of revoked keys.
+- Keep the passphrase in a password manager or on sealed paper, separate from the backup file.
+- Run restore drills monthly, and after every rotation or restore.
+
+### 8. Limits
+
+Forgeries committed before rotation remain committed. The manifest cannot retroactively decide
+whether earlier application data was legitimate; the report supplies evidence for human review.
+
+A database clone on another machine cannot be fenced by local locks. `STOPPED` covers the operator's
+responsibility for those clones. If a clone publishes an old-key file under a UUID re-signed here,
+this device gets an `immutable packet path collision` and an invalid own packet. Inspect the collision
+and remove the clone's file only after determining its origin; never overwrite published packets.
+
+`compromise-report --since ISO_UTC` filters exchange file mtimes, which a writer can set. It is an
+approximate convenience filter, not a cryptographic time boundary. Unlinking a file is not secure
+erasure, and Python cannot reliably wipe secret memory.

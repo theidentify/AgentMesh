@@ -63,3 +63,7 @@ Task 7 commit: `8d79ac4`. E2E/restore tests: two expected leftover-refusal failu
 Task 8 commit: `af5eea0`. CLI and source smoke tests failed first. Green: 224 recovery/CLI/build/backup tests passed from each location. All three commands, error reasons/actions, trusted module, hidden imports, bootstrap allowlist and native CI list are wired. Shared source/frozen recovery smoke uses only sealed disposable identities and explicit subprocess cwd.
 
 Built macOS arm64 with pinned PyInstaller 6.16.0 and hooks 2026.8. One-file binary built but sandbox execution failed before Python: `Failed to initialize sync semaphore; semctl: Operation not permitted`. Built a disposable onedir variant instead and its complete recovery smoke passed (three helps, two non-console unchanged-state refusals, empty read-only report). Native Windows execution remains CI-only. --reason is optional only for replay in practice: a new rotation without a valid reason refuses, while --resume takes the authenticated journal reason.
+
+## Task 10
+
+Task 9 commit: `84bb5b7`. Added the complete eight-part runbook in spec order, including immediate revocation, out-of-band approval, STOPPED/RESIGN, forward-only replay, pins, custody, packet outcomes and limits. Existing recovery tests passed from each location: 91 each. Documentation was checked against the CLI and the actual old-OS-item cleanup behavior; no implementation-mirroring documentation test was added.

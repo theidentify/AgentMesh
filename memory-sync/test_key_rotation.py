@@ -941,3 +941,49 @@ def test_readonly_refuses_incomplete_sidecars_without_creating_files(peers, suff
     with pytest.raises(ValueError, match='database WAL sidecars are incomplete'):
         rotation.compromise_report(isolated, ex, sa.public['key_id'])
     assert all_bytes(a.parent) == before
+
+
+def test_peer_rotate_refuses_replacing_its_own_key_even_with_matching_scope(peers):
+    # A forged proposal reusing this device's public node and sender would match its own trust entry.
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    attacker = sealed_identity(sb.directory.with_name('attacker-key'), 'windows', sender=sb.public['sender'])
+    for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
+        if not parent.exists(): backup.private_mkdir(parent)
+    manifest = ex / 'pairing' / 'rotations' / (attacker.public['key_id'] + '.manifest')
+    rotation.write_manifest(manifest, [])
+    path = manifest.with_suffix('.json')
+    signed.write_local(path, rotation.proposal(attacker, sb.public['key_id'], 'compromised', manifest))
+    before = {p.name: p.read_bytes() for p in sb.directory.iterdir() if p.is_file()}
+    with pytest.raises(ValueError, match="cannot replace this device's own key"):
+        rotation.peer_rotate(sb.directory, path, confirm=lambda: attacker.public['key_id'])
+    assert {p.name: p.read_bytes() for p in sb.directory.iterdir() if p.is_file()} == before
+
+
+def test_check_proposal_rejects_a_manifest_that_no_longer_matches(peers):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    doc = signed.parse(path.read_bytes())
+    rotation.check_proposal(doc, path.with_suffix('.manifest'))
+    path.with_suffix('.manifest').write_bytes(b'')
+    with pytest.raises(ValueError):
+        rotation.check_proposal(doc, path.with_suffix('.manifest'))
+
+
+def test_resign_refuses_a_signature_that_changes_the_body(peers, monkeypatch):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    with sync.connect(a) as c:
+        before = [tuple(r) for r in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid')]
+    original = rotation._ReplaySecurity.sign
+    def altering(self, legacy):
+        changed = dict(legacy)
+        changed['body'] = list(legacy['body']) + list(legacy['body'])
+        return original(self, changed)
+    monkeypatch.setattr(rotation._ReplaySecurity, 'sign', altering)
+    phrase, kwargs = rotate_args(peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    with sync.connect(a) as c:
+        assert [tuple(r) for r in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid')] == before

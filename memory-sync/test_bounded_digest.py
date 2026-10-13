@@ -15,7 +15,7 @@ class BoundedTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.temp.cleanup)
-        self.db = Path(self.temp.name) / 'memory.db'
+        self.db = Path(self.temp.name).resolve() / 'memory.db'  # macOS TMPDIR sits under the /var symlink
         sqlite_memory.init_database(self.db)
         memory_sync.initialize(self.db, 'mac', '9a95369f-97c5-4b0e-bf41-f110ab1450a9')
         self.event(1, 'Keep deployment manual.')

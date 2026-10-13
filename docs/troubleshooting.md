@@ -97,8 +97,8 @@ First stop the affected worker, confirm its runtime selects the intended securit
 | Refusal or status | What to do |
 | --- | --- |
 | `passphrase-protected identity is locked; enable OS unlock or unlock interactively` | For unattended signed operation, explicitly enable OS unlock after protecting the identity, then start a new worker process. `wizard-resume` can unlock interactively for that run; it does not unlock a later worker. Do not remove protection or fall back to unsigned policy. |
-| `protected identity could not be unlocked: wrong passphrase or damaged file` | Verify the intended identity and passphrase; wrong input and authenticated-file damage deliberately have the same error. Preserve the file and any trusted backup. Retry the interactive operation with the correct passphrase; if it still fails, request operator review. A lost passphrase has no recovery; replacement requires coordinated pairing, not automatic key generation. |
-| `passphrase entry requires an interactive console` | Run `identity-protect`, OS-unlock enable or the interactive wizard from a real console. Passphrases are not accepted through arguments, environment variables, files or pipes. |
+| `protected identity could not be unlocked: wrong passphrase or damaged file` | Verify the intended identity and passphrase; wrong input and authenticated-file damage deliberately have the same error. Preserve the file and any trusted backup. Retry the interactive operation with the correct passphrase; if it still fails, request operator review. A lost identity passphrase cannot be recovered. If you have an encrypted identity backup and its separate backup passphrase, use [verified restore](./install/security#restore-only-after-stopping-the-old-device) after fencing the old installation. Without that recovery material, request coordinated replacement/pairing; do not generate a key automatically. |
+| `passphrase entry requires an interactive console` | Run protection, OS-unlock enable, backup/restore or the interactive wizard from a real console. Passphrases are not accepted through arguments, environment variables, files or pipes. |
 | `passphrase must be at least 12 characters` / `passphrases do not match; nothing was changed` | Retry protection with a long unique passphrase entered identically twice. |
 | `identity must be passphrase-protected before enabling OS unlock` | Stop workers and run `identity-protect` on the existing identity first. |
 | `OS unlock is already enabled` | Inspect status. To replace the persisted unlock path, stop workers, disable it and explicitly enable it again with the passphrase. |
@@ -120,6 +120,44 @@ Output (example from code)
 ```
 
 `stray_item: true` is not successful cleanup. Retry the [disable/status commands](./install/security#disable-os-unlock-and-check-cleanup) after fixing store access. Require no store error and `stray_item: false` for the current key ID. Status does not enumerate or clean up items for old/rotated key IDs. A leftover wrapping key plus an older identity backup containing its envelope can still unlock that identity. Keep backups private and follow the [key-protection limits](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md#threats-and-portability); never share passphrases, identity files or OS-store contents with a help request.
+
+## Identity backup or restore refuses
+
+Use [Back up and verify the device identity](./install/security#back-up-and-verify-the-device-identity) for the commands and [verified restore](./install/security#restore-only-after-stopping-the-old-device) for the fencing/trust sequence. Errors exit `1`; inspect the fixed `reason` as well as the exit status. Refusal is not permission to erase a current identity or trust state.
+
+The disposable CLI run reproduced an existing-file refusal and a wrong-passphrase refusal:
+
+Output (run on macOS)
+
+```json
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"backup file already exists"}
+{"code":"GUARD_REFUSED","error":"ValueError","reason":"backup could not be opened: wrong passphrase or damaged file"}
+```
+
+Each line is an excerpt from a separate failed command. The following refusal text is verified against code:
+
+| Reason or result | What to do |
+| --- | --- |
+| `backup file already exists` | Keep the existing backup; use a new output filename. Creation never overwrites it. |
+| `backup parent directory does not exist` | Choose an existing private parent on the intended offline medium. |
+| `backup location is inside a Syncthing folder` / `backup location is inside a git work tree` | Use a location outside synced folders and repositories. These guards also apply to restore targets. |
+| `backup could not be opened: wrong passphrase or damaged file` | Confirm the intended file and backup passphrase. Authentication failures deliberately do not distinguish a wrong passphrase from corruption. Preserve the file; do not edit it or guess replacement fields. |
+| `invalid backup file` | The backup or decrypted payload failed validation. Preserve it and request review; do not bypass validation. |
+| `backup and identity passphrases must be different` | Choose a separate backup passphrase for creation, or a different new identity passphrase for restore. Both new passphrases must be at least 12 characters and entered identically twice. |
+| `backup or restore confirmation was not supplied` | Read the displayed identity and conditions, then retry from an interactive console only when you can truthfully confirm `BACKUP`, `FENCED` or the additional cloud-storage `CLOUD` acknowledgement. |
+| `restore target already contains an identity` | Inspect the existing identity and configured installation. Restore cannot overwrite it; do not delete it just to retry. |
+| `restore target must be outside the exchange` | Select the intended private security directory outside the exchange, Git and Syncthing. |
+| `exchange does not belong to this group` | Confirm the correct accepted exchange, its `.stfolder` and genuine group status delivery. Do not fabricate a status file or change group fields. |
+| `the old device looks active: recent exchange activity for this identity` | Actually stop/wipe the old installation and prevent its restart. Inspect the last 15 minutes of activity, future modification times and unreadable entries in this device identity's exchange paths. A quiet interval alone cannot prove an offline device is fenced. Do not alter timestamps or delete packets to bypass the guard. |
+| `this key is revoked in the current trust; rotate instead (#9)` | Preserve revocation and arrange operator-led rotation/re-pairing. A backup cannot make a revoked or compromised key safe. This message does not name an available rotation command. |
+| `current trust conflicts with the backup identity` | Review own public fields, any newer active key for this device identity and group membership. Retain current trust; do not use an empty directory to evade it. |
+| `current trust changed during restore; retry after inspection` | Coordinate trust changes, inspect the resulting state and then retry. |
+| `unfinished restore exists; inspect and remove .restore-* and trust.json.pre-restore before retrying` | Preserve and inspect the interrupted restore. Decide which trust state to retain before removing those recovery artifacts; do not blindly delete them. Request operator help if uncertain. |
+| `backup readback verification failed` / `restored identity readback failed` / `identity backup or restore failed` | Do not treat the operation as successful. Preserve available evidence and inspect the destination with the operator before retrying; a generic failure does not identify a safe repair. |
+| `key_id_mismatch: true` after verify/drill | The file passed its check but did not match the supplied live public identity, so no evidence was recorded for it. Select the correct file/directory; do not relabel the backup. |
+| `stray_os_unlock_item: true` after restore | Explicitly disable or enable OS unlock for the restored identity to remove or replace the leftover item, then inspect OS-unlock status. Restore itself leaves OS unlock off. |
+
+Backup status `none` means no recorded evidence for this identity. `verified` or `drilled` records a past check, not current file availability; rerun verify/drill against the stored backup when needed. A drill uses disposable peers and cannot prove acceptance by a real peer. Require a fresh live signed wizard roundtrip before normal operation after restore; remote revocations can still prevent it. The wizard can reuse an old saved probe/receipt and has no force-new-probe option. If that applies, seek operator review before restarting; do not reset state to make the check appear fresh.
 
 ## Invitation join is refused or incomplete
 

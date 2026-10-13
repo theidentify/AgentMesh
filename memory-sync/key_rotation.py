@@ -619,3 +619,63 @@ def peer_rotate(security_dir, proposal_file, *, exchange=None, confirm=console_f
     if doc['reason'] == 'compromised': next_steps.insert(0, 'Run compromise-report --key ' + old + ' on this device.')
     return dict(status='peer-rotated', old_key_id=old, new_key_id=new['key_id'], reason=doc['reason'],
                 manifest_packets=doc['manifest_count'], competing_proposals=competing, next=next_steps)
+
+
+INVALID_SINCE = 'invalid compromise report timestamp'
+REASONS.add(INVALID_SINCE)
+
+
+@safe_operation
+def compromise_report(db, exchange, key, *, security_dir=None, since=None):
+    signed.hex_bytes(key, 32)
+    cutoff = None
+    if since is not None:
+        try: cutoff = backup.timestamp(since).timestamp()
+        except Exception: raise ValueError(INVALID_SINCE) from None
+    manifest = None if security_dir is None else {}
+    if security_dir is not None:
+        entry = read_rotations(security_dir)['rotations'].get(key)
+        if entry is not None:
+            manifest = read_manifest(Path(security_dir) / 'rotations' / (key + '.manifest'), private=True,
+                                     sha256=entry['manifest_sha256'], count=entry['manifest_count'])['packets']
+    result = dict(committed=[], uncommitted=[], forged_candidates=[], receipts_without_file=0,
+                  legacy_receipts=0, filtered_by_since=0, unreadable=0)
+    root = signed.no_symlinks(Path(exchange) / 'signed-changes')
+    present = set()
+    with readonly(db) as c:
+        cfg = sync.config(c)
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        receipts = dict(c.execute('SELECT uuid,checksum FROM _sync_receipts')) if '_sync_receipts' in tables else {}
+        envelopes = dict(c.execute('SELECT uuid,digest FROM _sync_receipt_envelopes')) if '_sync_receipt_envelopes' in tables else {}
+        result['legacy_receipts'] = len(set(receipts) - set(envelopes))
+        for path in sorted(root.glob('*/*')):
+            try:
+                if not stat.S_ISREG(path.lstat().st_mode): continue
+                raw = signed.read_local(path)
+                p = signed.parse(raw)
+                signed.validate_envelope(p, cfg['group_id'], path.parent.name)
+                if path.name != p['uuid'] + '.json': raise ValueError(INVALID)
+                present.add(p['uuid'])
+                if p['key_id'] != key: continue
+                # Validate table/op/key shape before emitting any untrusted label.
+                legacy = {k: p[k] for k in ('group', 'node', 'uuid', 'body')}
+                legacy.update(format=sync.FORMAT, checksum=sync.digest(p['body']))
+                sync._validate(c, legacy)
+                when = path.stat().st_mtime
+                if cutoff is not None and when < cutoff:
+                    result['filtered_by_since'] += 1
+                    continue
+                digest = signed.receipt_digest(p)
+                item = dict(uuid=p['uuid'], node=p['node'], file_mtime=when,
+                    changes=[dict(table=ch['table'], op='delete' if ch['row'] is None else 'upsert',
+                                  key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16]) for ch in p['body']],
+                    in_manifest=None if manifest is None else manifest.get(p['uuid']) == digest)
+                committed = receipts.get(p['uuid']) == digest and (p['uuid'] not in envelopes or envelopes[p['uuid']] == signed.envelope_digest(p))
+                result['committed' if committed else 'uncommitted'].append(item)
+                if p['node'] == cfg['node']:
+                    row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (p['uuid'],)).fetchone()
+                    if row is None or row[0].encode('utf-8') != raw: result['forged_candidates'].append(item)
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
+                result['unreadable'] += 1
+        result['receipts_without_file'] = len(set(envelopes) - present)
+    return result

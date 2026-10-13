@@ -498,3 +498,68 @@ def test_peer_refusals_no_changes(peers, case):
         rotation.peer_rotate(sb.directory, path, confirm=lambda: '0'*64 if case == 'fingerprint' else new.public['key_id'])
     assert {p.name: p.read_bytes() for p in sb.directory.iterdir() if p.is_file()} == before
     assert not (sb.directory / 'rotations').exists()
+
+
+def all_bytes(root):
+    return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+def test_compromise_report_readonly_and_redacted(peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    path, p = publish(peers, 'row-content-must-never-appear')
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    manifest = ex / 'review.manifest'
+    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
+    fake = dict(p, uuid=str(uuid.uuid4()))
+    fake = sa.sign({k: v for k, v in fake.items() if k not in ('signature', 'key_id', 'sender')})
+    forged = path.with_name(fake['uuid'] + '.json')
+    forged.write_bytes(signed.wire(fake))
+    unreadable = path.with_name('broken.json')
+    unreadable.write_bytes(b'{')
+    missing = str(uuid.uuid4())
+    with sync.connect(b) as c, c:
+        c.execute('INSERT INTO _sync_receipts VALUES(?,?)', (missing, 'a'*64))
+        c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (missing, 'b'*64))
+        c.execute('INSERT INTO _sync_receipts VALUES(?,?)', (str(uuid.uuid4()), 'c'*64))
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(b, ex, sa.public['key_id'], security_dir=sb.directory)
+    assert len(report['committed']) == 1
+    item = report['committed'][0]
+    assert item['uuid'] == p['uuid'] and item['in_manifest'] is True
+    assert item['changes'][0]['key_sha256'] == hashlib.sha256(sync.canonical(p['body'][0]['key']).encode()).hexdigest()[:16]
+    assert 'row-content-must-never-appear' not in json.dumps(report)
+    assert report['receipts_without_file'] == 1
+    assert report['legacy_receipts'] == 1
+    assert report['unreadable'] == 1
+    assert report['uncommitted'][0]['uuid'] == fake['uuid']
+    own = rotation.compromise_report(a, ex, sa.public['key_id'])
+    assert [p['uuid'] for p in own['forged_candidates']] == [fake['uuid']]
+    assert all_bytes(a.parent) == before
+    future = rotation.compromise_report(b, ex, sa.public['key_id'], since='2099-01-01T00:00:00Z')
+    assert future['filtered_by_since'] == 2
+    assert future['committed'] == []
+    assert future['receipts_without_file'] == 1
+    assert all_bytes(a.parent) == before
+
+
+@pytest.mark.parametrize('case', ['filename', 'folder', 'group', 'oversize', 'body'])
+def test_compromise_report_hostile_files(peers, case):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    path, p = publish(peers)
+    if case == 'filename': path.rename(path.with_name(str(uuid.uuid4()) + '.json'))
+    elif case == 'folder':
+        backup.private_mkdir(path.parent.parent / 'linux')
+        path.rename(path.parent.parent / 'linux' / path.name)
+    else:
+        if case == 'group': p['group'] = str(uuid.uuid4())
+        elif case == 'body': p['body'][0]['table'] = 'secret-untrusted-table'
+        path.write_bytes(b' ' * (signed.MAX_BYTES + 1) if case == 'oversize' else signed.wire(p))
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(a, ex, sa.public['key_id'])
+    assert report['unreadable'] == 1
+    assert report['committed'] == []
+    assert 'secret-untrusted-table' not in json.dumps(report)
+    assert all_bytes(a.parent) == before

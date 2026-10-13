@@ -47,3 +47,9 @@ Process deviation: Task 4's commit was issued after both test processes started 
 ## Task 6
 
 Task 5 commit: `9e0faec`. Twelve peer-rotation tests failed first. Green: 79 recovery tests passed from each location. Peer approval rechecks manifest bytes against the approved hash when copying; wrong fingerprint makes no changes. Competing-proposal count is the number of *other* proposal files, and any positive count triggers the warning. The console never supplies the expected full fingerprint as ghost text.
+
+## Task 7
+
+Task 6 commit: `5788f4f`. Six reporting tests failed first. Green: 85 recovery tests passed from each location. Byte snapshots confirm DB/sidecars/exchange remain unchanged. Report uses install_inspect's read-only URI selection plus query_only, validates envelope, filename and change schema, and emits only hashed row keys.
+
+Small additions: `uncommitted` exposes redacted foreign forged candidates so the required B-side E2E result is observable. `in_manifest` requires UUID *and digest* equality; UUID-only membership could misleadingly mark altered content as approved. Without --security-dir it is null; a supplied security directory without approval yields false. Missing-file counts are independent of the mtime filter.

@@ -157,12 +157,13 @@ KEY_REASONS = frozenset({
 })
 from identity_backup import REASONS as BACKUP_REASONS
 from os_unlock import REASONS as OS_UNLOCK_REASONS
-KEY_REASONS = KEY_REASONS | OS_UNLOCK_REASONS | BACKUP_REASONS | {'invalid OS unlock envelope'}
+from key_rotation import REASONS as ROTATION_REASONS, UPSTREAM_REASONS as ROTATION_UPSTREAM_REASONS
+KEY_REASONS = KEY_REASONS | ROTATION_REASONS | ROTATION_UPSTREAM_REASONS | OS_UNLOCK_REASONS | BACKUP_REASONS | {'invalid OS unlock envelope'}
 from worker_error_details import DETAILS, SYSTEM_ERRORS
 SAFE_REASONS = SAFE_REASONS | DETAILS.keys()
 TRUSTED_MODULES = frozenset({'protocol_activation', 'conflict_commands', 'resolution_apply','install_adopt', 'worker_lifecycle', 'signed_packets',
                            'windows_acl', 'install_setup', 'runtime_lock', 'worker_diagnostics',
-                           'windows_install', 'windows_task', 'key_protection', 'os_unlock', 'identity_backup', 'install_join'})
+                           'windows_install', 'windows_task', 'key_protection', 'os_unlock', 'identity_backup', 'key_rotation', 'install_join'})
 
 
 def report(exc, action):
@@ -172,7 +173,7 @@ def report(exc, action):
                     next_action='Choose a new dedicated Syncthing exchange folder; retain the existing group files.')
     is_windows = action in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover')
     is_protocol = action in ('conflicts','resolve','receive-only','activate-protocol','protocol-capability')
-    is_key = action in ('identity-protect', 'identity-os-unlock', 'identity-backup', 'identity-restore')
+    is_key = action in ('identity-protect', 'identity-os-unlock', 'identity-backup', 'identity-restore', 'identity-rotate', 'peer-rotate', 'compromise-report')
     is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
     if not is_windows and not is_key and not is_join and not is_protocol and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result

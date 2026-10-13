@@ -1,8 +1,8 @@
 """Passphrase-protected identity storage. Disposable keys only; never real ones."""
 from contextlib import closing
+from pathlib import Path
 import io
 import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -171,14 +171,14 @@ def test_protected_identity_stays_locked_across_restarts_and_the_restarted_worke
     adopt(**args)
     kp.protect_identity(args['security_dir'], answers(PASS, PASS), **FAST)
     identity_bytes = (args['security_dir'] / 'identity.json').read_bytes()
-    def child(code, *extra):
-        return subprocess.run([sys.executable, '-c', code, str(args['security_dir']), *extra],
-                              capture_output=True, text=True, timeout=NATIVE_TIMEOUT,
+    def child(code, *, secret=None):
+        return subprocess.run([sys.executable, '-c', code, str(args['security_dir'])],
+                              input=secret, capture_output=True, text=True, timeout=NATIVE_TIMEOUT,
                               cwd=Path(__file__).resolve().parent)
     # An interactive unlock lives only in its own process.
     unlocked = child('import sys, signed_packets as s\n'
-                     's.Security(sys.argv[1], unlock=lambda: sys.argv[2]).sign_bytes(b"probe")\n'
-                     'print("signed")', PASS)
+                     's.Security(sys.argv[1], unlock=lambda: sys.stdin.read()).sign_bytes(b"probe")\n'
+                     'print("signed")', secret=PASS)
     assert unlocked.returncode == 0 and unlocked.stdout.strip() == 'signed', unlocked.stderr
     restarted = child('import sys, signed_packets as s\n'
                       'x = s.Security(sys.argv[1])\n'
@@ -190,7 +190,7 @@ def test_protected_identity_stays_locked_across_restarts_and_the_restarted_worke
     record = args['database'].parent / '.agentmesh-worker' / 'process.json'
     for _ in range(2):  # the first start and a restart both refuse
         run = subprocess.run(worker.command(args['runtime'], once=True), capture_output=True, text=True,
-                             timeout=NATIVE_TIMEOUT)
+                             timeout=NATIVE_TIMEOUT, cwd=Path(__file__).resolve().parent)
         assert run.returncode == 1, run.stderr
         detail = json.loads(record.read_text())['last_error_detail']
         assert detail['reason'] == kp.LOCKED and detail['code'] == 'GUARD_REFUSED'

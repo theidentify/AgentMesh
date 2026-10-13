@@ -302,6 +302,15 @@ def _receipt_checksum(p):
     from packet_versions import receipt_identity
     return receipt_identity(p)
 
+def _verify_signed(c, p, security, folder):
+    """New-input signature check shared by both receive paths: a revoked key passes only
+    through an operator-approved rotation manifest (verify_rotated), never plain verify."""
+    from signed_packets import read_trust
+    entry = read_trust(security.directory)['peers'].get(p['key_id'])
+    if entry is not None and entry['revoked']:
+        return security.verify_rotated(p, config(c)['group_id'], folder)
+    return security.verify(p, config(c)['group_id'], folder)
+
 def _received_signed(c, p, security, folder):
     """Return cached/verified for a committed receipt, else None for new input."""
     from signed_packets import envelope_digest, receipt_digest
@@ -413,7 +422,8 @@ def receive(db, exchange, *, security=None):
             try:
                 if security is not None:
                     from signed_packets import read_local, parse
-                    p = parse(read_local(path))
+                    packet_bytes = read_local(path)
+                    p = parse(packet_bytes)
                 else:
                     p=load_packet(path.read_text(encoding='utf-8'))
                 with connect(db) as c, c:
@@ -441,12 +451,19 @@ def receive(db, exchange, *, security=None):
                         from signed_packets import validate_envelope
                         validate_envelope(p, config(c)['group_id'], path.parent.name)
                         if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
+                        if p['node'] == config(c)['node']:
+                            own = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (p['uuid'],)).fetchone()
+                            if own is None or packet_bytes != own[0].encode('utf-8'):
+                                raise ValueError('unknown packet claiming local node')
+                            verified_signature = None
+                            c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
+                            continue
                         received = _received_signed(c, p, security, path.parent.name)
                         if received is not None:
                             verified_signature = True if received == 'verified' else None
                             c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
                             continue
-                        security.verify(p, config(c)['group_id'], path.parent.name)
+                        _verify_signed(c, p, security, path.parent.name)
                         verified_signature = True
                         legacy = {k: p[k] for k in ('group','node','uuid','body')}
                         legacy.update(format=FORMAT, checksum=digest(p['body']))

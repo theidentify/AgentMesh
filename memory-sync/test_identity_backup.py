@@ -30,7 +30,8 @@ def document(material, secret):
 
 def test_format_roundtrip(material, secret):
     raw, trust, captured = backup.open_backup(document(material, secret), secret)
-    assert raw == material[1], 'key mismatch'
+    same = raw == material[1]
+    assert same, 'key mismatch'
     assert trust == material[2]
     assert captured.endswith('Z')
 
@@ -257,3 +258,213 @@ def test_drill_symlink_temp(material, secret, tmp_path, monkeypatch):
     backup.write_new(output, signed.wire(document(material, secret)))
     assert backup.drill(output, ask=answers(secret))['status'] == 'drill-passed'
     assert not list(real.glob('.backup-drill-*'))
+
+class FakeBackend:
+    def __init__(self, present=False): self.present, self.calls = present, []
+    def load(self, key_id):
+        self.calls.append(key_id)
+        return b'present' if self.present else None
+
+
+@pytest.fixture
+def restore_case(tmp_path, material, secret):
+    root = Path(os.path.realpath(tmp_path))
+    file = root / 'backup'
+    backup.write_new(file, signed.wire(document(material, secret)))
+    exchange = root / 'exchange'
+    exchange.mkdir()
+    (exchange / '.stfolder').mkdir()
+    (exchange / 'status').mkdir()
+    signed.write_local(exchange / 'status' / 'windows.json', {'group': material[0]['group']})
+    return file, root / 'target', exchange
+
+
+def restore_call(case, secret, *, backend=None, **kwargs):
+    phrase = os.urandom(32).hex()
+    result = backup.restore(*case, ask=answers(secret, phrase, phrase), confirm=lambda w: w,
+                            backend=backend or FakeBackend(), _test_n=2**14, **kwargs)
+    return result, phrase
+
+
+@pytest.mark.parametrize('present', [False, True])
+def test_restore_success(restore_case, material, secret, present):
+    file, target, exchange = restore_case
+    backend = FakeBackend(present)
+    result, phrase = restore_call(restore_case, secret, backend=backend)
+    restored = signed.Security(target, unlock=lambda: phrase)
+    assert restored.public == material[0]
+    same = restored.key.private_bytes_raw() == material[1]
+    assert same, 'key mismatch'
+    assert result['stray_os_unlock_item'] is present
+    assert backend.calls == [material[0]['key_id']]
+    assert all(k in result for k in ['pinned', 'skipped', 'kept_revoked', 'imported_revoked', 'next'])
+    with pytest.raises(ValueError): signed.Security(target, unlock=lambda: secret)
+    assert not list(target.glob('.restore-*'))
+    assert not (target / 'trust.json.pre-restore').exists()
+    assert 'os_unlock' not in signed.parse(signed.read_local(target / 'identity.json'))
+
+
+@pytest.mark.parametrize('kind', ['identity', 'git', 'sync', 'inside', 'staging', 'pre-restore',
+    'revoked', 'fields', 'newer', 'group', 'no-marker', 'wrong-exchange', 'fenced', 'equal'])
+def test_restore_refuses(restore_case, material, secret, kind):
+    file, target, exchange = restore_case
+    target.mkdir(mode=0o700)
+    trust = copy.deepcopy(material[2])
+    if kind == 'identity': (target / 'identity.json').touch()
+    if kind == 'git': (target / '.git').touch()
+    if kind == 'sync': (target / '.stfolder').mkdir()
+    if kind == 'inside': target = exchange / 'target'
+    if kind == 'staging': (target / '.restore-crash').mkdir()
+    if kind == 'pre-restore': (target / 'trust.json.pre-restore').touch()
+    if kind == 'revoked': trust['peers'][material[0]['key_id']]['revoked'] = True
+    if kind == 'fields': trust['peers'][material[0]['key_id']]['sender'] = str(uuid.uuid4())
+    if kind in ('newer', 'group'):
+        peer = new_peer(material[0], node='mac' if kind == 'newer' else 'windows')
+        if kind == 'group': peer['group'] = str(uuid.uuid4())
+        trust['peers'][peer['key_id']] = {**peer, 'revoked': False}
+    if kind in ('revoked', 'fields', 'newer', 'group'): signed.write_local(target / 'trust.json', trust)
+    if kind == 'no-marker': (exchange / '.stfolder').rmdir()
+    if kind == 'wrong-exchange': (exchange / 'status' / 'windows.json').unlink()
+    phrase = secret if kind == 'equal' else os.urandom(32).hex()
+    with pytest.raises(ValueError):
+        backup.restore(file, target, exchange, ask=answers(secret, phrase, phrase),
+                       confirm=lambda w: '' if kind == 'fenced' else w, backend=FakeBackend(), _test_n=2**14)
+    if kind != 'identity': assert not (target / 'identity.json').exists()
+
+
+def new_peer(own, node='windows'):
+    key = signed.crypto()[0].generate().public_key().public_bytes_raw()
+    return {**own, 'node': node, 'sender': str(uuid.uuid4()), 'public_key': key.hex(),
+            'key_id': hashlib.sha256(key).hexdigest()}
+
+
+@pytest.mark.parametrize('folder', ['status', 'signed-changes', 'changes'])
+@pytest.mark.parametrize('age', [0, -3600, 3600])
+def test_restore_activity(restore_case, material, secret, folder, age):
+    import time
+    file, target, exchange = restore_case
+    p = exchange / folder / ('mac.json' if folder == 'status' else 'mac/packet')
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b'{}')
+    when = time.time() - age
+    os.utime(p, (when, when))
+    if age > 900: restore_call(restore_case, secret)
+    else:
+        with pytest.raises(ValueError, match='old device looks active'): restore_call(restore_case, secret)
+
+
+@pytest.mark.parametrize('choice', ['pin', 'skip', 'wrong', 'revoked', 'conflict', 'current', 'current-revoked'])
+def test_restore_peers(restore_case, material, secret, choice):
+    file, target, exchange = restore_case
+    peer = new_peer(material[0])
+    trust = copy.deepcopy(material[2])
+    trust['peers'][peer['key_id']] = {**peer, 'revoked': choice in ('revoked', 'current')}
+    file.unlink()
+    backup.write_new(file, signed.wire(document((material[0], material[1], trust), secret)))
+    if choice in ('conflict', 'current', 'current-revoked'):
+        target.mkdir(mode=0o700)
+        current = new_peer(material[0]) if choice == 'conflict' else peer
+        signed.write_local(target / 'trust.json', {'format': 'agentmesh-trust-v1',
+             'peers': {current['key_id']: {**current, 'revoked': choice == 'current-revoked'}}})
+    prompts = []
+    def approve(p):
+        prompts.append(p)
+        return peer['key_id'] if choice == 'pin' else ('bad' if choice == 'wrong' else '')
+    result, _ = restore_call(restore_case, secret, peer_confirm=approve)
+    restored = signed.read_trust(target)['peers']
+    if choice in ('revoked', 'current', 'current-revoked'):
+        assert restored[peer['key_id']]['revoked']
+        assert not prompts
+        with pytest.raises(ValueError, match='revoked key'):
+            signed.approve(target, peer, peer['key_id'], peer['group'], peer['node'], peer['sender'])
+    elif choice == 'pin': assert peer['key_id'] in result['pinned']
+    else: assert peer['key_id'] in result['skipped']
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_restore_rollback(restore_case, material, secret, monkeypatch, existing):
+    file, target, exchange = restore_case
+    target.mkdir(mode=0o700)
+    if existing: signed.write_local(target / 'trust.json', material[2])
+    before = {p.name: p.read_bytes() for p in target.iterdir()}
+    original = backup.os.link
+    def fail(source, destination, **kw):
+        if Path(destination) == target / 'identity.json': raise OSError('injected')
+        return original(source, destination, **kw)
+    monkeypatch.setattr(backup.os, 'link', fail)
+    with pytest.raises(ValueError): restore_call(restore_case, secret)
+    assert {p.name: p.read_bytes() for p in target.iterdir()} == before
+
+
+def test_restore_second_activity_check(restore_case, secret, monkeypatch):
+    file, target, exchange = restore_case
+    original = backup.exchange_activity
+    count = 0
+    def activity(*args):
+        nonlocal count
+        count += 1
+        if count == 2: (exchange / 'status' / 'mac.json').write_bytes(b'{}')
+        return original(*args)
+    monkeypatch.setattr(backup, 'exchange_activity', activity)
+    with pytest.raises(ValueError, match='old device looks active'): restore_call(restore_case, secret)
+    assert not (target / 'identity.json').exists()
+    assert not list(target.glob('.restore-*'))
+
+
+def test_restore_writes_and_fresh_process(restore_case, material, secret, monkeypatch):
+    import subprocess
+    import sys
+    original = signed.write_local
+    writes = []
+    def guarded(path, value, **kw):
+        payload = signed.wire(value)
+        safe = material[1].hex().encode() not in payload and secret.encode() not in payload and 'private_key' not in value
+        if not safe: raise AssertionError('secret written')
+        writes.append(Path(path))
+        return original(path, value, **kw)
+    monkeypatch.setattr(signed, 'write_local', guarded)
+    _, phrase = restore_call(restore_case, secret)
+    target = restore_case[1]
+    code = "import sys; import signed_packets as s; p=sys.stdin.buffer.read().decode(); x=s.Security(sys.argv[1], unlock=lambda:p); x.sign_bytes(b'fresh-process'); print('loaded-and-signed')"
+    process = subprocess.run([sys.executable, '-c', code, str(target)], input=phrase.encode(), capture_output=True)
+    if process.returncode or process.stdout.strip() != b'loaded-and-signed':
+        raise AssertionError('fresh-process validation failed')
+    assert all(p.parent == target or not p.exists() for p in writes)
+
+
+def test_restore_missing_os_item(restore_case, secret):
+    import os_unlock
+    class Missing:
+        def load(self, key_id): raise os_unlock.OSUnlockError(os_unlock.MISSING)
+    result, _ = restore_call(restore_case, secret, backend=Missing())
+    assert result['stray_os_unlock_item'] is False
+
+
+def test_restore_no_console_changes_nothing(restore_case):
+    with pytest.raises(ValueError, match='interactive console'):
+        backup.restore(*restore_case, backend=FakeBackend())
+    assert not restore_case[1].exists()
+
+
+def test_restore_readback_rollback(restore_case, material, secret, monkeypatch):
+    file, target, _ = restore_case
+    target.mkdir(mode=0o700)
+    signed.write_local(target / 'trust.json', material[2])
+    original = signed.Security
+    def broken(directory, *args, **kwargs):
+        if Path(directory) == target: raise ValueError('injected failure')
+        return original(directory, *args, **kwargs)
+    monkeypatch.setattr(signed, 'Security', broken)
+    with pytest.raises(ValueError): restore_call(restore_case, secret)
+    assert signed.read_trust(target) == material[2]
+    assert sorted(p.name for p in target.iterdir()) == ['trust.json']
+
+
+def test_restore_error_has_no_secret_context(restore_case, secret):
+    class Broken:
+        def load(self, key_id): raise RuntimeError(secret)
+    with pytest.raises(ValueError) as error:
+        restore_call(restore_case, secret, backend=Broken())
+    assert str(error.value) == backup.OPERATION_FAILED
+    assert error.value.__context__ is None
+    assert not restore_case[1].exists()

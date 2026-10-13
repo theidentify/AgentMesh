@@ -463,3 +463,223 @@ def drill(file, security_dir=None, *, ask=kp.console_passphrase):
     if doc['n'] < kp.SCRYPT_N:
         result['warning'] = 'backup uses a lower-than-production scrypt work factor'
     return result
+
+
+import copy
+import stat
+import time
+
+TARGET_EXISTS = 'restore target already contains an identity'
+TARGET_EXCHANGE = 'restore target must be outside the exchange'
+RESTORE_LEFTOVER = 'unfinished restore exists; inspect and remove .restore-* and trust.json.pre-restore before retrying'
+SELF_REVOKED = 'this key is revoked in the current trust; rotate instead (#9)'
+TRUST_CONFLICT = 'current trust conflicts with the backup identity'
+EXCHANGE_GROUP = 'exchange does not belong to this group'
+ACTIVE = 'the old device looks active: recent exchange activity for this identity'
+TRUST_CHANGED = 'current trust changed during restore; retry after inspection'
+RESTORE_READBACK = 'restored identity readback failed'
+REASONS |= {TARGET_EXISTS, TARGET_EXCHANGE, RESTORE_LEFTOVER, SELF_REVOKED, TRUST_CONFLICT,
+            EXCHANGE_GROUP, ACTIVE, TRUST_CHANGED, RESTORE_READBACK}
+
+
+def empty_trust():
+    return {'format': 'agentmesh-trust-v1', 'peers': {}}
+
+
+def check_target(target, exchange):
+    target = signed.no_symlinks(target)
+    if within(target, exchange):
+        raise ValueError(TARGET_EXCHANGE)
+    if os.path.lexists(target / 'identity.json'):
+        raise ValueError(TARGET_EXISTS)
+    if target.exists():
+        signed.private_directory(target)
+        if list(target.glob('.restore-*')) or os.path.lexists(target / 'trust.json.pre-restore'):
+            raise ValueError(RESTORE_LEFTOVER)
+    return target
+
+
+def current_trust(target):
+    return signed.read_trust(target) if os.path.lexists(target / 'trust.json') else empty_trust()
+
+
+def check_current(trust, own):
+    entry = trust['peers'].get(own['key_id'])
+    if entry and entry['revoked']:
+        raise ValueError(SELF_REVOKED)
+    if entry and {k: entry[k] for k in signed.PUBLIC_FIELDS} != own:
+        raise ValueError(TRUST_CONFLICT)
+    for entry in trust['peers'].values():
+        if entry['group'] != own['group'] or (not entry['revoked'] and entry['node'] == own['node']
+                                             and entry['key_id'] != own['key_id']):
+            raise ValueError(TRUST_CONFLICT)
+
+
+def exchange_activity(exchange, own):
+    root = signed.no_symlinks(exchange)
+    belongs = False
+    try:
+        if (root / '.stfolder').exists():
+            for path in (root / 'status').glob('*.json'):
+                try:
+                    value = signed.parse(signed.read_local(path))
+                    belongs |= type(value) is dict and value.get('group') == own['group']
+                except (OSError, ValueError):
+                    continue
+    except OSError:
+        pass
+    if not belongs:
+        raise ValueError(EXCHANGE_GROUP)
+    newest, active = None, False
+    cutoff = time.time() - 15 * 60
+    def visit(path):
+        nonlocal newest, active
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError:
+            active = True
+            return
+        try:
+            signed.no_symlinks(path)
+            if stat.S_ISDIR(info.st_mode):
+                for child in path.iterdir():
+                    visit(child)
+            elif stat.S_ISREG(info.st_mode):
+                signed.read_local(path)  # An unreadable entry is activity, even if its mtime is old.
+                newest = info.st_mtime if newest is None else max(newest, info.st_mtime)
+                active |= info.st_mtime >= cutoff
+            else:
+                active = True
+        except (OSError, ValueError):
+            active = True
+    visit(root / 'status' / (own['node'] + '.json'))
+    for folder in ('signed-changes', 'changes'):
+        visit(root / folder / own['node'])
+    show({'newest_activity_at': dt.datetime.fromtimestamp(newest, dt.timezone.utc).isoformat() if newest is not None else None})
+    if active:
+        raise ValueError(ACTIVE)
+    return newest
+
+
+def console_peer(peer):
+    if not sys.stdin.isatty():
+        raise ValueError('passphrase entry requires an interactive console')
+    print('Type the full fingerprint to pin this peer, or Enter to skip: ', end='', file=sys.stderr, flush=True)
+    return sys.stdin.readline().strip()
+
+
+def reconcile(current, saved, own, peer_confirm):
+    trust = copy.deepcopy(current)
+    peers = trust['peers']
+    report = {k: [] for k in ('pinned', 'skipped', 'kept_revoked', 'imported_revoked')}
+    peers[own['key_id']] = {**own, 'revoked': False}
+    # Apply every revocation before deciding whether a new active peer occupies a free slot.
+    for key_id, entry in saved['peers'].items():
+        if key_id == own['key_id']:
+            continue
+        if key_id in peers:
+            peers[key_id]['revoked'] |= entry['revoked']
+        elif entry['revoked']:
+            peers[key_id] = copy.deepcopy(entry)
+            report['imported_revoked'].append(key_id)
+    report['kept_revoked'] = sorted(k for k, e in current['peers'].items() if peers[k]['revoked'])
+    for key_id, entry in sorted(saved['peers'].items()):
+        if key_id in peers:
+            continue
+        conflict = entry['group'] != own['group'] or any(
+            not e['revoked'] and (e['group'], e['node']) == (entry['group'], entry['node'])
+            and e['sender'] != entry['sender'] for e in peers.values())
+        show({'node': entry['node'], 'sender': entry['sender'], 'fingerprint_prefix': key_id[:16]})
+        if conflict or peer_confirm({k: entry[k] for k in signed.PUBLIC_FIELDS}) != key_id:
+            report['skipped'].append(key_id)
+            show({'skipped': key_id, 'reason': 'slot conflict' if conflict else 'full fingerprint not confirmed'})
+        else:
+            peers[key_id] = copy.deepcopy(entry)
+            report['pinned'].append(key_id)
+    return trust, report
+
+
+def stray_item(key_id, backend):
+    import os_unlock
+    selected = os_unlock.current_backend() if backend is None else backend
+    if selected is None:
+        return False
+    missing = False
+    try:
+        return selected.load(key_id) is not None
+    except os_unlock.OSUnlockError as exc:
+        missing = str(exc) == os_unlock.MISSING
+    if missing:
+        return False
+    raise ValueError(OPERATION_FAILED)
+
+
+@safe_operation
+def restore(file, security_dir, exchange, *, ask=kp.console_passphrase, confirm=console_confirm,
+            peer_confirm=console_peer, backend=None, _test_n=None):
+    location_confirmation(security_dir, confirm)
+    target = check_target(security_dir, exchange)
+    phrase = ask('Backup passphrase: ')
+    doc, _ = read_backup(file)
+    raw, saved, captured = open_backup(doc, phrase)
+    own = public(doc['manifest'])
+    current = current_trust(target)
+    check_current(current, own)
+    exchange_activity(exchange, own)
+    show({'manifest': doc['manifest'], 'trust_captured_at': captured})
+    require_confirmation('FENCED', confirm)
+    trust, report = reconcile(current, saved, own, peer_confirm)
+    replacement = new_passphrase(ask, phrase, 'identity')
+    identity = sealed_identity(own, raw, replacement, kp.SCRYPT_N if _test_n is None else _test_n)
+    stray = stray_item(own['key_id'], backend)
+    created_target = not target.exists()
+    if created_target:
+        private_mkdir(target)
+    stage = target / ('.restore-' + str(uuid.uuid4()))
+    previous = target / 'trust.json.pre-restore'
+    had_trust = os.path.lexists(target / 'trust.json')
+    replaced, adopted, success = False, False, False
+    try:
+        check_target(target, exchange)
+        private_mkdir(stage)
+        signed.write_local(stage / 'identity.json', identity, exclusive=True)
+        signed.write_local(stage / 'trust.json', trust, exclusive=True)
+        exchange_activity(exchange, own)
+        if current_trust(target) != current:
+            raise ValueError(TRUST_CHANGED)
+        if os.path.lexists(target / 'identity.json'):
+            raise ValueError(TARGET_EXISTS)
+        if had_trust:
+            signed.no_symlinks(target / 'trust.json')
+            os.link(target / 'trust.json', previous)
+        replaced = True
+        signed.write_local(target / 'trust.json', trust)
+        os.link(stage / 'identity.json', target / 'identity.json')
+        adopted = True
+        reread = signed.Security(target, unlock=lambda: replacement)
+        if reread.public != own or reread.key.private_bytes_raw() != raw:
+            raise ValueError(RESTORE_READBACK)
+        (target / 'backup-status.json').unlink(missing_ok=True)
+        previous.unlink(missing_ok=True)
+        success = True
+    finally:
+        if not success:
+            if adopted:
+                (target / 'identity.json').unlink()
+            if replaced:
+                if had_trust:
+                    signed.replace(previous, target / 'trust.json')
+                else:
+                    (target / 'trust.json').unlink(missing_ok=True)
+            previous.unlink(missing_ok=True)
+        if stage.exists():
+            shutil.rmtree(stage)
+        if not success and created_target:
+            target.rmdir()
+    next_steps = ['Run a live signed roundtrip with a real peer using the wizard probe before trusting the restore.',
+                  'Optional: identity-os-unlock enable', 'worker-start', 'identity-backup create']
+    if stray:
+        next_steps.insert(0, 'Run identity-os-unlock disable or enable to remove or replace the stray OS item.')
+    return {'status': 'restored', 'key_id': own['key_id'], **report, 'stray_os_unlock_item': stray, 'next': next_steps}

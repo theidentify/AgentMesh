@@ -1009,3 +1009,205 @@ def test_rotation_converges_with_and_without_the_indexed_protocol(peers, protoco
     received_a = sync.receive(a, ex, security=new_a)
     assert not received_a.get('invalid') and not received_b.get('invalid'), (received_a, received_b)
     assert received_b['applied'] == 2
+
+
+@pytest.fixture
+def indexed_peers(peers):
+    import resolution_store as store
+    for db in peers[:2]:
+        with sync.connect(db) as c, c:
+            store.migrate(c)
+    return peers
+
+
+def evidence_rows(db):
+    with sync.connect(db) as c:
+        return [tuple(r) for r in c.execute(
+            'SELECT uuid,envelope_digest,envelope_json,key_id FROM _sync_packet_evidence ORDER BY uuid')]
+
+
+def pending_texts(db):
+    with sync.connect(db) as c:
+        return dict(c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0'))
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_publish_rotation_preserves_indexed_v2(indexed_peers, lost):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    with sync.connect(a) as c, c:
+        apply._index_local(c, sa)
+    evidence = evidence_rows(a)
+    pending = pending_texts(a)
+    phrase, kwargs = rotate_args(indexed_peers)
+    words = []
+    def confirm(word):
+        words.append(word)
+        return word
+    kwargs['confirm'] = confirm
+    if lost:
+        (sa.directory / 'identity.json').unlink()
+        (sa.directory / 'trust.json').unlink()
+        kwargs['old_key'] = sa.public['key_id']
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='lost' if lost else 'planned', **kwargs)
+    assert words == ['STOPPED', 'PUBLISH']
+    assert report['published_pending'] == len(pending) and report['manifest_packets'] == 2
+    assert not pending_texts(a)
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+    assert evidence_rows(a) == evidence
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    new = signed.Security(sa.directory, unlock=lambda: phrase)
+    assert sync.receive(a, ex, security=new)['invalid'] == 0
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == 0 and result['applied'] == 2
+
+
+def pending_resolution(peers, monkeypatch):
+    """Real activation/prepare/commit flow; all identities sealed, OS backend fake."""
+    import os_unlock as ou
+    import protocol_activation as activation
+    import resolution_apply as apply
+    from test_os_unlock import FakeBackend as UnlockBackend
+    from test_protocol_activation import enable
+    from test_resolution_apply import edit, retain, resolve
+    a, b, ex, sa, sb = peers
+    p = edit(a, dict(x=1, y=2), sa)
+    q = edit(b, dict(x=3, z=4), sb)
+    retain(a, [p, q], sa)
+    # Install an OS-wrapped key using only a fake, in-memory backend. No passphrase
+    # or private key is written to disk by the fixture.
+    backend = UnlockBackend()
+    wrapping = os.urandom(32)
+    backend.store(sa.public['key_id'], wrapping)
+    identity = signed.parse(signed.read_local(sa.directory / 'identity.json', private=True))
+    identity['os_unlock'] = ou.seal(sa.public, sa.key.private_bytes_raw(), backend.name, wrapping)
+    signed.write_local(sa.directory / 'identity.json', identity)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    ou.reset_cache()
+    runtime = sa.directory / 'resolution-runtime.json'
+    signed.write_local(runtime, dict(app_root=str(sa.directory), database=str(a), exchange=str(ex),
+                                    node='mac', security_dir=str(sa.directory), protocol_capability=1))
+    enable(activation, runtime)
+    # resolve() reuses the already activated database, preserving the real signer.
+    r = resolve(apply, a, [p, q], dict(x=5, y=2, z=4), sa)
+    ou.reset_cache()
+    backup.private_mkdir(ex / 'status')
+    signed.write_local(ex / 'status' / 'windows.json', {'group': GROUP})
+    return p, q, r
+
+
+def test_publish_rotation_pending_v3_converges(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    from test_resolution_apply import vector
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    pending = pending_texts(a)
+    evidence = evidence_rows(a)
+    assert r['format'] == signed.RESOLUTION_FORMAT
+    phrase, kwargs = rotate_args(indexed_peers)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert report['published_pending'] == 2 and report['manifest_packets'] == 2
+    assert evidence_rows(a) == evidence
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+    manifest = rotation.read_manifest((ex / report['proposal']).with_suffix('.manifest'))['packets']
+    assert manifest == {v['uuid']: signed.receipt_digest(v) for v in (p, r)}
+    # B has never committed P: it has its own conflicting Q only.
+    with sync.connect(b) as c:
+        assert not c.execute('SELECT 1 FROM _sync_receipts WHERE uuid=?', (p['uuid'],)).fetchone()
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    sync.publish(b, ex, security=sb)
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == result['pending'] == result['conflict'] == 0
+    assert vector(a) == vector(b) == dict(x=5, y=2, z=4)
+    assert sync.receive(a, ex, security=signed.Security(sa.directory, unlock=lambda: phrase))['invalid'] == 0
+    with sync.connect(b) as c:
+        assert c.execute('SELECT envelope_digest FROM _sync_packet_dispositions WHERE packet_uuid=?',
+                         (p['uuid'],)).fetchone()[0] == signed.envelope_digest(p)
+
+
+@pytest.mark.parametrize('approved', [True, False])
+def test_publish_rotation_manifest_evidence_authorization(indexed_peers, monkeypatch, approved):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import retain, receive, vector
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    # Hold both packets while authorized; holding is deliberately not a receipt.
+    retain(b, [p, r], sb)
+    new = sealed_identity(sa.directory.with_name('offer-key'), 'mac', sender=sa.public['sender'])
+    for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
+        backup.private_mkdir(parent)
+    manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
+    packets = [r, p] if approved else [r]
+    rotation.write_manifest(manifest, sorted((v['uuid'], signed.receipt_digest(v)) for v in packets))
+    proposal = manifest.with_suffix('.json')
+    signed.write_local(proposal, rotation.proposal(new, sa.public['key_id'], 'planned', manifest))
+    rotation.peer_rotate(sb.directory, proposal, confirm=lambda: new.public['key_id'])
+    before = vector(b)
+    if approved:
+        assert receive(apply, b, r, sb).status == 'applied'
+        assert vector(b) == dict(x=5, y=2, z=4)
+    else:
+        with pytest.raises(ValueError):
+            receive(apply, b, r, sb)
+        assert vector(b) == before
+        with sync.connect(b) as c:
+            assert c.execute('SELECT count(*) FROM _sync_packet_dispositions').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('point', ['before-file', pytest.param('after-file', marks=pytest.mark.skipif(os.name == 'nt', reason='POSIX directory fsync fault')), 'after-commit'])
+def test_publish_rotation_crash_resume_identical(indexed_peers, monkeypatch, point):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    pending = pending_texts(a)
+    phrase, kwargs = rotate_args(indexed_peers)
+    # Crash at real filesystem publication boundaries, not at a simulated DB update.
+    original = os.fsync
+    def crash_fsync(fd):
+        original(fd)
+        if point == 'before-file' and not os.path.isdir(ex / 'signed-changes' / 'mac'):
+            return
+        import stat
+        info = os.fstat(fd)
+        if point == 'before-file' and stat.S_ISREG(info.st_mode):
+            raise OSError('injected publish crash')
+        if point == 'after-file' and stat.S_ISDIR(info.st_mode):
+            raise OSError('injected publish crash')
+    def step(name):
+        if name == 'identity' and point != 'after-commit':
+            monkeypatch.setattr(os, 'fsync', crash_fsync)
+        if name == 'publish' and point == 'after-commit':
+            raise RuntimeError('injected publish crash')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=step, **kwargs)
+    monkeypatch.setattr(os, 'fsync', original)
+    for uid, text in pending.items():
+        path = ex / 'signed-changes' / 'mac' / (uid + '.json')
+        assert not path.exists() or path.read_bytes() == text.encode('utf-8')
+    assert not list((ex / 'signed-changes' / 'mac').glob('*.tmp'))
+    if point != 'after-commit': assert pending_texts(a) == pending
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['published_pending'] == len(pending)
+    assert not pending_texts(a)
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+
+
+def test_publish_rotation_existing_different_file_refuses(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid = next(iter(pending_texts(a)))
+    path = ex / 'signed-changes' / 'mac' / (uid + '.json')
+    path.write_bytes(b'different immutable bytes')
+    os.utime(path, (1, 1))
+    before = snapshot(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError, match='pending packet is already'):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert snapshot(indexed_peers) == before

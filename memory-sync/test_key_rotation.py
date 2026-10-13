@@ -563,3 +563,69 @@ def test_compromise_report_hostile_files(peers, case):
     assert report['committed'] == []
     assert 'secret-untrusted-table' not in json.dumps(report)
     assert all_bytes(a.parent) == before
+
+
+def test_two_peer_recovery_end_to_end(peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    earlier, earlier_packet = publish(peers, 'earlier receipt')
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+    ready(peers)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    phrase, kwargs = rotate_args(peers)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='compromised', **kwargs)
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    new = signed.Security(sa.directory, unlock=lambda: phrase)
+    assert sync.cycle(a, ex, security=new)['receive']['invalid'] == 0
+    received = sync.cycle(b, ex, security=sb)['receive']
+    assert received['invalid'] == 0 and received['applied'] == 2
+    with sync.connect(a) as c, sync.connect(b) as d:
+        assert sync.rows(c) == sync.rows(d)
+    assert sb.verify_received(earlier_packet, GROUP, 'mac', signed.receipt_digest(earlier_packet)) == earlier_packet
+    # Model possession of the stolen old key, without using the now-fenced signer.
+    forged = {k: v for k, v in earlier_packet.items() if k != 'signature'}
+    forged['uuid'] = str(uuid.uuid4())
+    forged['signature'] = sa.key.sign(signed.DOMAIN + signed.typed(forged)).hex()
+    (earlier.parent / (forged['uuid'] + '.json')).write_bytes(signed.wire(forged))
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    own = rotation.compromise_report(a, ex, sa.public['key_id'], security_dir=sa.directory)
+    peer = rotation.compromise_report(b, ex, sa.public['key_id'], security_dir=sb.directory)
+    assert [p['uuid'] for p in own['forged_candidates']] == [forged['uuid']]
+    assert [p['uuid'] for p in peer['uncommitted']] == [forged['uuid']]
+    assert all(p['uuid'] != forged['uuid'] for p in peer['committed'])
+
+
+@pytest.mark.parametrize('name', ['rotation-journal.json', '.rotate-test.manifest'])
+def test_restore_refuses_rotation_leftovers(peers, name):
+    a, b, ex, sa, sb = peers
+    target = sa.directory.with_name('restore-target')
+    backup.private_mkdir(target)
+    (target / name).write_bytes(b'{}')
+    before = all_bytes(a.parent)
+    with pytest.raises(ValueError, match='unfinished'):
+        backup.check_target(target, ex)
+    assert all_bytes(a.parent) == before
+
+
+def test_restore_revoked_key_into_empty_trust_cannot_reauthorize_peer(peers):
+    import os_unlock
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, new_phrase = os.urandom(32).hex(), os.urandom(32).hex()
+    manifest = {k: v for k, v in sa.public.items() if k != 'format'}
+    manifest['created_at'] = backup.now()
+    doc = backup.seal(manifest, sa.key.private_bytes_raw(), signed.read_trust(sa.directory), phrase, n=2**14)
+    file = a.parent / 'sealed-backup.json'
+    signed.write_local(file, doc)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    target = a.parent / 'restored'
+    class Missing:
+        def load(self, key_id): raise os_unlock.OSUnlockError(os_unlock.MISSING)
+    replies = iter((phrase, new_phrase, new_phrase))
+    report = backup.restore(file, target, ex, ask=lambda *a: next(replies), confirm=lambda w: w,
+                            peer_confirm=lambda p: '', backend=Missing(), _test_n=2**14)
+    assert report['status'] == 'restored'
+    restored = signed.Security(target, unlock=lambda: new_phrase)
+    assert restored.public == sa.public
+    assert sync.publish(a, ex, security=restored)['published'] == 1
+    assert sync.receive(b, ex, security=sb)['invalid'] == 2

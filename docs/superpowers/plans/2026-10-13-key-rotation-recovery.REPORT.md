@@ -53,3 +53,7 @@ Task 5 commit: `9e0faec`. Twelve peer-rotation tests failed first. Green: 79 rec
 Task 6 commit: `5788f4f`. Six reporting tests failed first. Green: 85 recovery tests passed from each location. Byte snapshots confirm DB/sidecars/exchange remain unchanged. Report uses install_inspect's read-only URI selection plus query_only, validates envelope, filename and change schema, and emits only hashed row keys.
 
 Small additions: `uncommitted` exposes redacted foreign forged candidates so the required B-side E2E result is observable. `in_manifest` requires UUID *and digest* equality; UUID-only membership could misleadingly mark altered content as approved. Without --security-dir it is null; a supplied security directory without approval yields false. Missing-file counts are independent of the mtime filter.
+
+## Task 8
+
+Task 7 commit: `8d79ac4`. E2E/restore tests: two expected leftover-refusal failures, two existing behaviors passed before the restore guard change. Green: 268 recovery/backup/signed-packet tests passed from each location. Real capture/publish/receive cycles converge after immediate peer revocation, rotation and approval; a stolen-key forgery is refused and reported, and prior receipts still verify historically. Empty-trust restore regression confirms local restoration does not undo remote revocation.

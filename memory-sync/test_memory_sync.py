@@ -380,3 +380,18 @@ def test_atomic_multichange_conflict_and_self_reference_delete(peers):
         c.execute('DELETE FROM memory_items WHERE id=1')
         c.execute('DELETE FROM memory_items WHERE id=?',(ids['memory_items'],))
     assert sync.capture(a)['changes']==3
+
+
+def test_gate2_capture_format_stays_legacy(peers):
+    import resolution_store
+    a, b, ex = peers
+    sync.initialize(a, 'mac', GROUP)
+    with sync.connect(a) as c, c:
+        resolution_store.migrate(c)
+        c.execute("UPDATE memory_items SET content='still legacy' WHERE id=1")
+    sync.capture(a)
+    with sync.connect(a) as c:
+        packet = json.loads(c.execute('SELECT packet FROM _sync_outbox').fetchone()[0])
+        assert packet['format'] == 'omp-memory-changes-v1'
+        assert set(packet['body'][0]) == {'table','key','row','revision','parent'}
+        assert c.execute('SELECT emission_enabled FROM _sync_protocol').fetchone()[0] == 0

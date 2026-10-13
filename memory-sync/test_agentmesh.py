@@ -146,3 +146,25 @@ def test_once_transient_exchange_exits_one(tmp_path, monkeypatch, capsys):
     sqlite_memory.init_database(db)
     assert agentmesh.main(['--database', str(db), '--exchange', str(tmp_path / 'exchange'), 'once']) == 1
     assert json.loads(capsys.readouterr().out)['failure_kind'] == 'transient'
+
+
+def test_protocol_capability_and_redacted_conflicts_cli(tmp_path,capsys):
+    import agentmesh
+    from test_conflict_commands import setup_conflict
+    assert agentmesh.main(['protocol-capability'])==0
+    import json
+    assert json.loads(capsys.readouterr().out)['protocol_capability']==1
+    args,p,q=setup_conflict(tmp_path)
+    assert agentmesh.main(['conflicts','--runtime',str(args['runtime']),'--json'])==0
+    report=json.loads(capsys.readouterr().out)
+    assert report['conflicts'] and 'last_event_id' not in json.dumps(report)
+    assert agentmesh.main(['conflicts','--runtime',str(args['runtime']),'--json','--show-content'])==1
+
+
+def test_resolution_errors_are_fixed_and_actionable():
+    from cli_errors import report
+    value=report(ValueError('stale resolution plan'),'resolve')
+    assert value.get('reason')=='stale resolution plan'
+    assert 'preview' in value['next_action'].lower()
+    secret=report(ValueError('private row secret'),'resolve')
+    assert 'private row secret' not in __import__('json').dumps(secret)

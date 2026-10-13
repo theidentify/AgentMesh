@@ -1,0 +1,126 @@
+{
+  "title": "An explicit resolution keeps the companion rows",
+  "nodes": [
+    {
+      "id": "a",
+      "col": 0,
+      "row": 0,
+      "title": "A \u00b7 Local edit",
+      "lines": [
+        "Same record, local choice"
+      ]
+    },
+    {
+      "id": "b",
+      "col": 2,
+      "row": 0,
+      "title": "B \u00b7 Conflicting edit",
+      "lines": [
+        "Same origin, different choice"
+      ]
+    },
+    {
+      "id": "review",
+      "col": 0,
+      "row": 1,
+      "title": "Review and choose",
+      "lines": [
+        "Workers stopped; activated",
+        "Inspect \u2192 preview \u2192 RESOLVE"
+      ]
+    },
+    {
+      "id": "packet",
+      "col": 1,
+      "row": 1,
+      "title": "Resolution packet",
+      "kind": "highlight",
+      "lines": [
+        "Chosen rows + companions",
+        "References covered packets"
+      ]
+    },
+    {
+      "id": "receive",
+      "col": 2,
+      "row": 1,
+      "title": "Receive on B",
+      "lines": [
+        "receive-only",
+        "Validate choice and evidence"
+      ]
+    },
+    {
+      "id": "reject",
+      "col": 0,
+      "row": 2,
+      "title": "Never delete packets",
+      "kind": "rejected",
+      "lines": [
+        "History proves the decision",
+        "No silent overwrite"
+      ]
+    },
+    {
+      "id": "restart",
+      "col": 2,
+      "row": 2,
+      "title": "Check, then restart",
+      "lines": [
+        "Compare records on A and B",
+        "Explicit worker-start"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "label": "Device A",
+      "cols": [
+        0,
+        0
+      ],
+      "rows": [
+        0,
+        1
+      ]
+    },
+    {
+      "label": "Device B",
+      "cols": [
+        2,
+        2
+      ],
+      "rows": [
+        0,
+        1
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "review"
+    },
+    {
+      "from": "b",
+      "to": "review",
+      "route": "v"
+    },
+    {
+      "from": "review",
+      "to": "packet"
+    },
+    {
+      "from": "packet",
+      "to": "receive"
+    },
+    {
+      "from": "receive",
+      "to": "restart"
+    },
+    {
+      "from": "review",
+      "to": "reject"
+    }
+  ]
+}

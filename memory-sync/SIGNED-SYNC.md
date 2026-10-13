@@ -3,7 +3,9 @@
 This source implements Ed25519 authentication and local pinned peer trust. It does
 **not** activate signing, create production keys, publish a bootstrap package, pair
 Windows, or change running services. Existing unsigned databases and workers keep
-using `omp-memory-changes-v1` without needing cryptography.
+using `omp-memory-changes-v1` without needing cryptography until a separate
+operator-approved protocol activation. Signing policy and protocol activation
+are independent choices.
 
 ## Identity and authorization
 
@@ -231,3 +233,79 @@ Primary references: cryptography's Ed25519 documentation
 (https://cryptography.io/en/latest/hazmat/primitives/asymmetric/ed25519/) and RFC 8785
 (https://www.rfc-editor.org/rfc/rfc8785). Ed25519 signing/verification is provided
 by cryptography, not a handwritten cryptographic primitive.
+
+
+## Resolution protocol and local recovery commands
+
+The commands and typed confirmations in [SYNC.md](SYNC.md#review-and-resolve-conflicts)
+also operate on existing strict runtimes: `conflicts`, `resolve`, `receive-only`,
+`activate-protocol`, and read-only `protocol-capability`. They neither create
+signing keys nor approve/revoke peers. `conflicts` does not verify signatures or
+write verification counters; its optional content display is an explicitly local,
+unverified preview. Public/default JSON remains redacted. Resolution execution
+reauthorizes all referenced evidence against current pinned trust.
+
+Before protocol activation, signed capture still emits
+`agentmesh-signed-changes-v2`. After the operator confirms the complete upgraded
+peer inventory with `ACTIVATE`, capture and explicit resolution emit
+`agentmesh-signed-changes-v3`. Old signed-v2 and unsigned-v1 readers remain in the
+code permanently; strict databases still reject unsigned traffic as before.
+Upgraded unactivated strict peers can receive v3 while emitting v2.
+
+V3 adds signed `kind`, `covers`, `evidence`, and per-change `parents`/`origin` fields.
+The semantic checksum covers the full payload, including coverage references.
+Ed25519 signatures and signed receipt/envelope digests use the separate
+`AgentMesh/change-packet/Ed25519/v3\0` domain. The signature binds the complete
+unsigned envelope (including checksum); the complete-envelope identity also binds
+signature bytes. V2's domain, checksum and receipt encoding are unchanged. Strict
+field sets, filename/folder/scope checks and bounded proof validation still apply.
+
+A resolver signs its own decision; it does not impersonate either source sender.
+Previously verified but uncommitted evidence must still pass **current** trust.
+A revocation can therefore stop a pending resolution. Only an exact committed
+receipt or superseded disposition grants the existing historical-replay exception;
+a changed envelope/signature with the same UUID is rejected. No synthetic receipt
+is used to bypass revocation. The transaction rechecks the trust digest before
+completion, but filesystem trust and SQLite do not share an atomic transaction.
+
+Use `resolve --preview` with `mine`, `theirs`, `row`, or `delete`, then confirm the
+exact private plan digest with `RESOLVE` and a stable `--operation-id`. Private
+proposal files include full row content and must remain local. Resolution commit,
+publication retry and exact diagnostics cleanup preserve immutable original
+packets. `receive-only` does not ingest, summarize, publish, resume a stopped
+worker, or erase its unrelated failure state. Restart explicitly only after
+reviewing health and remaining diagnostics.
+
+Protocol activation is not permission to join a strict group through the unsigned
+invitation flow. `invite-peer`/`setup-join` continue to refuse signed invitations
+and retain the pending-install guard on incomplete replay. Existing pairing and
+revocation procedures remain authoritative. Older binaries must be drained before
+activation; managed capability fences do not protect bypassed unmanaged execution.
+
+
+### Protected keys during conflict recovery
+
+Signed `resolve` (including preview), `receive-only`, and confirmed
+`activate-protocol` use the worker's existing OS-unlock path. Enable it explicitly
+for the same local account before running recovery:
+
+```sh
+python agentmesh.py identity-os-unlock enable --security-dir /local/app/identity
+python agentmesh.py identity-os-unlock status --security-dir /local/app/identity
+```
+
+Enrollment uses the existing interactive passphrase flow; recovery commands do
+not add a passphrase flag, prompt, or fallback to unsigned packets. If no OS unlock
+is enrolled, they refuse with `passphrase-protected identity is locked; enable OS
+unlock or unlock interactively`. An unavailable or refused OS store produces its
+existing fixed reason. Unlock refusal occurs before stopping the worker or
+creating recovery control files. No resolution rows or outbox packet are committed.
+After correcting an OS-store refusal, rerun the command in a fresh process because
+the existing unlock helper caches results per process.
+
+`conflicts` and activation preview remain informational and do not access the OS
+key store. Listing works with a locked identity and does not change verification
+telemetry. Enrolling or disabling OS unlock changes the identity file, so discard
+an older preview and generate a new one before confirmation. Keep private plan
+files local. See [KEY-PROTECTION.md](KEY-PROTECTION.md) for supported OS stores,
+passphrase recovery and the limits of protection against same-user processes.

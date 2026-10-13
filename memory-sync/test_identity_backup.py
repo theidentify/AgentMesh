@@ -76,3 +76,42 @@ def test_invalid_plaintext(material, secret, kind):
     doc = backup.seal(manifest, raw, trust, secret, n=2**14)
     with pytest.raises(ValueError, match=backup.OPEN_FAILED if kind == 'key' else backup.INVALID):
         backup.open_backup(doc, secret)
+
+@pytest.mark.parametrize('marker', ['.stfolder', '.git', '.STFOLDER', '.GIT'])
+@pytest.mark.parametrize('platform', ['darwin', 'win32'])
+def test_unsafe_markers(tmp_path, monkeypatch, marker, platform):
+    monkeypatch.setattr(backup.sys, 'platform', platform)
+    (tmp_path / marker).touch()
+    child = tmp_path / 'child'
+    child.mkdir()
+    alias = tmp_path / 'alias'
+    alias.symlink_to(child, target_is_directory=True)
+    with pytest.raises(ValueError, match='backup location is inside'):
+        backup.unsafe_location(alias / 'file')
+
+
+def test_cloud_location(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, 'CLOUD_ROOTS', (tmp_path / 'cloud',))
+    assert backup.unsafe_location(tmp_path / 'cloud' / 'file') == 'cloud'
+    assert backup.unsafe_location(tmp_path / 'file') is None
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+def test_write_new(tmp_path, monkeypatch, fallback):
+    import errno
+    if fallback:
+        def unsupported(*a): raise OSError(errno.EPERM, 'unavailable')
+        monkeypatch.setattr(backup.os, 'link', unsupported)
+    path = tmp_path / 'backup'
+    assert backup.write_new(path, b'encrypted payload') == 'owner-only'
+    with pytest.raises(ValueError, match='backup file already exists'):
+        backup.write_new(path, b'replacement')
+    assert path.read_bytes() == b'encrypted payload'
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_permissions_unsupported(tmp_path, monkeypatch):
+    import errno
+    def unsupported(*a): raise OSError(errno.ENOTSUP, 'unsupported')
+    monkeypatch.setattr(backup.os, 'chmod', unsupported)
+    assert backup.write_new(tmp_path / 'backup', b'ciphertext') == 'unsupported-by-filesystem'

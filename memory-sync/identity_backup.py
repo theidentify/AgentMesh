@@ -108,3 +108,96 @@ def open_backup(doc, passphrase):
     if not valid:
         raise ValueError(INVALID)
     return raw, result['trust'], result['trust_captured_at']
+
+
+import errno
+from pathlib import Path
+import sys
+import tempfile
+
+CLOUD_ROOTS = tuple(Path.home() / p for p in (
+    'Library/Mobile Documents', 'Library/CloudStorage', 'Dropbox', 'OneDrive', 'Google Drive'
+)) + ((Path(os.environ['OneDrive']),) if os.environ.get('OneDrive') else ())
+LOCATION_SYNC = 'backup location is inside a Syncthing folder'
+LOCATION_GIT = 'backup location is inside a git work tree'
+EXISTS = 'backup file already exists'
+WRITE_FAILED = 'backup file could not be written'
+REASONS |= {LOCATION_SYNC, LOCATION_GIT, EXISTS, WRITE_FAILED}
+
+
+def normalized(path):
+    value = os.path.realpath(Path(path).expanduser())
+    return value.casefold() if sys.platform in ('darwin', 'win32') else value
+
+
+def within(path, root):
+    a, b = normalized(path), normalized(root)
+    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def unsafe_location(path):
+    path = Path(os.path.realpath(Path(path).expanduser()))
+    cloud = any(within(path, root) for root in CLOUD_ROOTS)
+    for parent in (path, *path.parents):
+        if not parent.is_dir():
+            continue
+        names = {p.name.casefold() if sys.platform in ('darwin', 'win32') else p.name
+                 for p in parent.iterdir()}
+        if '.stfolder' in names:
+            raise ValueError(LOCATION_SYNC)
+        if '.git' in names:
+            raise ValueError(LOCATION_GIT)
+        if names & {'.dropbox', 'desktop.ini.icloud', '.icloud'}:
+            cloud = True
+    return 'cloud' if cloud else None
+
+
+def file_permissions(path):
+    try:
+        if os.name == 'nt':
+            signed.windows_private(path, provision=True)
+        else:
+            os.chmod(path, 0o600)
+        return 'owner-only'
+    except (OSError, ValueError):
+        return 'unsupported-by-filesystem'
+
+
+def write_new(path, data):
+    path = Path(path)
+    temp, created, reason, permissions = None, False, None, None
+    try:
+        fd, name = tempfile.mkstemp(prefix='.backup-', dir=path.parent)
+        temp = Path(name)
+        with os.fdopen(fd, 'wb') as stream:
+            permissions = file_permissions(temp)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temp, path)
+            created = True
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            if exc.errno not in (errno.EPERM, errno.EACCES, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV):
+                raise
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            created = True
+            with os.fdopen(fd, 'wb') as stream:
+                permissions = file_permissions(path)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+    except FileExistsError:
+        reason = EXISTS
+    except (OSError, ValueError):
+        reason = WRITE_FAILED
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+        if reason and created:
+            path.unlink(missing_ok=True)
+    if reason:
+        raise ValueError(reason)
+    return permissions

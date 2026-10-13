@@ -303,13 +303,22 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
    `.stfolder` marker and a status file for the database group. Pending packets already present in
    either `signed-changes/` or `changes/` refuse rotation; inspect or publish them first.
 
-   If pending packets exist, review the packet and per-table operation counts and type `RESIGN`.
+   With `--reason compromised`, review each pending UUID, format, v3 kind, table/operation and
+   `key_sha256`; row contents are never shown. Repeat `--drop-pending UUID` to exclude reviewed
+   packets from publication and the manifest. This option is only accepted for a fresh compromised
+   rotation. A packet referenced by another pending packet's covers/evidence cannot be dropped.
+   Dropped packets stay unpublished until finish, then move byte-identically into the local
+   `_sync_rotation_dropped(uuid, packet, dropped_at)` archive. The report lists `dropped_pending`.
+   If pending packets exist, review the counts per packet format and per table/operation, then type `PUBLISH`.
+   Rotation publishes pending v2 and v3 packets exactly as stored, including resolution packets.
+   Their bytes, signatures and evidence digests never change; the manifest lists them alongside
+   already-published old-key packets. This also works when the old private key is lost.
    Enter a new identity passphrase twice, at least 12 characters, through the interactive console.
    No passphrase flag or environment-variable input is supported. The new identity is always sealed;
    rotation does not enable OS unlock or start a worker.
 
-   The report includes the full `new_fingerprint`, old/new key IDs, pending re-sign count, published
-   manifest count and `pairing/rotations/NEW_KEY_ID.json`. If `trust_restored` is false, only the new
+   The report includes the full `new_fingerprint`, old/new key IDs, `published_pending` count, total
+   `manifest_packets` count and `pairing/rotations/NEW_KEY_ID.json`. If `trust_restored` is false, only the new
    self entry exists locally. Re-pin every peer with `signed_packets trust`, using out-of-band
    fingerprints; incoming peer packets are safely refused until then.
 
@@ -335,13 +344,21 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
 
    `committed` lists matching local receipts, timestamps and table/operation metadata. Row keys are
    represented only by a 16-hex SHA-256 prefix; row contents and raw keys are never emitted.
-   `in_manifest` means the UUID and receipt digest match this device's approved manifest; it is null
+   `in_manifest` means the UUID and envelope digest (including the signature) match this device's approved manifest; it is null
    without `--security-dir`. Committed packets outside that manifest deserve particular attention.
    `uncommitted` shows other observed old-key files. On the originating device, `forged_candidates`
    identifies own-node files that do not match the outbox byte for byte. These are evidence for
-   investigation, not an automatic verdict. Missing signed-envelope receipts are counted separately
+   investigation, not an automatic verdict. This byte check includes v3 files. When the resolution
+   store exists, `superseded` means a disposition matches this file's envelope digest;
+   `variant_superseded` means a disposition exists for another digest of the same UUID.
+   V3 syntax and row validation use `packet_versions`. Missing signed-envelope receipts are counted separately
    from legacy receipts because receipts do not retain key/node attribution. Malformed files increase
-   `unreadable`. The report never writes, deletes, quarantines or automatically undoes changes.
+   `unreadable`. For v3 packets, the packet and its change summaries include `kind` (`change` or
+   `resolution`). When the resolution store exists, every packet also has `superseded: true|false`;
+   true requires a committed disposition matching its complete envelope, including its signature.
+   A changed envelope cannot inherit the original packet's disposition. This is a read-only inventory,
+   not signature authentication. The report never writes, deletes, quarantines or undoes source state.
+   Live-WAL inspection uses a disposable private snapshot so even source SHM read marks stay unchanged.
    An incomplete WAL/SHM sidecar pair refuses inspection instead of creating a missing sidecar or
    ignoring uncheckpointed data; inspect or checkpoint the stopped database before retrying.
 
@@ -368,16 +385,35 @@ SQLite and do not delete the journal to make the worker start. Ordinary signing 
 while the journal exists. The journal contains a sealed new identity and public recovery metadata,
 never a raw key or passphrase; its manifest is kept in a separate private staging file.
 
-`--resume` repeats `STOPPED`, the locks, exchange inactivity and pending-path checks before replay. It
-asks for the new identity passphrase and replays trust, identity, the atomic DB re-sign transaction,
-verification and proposal publication. Completed steps are idempotent. OS cleanup precedes the final
-journal removal. Restore also refuses rotation journals/staging; finish or inspect recovery first.
+`--resume` repeats `STOPPED`, the locks, exchange inactivity and pending-path checks before replay.
+Only original pending files pinned by this journal may already exist with identical bytes; different
+bytes refuse with `pending packet file differs from the outbox; see compromise-report`.
+For a journal-bound collision, use `--resume --quarantine-collision UUID` (repeatable).
+The command shows the exchange and outbox envelope digests. Type `QUARANTINE` to preserve the
+conflicting file at `EXCHANGE/pairing/rotations/quarantine/<uuid>.<digest>.json` and continue
+with the authoritative outbox bytes. Cancellation leaves the collision in place. Malformed
+JSON or unsupported formats require separate inspection. Supported envelope JSON can be
+quarantined even when it claims another UUID or scope; moving it never authorizes its contents.
+Recent activity in unrelated files still refuses. An interrupted temporary write may
+be retried only at this journal's exact staging name with bytes that are a prefix of the stored packet.
+
+Resume asks for the new identity passphrase and replays trust, identity, publication of the unchanged
+pending packets, verification and proposal publication. All pending flags commit in one DB transaction
+after every file is in place. A crash can leave some files present with the flags rolled back; replay
+accepts identical files and finishes the transaction. `published_pending` retains the original count.
+OS cleanup precedes final journal removal. Restore also refuses rotation journals/staging.
+
+Publication uses journal format `agentmesh-rotation-journal-v2`. An unfinished journal from the older
+re-sign implementation is refused as `invalid rotation journal`; inspect that recovery state instead
+of deleting or reinterpreting it. Proposals use `agentmesh-key-rotation-v2` and registries use `agentmesh-rotations-v2`.
+V1 proposals and registries are refused; their signature-excluding digest is not accepted.
+Round-1 journals without drop metadata or a v2 proposal also require separate inspection.
 
 ### 5. What happens to packets
 
 | Packet/evidence | Result |
 |---|---|
-| Pending unpublished packets | Re-signed only after `RESIGN`; UUID, body and checksum stay unchanged. |
+| Pending unpublished v2/v3 packets | Published byte for byte only after `PUBLISH`, then marked published. Listed on the manifest; signatures and evidence digests stay unchanged. |
 | Published old-key packets | Unchanged. Peers accept approved contents through the signed manifest and historical signature verification. |
 | Historical committed receipts | Unchanged; the historical receipt path continues to validate retained files. |
 | Own published files | Seen before signature verification only when file bytes exactly match the stored outbox text. |
@@ -386,9 +422,17 @@ journal removal. Restore also refuses rotation journals/staging; finish or inspe
 The new key signs the small proposal's manifest SHA-256 and count. The separate sorted manifest is
 streamed with a 200 MiB ceiling (roughly 1.9 million packets), not parsed as a JSON packet. Peer approval
 stores it privately. A revoked-key packet must match its approved UUID/digest and still pass historical
-signature verification. Each Security instance loads a manifest lazily at most once; start a fresh
-worker cycle after approval. Signing a new forged packet with the stolen key cannot add it to the
+signature verification. Each Security instance caches manifests lazily against the registry's mtime and size;
+a changed registry invalidates cached entries, including missing entries. Signing a new forged packet with the stolen key cannot add it to the
 approved manifest.
+
+**Approved manifests authorize resolution evidence.** After fingerprint approval, a listed packet
+counts as authorized `covers`/`evidence` even if the peer never committed it before revocation. This
+includes an old-key v3 resolution packet. UUID/envelope-digest matching and historical signature
+verification still apply; rotation never changes packet bytes or evidence references.
+Everything outside an approved manifest retains strict revocation: merely held or previously verified
+uncommitted packets are refused. Exact committed receipts and superseded dispositions retain their
+existing historical-replay rules. No synthetic receipt or blanket trust exception is created.
 
 ### 6. Key recovery is separate from SQLite recovery
 
@@ -408,9 +452,9 @@ Forgeries committed before rotation remain committed. The manifest cannot retroa
 whether earlier application data was legitimate; the report supplies evidence for human review.
 
 A database clone on another machine cannot be fenced by local locks. `STOPPED` covers the operator's
-responsibility for those clones. If a clone publishes an old-key file under a UUID re-signed here,
-this device gets an `immutable packet path collision` and an invalid own packet. Inspect the collision
-and remove the clone's file only after determining its origin; never overwrite published packets.
+responsibility for those clones. If a clone publishes different bytes under an existing packet UUID,
+publication refuses with an immutable-path collision and receive rejects the changed packet. Inspect
+the collision and remove the clone's file only after determining its origin; never overwrite published packets.
 
 `compromise-report --since ISO_UTC` filters exchange file mtimes, which a writer can set. It is an
 approximate convenience filter, not a cryptographic time boundary. Unlinking a file is not secure

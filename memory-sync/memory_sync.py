@@ -175,6 +175,58 @@ def _capture(c, *, security=None):
     return {'changes':len(changes),'packets':int(bool(changes))}
 
 
+def write_packet(directory, ident, text, *, signed_packet=False, staging_id=None):
+    """Durably publish stored UTF-8 bytes without replacing an immutable path.
+
+    Shared by ordinary publish and journaled rotation. The caller validates the
+    envelope and owns the DB transaction; this helper never changes packet text.
+    """
+    from signed_packets import no_symlinks, read_local
+    directory = Path(directory)
+    if signed_packet:
+        directory = no_symlinks(directory)
+        if not valid_uuid(ident): raise ValueError('invalid outbox UUID')
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory/(ident+'.json')
+    raw = text.encode('utf-8')
+    if staging_id is not None:
+        from signed_packets import hex_bytes
+        hex_bytes(staging_id, 32)
+        temp = no_symlinks(directory/('.'+ident+'.rotate-'+staging_id+'.tmp'))
+        if temp.exists():
+            # Journaled replay owns this exact name. A killed writer can leave
+            # a prefix; no other content may be removed as rotation staging.
+            if not raw.startswith(read_local(temp)):
+                raise ValueError('immutable packet path collision: '+str(temp))
+            temp.unlink()
+    else:
+        temp = directory/('.'+ident+'.'+str(uuid.uuid4())+'.tmp')
+    def identical():
+        if signed_packet: no_symlinks(target)
+        existing = read_local(target) if signed_packet else target.read_bytes()
+        if existing != raw: raise ValueError('immutable packet path collision: '+str(target))
+    if signed_packet: no_symlinks(target)
+    if target.exists():
+        identical()
+    else:
+        try:
+            with temp.open('xb') as f:
+                f.write(raw); f.flush(); os.fsync(f.fileno())
+            try:
+                # An atomic hard link cannot overwrite a file created after the
+                # existence check (unlike os.replace). NTFS supports this too.
+                os.link(temp, target)
+            except FileExistsError:
+                identical()
+        finally:
+            if temp.exists(): temp.unlink()
+    # Repeat on identical retries: a crash may have preceded directory fsync.
+    if os.name != 'nt':
+        fd = os.open(directory, os.O_RDONLY)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+
+
 def publish(db, exchange, *, security=None):
     published = 0
     try:
@@ -196,29 +248,7 @@ def publish(db, exchange, *, security=None):
                     if not emission_enabled(c): raise ValueError('new packet emission disabled')
                 from packet_versions import is_new
                 if not is_new(load_packet(text)): raise ValueError('unsupported packet format')
-            target = directory/(ident+'.json')
-            if security is not None:
-                from signed_packets import no_symlinks
-                no_symlinks(target)
-                if not valid_uuid(ident): raise ValueError('invalid outbox UUID')
-            if target.exists():
-                if security is not None:
-                    from signed_packets import read_local
-                    existing = read_local(target)
-                else: existing = target.read_bytes()
-                if existing != text.encode('utf-8'): raise ValueError('immutable packet path collision: '+str(target))
-            else:
-                temp = directory/('.'+ident+'.'+str(uuid.uuid4())+'.tmp')
-                try:
-                    with temp.open('xb') as f:
-                        f.write(text.encode('utf-8')); f.flush(); os.fsync(f.fileno())
-                    os.replace(temp, target)
-                    if os.name != 'nt':
-                        fd = os.open(directory, os.O_RDONLY)
-                        try: os.fsync(fd)
-                        finally: os.close(fd)
-                finally:
-                    if temp.exists(): temp.unlink()
+            write_packet(directory, ident, text, signed_packet=security is not None)
             with connect(db) as c, c:
                 c.execute('UPDATE _sync_outbox SET published=1 WHERE uuid=?',(ident,))
             published += 1

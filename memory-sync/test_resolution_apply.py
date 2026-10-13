@@ -173,11 +173,11 @@ def test_publish_retry_keeps_uuid(app,tmp_path,monkeypatch):
         plan = app.prepare_resolution(con,[ref(p),ref(q)],choices(x=5,y=2,z=4),security=None)
         r = app.commit_resolution(con,plan,security=None,operation_id='retry')
         assert app.commit_resolution(con,plan,security=None,operation_id='retry') == r
-    original = sync.os.replace
+    original = sync.os.link
     def fail(*args): raise OSError('publication failure')
-    monkeypatch.setattr(sync.os,'replace',fail)
+    monkeypatch.setattr(sync.os,'link',fail)
     assert sync.publish(a,tmp_path/'exchange')['unavailable']
-    monkeypatch.setattr(sync.os,'replace',original)
+    monkeypatch.setattr(sync.os,'link',original)
     assert not sync.publish(a,tmp_path/'exchange')['unavailable']
     path = tmp_path/'exchange'/'changes'/'mac'/(r['uuid']+'.json')
     assert json.loads(path.read_text()) == r
@@ -267,7 +267,7 @@ with sync.connect(sys.argv[1]) as c:
 os._exit(73)
 '''
     result=subprocess.run([sys.executable,'-c',script,str(a),str(plan_path),boundary],
-                          env={**os.environ,'PYTHONPATH':str(Path(__file__).parent)})
+                          cwd=Path(__file__).parent, env={**os.environ,'PYTHONPATH':str(Path(__file__).parent)})
     assert result.returncode==73
     if boundary!='committed': assert snapshot(a)==before
     with sync.connect(a) as con:
@@ -331,7 +331,7 @@ def test_replay_does_not_scan_rows_per_retained_packet(app,tmp_path,monkeypatch)
     assert len(calls)==1  # initial legacy capture only; no per-evidence row scans
 
 
-def test_crash_after_publish_rename_reuses_committed_packet(app,tmp_path):
+def test_crash_after_publish_link_reuses_committed_packet(app,tmp_path):
     import os
     import subprocess
     import sys
@@ -341,15 +341,15 @@ def test_crash_after_publish_rename_reuses_committed_packet(app,tmp_path):
     ex=tmp_path/'exchange'
     script='''import os,sys
 import memory_sync as sync
-original=sync.os.replace
-def replace(source,target):
+original=sync.os.link
+def link(source,target):
     original(source,target)
     if target.name==sys.argv[3]+'.json': os._exit(74)
-sync.os.replace=replace
+sync.os.link=link
 sync.publish(sys.argv[1],sys.argv[2])
 '''
     result=subprocess.run([sys.executable,'-c',script,str(a),str(ex),r['uuid']],
-                          env={**os.environ,'PYTHONPATH':str(Path(__file__).parent)})
+                          cwd=Path(__file__).parent, env={**os.environ,'PYTHONPATH':str(Path(__file__).parent)})
     assert result.returncode==74
     path=ex/'changes'/'mac'/(r['uuid']+'.json'); original=path.read_bytes()
     with sync.connect(a) as con:

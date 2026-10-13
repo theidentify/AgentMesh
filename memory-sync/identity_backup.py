@@ -555,7 +555,7 @@ def check_current(trust, own):
             raise ValueError(TRUST_CONFLICT)
 
 
-def exchange_activity(exchange, own):
+def exchange_activity(exchange, own, *, _rotation_files=None):
     root = signed.no_symlinks(exchange)
     belongs = False
     try:
@@ -587,7 +587,12 @@ def exchange_activity(exchange, own):
                 for child in path.iterdir():
                     visit(child)
             elif stat.S_ISREG(info.st_mode):
-                signed.read_local(path)  # An unreadable entry is activity, even if its mtime is old.
+                raw = signed.read_local(path)  # Unreadable entries are always activity.
+                # Only journal-bound, byte-identical rotation publications may
+                # be recent during replay. Other files keep the normal fence.
+                if (_rotation_files is not None and path in _rotation_files
+                        and hashlib.sha256(raw).hexdigest() == _rotation_files[path]):
+                    return
                 newest = info.st_mtime if newest is None else max(newest, info.st_mtime)
                 active |= info.st_mtime >= cutoff
             else:

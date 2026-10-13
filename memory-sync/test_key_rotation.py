@@ -93,7 +93,7 @@ def test_proposal_roundtrip_and_registry(peers):
     a, b, ex, sa, sb = peers
     path, p = publish(peers)
     manifest = ex / 'test.manifest'
-    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
     doc = rotation.proposal(sa, sb.public['key_id'], 'planned', manifest)
     assert rotation.check_proposal(doc, manifest) == doc
     rotation.add_rotation(sb.directory, doc['old_key_id'], sa.public['key_id'], manifest)
@@ -176,7 +176,7 @@ def test_revoked_manifest_receive(peers, case):
     a, b, ex, sa, sb = peers
     path, p = publish(peers)
     manifest = ex / 'approved.manifest'
-    digest = '0'*64 if case == 'digest' else signed.receipt_digest(p)
+    digest = '0'*64 if case == 'digest' else signed.envelope_digest(p)
     rotation.write_manifest(manifest, [] if case == 'absent' else [(p['uuid'], digest)])
     if case != 'no-registry':
         rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
@@ -199,7 +199,7 @@ def test_manifest_causality_and_lazy_cache(peers, monkeypatch):
     first.unlink()
     second, q = publish(peers, 'second')
     manifest = ex / 'approved.manifest'
-    pairs = sorted([(p['uuid'], signed.receipt_digest(p)), (q['uuid'], signed.receipt_digest(q))])
+    pairs = sorted([(p['uuid'], signed.envelope_digest(p)), (q['uuid'], signed.envelope_digest(q))])
     rotation.write_manifest(manifest, pairs)
     rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
     signed.revoke(sb.directory, sa.public['key_id'])
@@ -248,11 +248,11 @@ def test_prepare_derives_old_key_and_keeps_state(peers, case):
     with rotation.prepare(sa.directory, a, ex, old_key=sa.public['key_id'] if case == 'lost-all' else ('0'*64 if case == 'ok' else None), confirm=lambda w: w) as plan:
         assert plan['old_key_id'] == sa.public['key_id']
         assert len(plan['pending']) == 1
-        assert len(plan['manifest']) == 1
+        assert len(plan['manifest']) == 2
     assert snapshot(peers) == before
 
 
-@pytest.mark.parametrize('case', ['journal', 'stage', 'restore', 'pre-restore', 'legacy', 'binding', 'unexpected', 'STOPPED', 'RESIGN', 'exchange', 'legacy-exchange', 'signature', 'recent', 'lost-no-key', 'cycle-lock', 'lifetime-lock', 'running'])
+@pytest.mark.parametrize('case', ['journal', 'stage', 'restore', 'pre-restore', 'legacy', 'binding', 'unexpected', 'STOPPED', 'PUBLISH', 'exchange', 'legacy-exchange', 'signature', 'recent', 'lost-no-key', 'cycle-lock', 'lifetime-lock', 'running'])
 def test_prepare_refusals_unchanged(peers, case, monkeypatch):
     import key_rotation as rotation
     import worker_lifecycle as worker
@@ -337,7 +337,7 @@ def test_rotation_full_and_sealed_writes(peers, monkeypatch):
     monkeypatch.setattr(signed, 'write_local', record)
     report = rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
     assert report['status'] == 'rotated'
-    assert report['resigned'] == 1 and report['manifest_packets'] == 1
+    assert report['published_pending'] == 1 and report['manifest_packets'] == 2
     assert report['os_unlock_item_removed'] is True
     assert kwargs['backend'].calls == [sa.public['key_id']]
     new = signed.Security(sa.directory, unlock=lambda: phrase)
@@ -349,11 +349,10 @@ def test_rotation_full_and_sealed_writes(peers, monkeypatch):
         for row in c.execute('SELECT * FROM _sync_outbox'):
             old = signed.parse(before[row['uuid']][0])
             p = signed.parse(row['packet'])
-            if row['published']: assert row['packet'] == before[row['uuid']][0]
-            else:
-                assert all(p[k] == old[k] for k in ('uuid', 'body', 'checksum'))
-                new.verify(p, GROUP, 'mac')
-                with pytest.raises(ValueError): sb.verify(p, GROUP, 'mac')
+            assert row['published'] == 1
+            assert row['packet'] == before[row['uuid']][0]
+            assert p['key_id'] == sa.public['key_id']
+            sb.verify(p, GROUP, 'mac')
     proposal_path = ex / report['proposal']
     doc = signed.parse(signed.read_local(proposal_path))
     rotation.check_proposal(doc, proposal_path.with_suffix('.manifest'))
@@ -364,7 +363,7 @@ def test_rotation_full_and_sealed_writes(peers, monkeypatch):
     assert 'protection' in journal['new_identity']
 
 
-@pytest.mark.parametrize('step', ['trust', 'identity', 'db', 'verify', 'proposal'])
+@pytest.mark.parametrize('step', ['trust', 'identity', 'publish', 'verify', 'proposal'])
 def test_crash_resume_replays_and_fences(peers, step):
     import key_rotation as rotation
     import runtime_lock
@@ -388,7 +387,7 @@ def test_crash_resume_replays_and_fences(peers, step):
     report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
     assert report['new_key_id'] == journal['new_identity']['key_id']
     assert report['reason'] == 'compromised'
-    assert report['resigned'] == 1
+    assert report['published_pending'] == 1
     assert signed.parse(signed.read_local(sa.directory / 'identity.json', private=True)) == journal['new_identity']
     assert not (sa.directory / 'rotation-journal.json').exists()
 
@@ -422,9 +421,9 @@ def test_transaction_exchange_race_rolls_back_and_resumes(peers):
     file = ex / 'signed-changes' / 'mac' / (before[0][0] + '.json')
     def race(step):
         if step == 'identity':
-            file.write_bytes(before[0][1].encode())
+            file.write_bytes(b'different immutable bytes')
             os.utime(file, (1, 1))
-    with pytest.raises(ValueError, match='pending packet is already'):
+    with pytest.raises(ValueError, match='pending packet file differs from the outbox'):
         rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=race, **kwargs)
     with sync.connect(a) as c:
         assert [tuple(r) for r in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0')] == before
@@ -440,7 +439,7 @@ def rotation_offer(peers):
     for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
         backup.private_mkdir(parent)
     manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
-    rotation.write_manifest(manifest, [(packet['uuid'], signed.receipt_digest(packet))])
+    rotation.write_manifest(manifest, [(packet['uuid'], signed.envelope_digest(packet))])
     doc = rotation.proposal(new, sa.public['key_id'], 'compromised', manifest)
     proposal = manifest.with_suffix('.json')
     signed.write_local(proposal, doc)
@@ -510,7 +509,7 @@ def test_compromise_report_readonly_and_redacted(peers):
     path, p = publish(peers, 'row-content-must-never-appear')
     assert sync.receive(b, ex, security=sb)['applied'] == 1
     manifest = ex / 'review.manifest'
-    rotation.write_manifest(manifest, [(p['uuid'], signed.receipt_digest(p))])
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
     rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
     fake = dict(p, uuid=str(uuid.uuid4()))
     fake = sa.sign({k: v for k, v in fake.items() if k not in ('signature', 'key_id', 'sender')})
@@ -672,7 +671,7 @@ def test_large_manifest_peer_approval_and_receive(peers):
     with sync.connect(peers[0]) as c:
         packet = signed.parse(c.execute('SELECT packet FROM _sync_outbox').fetchone()[0])
     pairs = [(str(uuid.UUID(int=i)), 'a'*64) for i in range(59999)]
-    pairs.append((packet['uuid'], signed.receipt_digest(packet)))
+    pairs.append((packet['uuid'], signed.envelope_digest(packet)))
     rotation.write_manifest(path.with_suffix('.manifest'), sorted(pairs))
     signed.write_local(path, rotation.proposal(new, sa.public['key_id'], 'planned', path.with_suffix('.manifest')))
     report = rotation.peer_rotate(sb.directory, path, confirm=lambda: new.public['key_id'])
@@ -743,7 +742,7 @@ def test_resume_rechecks_remaining_fences(peers, case, monkeypatch):
         with sync.connect(a) as c:
             row = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchone()
         path = ex / 'signed-changes' / 'mac' / (row[0] + '.json')
-        path.write_bytes(row[1].encode())
+        path.write_bytes(b'different immutable bytes')
         os.utime(path, (1, 1))
     with ExitStack() as stack:
         if case == 'lifetime':
@@ -890,7 +889,7 @@ def test_production_rotation_seal_uses_production_n(peers, monkeypatch):
     assert calls == [kp.SCRYPT_N]
 
 
-@pytest.mark.parametrize('step', ['trust', 'identity', 'db', 'verify', 'proposal'])
+@pytest.mark.parametrize('step', ['trust', 'identity', 'publish', 'verify', 'proposal'])
 def test_crashed_replay_is_byte_identical_to_uninterrupted_replay(peers, tmp_path_factory, step):
     import key_rotation as rotation
     from contextlib import closing
@@ -970,23 +969,21 @@ def test_check_proposal_rejects_a_manifest_that_no_longer_matches(peers):
         rotation.check_proposal(doc, path.with_suffix('.manifest'))
 
 
-def test_resign_refuses_a_signature_that_changes_the_body(peers, monkeypatch):
+def test_rotation_never_calls_any_packet_signer(peers, monkeypatch):
     import key_rotation as rotation
     ready(peers)
     a, b, ex, sa, sb = peers
     with sync.connect(a) as c:
-        before = [tuple(r) for r in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid')]
-    original = rotation._ReplaySecurity.sign
-    def altering(self, legacy):
-        changed = dict(legacy)
-        changed['body'] = list(legacy['body']) + list(legacy['body'])
-        return original(self, changed)
-    monkeypatch.setattr(rotation._ReplaySecurity, 'sign', altering)
+        before = dict(c.execute('SELECT uuid,packet FROM _sync_outbox'))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('rotation must never sign packets')
+    monkeypatch.setattr(signed.Security, 'sign', forbidden)
+    monkeypatch.setattr(signed.Security, '_sign_resolution', forbidden)
     phrase, kwargs = rotate_args(peers)
-    with pytest.raises(ValueError):
-        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
     with sync.connect(a) as c:
-        assert [tuple(r) for r in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid')] == before
+        assert dict(c.execute('SELECT uuid,packet FROM _sync_outbox')) == before
+        assert c.execute('SELECT count(*) FROM _sync_outbox WHERE published=0').fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('protocol', ['legacy', 'indexed'])
@@ -1009,3 +1006,839 @@ def test_rotation_converges_with_and_without_the_indexed_protocol(peers, protoco
     received_a = sync.receive(a, ex, security=new_a)
     assert not received_a.get('invalid') and not received_b.get('invalid'), (received_a, received_b)
     assert received_b['applied'] == 2
+
+
+@pytest.fixture
+def indexed_peers(peers):
+    import resolution_store as store
+    for db in peers[:2]:
+        with sync.connect(db) as c, c:
+            store.migrate(c)
+    return peers
+
+
+def evidence_rows(db):
+    with sync.connect(db) as c:
+        return [tuple(r) for r in c.execute(
+            'SELECT uuid,envelope_digest,envelope_json,key_id FROM _sync_packet_evidence ORDER BY uuid')]
+
+
+def pending_texts(db):
+    with sync.connect(db) as c:
+        return dict(c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0'))
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_publish_rotation_preserves_indexed_v2(indexed_peers, lost):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    with sync.connect(a) as c, c:
+        apply._index_local(c, sa)
+    evidence = evidence_rows(a)
+    pending = pending_texts(a)
+    phrase, kwargs = rotate_args(indexed_peers)
+    words = []
+    def confirm(word):
+        words.append(word)
+        return word
+    kwargs['confirm'] = confirm
+    if lost:
+        (sa.directory / 'identity.json').unlink()
+        (sa.directory / 'trust.json').unlink()
+        kwargs['old_key'] = sa.public['key_id']
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='lost' if lost else 'planned', **kwargs)
+    assert words == ['STOPPED', 'PUBLISH']
+    assert report['published_pending'] == len(pending) and report['manifest_packets'] == 2
+    assert not pending_texts(a)
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+    assert evidence_rows(a) == evidence
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    new = signed.Security(sa.directory, unlock=lambda: phrase)
+    assert sync.receive(a, ex, security=new)['invalid'] == 0
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == 0 and result['applied'] == 2
+
+
+def pending_resolution(peers, monkeypatch):
+    """Real activation/prepare/commit flow; all identities sealed, OS backend fake."""
+    import os_unlock as ou
+    import protocol_activation as activation
+    import resolution_apply as apply
+    from test_os_unlock import FakeBackend as UnlockBackend
+    from test_protocol_activation import enable
+    from test_resolution_apply import edit, retain, resolve
+    a, b, ex, sa, sb = peers
+    p = edit(a, dict(x=1, y=2), sa)
+    q = edit(b, dict(x=3, z=4), sb)
+    retain(a, [p, q], sa)
+    # Install an OS-wrapped key using only a fake, in-memory backend. No passphrase
+    # or private key is written to disk by the fixture.
+    backend = UnlockBackend()
+    wrapping = os.urandom(32)
+    backend.store(sa.public['key_id'], wrapping)
+    identity = signed.parse(signed.read_local(sa.directory / 'identity.json', private=True))
+    identity['os_unlock'] = ou.seal(sa.public, sa.key.private_bytes_raw(), backend.name, wrapping)
+    signed.write_local(sa.directory / 'identity.json', identity)
+    monkeypatch.setattr(ou, 'current_backend', lambda: backend)
+    ou.reset_cache()
+    runtime = sa.directory / 'resolution-runtime.json'
+    signed.write_local(runtime, dict(app_root=str(sa.directory), database=str(a), exchange=str(ex),
+                                    node='mac', security_dir=str(sa.directory), protocol_capability=1))
+    enable(activation, runtime)
+    # resolve() reuses the already activated database, preserving the real signer.
+    r = resolve(apply, a, [p, q], dict(x=5, y=2, z=4), sa)
+    ou.reset_cache()
+    backup.private_mkdir(ex / 'status')
+    signed.write_local(ex / 'status' / 'windows.json', {'group': GROUP})
+    return p, q, r
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_publish_rotation_pending_v3_converges(indexed_peers, monkeypatch, lost, capsys):
+    import key_rotation as rotation
+    from test_resolution_apply import vector
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    pending = pending_texts(a)
+    evidence = evidence_rows(a)
+    assert r['format'] == signed.RESOLUTION_FORMAT
+    phrase, kwargs = rotate_args(indexed_peers)
+    if lost:
+        (sa.directory / 'identity.json').unlink()
+        (sa.directory / 'trust.json').unlink()
+        kwargs['old_key'] = sa.public['key_id']
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    summary = next(json.loads(line) for line in capsys.readouterr().err.splitlines() if 'packets_by_format' in line)
+    assert summary['packets_by_format'] == {signed.FORMAT: 1, signed.RESOLUTION_FORMAT: 1}
+    assert summary['operations_by_table'] == {'summary_state': {'upsert': 5, 'delete': 0}}
+    if lost:
+        signed.approve(sa.directory, sb.public, sb.public['key_id'], GROUP, 'windows', sb.public['sender'])
+    assert report['published_pending'] == 2 and report['manifest_packets'] == 2
+    assert evidence_rows(a) == evidence
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+    manifest = rotation.read_manifest((ex / report['proposal']).with_suffix('.manifest'))['packets']
+    assert manifest == {v['uuid']: signed.envelope_digest(v) for v in (p, r)}
+    # B has never committed P: it has its own conflicting Q only.
+    with sync.connect(b) as c:
+        assert not c.execute('SELECT 1 FROM _sync_receipts WHERE uuid=?', (p['uuid'],)).fetchone()
+    rotation.peer_rotate(sb.directory, ex / report['proposal'], confirm=lambda: report['new_fingerprint'])
+    sync.publish(b, ex, security=sb)
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == result['pending'] == result['conflict'] == 0
+    assert vector(a) == vector(b) == dict(x=5, y=2, z=4)
+    assert sync.receive(a, ex, security=signed.Security(sa.directory, unlock=lambda: phrase))['invalid'] == 0
+    with sync.connect(b) as c:
+        assert c.execute('SELECT envelope_digest FROM _sync_packet_dispositions WHERE packet_uuid=?',
+                         (p['uuid'],)).fetchone()[0] == signed.envelope_digest(p)
+
+
+@pytest.mark.parametrize('approved', [True, False])
+def test_publish_rotation_manifest_evidence_authorization(indexed_peers, monkeypatch, approved):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import retain, receive, vector
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    # Hold both packets while authorized; holding is deliberately not a receipt.
+    retain(b, [p, r], sb)
+    new = sealed_identity(sa.directory.with_name('offer-key'), 'mac', sender=sa.public['sender'])
+    for parent in (ex / 'pairing', ex / 'pairing' / 'rotations'):
+        backup.private_mkdir(parent)
+    manifest = ex / 'pairing' / 'rotations' / (new.public['key_id'] + '.manifest')
+    packets = [r, p] if approved else [r]
+    rotation.write_manifest(manifest, sorted((v['uuid'], signed.envelope_digest(v)) for v in packets))
+    proposal = manifest.with_suffix('.json')
+    signed.write_local(proposal, rotation.proposal(new, sa.public['key_id'], 'planned', manifest))
+    rotation.peer_rotate(sb.directory, proposal, confirm=lambda: new.public['key_id'])
+    before = vector(b)
+    if approved:
+        assert receive(apply, b, r, sb).status == 'applied'
+        assert vector(b) == dict(x=5, y=2, z=4)
+    else:
+        with pytest.raises(ValueError):
+            receive(apply, b, r, sb)
+        assert vector(b) == before
+        with sync.connect(b) as c:
+            assert c.execute('SELECT count(*) FROM _sync_packet_dispositions').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('point', ['before-file', pytest.param('after-file', marks=pytest.mark.skipif(os.name == 'nt', reason='POSIX directory fsync fault')), 'after-commit'])
+def test_publish_rotation_crash_resume_identical(indexed_peers, monkeypatch, point):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    pending = pending_texts(a)
+    phrase, kwargs = rotate_args(indexed_peers)
+    # Crash at real filesystem publication boundaries, not at a simulated DB update.
+    original = os.fsync
+    def crash_fsync(fd):
+        original(fd)
+        if point == 'before-file' and not os.path.isdir(ex / 'signed-changes' / 'mac'):
+            return
+        import stat
+        info = os.fstat(fd)
+        if point == 'before-file' and stat.S_ISREG(info.st_mode):
+            raise OSError('injected publish crash')
+        if point == 'after-file' and stat.S_ISDIR(info.st_mode):
+            raise OSError('injected publish crash')
+    def step(name):
+        if name == 'identity' and point != 'after-commit':
+            monkeypatch.setattr(os, 'fsync', crash_fsync)
+        if name == 'publish' and point == 'after-commit':
+            raise RuntimeError('injected publish crash')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=step, **kwargs)
+    monkeypatch.setattr(os, 'fsync', original)
+    for uid, text in pending.items():
+        path = ex / 'signed-changes' / 'mac' / (uid + '.json')
+        assert not path.exists() or path.read_bytes() == text.encode('utf-8')
+    assert not list((ex / 'signed-changes' / 'mac').glob('*.tmp'))
+    if point != 'after-commit': assert pending_texts(a) == pending
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['published_pending'] == len(pending)
+    assert not pending_texts(a)
+    for uid, text in pending.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+
+
+def test_publish_rotation_existing_different_file_refuses(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid = next(iter(pending_texts(a)))
+    path = ex / 'signed-changes' / 'mac' / (uid + '.json')
+    path.write_bytes(b'different immutable bytes')
+    os.utime(path, (1, 1))
+    before = snapshot(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError, match='pending packet is already'):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+@pytest.mark.parametrize('same', [False, True])
+def test_publish_writer_does_not_clobber_racing_file(indexed_peers, monkeypatch, same):
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid, text = next(iter(pending_texts(a).items()))
+    target = ex / 'signed-changes' / 'mac' / (uid + '.json')
+    competing = text.encode('utf-8') if same else b'immutable competing file'
+    original = os.link
+    def race(source, destination, *args, **kwargs):
+        if Path(destination) == target:
+            target.write_bytes(competing)
+        return original(source, destination, *args, **kwargs)
+    monkeypatch.setattr(os, 'link', race)
+    if same:
+        assert sync.publish(a, ex, security=sa)['published'] == 1
+    else:
+        with pytest.raises(ValueError, match='immutable packet path collision'):
+            sync.publish(a, ex, security=sa)
+        assert pending_texts(a) == {uid: text}
+    assert target.read_bytes() == competing
+
+
+@pytest.mark.parametrize('damage', ['signature', 'checksum', 'sender', 'unexpected'])
+def test_publish_rotation_v3_preparation_refuses_damage(indexed_peers, monkeypatch, damage):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    changed = dict(r)
+    if damage == 'signature': changed['signature'] = '0' * 128
+    elif damage == 'checksum': changed['checksum'] = '0' * 64
+    elif damage == 'sender': changed['sender'] = str(uuid.uuid4())
+    else: changed['key_id'] = sb.public['key_id']
+    with sync.connect(a) as c, c:
+        c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?', (sync.canonical(changed), r['uuid']))
+    before = snapshot(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+def test_publish_rotation_lost_key_still_checks_v2_checksum(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid, text = next(iter(pending_texts(a).items()))
+    p = signed.parse(text)
+    p['checksum'] = '0' * 64
+    with sync.connect(a) as c, c:
+        c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?', (sync.canonical(p), uid))
+    (sa.directory / 'identity.json').unlink()
+    (sa.directory / 'trust.json').unlink()
+    before = snapshot(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError, match='invalid pending outbox packet'):
+        rotation.identity_rotate(sa.directory, a, ex, reason='lost', old_key=sa.public['key_id'], **kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_publish_rotation_resume_abandoned_temporary_file(indexed_peers, partial):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid, text = next(iter(pending_texts(a).items()))
+    phrase, kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('process stopped before publish')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=crash, **kwargs)
+    journal = rotation.read_journal(sa.directory, ex)
+    # Model process termination before its finally block: the journal names the
+    # exact staging file and the only valid bytes are a prefix of stored text.
+    temp = ex / 'signed-changes' / 'mac' / ('.' + uid + '.rotate-' + journal['new_identity']['key_id'] + '.tmp')
+    raw = text.encode('utf-8')
+    temp.write_bytes(raw[:len(raw)//2] if partial else raw)
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['published_pending'] == 1 and not temp.exists()
+    assert (temp.parent / (uid + '.json')).read_bytes() == raw
+
+
+def test_publish_rotation_preserves_noncanonical_text(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid, text = next(iter(pending_texts(a).items()))
+    text = '\n' + json.dumps(signed.parse(text), ensure_ascii=False, indent=2) + '\n'
+    with sync.connect(a) as c, c:
+        c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?', (text, uid))
+    _, kwargs = rotate_args(indexed_peers)
+    rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+
+
+def test_publish_rotation_partial_batch_rolls_back_flags(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    pending_resolution(indexed_peers, monkeypatch)
+    before = pending_texts(a)
+    assert len(before) == 2
+    evidence = evidence_rows(a)
+    original = sync.write_packet
+    calls = []
+    def interrupted(*args, **kwargs):
+        original(*args, **kwargs)
+        calls.append(args[1])
+        raise OSError('injected crash after first file')
+    monkeypatch.setattr(sync, 'write_packet', interrupted)
+    phrase, kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert len(calls) == 1 and pending_texts(a) == before
+    assert evidence_rows(a) == evidence
+    monkeypatch.setattr(sync, 'write_packet', original)
+    assert rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)['published_pending'] == 2
+    assert not pending_texts(a)
+    assert evidence_rows(a) == evidence
+    for uid, text in before.items():
+        assert (ex / 'signed-changes' / 'mac' / (uid + '.json')).read_bytes() == text.encode('utf-8')
+
+
+@pytest.mark.parametrize('damage', ['temporary', 'outbox', 'published-file', 'old-journal'])
+def test_publish_rotation_resume_does_not_excuse_changed_state(indexed_peers, damage):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    uid, text = next(iter(pending_texts(a).items()))
+    _, kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == ('publish' if damage == 'published-file' else 'identity'):
+            raise RuntimeError('injected crash')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=crash, **kwargs)
+    journal = rotation.read_journal(sa.directory, ex)
+    if damage == 'temporary':
+        path = ex / 'signed-changes' / 'mac' / ('.' + uid + '.rotate-' + journal['new_identity']['key_id'] + '.tmp')
+        path.write_bytes(b'unrelated recent file')
+    elif damage == 'outbox':
+        with sync.connect(a) as c, c:
+            c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?', (text + ' ', uid))
+    elif damage == 'published-file':
+        (ex / 'signed-changes' / 'mac' / (uid + '.json')).write_bytes(b'different immutable bytes')
+    else:
+        journal['format'] = 'agentmesh-rotation-journal-v1'
+        signed.write_local(sa.directory / 'rotation-journal.json', journal)
+    before = snapshot(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+def test_compromise_report_v3_kinds_dispositions_and_live_wal(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import resolve, edit
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    s = resolve(apply, a, [r], dict(x=6, y=2, z=4), sa)
+    u = edit(a, dict(x=8), sa)
+    assert u['format'] == signed.RESOLUTION_FORMAT and u['kind'] == 'change'
+    sync.publish(a, ex, security=sa)
+    sync.publish(b, ex, security=sb)
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == result['pending'] == result['conflict'] == 0
+    with sync.connect(b) as c, c:
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute('CREATE TABLE report_wal_fixture(value INTEGER)')
+        c.execute('INSERT INTO report_wal_fixture VALUES(1)')
+        c.commit()
+        before = all_bytes(a.parent)
+        report = rotation.compromise_report(b, ex, sa.public['key_id'])
+        assert all_bytes(a.parent) == before
+        assert report['unreadable'] == 0
+        packets = {item['uuid']: item for item in report['committed'] + report['uncommitted']}
+        assert set(packets) == {v['uuid'] for v in (p, r, s, u)}
+        assert packets[p['uuid']]['superseded'] is True
+        assert packets[r['uuid']]['superseded'] is True
+        assert packets[s['uuid']]['superseded'] is False
+        assert packets[u['uuid']]['superseded'] is False
+        for packet in (r, s, u):
+            item = packets[packet['uuid']]
+            assert item['kind'] == packet['kind']
+            assert item['changes'] == [dict(kind=packet['kind'], table=ch['table'],
+                op='delete' if ch['row'] is None else 'upsert',
+                key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16])
+                for ch in packet['body']]
+        encoded = json.dumps(report)
+        assert all(value not in encoded for value in ('fixture', 'last_event_id', 'consumer', '"row"', '"key"', '"body"'))
+        assert rotation.compromise_report(b, ex, sa.public['key_id'], since='2099-01-01T00:00:00Z')['filtered_by_since'] == 4
+        assert all_bytes(a.parent) == before
+
+
+@pytest.mark.parametrize('with_store', [False, True])
+def test_compromise_report_v3_uncommitted_without_migration(peers, monkeypatch, with_store):
+    import key_rotation as rotation
+    import resolution_store as store
+    a, b, ex, sa, sb = peers
+    p, q, r = pending_resolution(peers, monkeypatch)
+    sync.publish(a, ex, security=sa)
+    if with_store:
+        with sync.connect(b) as c, c: store.migrate(c)
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(b, ex, sa.public['key_id'])
+    assert all_bytes(a.parent) == before
+    assert report['unreadable'] == 0 and len(report['uncommitted']) == 2
+    item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+    assert item['kind'] == 'resolution'
+    if with_store: assert item['superseded'] is False
+    else: assert 'superseded' not in item
+    with sync.connect(b) as c:
+        assert store.exists(c) is with_store
+
+
+@pytest.mark.parametrize('damage', ['signature', 'kind', 'body', 'checksum', 'extra'])
+def test_compromise_report_v3_hostile_envelopes(indexed_peers, monkeypatch, damage):
+    import key_rotation as rotation
+    import packet_versions as versions
+    import resolution_protocol as protocol
+    import resolution_apply as apply
+    from test_resolution_apply import resolve
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    resolve(apply, a, [r], dict(x=7, y=2, z=4), sa)
+    sync.publish(a, ex, security=sa)
+    path = ex / 'signed-changes' / 'mac' / (r['uuid'] + '.json')
+    changed = signed.parse(path.read_bytes())
+    if damage == 'signature': changed['signature'] = '0' * 128
+    elif damage == 'kind': changed['kind'] = 'untrusted-label-must-not-appear'
+    elif damage == 'body':
+        changed['body'][0]['table'] = 'untrusted-label-must-not-appear'
+        changed['checksum'] = protocol.payload_digest(versions.semantic(changed))
+    elif damage == 'checksum': changed['checksum'] = '0' * 64
+    else: changed['extra'] = 'untrusted-label-must-not-appear'
+    path.write_bytes(signed.wire(changed))
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(a, ex, sa.public['key_id'])
+    assert all_bytes(a.parent) == before
+    assert 'untrusted-label-must-not-appear' not in json.dumps(report)
+    if damage == 'signature':
+        # This read-only inventory does not authenticate signatures. A changed
+        # complete envelope must never inherit the original disposition.
+        item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+        assert item['superseded'] is False and item in report['forged_candidates']
+        assert report['unreadable'] == 0
+    else:
+        assert report['unreadable'] == 1
+        assert all(v['uuid'] != r['uuid'] for v in report['committed'] + report['uncommitted'])
+
+
+def test_publish_rotation_resume_skips_committed_outbox_rows(indexed_peers):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = indexed_peers
+    ready(indexed_peers)
+    _, kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'publish': raise RuntimeError('crash after publication commit')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=crash, **kwargs)
+    # Enforce the specified replay boundary: already-published immutable rows
+    # are skipped, rather than even updating them to the same values again.
+    with sync.connect(a) as c, c:
+        c.execute("""CREATE TRIGGER fixture_published_is_immutable BEFORE UPDATE ON _sync_outbox
+            WHEN OLD.published=1 BEGIN SELECT RAISE(ABORT, 'published packet update'); END""")
+    before = a.read_bytes()
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['published_pending'] == 1
+    assert a.read_bytes() == before
+
+
+def alternate_signature(key, message):
+    """Test-only affine Ed25519 signing with a chosen nonce; no extra dependency."""
+    field, order = 2**255 - 19, 2**252 + 27742317777372353535851937790883648493
+    d = -121665 * pow(121666, -1, field) % field
+    y = 4 * pow(5, -1, field) % field
+    xx = (y*y-1) * pow(d*y*y+1, -1, field) % field
+    x = pow(xx, (field+3)//8, field)
+    if x*x % field != xx: x = x * pow(2, (field-1)//4, field) % field
+    if x & 1: x = field-x
+    def add(p, q):
+        a,b = p; c,e = q
+        z = d*a*b*c*e % field
+        return ((a*e+b*c)*pow(1+z,-1,field)%field,
+                (b*e+a*c)*pow(1-z,-1,field)%field)
+    def mul(n):
+        p, q = (0,1), (x,y)
+        while n:
+            if n & 1: p = add(p,q)
+            q = add(q,q); n >>= 1
+        return p
+    def encode(p):
+        return (p[1] | ((p[0]&1)<<255)).to_bytes(32,'little')
+    h = bytearray(hashlib.sha512(key.private_bytes_raw()).digest())
+    h[0] &= 248; h[31] = (h[31] & 63) | 64
+    scalar = int.from_bytes(h[:32], 'little')
+    nonce = 42
+    R = encode(mul(nonce))
+    public = key.public_key().public_bytes_raw()
+    challenge = int.from_bytes(hashlib.sha512(R+public+message).digest(),'little') % order
+    return R + ((nonce+challenge*scalar)%order).to_bytes(32,'little')
+
+
+def test_round2_signature_variant_refused_then_original_accepted(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    path,p = publish(indexed_peers)
+    variant = dict(p)
+    variant['signature'] = alternate_signature(sa.key, signed.packet_domain(p) +
+        signed.typed({k:v for k,v in p.items() if k != 'signature'})).hex()
+    assert variant['signature'] != p['signature']
+    assert sb.verify(variant, GROUP, 'mac') == variant
+    manifest = ex / 'variant.manifest'
+    rotation.write_manifest(manifest, [(p['uuid'], signed.envelope_digest(p))])
+    rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    path.write_bytes(signed.wire(variant))
+    assert sync.receive(b, ex, security=sb)['invalid'] == 1
+    path.write_bytes(signed.wire(p))
+    assert sync.receive(b, ex, security=sb)['applied'] == 1
+
+
+def test_round2_refuses_v1_formats(peers):
+    import key_rotation as rotation
+    assert rotation.FORMAT == 'agentmesh-key-rotation-v2'
+    assert rotation.ROTATIONS == 'agentmesh-rotations-v2'
+    path,new = rotation_offer(peers)
+    p = signed.parse(path.read_bytes())
+    p['format'] = 'agentmesh-key-rotation-v1'
+    p['signature'] = new.sign_bytes(b'agentmesh-key-rotation-v1\0' + signed.typed({k:v for k,v in p.items() if k != 'signature'})).hex()
+    with pytest.raises(ValueError, match='invalid rotation proposal'):
+        rotation.check_proposal(p, path.with_suffix('.manifest'))
+    signed.write_local(peers[4].directory / 'rotations.json',
+                       dict(format='agentmesh-rotations-v1', rotations={}))
+    with pytest.raises(ValueError, match='invalid rotation registry'):
+        rotation.read_rotations(peers[4].directory)
+
+
+@pytest.mark.parametrize('same', [False, True])
+def test_round2_resume_file_bytes(indexed_peers, same):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',_after_step=crash,**kwargs)
+    path = ex/'signed-changes'/'mac'/(uid+'.json')
+    path.write_bytes(text.encode() if same else b'collision')
+    if same:
+        assert rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)['status'] == 'rotated'
+    else:
+        before = snapshot(indexed_peers)
+        with pytest.raises(ValueError, match='^pending packet file differs from the outbox; see compromise-report$'):
+            rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)
+        assert snapshot(indexed_peers) == before
+
+
+def test_round2_publish_prevalidates_entire_manifest(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    with sync.connect(a) as c,c:
+        c.execute("UPDATE memory_items SET content='third' WHERE id=1")
+    sync.capture(a,security=sa)
+    pending = pending_texts(a)
+    _,kwargs = rotate_args(indexed_peers)
+    def race(step):
+        if step == 'identity':
+            with sync.connect(a) as c,c:
+                c.execute('DELETE FROM _sync_outbox WHERE uuid=?',(sorted(pending)[-1],))
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',_after_step=race,**kwargs)
+    assert not any((ex/'signed-changes'/'mac'/(uid+'.json')).exists() for uid in pending)
+
+
+def test_round2_drop_pending_archives_and_reviews(indexed_peers, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    report = rotation.identity_rotate(sa.directory,a,ex,reason='compromised',drop_pending=[uid],**kwargs)
+    assert report['dropped_pending'] == [uid]
+    assert report['published_pending'] == 0
+    with sync.connect(a) as c:
+        assert c.execute('SELECT packet FROM _sync_rotation_dropped WHERE uuid=?',(uid,)).fetchone()[0] == text
+        assert not c.execute('SELECT 1 FROM _sync_outbox WHERE uuid=?',(uid,)).fetchone()
+    assert not (ex/'signed-changes'/'mac'/(uid+'.json')).exists()
+    manifest = rotation.read_manifest((ex/report['proposal']).with_suffix('.manifest'))['packets']
+    assert uid not in manifest
+    shown = capsys.readouterr().err
+    assert uid in shown and 'key_sha256' in shown and '"row"' not in shown
+
+
+@pytest.mark.parametrize('case', ['planned', 'unknown', 'referenced'])
+def test_round2_drop_refuses(indexed_peers, monkeypatch, case):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    if case == 'referenced':
+        p,q,r = pending_resolution(indexed_peers,monkeypatch)
+        uid = p['uuid']
+    else:
+        ready(indexed_peers)
+        uid = next(iter(pending_texts(a))) if case == 'planned' else str(uuid.uuid4())
+    before = snapshot(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError, match='drop-pending requires unreferenced pending packets'):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned' if case == 'planned' else 'compromised',
+                                 drop_pending=[uid],**kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+@pytest.mark.parametrize('step', ['publish', 'proposal', 'drop'])
+def test_round2_drop_resume(indexed_peers, step):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(name):
+        if name == step: raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',drop_pending=[uid],_after_step=crash,**kwargs)
+    with sync.connect(a) as c:
+        assert bool(c.execute('SELECT 1 FROM _sync_outbox WHERE uuid=?',(uid,)).fetchone()) == (step != 'drop')
+    report = rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)
+    assert report['dropped_pending'] == [uid]
+    with sync.connect(a) as c:
+        assert c.execute('SELECT packet FROM _sync_rotation_dropped WHERE uuid=?',(uid,)).fetchone()[0] == text
+
+
+@pytest.mark.parametrize('approve', [False, True])
+@pytest.mark.parametrize('foreign', [False, True])
+def test_round2_quarantine_collision(indexed_peers, approve, foreign, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',_after_step=crash,**kwargs)
+    p = signed.parse(text)
+    variant = dict(p)
+    if foreign:
+        variant.update(uuid=str(uuid.uuid4()), group=str(uuid.uuid4()))
+    variant['signature'] = alternate_signature(sa.key, signed.packet_domain(p)+signed.typed(
+        {k:v for k,v in variant.items() if k != 'signature'})).hex()
+    raw = signed.wire(variant)
+    path = ex/'signed-changes'/'mac'/(uid+'.json')
+    path.write_bytes(raw)
+    before = snapshot(indexed_peers)
+    words = []
+    def confirm(word):
+        words.append(word)
+        return word if approve or word != 'QUARANTINE' else ''
+    kwargs['confirm'] = confirm
+    if not approve:
+        with pytest.raises(ValueError, match='rotation confirmation was not supplied'):
+            rotation.identity_rotate(sa.directory,a,ex,resume=True,quarantine_collision=[uid],**kwargs)
+        assert snapshot(indexed_peers) == before
+    else:
+        rotation.identity_rotate(sa.directory,a,ex,resume=True,quarantine_collision=[uid],**kwargs)
+        assert path.read_bytes() == text.encode()
+        target = ex/'pairing'/'rotations'/'quarantine'/(uid+'.'+signed.envelope_digest(variant)+'.json')
+        assert target.read_bytes() == raw
+    assert 'QUARANTINE' in words
+    shown = capsys.readouterr().err
+    assert signed.envelope_digest(p) in shown and signed.envelope_digest(variant) in shown
+
+
+def test_round2_report_variant_and_version_validation(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import packet_versions as versions
+    import resolution_apply as apply
+    from test_resolution_apply import resolve
+    a,b,ex,sa,sb = indexed_peers
+    p,q,r = pending_resolution(indexed_peers,monkeypatch)
+    resolve(apply,a,[r],dict(x=7,y=2,z=4),sa)
+    sync.publish(a,ex,security=sa)
+    manifest = ex/'report.manifest'
+    rotation.write_manifest(manifest,[(r['uuid'],signed.envelope_digest(r))])
+    rotation.add_rotation(sa.directory,sa.public['key_id'],sb.public['key_id'],manifest)
+    path = ex/'signed-changes'/'mac'/(r['uuid']+'.json')
+    variant = dict(r)
+    variant['signature'] = alternate_signature(sa.key,signed.packet_domain(r)+signed.typed(
+        {k:v for k,v in r.items() if k != 'signature'})).hex()
+    path.write_bytes(signed.wire(variant))
+    called = []
+    original = versions.validate_wire
+    def validate(packet, **kwargs):
+        called.append(packet['uuid'])
+        return original(packet,**kwargs)
+    monkeypatch.setattr(versions,'validate_wire',validate)
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(a,ex,sa.public['key_id'],security_dir=sa.directory)
+    assert all_bytes(a.parent) == before
+    item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+    assert item['superseded'] is False and item['variant_superseded'] is True
+    assert item['in_manifest'] is False and item in report['forged_candidates']
+    assert r['uuid'] in called
+    path.write_bytes(signed.wire(r))
+    report = rotation.compromise_report(a,ex,sa.public['key_id'],security_dir=sa.directory)
+    item = next(v for v in report['uncommitted']+report['committed'] if v['uuid'] == r['uuid'])
+    assert item['superseded'] is True and item['variant_superseded'] is False
+    assert item['in_manifest'] is True and item not in report['forged_candidates']
+
+
+def test_round2_registry_change_invalidates_missing_cache(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    path,p = publish(indexed_peers)
+    signed.revoke(sb.directory,sa.public['key_id'])
+    with pytest.raises(ValueError): sb.verify_rotated(p,GROUP,'mac')
+    manifest = ex/'late.manifest'
+    rotation.write_manifest(manifest,[(p['uuid'],signed.envelope_digest(p))])
+    rotation.add_rotation(sb.directory,sa.public['key_id'],sb.public['key_id'],manifest)
+    assert sb.verify_rotated(p,GROUP,'mac') == p
+
+
+def test_round2_pre_rotation_resolution_plan_is_stale(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import ref, choices
+    a,b,ex,sa,sb = indexed_peers
+    p,q,r = pending_resolution(indexed_peers,monkeypatch)
+    with sync.connect(a) as c,c:
+        plan = apply.prepare_resolution(c,[ref(r)],choices(x=7,y=2,z=4),security=sa)
+    phrase,kwargs = rotate_args(indexed_peers)
+    rotation.identity_rotate(sa.directory,a,ex,reason='planned',**kwargs)
+    new = signed.Security(sa.directory,unlock=lambda:phrase)
+    assert apply._trust(new) != plan.trust_digest
+    before = snapshot(indexed_peers)
+    with sync.connect(a) as c,c:
+        assert apply._state(c) == plan.state_digest
+        with pytest.raises(ValueError,match='stale resolution plan'):
+            apply.commit_resolution(c,plan,security=new,operation_id='round2-stale')
+    assert snapshot(indexed_peers) == before
+
+
+def test_round2_cli_flags_and_fixed_reasons(peers, monkeypatch):
+    import agentmesh
+    import cli_errors
+    import key_rotation as rotation
+    a,b,ex,sa,sb = peers
+    calls = []
+    def rotate(*args, **kwargs):
+        calls.append(kwargs)
+        return {'status':'rotated'}
+    monkeypatch.setattr(rotation,'identity_rotate',rotate)
+    base = ['identity-rotate','--security-dir',str(sa.directory),'--db',str(a),'--exchange',str(ex)]
+    ids = [str(uuid.uuid4()),str(uuid.uuid4())]
+    assert agentmesh.main(base+['--reason','compromised','--drop-pending',ids[0],'--drop-pending',ids[1]]) == 0
+    assert calls[-1]['drop_pending'] == ids
+    assert agentmesh.main(base+['--resume','--quarantine-collision',ids[0]]) == 0
+    assert calls[-1]['resume'] and calls[-1]['quarantine_collision'] == ids[:1]
+    for reason in (rotation.PENDING_DIFFERS,rotation.DROP_INVALID,rotation.QUARANTINE_INVALID):
+        assert reason in cli_errors.KEY_REASONS
+        assert cli_errors.report(ValueError(reason),'identity-rotate')['reason'] == reason
+
+
+@pytest.mark.parametrize('option', ['drop_pending','quarantine_collision'])
+def test_round2_option_scope_refuses_without_writes(indexed_peers, option):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    before = snapshot(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',**{option:[str(uuid.uuid4())]},**kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+def test_round2_compromise_review_rejects_untrusted_labels(indexed_peers, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    p = signed.parse(text)
+    marker = 'untrusted-table-label-must-not-appear'
+    p['body'][0]['table'] = marker
+    p['checksum'] = hashlib.sha256(signed.typed(p['body'])).hexdigest()
+    p['signature'] = sa.sign_bytes(signed.packet_domain(p)+signed.typed(
+        {k:v for k,v in p.items() if k != 'signature'})).hex()
+    with sync.connect(a) as c,c:
+        c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=?',(sync.canonical(p),uid))
+    before = snapshot(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError,match='invalid pending outbox packet'):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',**kwargs)
+    assert marker not in capsys.readouterr().err
+    assert snapshot(indexed_peers) == before
+
+
+def test_round2_quarantine_retains_confirmed_bytes_if_source_changes(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',_after_step=crash,**kwargs)
+    packet = signed.parse(text)
+    packet['signature'] = '0'*128
+    raw = signed.wire(packet)
+    path = ex/'signed-changes'/'mac'/(uid+'.json')
+    path.write_bytes(raw)
+    target = ex/'pairing'/'rotations'/'quarantine'/(uid+'.'+signed.envelope_digest(packet)+'.json')
+    original = os.link
+    def race(source, destination, *args, **kw):
+        original(source,destination,*args,**kw)
+        if Path(destination) == target: path.write_bytes(b'changed after confirmation')
+    monkeypatch.setattr(os,'link',race)
+    with pytest.raises(ValueError,match='pending packet file differs from the outbox'):
+        rotation.identity_rotate(sa.directory,a,ex,resume=True,quarantine_collision=[uid],**kwargs)
+    assert target.read_bytes() == raw
+    assert path.read_bytes() == b'changed after confirmation'
+    assert pending_texts(a) == {uid:text}

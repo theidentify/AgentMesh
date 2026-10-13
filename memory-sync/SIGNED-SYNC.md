@@ -149,18 +149,35 @@ reconciliation of subsequent writes, NOT removing the latch or dropping history.
 
 ## Rotation and revocation
 
-Generate a replacement into a **new** private directory, with `init --sender` set
-to the existing sender UUID and the same group/slot. Verify the new fingerprint
-out of band on every receiver; approve it explicitly, then revoke the old key at
-the agreed boundary. Do not change the production identity merely to test rotation.
-Drain signed outboxes before revoking their signing keys; old unpublished packets
-cannot be silently rewritten. Revocation blocks **new, unapplied packets** from
-that key. Packets already committed remain accepted: the receiver checks their
+Use `identity-rotate` and `peer-rotate` as described in
+[Lost or compromised keys](KEY-PROTECTION.md#lost-or-compromised-keys). Rotation keeps the sender,
+group and slot. Verify the new fingerprint out of band on every receiver. For a suspected compromise,
+revoke the old key on every peer immediately, before rotation. Do not change a production identity
+merely to test rotation.
+
+With the operator's `PUBLISH` confirmation, rotation publishes pending old-key v2 and v3 packets
+**byte for byte**, including resolution packets. It never re-signs packets or changes their signatures,
+digests or evidence references. The signed rotation manifest lists both pending and already-published
+old-key packets. Revocation blocks **new, unapplied packets** except those authorized by an approved
+rotation manifest.
+
+Packets already committed remain accepted: the receiver checks their
 packet UUID, recorded content/identity digest, and complete envelope digest
 (including signature) before consulting current peer trust. Retaining these exact
 packets does not create invalid diagnostics or stop the worker. Changing content,
 identity, signature, filename, or sender folder is still rejected. Do not delete
 history. Replacing a lost key is explicit recovery, not auto-generation.
+
+An **approved rotation manifest authorizes resolution evidence** as well as ordinary receipt of its
+listed packets. After the operator approves the new fingerprint, a revoked-key packet must match the
+manifest's UUID and envelope digest (signature included) and still pass historical signature verification with the retained
+old public key. This includes `covers`/`evidence` never committed at that peer before revocation and
+v3 resolution packets signed by the old key. Manifest acceptance gives authorization state
+`verified`, not `applied`; only a real commit establishes an applied receipt. Proposals use
+`agentmesh-key-rotation-v2` and registries use `agentmesh-rotations-v2`; v1 is refused. The approval is explicit authorization of that history;
+it does not reactivate the old key. Packets outside the approved manifest remain subject to strict
+revocation, including previously verified but uncommitted evidence. Existing exact committed-receipt
+and superseded-disposition exceptions are unchanged. No synthetic receipt bypasses verification.
 
 Receipts from older installations omit signature bytes. On their first replay,
 the receiver requires the exact recorded content/identity digest and verifies the
@@ -261,11 +278,12 @@ signature bytes. V2's domain, checksum and receipt encoding are unchanged. Stric
 field sets, filename/folder/scope checks and bounded proof validation still apply.
 
 A resolver signs its own decision; it does not impersonate either source sender.
-Previously verified but uncommitted evidence must still pass **current** trust.
-A revocation can therefore stop a pending resolution. Only an exact committed
-receipt or superseded disposition grants the existing historical-replay exception;
-a changed envelope/signature with the same UUID is rejected. No synthetic receipt
-is used to bypass revocation. The transaction rechecks the trust digest before
+Previously verified but uncommitted evidence must still pass **current authorization**: active pinned
+trust, or an approved rotation manifest with matching UUID/envelope digest and historical signature
+verification, as described above. Without that approval, strict revocation can stop a pending resolution.
+Exact committed receipts and superseded dispositions retain their historical-replay exception;
+a changed envelope/signature with the same UUID is rejected. No synthetic receipt is used to bypass
+revocation. The transaction rechecks the trust digest before
 completion, but filesystem trust and SQLite do not share an atomic transaction.
 
 Use `resolve --preview` with `mine`, `theirs`, `row`, or `delete`, then confirm the

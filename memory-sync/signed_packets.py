@@ -375,6 +375,15 @@ class Security:
         if entry is None or not entry['revoked']:
             raise ValueError('unknown or revoked signing key')
         key_id = p['key_id']
+        registry = no_symlinks(self.directory / 'rotations.json')
+        try:
+            info = registry.stat()
+            stamp = (info.st_mtime_ns, info.st_size)
+        except FileNotFoundError:
+            stamp = None
+        if getattr(self, '_rotation_registry_stamp', object()) != stamp:
+            self._rotation_manifests.clear()
+            self._rotation_registry_stamp = stamp
         if key_id not in self._rotation_manifests:
             # Cache failures too: a hostile stream cannot force repeated large-file reads.
             self._rotation_manifests[key_id] = None
@@ -384,7 +393,7 @@ class Security:
                     self.directory / 'rotations' / (key_id + '.manifest'), private=True,
                     sha256=rotation['manifest_sha256'], count=rotation['manifest_count'])['packets']
         packets = self._rotation_manifests[key_id]
-        if packets is None or packets.get(p['uuid']) != receipt_digest(p):
+        if packets is None or packets.get(p['uuid']) != envelope_digest(p):
             raise ValueError('unknown or revoked signing key')
         return self._verify(p, group, folder, historical=True)
 

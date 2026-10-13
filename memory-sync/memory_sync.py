@@ -384,7 +384,8 @@ def receive(db, exchange, *, security=None):
             try:
                 if security is not None:
                     from signed_packets import read_local, parse
-                    p = parse(read_local(path))
+                    packet_bytes = read_local(path)
+                    p = parse(packet_bytes)
                 else:
                     p=load_packet(path.read_text(encoding='utf-8'))
                 with connect(db) as c, c:
@@ -394,6 +395,13 @@ def receive(db, exchange, *, security=None):
                         from signed_packets import validate_envelope
                         validate_envelope(p, config(c)['group_id'], path.parent.name)
                         if path.name != p['uuid']+'.json': raise ValueError('signed packet filename mismatch')
+                        if p['node'] == config(c)['node']:
+                            own = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (p['uuid'],)).fetchone()
+                            if own is None or packet_bytes != own[0].encode('utf-8'):
+                                raise ValueError('unknown packet claiming local node')
+                            verified_signature = None
+                            c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
+                            continue
                         received = _received_signed(c, p, security, path.parent.name)
                         if received is not None:
                             verified_signature = True if received == 'verified' else None

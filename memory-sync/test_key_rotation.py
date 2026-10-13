@@ -629,3 +629,37 @@ def test_restore_revoked_key_into_empty_trust_cannot_reauthorize_peer(peers):
     assert restored.public == sa.public
     assert sync.publish(a, ex, security=restored)['published'] == 1
     assert sync.receive(b, ex, security=sb)['invalid'] == 2
+
+
+def test_recovery_cli_errors_and_packaging(peers, capsys):
+    import agentmesh
+    import cli_errors
+    import key_rotation as rotation
+    import standalone_build
+    import build_package
+    a, b, ex, sa, sb = peers
+    ready(peers)
+    before = snapshot(peers)
+    assert agentmesh.main(['identity-rotate', '--security-dir', str(sa.directory), '--db', str(a), '--exchange', str(ex), '--reason', 'planned']) == 1
+    output = capsys.readouterr()
+    assert not output.out
+    assert json.loads(output.err.splitlines()[-1])['reason'] == 'passphrase entry requires an interactive console'
+    assert snapshot(peers) == before
+    assert agentmesh.main(['compromise-report', '--db', str(a), '--exchange', str(ex), '--key', sa.public['key_id']]) == 0
+    assert json.loads(capsys.readouterr().out)['committed'] == []
+    for action in ('identity-rotate', 'peer-rotate', 'compromise-report'):
+        assert cli_errors.report(ValueError(rotation.INVALID), action)['reason'] == rotation.INVALID
+        assert 'sensitive' not in json.dumps(cli_errors.report(ValueError('sensitive'), action))
+        with pytest.raises(SystemExit) as error: agentmesh.main([action, '--help'])
+        assert error.value.code == 0
+        capsys.readouterr()
+    assert 'key_rotation' in cli_errors.TRUSTED_MODULES
+    assert 'key_rotation' in standalone_build.HIDDEN_MODULES
+    assert 'key_rotation.py' in build_package.FILES
+
+
+def test_recovery_source_smoke(tmp_path):
+    import smoke_standalone
+    import sys
+    import agentmesh
+    smoke_standalone.smoke_recovery([sys.executable, agentmesh.__file__], Path(os.path.realpath(tmp_path)))

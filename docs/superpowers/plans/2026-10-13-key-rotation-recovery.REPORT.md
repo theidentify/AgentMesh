@@ -57,3 +57,9 @@ Small additions: `uncommitted` exposes redacted foreign forged candidates so the
 ## Task 8
 
 Task 7 commit: `8d79ac4`. E2E/restore tests: two expected leftover-refusal failures, two existing behaviors passed before the restore guard change. Green: 268 recovery/backup/signed-packet tests passed from each location. Real capture/publish/receive cycles converge after immediate peer revocation, rotation and approval; a stolen-key forgery is refused and reported, and prior receipts still verify historically. Empty-trust restore regression confirms local restoration does not undo remote revocation.
+
+## Task 9
+
+Task 8 commit: `af5eea0`. CLI and source smoke tests failed first. Green: 224 recovery/CLI/build/backup tests passed from each location. All three commands, error reasons/actions, trusted module, hidden imports, bootstrap allowlist and native CI list are wired. Shared source/frozen recovery smoke uses only sealed disposable identities and explicit subprocess cwd.
+
+Built macOS arm64 with pinned PyInstaller 6.16.0 and hooks 2026.8. One-file binary built but sandbox execution failed before Python: `Failed to initialize sync semaphore; semctl: Operation not permitted`. Built a disposable onedir variant instead and its complete recovery smoke passed (three helps, two non-console unchanged-state refusals, empty read-only report). Native Windows execution remains CI-only. --reason is optional only for replay in practice: a new rotation without a valid reason refuses, while --resume takes the authenticated journal reason.

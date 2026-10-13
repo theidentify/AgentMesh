@@ -168,3 +168,50 @@ def test_registry_strict_schema(peers, damage):
     signed.write_local(directory / 'rotations.json', doc)
     with pytest.raises(ValueError, match='^invalid rotation registry$'):
         rotation.read_rotations(directory)
+
+
+@pytest.mark.parametrize('case', ['accepted', 'digest', 'absent', 'no-registry', 'signature', 'corrupt-file'])
+def test_revoked_manifest_receive(peers, case):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    path, p = publish(peers)
+    manifest = ex / 'approved.manifest'
+    digest = '0'*64 if case == 'digest' else signed.receipt_digest(p)
+    rotation.write_manifest(manifest, [] if case == 'absent' else [(p['uuid'], digest)])
+    if case != 'no-registry':
+        rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    if case == 'signature':
+        p['signature'] = '0'*128
+        path.write_bytes(signed.wire(p))
+    if case == 'corrupt-file':
+        (sb.directory / 'rotations' / (sa.public['key_id'] + '.manifest')).write_bytes(b'')
+    result = sync.receive(b, ex, security=sb)
+    assert result['applied'] == int(case == 'accepted')
+    assert result['invalid'] == int(case != 'accepted')
+
+
+def test_manifest_causality_and_lazy_cache(peers, monkeypatch):
+    import key_rotation as rotation
+    a, b, ex, sa, sb = peers
+    first, p = publish(peers)
+    raw = first.read_bytes()
+    first.unlink()
+    second, q = publish(peers, 'second')
+    manifest = ex / 'approved.manifest'
+    pairs = sorted([(p['uuid'], signed.receipt_digest(p)), (q['uuid'], signed.receipt_digest(q))])
+    rotation.write_manifest(manifest, pairs)
+    rotation.add_rotation(sb.directory, sa.public['key_id'], sb.public['key_id'], manifest)
+    signed.revoke(sb.directory, sa.public['key_id'])
+    calls = []
+    original = rotation.read_manifest
+    def count(*a, **kw):
+        calls.append(1)
+        return original(*a, **kw)
+    monkeypatch.setattr(rotation, 'read_manifest', count)
+    assert sync.receive(b, ex, security=sb)['pending'] == 1
+    first.write_bytes(raw)
+    assert sync.receive(b, ex, security=sb)['applied'] == 2
+    assert len(calls) == 1
+    with sync.connect(b) as c:
+        assert c.execute('SELECT content FROM memory_items WHERE id=1').fetchone()[0] == 'second'

@@ -25,3 +25,7 @@ Tasks 3–11 are not yet completed. No final full-suite result yet.
 ## Task 2
 
 Task 1 commit: `0aae4a5`. Added streaming manifest IO, domain-separated proposals, and strict private rotation registry. Red: 25 failed / 5 passed; green: 30 passed from each working directory. A 60,000-entry manifest passes without packet parse/typed limits. Errors are raised outside exception handlers with fixed reasons.
+
+## Task 3
+
+Task 2 commit: `5544210`. R2 red: two failures / five passes. Green: 131 tests passed in memory-sync and repository root (recovery, signed-packet, and security-regression suites). Revoked trust selects manifest verification after committed receipts and before validation/application. Membership never bypasses historical signature verification. Lazy caches include failed loads to bound hostile repeated reads.

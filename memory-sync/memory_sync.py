@@ -407,7 +407,12 @@ def receive(db, exchange, *, security=None):
                             verified_signature = True if received == 'verified' else None
                             c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
                             continue
-                        security.verify(p, config(c)['group_id'], path.parent.name)
+                        from signed_packets import read_trust
+                        entry = read_trust(security.directory)['peers'].get(p['key_id'])
+                        if entry is not None and entry['revoked']:
+                            security.verify_rotated(p, config(c)['group_id'], path.parent.name)
+                        else:
+                            security.verify(p, config(c)['group_id'], path.parent.name)
                         verified_signature = True
                         legacy = {k: p[k] for k in ('group','node','uuid','body')}
                         legacy.update(format=FORMAT, checksum=digest(p['body']))

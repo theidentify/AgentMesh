@@ -303,6 +303,12 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
    `.stfolder` marker and a status file for the database group. Pending packets already present in
    either `signed-changes/` or `changes/` refuse rotation; inspect or publish them first.
 
+   With `--reason compromised`, review each pending UUID, format, v3 kind, table/operation and
+   `key_sha256`; row contents are never shown. Repeat `--drop-pending UUID` to exclude reviewed
+   packets from publication and the manifest. This option is only accepted for a fresh compromised
+   rotation. A packet referenced by another pending packet's covers/evidence cannot be dropped.
+   Dropped packets stay unpublished until finish, then move byte-identically into the local
+   `_sync_rotation_dropped(uuid, packet, dropped_at)` archive. The report lists `dropped_pending`.
    If pending packets exist, review the counts per packet format and per table/operation, then type `PUBLISH`.
    Rotation publishes pending v2 and v3 packets exactly as stored, including resolution packets.
    Their bytes, signatures and evidence digests never change; the manifest lists them alongside
@@ -338,7 +344,7 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
 
    `committed` lists matching local receipts, timestamps and table/operation metadata. Row keys are
    represented only by a 16-hex SHA-256 prefix; row contents and raw keys are never emitted.
-   `in_manifest` means the UUID and receipt digest match this device's approved manifest; it is null
+   `in_manifest` means the UUID and envelope digest (including the signature) match this device's approved manifest; it is null
    without `--security-dir`. Committed packets outside that manifest deserve particular attention.
    `uncommitted` shows other observed old-key files. On the originating device, `forged_candidates`
    identifies own-node files that do not match the outbox byte for byte. These are evidence for

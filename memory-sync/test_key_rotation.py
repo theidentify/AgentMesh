@@ -1593,3 +1593,59 @@ def test_round2_publish_prevalidates_entire_manifest(indexed_peers):
     with pytest.raises(ValueError):
         rotation.identity_rotate(sa.directory,a,ex,reason='planned',_after_step=race,**kwargs)
     assert not any((ex/'signed-changes'/'mac'/(uid+'.json')).exists() for uid in pending)
+
+
+def test_round2_drop_pending_archives_and_reviews(indexed_peers, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    report = rotation.identity_rotate(sa.directory,a,ex,reason='compromised',drop_pending=[uid],**kwargs)
+    assert report['dropped_pending'] == [uid]
+    assert report['published_pending'] == 0
+    with sync.connect(a) as c:
+        assert c.execute('SELECT packet FROM _sync_rotation_dropped WHERE uuid=?',(uid,)).fetchone()[0] == text
+        assert not c.execute('SELECT 1 FROM _sync_outbox WHERE uuid=?',(uid,)).fetchone()
+    assert not (ex/'signed-changes'/'mac'/(uid+'.json')).exists()
+    manifest = rotation.read_manifest((ex/report['proposal']).with_suffix('.manifest'))['packets']
+    assert uid not in manifest
+    shown = capsys.readouterr().err
+    assert uid in shown and 'key_sha256' in shown and '"row"' not in shown
+
+
+@pytest.mark.parametrize('case', ['planned', 'unknown', 'referenced'])
+def test_round2_drop_refuses(indexed_peers, monkeypatch, case):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    if case == 'referenced':
+        p,q,r = pending_resolution(indexed_peers,monkeypatch)
+        uid = p['uuid']
+    else:
+        ready(indexed_peers)
+        uid = next(iter(pending_texts(a))) if case == 'planned' else str(uuid.uuid4())
+    before = snapshot(indexed_peers)
+    _,kwargs = rotate_args(indexed_peers)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned' if case == 'planned' else 'compromised',
+                                 drop_pending=[uid],**kwargs)
+    assert snapshot(indexed_peers) == before
+
+
+@pytest.mark.parametrize('step', ['publish', 'proposal', 'drop'])
+def test_round2_drop_resume(indexed_peers, step):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(name):
+        if name == step: raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',drop_pending=[uid],_after_step=crash,**kwargs)
+    with sync.connect(a) as c:
+        assert bool(c.execute('SELECT 1 FROM _sync_outbox WHERE uuid=?',(uid,)).fetchone()) == (step != 'drop')
+    report = rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)
+    assert report['dropped_pending'] == [uid]
+    with sync.connect(a) as c:
+        assert c.execute('SELECT packet FROM _sync_rotation_dropped WHERE uuid=?',(uid,)).fetchone()[0] == text

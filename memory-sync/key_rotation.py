@@ -200,10 +200,11 @@ BUSY = 'a worker or cycle is using this database'
 CANCELLED = 'rotation confirmation was not supplied'
 PENDING_EXCHANGE = 'pending packet is already in the exchange; publish or inspect it before rotating'
 PENDING_DIFFERS = 'pending packet file differs from the outbox; see compromise-report'
+DROP_INVALID = 'drop-pending requires unreferenced pending packets and reason compromised'
 PENDING_INVALID = 'invalid pending outbox packet'
 RUNTIME = 'runtime does not match rotation paths'
 INCOMPLETE_WAL = 'database WAL sidecars are incomplete; inspect or checkpoint the stopped database before retrying'
-REASONS |= {PENDING_DIFFERS, LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
+REASONS |= {DROP_INVALID, PENDING_DIFFERS, LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
 UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GROUP, backup.TARGET_EXCHANGE,
     backup.PASSPHRASE_SHORT, backup.PASSPHRASE_MISMATCH, 'passphrase entry requires an interactive console'}
 
@@ -316,7 +317,9 @@ def fence(db, exchange, own, runtime, confirm, *, rotation_files=None):
         yield
 
 
-def _read_plan(directory, db, *, old_key=None, journal=None):
+def _read_plan(directory, db, *, old_key=None, journal=None, drop_pending=()):
+    dropped = dict(journal['manifest']['dropped_packets']) if journal else {}
+    selected = set(dropped if journal else drop_pending)
     trust = signed.read_trust(directory) if (directory / 'trust.json').exists() else None
     own = None
     with readonly(db) as c:
@@ -352,9 +355,19 @@ def _read_plan(directory, db, *, old_key=None, journal=None):
             if verifier is not None:
                 try: verify_old(p, verifier)
                 except Exception: raise ValueError(PENDING_INVALID) from None
+            if p['uuid'] in selected:
+                digest = hashlib.sha256(row['packet'].encode('utf-8')).hexdigest()
+                if journal and dropped[p['uuid']] != digest: raise ValueError(PENDING_INVALID)
+                dropped[p['uuid']] = digest
+                continue
             pending.append(p)
             manifest.append((p['uuid'], signed.envelope_digest(p)))
             texts[p['uuid']] = hashlib.sha256(row['packet'].encode('utf-8')).hexdigest()
+        if selected != set(dropped): raise ValueError(DROP_INVALID)
+        for packet in (signed.parse(row[0]) for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0')):
+            if any(ref['uuid'] in selected for ref in packet.get('covers', []) + packet.get('evidence', [])):
+                raise ValueError(DROP_INVALID)
+        _check_dropped(c, dropped)
         if journal is not None:
             expected = journal['manifest']['pending_packets']
             # Published rows must still match too, including after a DB commit.
@@ -365,11 +378,31 @@ def _read_plan(directory, db, *, old_key=None, journal=None):
             if any(expected.get(uid) != digest for uid, digest in texts.items()):
                 raise ValueError(PENDING_INVALID)
     return dict(binding=scope, old_key_id=key_id, old_public=own, trust=trust, pending=pending,
-                manifest=manifest, pending_packets=texts)
+                manifest=manifest, pending_packets=texts, dropped_packets=dropped)
+
+
+def _check_dropped(c, dropped):
+    for uid, digest in dropped.items():
+        row = c.execute('SELECT packet,published FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
+        if row is None:
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_rotation_dropped'").fetchone():
+                raise ValueError(PENDING_INVALID)
+            row = c.execute('SELECT packet,0 FROM _sync_rotation_dropped WHERE uuid=?', (uid,)).fetchone()
+        if row is None or row[1] or hashlib.sha256(row[0].encode('utf-8')).hexdigest() != digest:
+            raise ValueError(PENDING_INVALID)
+
+
+def packet_summary(p):
+    item = dict(uuid=p['uuid'], format=p['format'], changes=[
+        dict(table=ch['table'], op='delete' if ch['row'] is None else 'upsert',
+             key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16])
+        for ch in p['body']])
+    if p['format'] == signed.RESOLUTION_FORMAT: item['kind'] = p['kind']
+    return item
 
 
 @contextmanager
-def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=backup.console_confirm, _journal=None):
+def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=backup.console_confirm, _journal=None, drop_pending=(), rotation_reason=None):
     reason = FAILED
     try:
         directory = signed.no_symlinks(security_dir)
@@ -380,7 +413,7 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
             if _journal is None and ((directory / 'rotation-journal.json').exists() or list(directory.glob('.rotate-*'))
                     or list(directory.glob('.restore-*')) or (directory / 'trust.json.pre-restore').exists()):
                 raise ValueError(LEFTOVERS)
-        initial = _read_plan(directory, db, old_key=old_key, journal=_journal)
+        initial = _read_plan(directory, db, old_key=old_key, journal=_journal, drop_pending=drop_pending)
         expected = None if _journal is None else _journal['manifest']['pending_packets']
         rotation_files = None if expected is None else {
             Path(exchange) / 'signed-changes' / initial['binding']['node'] / (uid + '.json'): digest
@@ -402,9 +435,13 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
                         text = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()[0]
                         if text.encode('utf-8').startswith(raw): rotation_files[temp] = hashlib.sha256(raw).hexdigest()
         with fence(db, exchange, initial['binding'], runtime, confirm, rotation_files=rotation_files):
-            plan = _read_plan(directory, db, old_key=old_key, journal=_journal)
+            plan = _read_plan(directory, db, old_key=old_key, journal=_journal, drop_pending=drop_pending)
             if plan['binding'] != initial['binding'] or plan['old_key_id'] != initial['old_key_id']: raise ValueError(BINDING)
             no_pending_files(exchange, plan['binding']['node'], plan['pending'], expected=expected_bytes)
+            if rotation_reason == 'compromised' and _journal is None:
+                with readonly(db) as c:
+                    backup.show({'pending_review': [packet_summary(signed.parse(row[0])) for row in
+                        c.execute('SELECT packet FROM _sync_outbox WHERE published=0 ORDER BY uuid')]})
             if plan['pending'] and _journal is None:
                 tables, formats = {}, {}
                 for packet in plan['pending']:
@@ -489,11 +526,17 @@ def read_journal(directory, exchange):
         if old['key_id'] != doc['old_key_id'] or any(old[k] != new[k] for k in ('group', 'node', 'sender')):
             raise ValueError(JOURNAL_INVALID)
     meta = doc['manifest']
-    if type(meta) is not dict or set(meta) != {'sha256', 'count', 'published_pending', 'pending_packets', 'trust_restored'} or type(meta['published_pending']) is not int or meta['published_pending'] < 0 or type(meta['trust_restored']) is not bool:
+    if type(meta) is not dict or set(meta) != {'sha256', 'count', 'published_pending', 'pending_packets', 'dropped_packets', 'trust_restored'} or type(meta['published_pending']) is not int or meta['published_pending'] < 0 or type(meta['trust_restored']) is not bool:
         raise ValueError(JOURNAL_INVALID)
     pending = meta['pending_packets']
     if type(pending) is not dict or len(pending) != meta['published_pending']: raise ValueError(JOURNAL_INVALID)
     for uid, digest in pending.items():
+        if not signed.canonical_uuid(uid): raise ValueError(JOURNAL_INVALID)
+        signed.hex_bytes(digest, 32)
+    dropped = meta['dropped_packets']
+    if type(dropped) is not dict or set(dropped) & set(pending): raise ValueError(JOURNAL_INVALID)
+    if dropped and doc['reason'] != 'compromised': raise ValueError(JOURNAL_INVALID)
+    for uid, digest in dropped.items():
         if not signed.canonical_uuid(uid): raise ValueError(JOURNAL_INVALID)
         signed.hex_bytes(digest, 32)
     p = doc['proposal']
@@ -546,12 +589,19 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
                              count=journal['manifest']['count'])['packets']
     if dict(plan['manifest']) != manifest: raise ValueError(PENDING_INVALID)
     expected = journal['manifest']['pending_packets']
+    dropped = journal['manifest']['dropped_packets']
     with sync.connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         if binding(c) != plan['binding']: raise ValueError(BINDING)
         # Recheck the outbox under the write lock, then publish each original
         # stored text. A failed file write rolls back all published flags.
         pending = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchall()
+        _check_dropped(c, dropped)
+        for row in pending:
+            packet = signed.parse(row['packet'])
+            if any(ref['uuid'] in dropped for ref in packet.get('covers', []) + packet.get('evidence', [])):
+                raise ValueError(DROP_INVALID)
+        pending = [row for row in pending if row['uuid'] not in dropped]
         for row in pending:
             if expected.get(row['uuid']) != hashlib.sha256(row['packet'].encode('utf-8')).hexdigest():
                 raise ValueError(PENDING_INVALID)
@@ -575,12 +625,12 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
                               signed_packet=True, staging_id=new['key_id'])
             if not row['published']:
                 c.execute('UPDATE _sync_outbox SET published=1 WHERE uuid=?', (uid,))
-        security.guard(c, exchange)
+        if not dropped: security.guard(c, exchange)
     after_step('publish')
     verified = _ReplaySecurity(directory, unlock=lambda: phrase)
     verified.check_self()
     with readonly(db) as c:
-        if c.execute('SELECT 1 FROM _sync_outbox WHERE published=0').fetchone():
+        if any(row[0] not in dropped for row in c.execute('SELECT uuid FROM _sync_outbox WHERE published=0')):
             raise ValueError(PENDING_INVALID)
         for uid, digest in expected.items():
             row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
@@ -590,6 +640,18 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
     after_step('verify')
     _publish_rotation(directory, exchange, journal)
     after_step('proposal')
+    if dropped:
+        with sync.connect(db) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            _check_dropped(c, dropped)
+            c.execute('CREATE TABLE IF NOT EXISTS _sync_rotation_dropped(uuid TEXT PRIMARY KEY, packet TEXT NOT NULL, dropped_at TEXT NOT NULL)')
+            for uid in dropped:
+                row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
+                if row is not None:
+                    c.execute('INSERT INTO _sync_rotation_dropped VALUES(?,?,?)', (uid, row[0], journal['proposal']['created_at']))
+                    c.execute('DELETE FROM _sync_outbox WHERE uuid=?', (uid,))
+            security.guard(c, exchange)
+    after_step('drop')
     if backend is _AUTO_BACKEND:
         import os_unlock
         backend = os_unlock.current_backend()
@@ -612,19 +674,21 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
     (directory / 'rotation-journal.json').unlink()  # Last durable step: signing opens only now.
     _sync_directory(directory)
     return dict(status='rotated', old_key_id=journal['old_key_id'], new_key_id=new['key_id'], new_fingerprint=new['key_id'],
-        reason=journal['reason'], published_pending=journal['manifest']['published_pending'], manifest_packets=journal['manifest']['count'],
+        reason=journal['reason'], dropped_pending=sorted(dropped), published_pending=journal['manifest']['published_pending'], manifest_packets=journal['manifest']['count'],
         proposal='pairing/rotations/' + new['key_id'] + '.json', trust_restored=journal['manifest']['trust_restored'],
         os_unlock_item_removed=removed, next=next_steps)
 
 
 @safe_operation
-def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, runtime=None, resume=False,
+def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, runtime=None, resume=False, drop_pending=(),
                     ask=kp.console_passphrase, confirm=backup.console_confirm, backend=_AUTO_BACKEND,
                     _test_n=None, _after_step=lambda step: None):
     directory = signed.no_symlinks(security_dir)
+    if drop_pending and (resume or reason != 'compromised' or any(not signed.canonical_uuid(uid) for uid in drop_pending)):
+        raise ValueError(DROP_INVALID)
     journal = read_journal(directory, exchange) if resume else None
     if not resume and reason not in ('lost', 'compromised', 'planned'): raise ValueError(INVALID)
-    with prepare(directory, db, exchange, old_key=old_key, runtime=runtime, confirm=confirm, _journal=journal) as plan:
+    with prepare(directory, db, exchange, old_key=old_key, runtime=runtime, confirm=confirm, _journal=journal, drop_pending=drop_pending, rotation_reason=reason) as plan:
         if journal is None:
             phrase = backup.new_passphrase(ask, None, 'identity')
             key = signed.crypto()[0].generate()
@@ -642,7 +706,7 @@ def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, ru
                 staged = True
                 journal = dict(format=JOURNAL, old_key_id=plan['old_key_id'], old_public=plan['old_public'],
                     new_identity=identity, reason=reason,
-                    manifest=dict(sha256=manifest['sha256'], count=manifest['count'], published_pending=len(plan['pending']), pending_packets=plan['pending_packets'], trust_restored=plan['trust'] is not None),
+                    manifest=dict(sha256=manifest['sha256'], count=manifest['count'], published_pending=len(plan['pending']), pending_packets=plan['pending_packets'], dropped_packets=plan['dropped_packets'], trust_restored=plan['trust'] is not None),
                     proposal=proposal(_MemorySigner(new, key), plan['old_key_id'], reason, stage))
                 signed.write_local(directory / 'rotation-journal.json', journal, exclusive=True)
             finally:

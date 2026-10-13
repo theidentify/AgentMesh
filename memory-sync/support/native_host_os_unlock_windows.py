@@ -12,6 +12,7 @@ Phases, in order:
     status                  identity-os-unlock status (read-only)
     task-run                start one worker cycle through a disposable interactive scheduled task
     watch SECONDS           worker every 15 s via the task; lock the screen (Win+L) meanwhile
+    locked-start            waits for a locked screen, then starts a FRESH worker through the task
     delete-item             delete the credential, then run task-run again: it must refuse
     reenable                restore OS unlock after delete-item
     s4u                     optional; needs an elevated prompt: same worker as an S4U task, must refuse
@@ -157,6 +158,20 @@ def watch(seconds):
     print('summary', json.dumps(timeline))
 
 
+def locked_start():
+    deadline = time.monotonic() + 240
+    while not screen_locked():
+        if time.monotonic() > deadline:
+            print('screen was never locked'); return
+        time.sleep(1)
+    time.sleep(20)
+    locked = screen_locked()
+    name = load_state()['task']
+    create_task(name, wrapper())
+    result = run_task(name)
+    print(json.dumps({'locked_at_start': locked, 'locked_after_run': screen_locked(), **result}))
+
+
 def delete_item():
     ou.current_backend().delete(key_id())
     print('deleted credential for disposable key_id')
@@ -190,5 +205,5 @@ def cleanup():
     print('cleaned up tasks and the disposable credential; delete', root, 'when done')
 
 
-{'setup': setup, 'status': status, 'task-run': task_run, 'watch': lambda: watch(int(sys.argv[3])),
+{'setup': setup, 'status': status, 'task-run': task_run, 'watch': lambda: watch(int(sys.argv[3])), 'locked-start': locked_start,
  'delete-item': delete_item, 'reenable': reenable, 's4u': s4u, 'cleanup': cleanup}[phase]()

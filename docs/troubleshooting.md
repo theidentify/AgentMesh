@@ -18,25 +18,17 @@ Startup timeout requests a stop but does not wait for completion; stop timeout a
 
 A conflict in one row rejects the whole packet, including nonconflicting rows in it. Dependent packets can remain pending. Unrelated packets may still apply during that cycle; the managed worker then stops for the permanent failure.
 
-The counters identify the problem class, not the affected records. To inspect local details without writing the database, run from a terminal with Python:
-
-```sh
-python3 -c "import sqlite3,sys; from pathlib import Path; c=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True); print(c.execute('SELECT path, kind, message FROM _sync_diagnostics ORDER BY path').fetchall()); c.close()" "/path/to/memory.db"
-```
-
-Output (run on macOS)
-
-The invalid-packet fixture returned its private packet path, `invalid` and diagnostic message, exit `0`. An empty result is `[]`; a traceback/nonzero exit means inspection failed. **Keep this output private:** paths and messages may reveal deployment or memory details. Signed-packet messages are deliberately less detailed.
+Use the read-only `conflicts` listing and local `--show-content` view in [Resolve conflicts](./use/resolve-conflicts) to inspect the affected packets. Listing does not verify signatures or update diagnostics; keep content and raw identifiers private.
 
 | Diagnostic | What to investigate |
 | --- | --- |
-| `pending` | Missing parent revision or referenced record; check that predecessor packets reached this device. |
-| `conflict` | Divergent ancestry, baseline mismatch or unique-key collision; retries do not merge independent edits. |
-| `invalid` | Malformed/foreign packet, checksum/signature failure or another validation rejection; preserve the original bytes. |
+| `pending` | Missing predecessor or referenced evidence; let the complete retained history arrive before retrying receive. |
+| `conflict` | Same-lineage divergent edits can now be resolved by an explicit, previewed decision after protocol activation. Baseline mismatch and natural-key/unique/FK repairs remain outside this procedure. |
+| `invalid` | Malformed/foreign packet, checksum/signature failure or another validation rejection; preserve the original bytes. Resolution cannot waive these checks. |
 
-A diagnostic is cleared when that path is successfully processed, not merely when its file disappears. Before operator-led reconciliation, preserve the packet files, diagnostics, runtime configuration and a [consistent SQLite backup](#preserve-a-consistent-database-backup) made through the backup API—not a copy of only a live main database file. Stop affected sync workers and coordinate writers for the recovery procedure. The [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md#safety-and-conflicts) provides the data model; there is no automatic conflict-resolution command.
+Before resolution, preserve the packet files, diagnostics, runtime configuration and a [consistent SQLite backup](#preserve-a-consistent-database-backup). Stop affected workers and coordinate other writers. Follow the [activation, preview, confirmation and peer receive steps](./use/resolve-conflicts); do not restart until you have reviewed diagnostics and compared the chosen records. Resolution retains non-conflicting companion rows and marks covered held originals as superseded. It never restarts a worker automatically.
 
-After an approved repair, require successful packet application, reviewed/cleared diagnostics, a cycle without permanent failure and destination recall before resuming normal operation. Do not reset history or diagnostics to make counters look clean.
+Do not delete packets, reset history or clear diagnostics to make counters look clean. Missing proof can keep a resolution pending; independently conflicting resolutions need a further explicit decision. See [resolution refusals](./use/resolve-conflicts#handle-refusals-without-rewriting-history) for stale plans, unsupported repairs and protected-key requirements.
 
 ## Preserve a consistent database backup
 
@@ -80,7 +72,7 @@ Signed packets have [size and structure limits](./install/security#respect-packe
 
 ## Signed packets are invalid after revocation
 
-Revocation alone no longer invalidates previously committed packets or stops the managed worker. Exact retained packets remain accepted against local receipts and full envelope digests. New, unapplied packets from the revoked key and tampered replays remain invalid; a managed worker stops for that permanent failure. Preserve original packets, database/history/receipts and trust state, including revoked public-key records needed to verify older receipts. Follow [rotation and revocation](./install/security#understand-the-protection) with the operator; do not delete history or diagnostics to hide a validation failure.
+Revocation alone no longer invalidates previously committed packets or stops the managed worker. Exact retained packets remain accepted against local receipts and full envelope digests. New, unapplied packets from the revoked key and tampered replays remain invalid; a managed worker stops for that permanent failure. Preserve original packets, database/history/receipts and trust state, including revoked public-key records needed to verify older receipts. A pending resolution also requires current trust for never-committed evidence; only exact committed receipts or superseded dispositions permit historical replay. Follow [rotation and revocation](./install/security#understand-the-protection) with the operator; do not delete history or diagnostics to hide a validation failure.
 
 ## Windows window closed and sync stopped
 

@@ -130,6 +130,12 @@ A signed worker using a passphrase-protected identity needs [OS unlock enabled](
 
 Stop workers before protecting the key or enabling/disabling OS unlock. Disabling removes the persisted unlock path but does not erase keys already in process memory. After restart, a protected signed worker without OS unlock refuses; Linux has no supported OS-unlock backend. Follow [locked-key troubleshooting](../troubleshooting#protected-key-or-os-unlock-refuses), without removing protection, changing policy or generating replacement keys as a retry shortcut.
 
+## Recover from a conflict
+
+Use [Resolve conflicts](./resolve-conflicts) for supported same-lineage edits after all peers are upgraded and operator activation is complete. Stop unmanaged execution through its original controls and coordinate other writers. `resolve`, confirmed `activate-protocol` and `receive-only` cooperatively stop an owned running worker and hold recovery locks; none restarts it. `receive-only` captures local edits and imports packets without ingestion, summarization or publication, preserving failed/stopped worker metadata.
+
+A protected signed identity needs OS unlock for these recovery operations, including resolution preview. A locked refusal happens before worker stop or control-file creation; read-only `conflicts` and activation preview do not unlock. Correct the account's unlock configuration, then preview again if identity or trust changed. Review diagnostics and verify the selected records on peers before explicitly using `worker-start`.
+
 ## Respond to failures and timeouts
 
 | Result | Meaning and next action |

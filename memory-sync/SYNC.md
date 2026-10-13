@@ -55,7 +55,7 @@ SQLite connections, except `allocate_id`.
 | `receive(db, exchange)` | `{"applied": N, "pending": N, "conflict": N, "invalid": N, "unavailable": bool}`; capture local edits before importing, retry deferred dependencies, quarantine failures |
 | `cycle(db, exchange)` | `{"capture": capture_result, "publish": publish_result, "receive": receive_result}` |
 | `allocate_id(connection, table)` | Next reserved integer ID; caller must have an active transaction, normally `BEGIN IMMEDIATE`; reservation commits/rolls back with caller ingestion |
-| `status(db)` | `node`, `group_id`, unpublished `outbox` count, `received` packet count, and `pending`/`conflict`/`invalid` diagnostic counts |
+| `status(db)` | `node`, `group_id`, unpublished `outbox` count, `received` packet count, separate `superseded` packet count, and `pending`/`conflict`/`invalid` diagnostic counts |
 
 `applied` counts packets committed during that invocation. Diagnostic counts are
 current stored **file-path counts**, not row counts or unique packet counts;
@@ -175,8 +175,9 @@ Inspect diagnostics with a read-only SQLite tool:
 SELECT path, kind, message FROM _sync_diagnostics ORDER BY path;
 ```
 
-There is no automatic conflict-resolution or garbage-collection command. Keep
-backups before any operator-led reconciliation/rebootstrap. Natural-key collisions
+There is no automatic winner or garbage collection. Use the explicit resolution
+commands below for supported same-lineage conflicts. Keep backups before
+operator-led reconciliation or rebootstrap. Natural-key collisions
 between independently inserted rows are quarantined; IDs are not remapped and
 rows are not deduplicated by content. Differing bootstrap data is not merged.
 Replication of shared cursor/consumer keys can deliberately produce conflicts
@@ -213,3 +214,142 @@ unique-key conflicts, retained tombstones, and all four CLI commands including a
 live watch subprocess. Tests use disposable databases under Hermes scratch; they
 do not touch production databases or the actual Syncthing folder. Real-data clone
 and actual Windows/deployment verification must be reported separately.
+
+
+## Review and resolve conflicts
+
+Upgrade **every reader/worker**, including offline peers, before activating new
+packet emission. Old unsigned-v1 packets remain readable indefinitely. New
+unsigned-v2 packets carry `kind`, a sorted `parents` array and verified `origin`
+per change, plus immutable complete-envelope `covers`/`evidence` references.
+The checksum covers the full semantic payload. A resolution carries the final
+row or tombstone for **every key** in the covered whole-packet closure; it does
+not discard non-conflicting companion changes.
+
+These commands use an existing absolute runtime path. They do not bootstrap a
+new installation or change signing policy:
+
+```sh
+python agentmesh.py conflicts --runtime /local/app/data/runtime.json
+python agentmesh.py conflicts --runtime /local/app/data/runtime.json --show-content
+python agentmesh.py receive-only --runtime /local/app/data/runtime.json
+```
+
+`conflicts` is strictly read-only: no capture, migration, receipt or verification
+telemetry writes. It reads a disposable stable SQLite/WAL snapshot. Default and
+`--json` output redact row contents and hash natural keys; `--show-content` shows
+local and incoming rows locally and cannot be combined with `--json`. Listings
+are labeled **unverified preview**; execution rechecks signatures and evidence.
+Nothing in a listing is published to peer status or the exchange.
+
+While a worker writes, inspection retries a changed DB/WAL copy up to 20 times
+with short backoff (at most 4.25 seconds of waiting, plus filesystem copy time).
+Only a stable pair is opened, in a private temporary directory; the source SQLite
+database and its WAL index are never opened by the snapshot helper. Sustained
+writes or file-sharing contention can still produce
+`database changed during snapshot; retry`. Retry later, or explicitly stop the
+worker before inspection if no stable interval is available. A second
+`worker-start` refuses an already-running worker before attempting this snapshot.
+
+`receive-only` cooperatively stops an owned running worker, holds the worker
+lifetime/cycle locks, and captures local edits before receiving. It never runs
+transcript ingestion or summarization. A failed/stopped worker's metadata is
+preserved. This command does not publish the local outbox or restart a worker.
+
+For a signed runtime with a protected device key, `resolve` (including preview),
+`receive-only`, and confirmed activation use the same OS unlock as the worker.
+Enroll it using `identity-os-unlock enable --security-dir ...` before recovery;
+otherwise these commands report the standard locked-key reason before worker
+stop/control-file creation. OS-store failures retain their fixed refusal reason.
+There is no unsigned fallback or recovery-specific passphrase mechanism.
+`conflicts` and activation preview do not request unlock. Identity-file changes,
+including OS enrollment, require a fresh confirmation plan. See
+[SIGNED-SYNC.md](SIGNED-SYNC.md#protected-keys-during-conflict-recovery).
+
+### Activate the protocol deliberately
+
+Run `python agentmesh.py protocol-capability` on each upgraded executable. This
+release reports protocol capability `1`. Prepare a private JSON inventory of
+**all** peers, including silent/offline devices and durable join reservations:
+
+```json
+{
+  "inventory_complete": true,
+  "legacy_workers_drained": true,
+  "peers": [
+    {"node":"mac","capability":1,"software":"reviewed resolution-capable build","offline":false},
+    {"node":"windows","capability":1,"software":"reviewed resolution-capable build","offline":true}
+  ]
+}
+```
+
+These acknowledgments assert that the operator checked the complete inventory
+and drained old/unmanaged workers. The software detects observed/reserved slots
+but cannot discover every offline device or remotely attest its executable.
+Use owner-only permissions for inventory and row-choice files (POSIX: mode 600).
+
+```sh
+python agentmesh.py activate-protocol --runtime /local/app/data/runtime.json --inventory /local/peers.json --preview
+python agentmesh.py activate-protocol --runtime /local/app/data/runtime.json --plan-digest <printed-digest>
+# Noninteractive equivalent requires both the digest and exact word:
+python agentmesh.py activate-protocol --runtime /local/app/data/runtime.json --plan-digest <printed-digest> --yes --confirm ACTIVATE
+```
+
+Preview writes an owner-only proposal under `runtime.json`'s sibling
+`.agentmesh-plans/`; it does not migrate or modify the live database. Activation
+requires typed `ACTIVATE`, rechecks runtime paths, trust, inventory and DB scope,
+stops the owned worker and commits the inventory, minimum capability and manifest
+digest locally. Normal capture changes format only on that activated database.
+There is no test-only activation or environment bypass. An upgraded, unactivated
+peer can read new packets while continuing to emit legacy packets. Old immutable
+outboxes are drained byte-for-byte, never rewritten or re-signed.
+
+Managed Windows selection/rollback and Mac replacement/rollback probe the chosen
+executable's capability before allowing it to run against an activated database.
+Old unmanaged binaries cannot retroactively learn this fence: operator draining
+remains necessary. No automatic protocol downgrade is provided.
+
+### Choose and confirm a resolution
+
+Use packet UUIDs from `conflicts`; repeat `--packet` to include multiple held
+packets. Preview includes their predecessor packets, local heads and every
+companion key. `mine` or `theirs` chooses the conflicting row, while preserving
+non-conflicting companions. Multiple remote frontiers require an explicit row.
+`delete` chooses tombstones for conflicting keys. `row` uses an owner-only JSON
+array of `{ "table": ..., "key": [...], "row": {...} }`; use `"row": null` for a
+specific tombstone and include every conflicting key.
+
+```sh
+python agentmesh.py resolve --runtime /local/app/data/runtime.json --packet <uuid> --choice theirs --preview
+python agentmesh.py resolve --runtime /local/app/data/runtime.json --plan-digest <printed-digest> --operation-id <stable-retry-id>
+python agentmesh.py resolve --runtime /local/app/data/runtime.json --plan-digest <printed-digest> --operation-id <same-id> --yes --confirm RESOLVE
+```
+
+The private preview artifact contains full chosen rows; keep it outside the
+exchange. Execution requires typed `RESOLVE`, an exact plan digest and a stable
+operation ID. Wrong words/EOF do not apply a plan. Changed runtime/trust/paths or
+stale rows/heads require a fresh preview. Uncaptured edits are refused: run
+`receive-only` to capture them before previewing again. Relational repairs,
+unknown original baselines, changed baselines and oversized proofs are refused;
+no ID remapping, deduplication or row repair is guessed.
+
+Rows, revisions, outbox, operation record, dispositions and matching diagnostic
+cleanup commit together. A retry with the same operation/plan returns the same
+packet UUID, including after a publication failure. Originals keep their bytes
+and existing receipts; held originals gain **superseded dispositions**, not fake
+applied receipts. `status.superseded` counts distinct covered packets separately
+from `received`. Exact replays are no-ops, newer proved descendants survive, and
+independent conflicting resolutions require a later explicit covering decision.
+Missing proof stays pending until the immutable source packets arrive.
+
+After recovery, inspect remaining diagnostics and worker failures. Resolve never
+silently clears an unrelated worker failure or restarts the worker. When healthy,
+use the existing `worker-start --runtime ...` command (with `--legacy-drained`
+when required for unsigned policy). Publication and receive outcomes are returned
+separately; an unavailable exchange is not a completed delivery claim.
+
+Unsigned empty-baseline join replays all supported unsigned formats, including
+resolution-before-source ordering. Parent arrays and origin declarations cannot
+hide a non-empty baseline. Missing evidence retains `.setup-pending.json` and
+requires `setup-join --resume`; signed invitations remain refused. A zero local
+diagnostic count is not proof that transport delivered every offline packet.

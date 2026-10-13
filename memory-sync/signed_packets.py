@@ -14,6 +14,9 @@ import time
 import uuid
 
 FORMAT = 'agentmesh-signed-changes-v2'
+RESOLUTION_FORMAT = 'agentmesh-signed-changes-v3'
+RESOLUTION_DOMAIN = b'AgentMesh/change-packet/Ed25519/v3\x00'
+RESOLUTION_FIELDS = {'format', 'encoding', 'group', 'node', 'sender', 'uuid', 'kind', 'body', 'covers', 'evidence', 'checksum', 'key_id', 'signature'}
 ENCODING = 'agentmesh-typed-v1'
 DOMAIN = b'AgentMesh/change-packet/Ed25519/v2\x00'
 MAX_BYTES = 8 * 1024 * 1024
@@ -322,7 +325,10 @@ class Security:
         # Do not rewrite committed legacy packets or silently abandon unpublished backlog.
         for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0'):
             p = parse(row[0])
-            if p.get('format') != FORMAT: raise ValueError('unsigned outbox backlog: drain before signed activation')
+            if p.get('format') != FORMAT:
+                from protocol_activation import emission_enabled
+                if p.get('format') != RESOLUTION_FORMAT or not emission_enabled(c):
+                    raise ValueError('unsigned outbox backlog: drain before signed activation')
             self.verify(p, self.public['group'], self.public['node'])
             if p['sender'] != self.public['sender']: raise ValueError('outbox sender mismatch')
         c.execute('CREATE TABLE IF NOT EXISTS _sync_security(sender TEXT NOT NULL,group_id TEXT NOT NULL,node TEXT NOT NULL)')
@@ -334,12 +340,28 @@ class Security:
         c.execute('CREATE TABLE IF NOT EXISTS _sync_receipt_envelopes(uuid TEXT PRIMARY KEY,digest TEXT NOT NULL)')
 
     def sign(self, legacy):
+        # Reader support is not permission to emit a new format before activation.
+        if legacy.get('format') in ('omp-memory-changes-v2', RESOLUTION_FORMAT) or set(legacy) & {'kind', 'covers', 'evidence'}:
+            raise ValueError('new packet emission disabled')
         self.require_unlocked()
         self.check_self()
         if (legacy['group'], legacy['node']) != (self.public['group'], self.public['node']): raise ValueError('signing scope mismatch')
         p = {**legacy, 'format': FORMAT, 'encoding': ENCODING, 'sender': self.public['sender'], 'key_id': self.public['key_id']}
         p['checksum'] = hashlib.sha256(typed(p['body'])).hexdigest()
         p['signature'] = self.sign_bytes(DOMAIN + typed(p)).hex()
+        wire(p)
+        return p
+
+    def _sign_resolution(self, c, envelope):
+        from protocol_activation import emission_enabled
+        if not emission_enabled(c): raise ValueError('new packet emission disabled')
+        self.check_self()
+        if (envelope['group'], envelope['node']) != (self.public['group'], self.public['node']):
+            raise ValueError('signing scope mismatch')
+        p = {**envelope, 'format': RESOLUTION_FORMAT, 'encoding': ENCODING,
+             'sender': self.public['sender'], 'key_id': self.public['key_id']}
+        p['signature'] = self.sign_bytes(RESOLUTION_DOMAIN + typed(p)).hex()
+        validate_envelope(p, self.public['group'], self.public['node'])
         wire(p)
         return p
 
@@ -386,17 +408,25 @@ class Security:
         if (entry['group'], entry['node'], entry['sender']) != (p['group'], p['node'], p['sender']):
             raise ValueError('key not authorized for packet scope')
         unsigned = {k: v for k, v in p.items() if k != 'signature'}
-        try: Public.from_public_bytes(hex_bytes(entry['public_key'], 32)).verify(signature, DOMAIN + typed(unsigned))
+        try: Public.from_public_bytes(hex_bytes(entry['public_key'], 32)).verify(signature, packet_domain(p) + typed(unsigned))
         except InvalidSignature as exc: raise ValueError('invalid packet signature') from exc
-        if type(p['body']) is not list or not p['body'] or hashlib.sha256(typed(p['body'])).hexdigest() != p['checksum']:
+        if p['format'] == FORMAT and (type(p['body']) is not list or not p['body'] or hashlib.sha256(typed(p['body'])).hexdigest() != p['checksum']):
             raise ValueError('signed body checksum/shape mismatch')
         return p
 
 
 def validate_envelope(p, group, folder):
     """Scope/shape checks also required for retained packets; no trust decision."""
-    if type(p) is not dict or set(p) != FIELDS: raise ValueError('signed packet required; invalid envelope')
-    if p['format'] != FORMAT or p['encoding'] != ENCODING: raise ValueError('unsupported signed protocol')
+    if type(p) is not dict: raise ValueError('signed packet required; invalid envelope')
+    fields = RESOLUTION_FIELDS if p.get('format') == RESOLUTION_FORMAT else FIELDS
+    if set(p) != fields: raise ValueError('signed packet required; invalid envelope')
+    if p['format'] not in (FORMAT, RESOLUTION_FORMAT) or p['encoding'] != ENCODING: raise ValueError('unsupported signed protocol')
+    if p['format'] == RESOLUTION_FORMAT:
+        from resolution_protocol import packet_from_payload, payload_digest
+        payload = {k:p[k] for k in ('group','node','uuid','kind','body','covers','evidence')}
+        packet_from_payload(payload, envelope_digest='0'*64)
+        if payload_digest(payload) != p['checksum']: raise ValueError('semantic checksum mismatch')
+        wire(p)
     if not canonical_uuid(p['group']) or p['group'] != group or not canonical_uuid(p['sender']) or not canonical_uuid(p['uuid']):
         raise ValueError('invalid signed scope/UUID')
     if type(p['node']) is not str or p['node'] not in SLOTS or p['node'] != folder: raise ValueError('signed sender/folder mismatch')
@@ -404,13 +434,19 @@ def validate_envelope(p, group, folder):
     return hex_bytes(p['signature'], 64)
 
 
+def packet_domain(p):
+    if p.get('format') == FORMAT: return DOMAIN
+    if p.get('format') == RESOLUTION_FORMAT: return RESOLUTION_DOMAIN
+    raise ValueError('unsupported signed protocol')
+
+
 def envelope_digest(p):
     """Pin all parsed packet bytes, including the signature, for exact replay."""
-    return hashlib.sha256(DOMAIN + typed(p)).hexdigest()
+    return hashlib.sha256(packet_domain(p) + typed(p)).hexdigest()
 
 
 def receipt_digest(p):
-    return hashlib.sha256(DOMAIN + typed({k: v for k, v in p.items() if k != 'signature'})).hexdigest()
+    return hashlib.sha256(packet_domain(p) + typed({k: v for k, v in p.items() if k != 'signature'})).hexdigest()
 
 
 def require_policy(c, security=None, exchange=None):

@@ -38,6 +38,7 @@ export default defineConfig({
         { text: 'Recall memory', link: '/use/recall' },
         { text: 'Ingest agent sessions', link: '/use/ingest' },
         { text: 'Check sync status', link: '/use/status' },
+        { text: 'Resolve conflicts', link: '/use/resolve-conflicts' },
         { text: 'Insight dashboard', link: '/use/insight' },
       ] },
       { text: 'Help', items: [

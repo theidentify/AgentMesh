@@ -518,3 +518,54 @@ def test_sqlite_sidecar_acl_accepts_only_private_inheritance(fault):
     else:
         with pytest.raises(ValueError): module().sidecar_acl(report)
     assert report == before  # validation never changes an existing descriptor
+
+
+def test_join_new_parent_arrays_cannot_hide_baseline(tmp_path,monkeypatch):
+    from test_packet_versions import new_packet
+    from test_resolution_e2e import put as envelope
+    import resolution_protocol as protocol
+    a,exchange=setup(tmp_path,monkeypatch)
+    with sync.connect(a/'data/memory.db') as c: group=sync.config(c)['group_id']
+    p=new_packet(); p['group']=group
+    p['body'][0]['parents']=['baseline:'+'a'*64]; p['body'][0]['origin']='baseline:'+'a'*64
+    import packet_versions
+    p['checksum']=protocol.payload_digest(packet_versions.semantic(p)); envelope(exchange,p)
+    with pytest.raises(ValueError,match='baseline'): module().observed_slots(exchange,group)
+
+
+def test_join_signed_invitation_still_refused(tmp_path,monkeypatch):
+    a,exchange=setup(tmp_path,monkeypatch)
+    (exchange/'signed-changes').mkdir()
+    with pytest.raises(ValueError,match='signed'): module().observed_slots(exchange,'00000000-0000-4000-8000-000000000001')
+
+
+@pytest.mark.parametrize('missing',[False,True])
+def test_join_replays_resolution_before_conflicting_sources(tmp_path,monkeypatch,missing):
+    import protocol_activation as activation
+    import conflict_commands as commands
+    from test_protocol_activation import inventory, enable
+    from test_resolution_apply import edit,peers
+    from test_resolution_e2e import put as envelope
+    a,exchange=setup(tmp_path,monkeypatch); db=a/'data/memory.db'
+    other=tmp_path/'others';other.mkdir();_,b,_=peers(other)
+    with sync.connect(db) as c: group=sync.config(c)['group_id']
+    with sync.connect(b) as c,c: c.execute('UPDATE _sync_config SET group_id=?',(group,))
+    p=edit(db,dict(x=1,y=2)); q=edit(b,dict(x=3,z=4))
+    envelope(exchange,p); envelope(exchange,q); sync.receive(db,exchange)
+    # Reserve C before activation; activation inventory includes this offline peer.
+    target=tmp_path/'joined'; request=tmp_path/'request'; invitation=tmp_path/'invitation'
+    prepare(target,exchange,'linux',request); issue(a,request,invitation)
+    enable(activation,a/'data/runtime.json')
+    plan=commands.preview_resolution(a/'data/runtime.json',[q['uuid']],{'mode':'theirs'})
+    result=commands.resolve(a/'data/runtime.json',plan['plan_digest'],confirm_word='RESOLVE',operation_id='join')
+    if missing: (exchange/'changes'/'windows'/(q['uuid']+'.json')).unlink()
+    report=join(target,exchange,invitation)
+    assert report['status']==('pending' if missing else 'joined')
+    assert (target/'.setup-pending.json').exists()==missing
+    if not missing:
+        with sync.connect(target/'data/memory.db') as c:
+            assert dict(c.execute('SELECT consumer,last_event_id FROM summary_state'))==dict(x=3,y=2,z=4)
+
+
+def test_join_missing_evidence_retains_guard(tmp_path,monkeypatch):
+    test_join_replays_resolution_before_conflicting_sources(tmp_path,monkeypatch,True)

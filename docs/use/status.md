@@ -26,8 +26,11 @@ This excerpt omits device/group and security metadata. Exit `0` means status was
 
 - `outbox` counts captured packets not yet published. It excludes local changes not captured by a worker cycle; `outbox: 0` does not mean nothing remains to send. Published outbox records are retained.
 - `received` counts local packet receipts (accepted packet identifiers and checksums stored in the local database), not proof of two-way convergence.
+- `superseded` counts distinct original packets covered by committed resolutions, separately from `received`; it does not mean the originals were applied or can be deleted.
 - `pending`, `conflict` and `invalid` count diagnostic file paths, not rows. Run a cycle before interpreting incoming files: status itself does not scan or import them.
 - Equal record counts do not prove equal contents. Verify a distinctive record by recall on the receiving device.
+
+For supported same-lineage conflicts, follow [Resolve conflicts](./resolve-conflicts). After confirmation, receive the decision on stopped peers, review counters and compare chosen records before explicitly restarting. A successful command or matching counts alone does not prove convergence.
 
 ## Peer status files
 

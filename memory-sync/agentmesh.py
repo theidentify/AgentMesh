@@ -145,8 +145,71 @@ def main(argv=None):
             selection = installer.add_mutually_exclusive_group(required=True)
             selection.add_argument('--enable', action='store_true')
             selection.add_argument('--disable', action='store_true')
+    subs.add_parser('protocol-capability', help='read-only protocol capability for managed installers')
+    conflicts = subs.add_parser('conflicts', help='read-only local conflict listing')
+    conflicts.add_argument('--runtime', required=True)
+    conflicts.add_argument('--show-content', action='store_true', help='show both row contents locally')
+    conflicts.add_argument('--json', action='store_true', help='redacted machine-readable report')
+    recovery = subs.add_parser('receive-only', help='stop owned worker and receive without ingestion or summarization')
+    recovery.add_argument('--runtime', required=True)
+    for name in ('resolve','activate-protocol'):
+        command = subs.add_parser(name, help='preview and explicitly confirm a local protocol decision')
+        command.add_argument('--runtime', required=True)
+        command.add_argument('--preview', action='store_true')
+        command.add_argument('--plan-digest')
+        command.add_argument('--yes', action='store_true')
+        command.add_argument('--confirm', dest='confirm_word')
+        if name=='resolve':
+            command.add_argument('--packet', action='append', default=[])
+            command.add_argument('--choice', choices=('mine','theirs','row','delete'),default='mine')
+            command.add_argument('--rows', help='local JSON array of table/key/row overrides')
+            command.add_argument('--operation-id', help='stable retry identifier; required to commit')
+        else:
+            command.add_argument('--inventory', help='local JSON peer inventory including offline peers')
     args = parser.parse_args(argv)
     try:
+        if args.action=='protocol-capability':
+            from protocol_activation import CAPABILITY
+            print(json.dumps({'format':'agentmesh-protocol-capability-v1','protocol_capability':CAPABILITY},sort_keys=True))
+            return 0
+        if args.action in ('conflicts','receive-only','resolve','activate-protocol'):
+            import conflict_commands as conflicts
+            import protocol_activation as activation
+            from signed_packets import parse,read_local
+            if args.action=='conflicts':
+                if args.json and args.show_content: raise ValueError('JSON reports are redacted; omit --json for local content')
+                bound=activation.binding(args.runtime)
+                report=conflicts.list_conflicts(bound['config']['database'],bound['config']['exchange'],show_content=args.show_content)
+            elif args.action=='receive-only': report=conflicts.receive_only(args.runtime)
+            else:
+                word='RESOLVE' if args.action=='resolve' else 'ACTIVATE'
+                digest=args.plan_digest
+                if args.yes and (not digest or args.confirm_word!=word):
+                    raise ValueError('noninteractive confirmation requires the exact plan digest and typed word')
+                if not digest:
+                    if args.action=='resolve':
+                        choice={'mode':args.choice}
+                        if args.rows: choice['rows']=parse(read_local(args.rows,private=True))
+                        report=conflicts.preview_resolution(args.runtime,args.packet,choice)
+                    else:
+                        if not args.inventory: raise ValueError('peer inventory required')
+                        report=activation.activation_plan(args.runtime,parse(read_local(args.inventory,private=True)))
+                    digest=report['plan_digest']
+                else: report={'plan_digest':digest}
+                if args.preview:
+                    print(json.dumps(report,sort_keys=True)); return 0
+                if args.action=='resolve' and not args.operation_id: raise ValueError('stable --operation-id required')
+                from install_join import confirm
+                if not confirm(word,yes=args.yes,confirm_word=args.confirm_word,
+                               message='Plan '+digest+'. Owned worker will stop and require explicit restart.'):
+                    print(json.dumps({'status':'cancelled'})); return 2
+                if args.action=='resolve':
+                    report=conflicts.resolve(args.runtime,digest,confirm_word=word,operation_id=args.operation_id)
+                else:
+                    activation.activate(args.runtime,digest,confirm_word=word)
+                    report={'status':'activated','plan_digest':digest,'next_action':'worker-start'}
+            print(json.dumps(report,ensure_ascii=False,sort_keys=True))
+            return 0
         if args.action.startswith('windows-'):
             import console_prompt
             import windows_install

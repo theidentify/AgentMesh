@@ -108,6 +108,19 @@ python digest_bench.py --models claude-code:claude-haiku-5-5 \
   claude-code:claude-sonnet-5-5 codex:gpt-6-luna --trials 3 --out bench.jsonl
 ```
 
+### Scheduling with failure alerts
+
+`job_notify.py` wraps one scheduled run (for example from a launchd
+`StartInterval` job) and posts to a Discord channel webhook only when the job
+starts failing and when it recovers. Only the job name, exit code and the
+job's own `status`/`action`/`error_class` identifiers are sent. The webhook
+URL is read from a private (0600) file; without it, runs are only logged.
+
+```sh
+python job_notify.py --name summary --state-dir status \
+  --webhook-file ~/.config/agentmesh/discord-webhook -- python summary_job.py
+```
+
 Real-snapshot verification may require an explicitly larger related-context
 bound than the default; measure it and raise the bound deliberately. Do not work
 around overflow by dropping old rules. Private snapshots and model responses

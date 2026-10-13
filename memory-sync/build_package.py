@@ -12,7 +12,7 @@ FILES = ['bounded_digest.py', 'bounded_protocol.py', 'digest_worker.py', 'digest
          'shared_memory_context.py', 'sqlite_export.py', 'retention_audit.py', 'SQLITE-CONSUMERS.md', 'SQLITE-WRITERS.md',
          'brand.py', 'terminal_progress.py', 'agentmesh.py', 'workflow.py', 'ingest_sessions.py',
          'recall_memory.py', 'summarize_memory.py', 'claude_summary_provider.py',
-         'claude_digest_worker.py', 'digest_api.py', 'digest_api_client.py', 'digest_bench.py',
+         'claude_digest_worker.py', 'digest_api.py', 'digest_api_client.py', 'digest_bench.py', 'job_notify.py',
          'bench/digest_cases.json', 'bench/providers.example.json',
          'install_agent_rules.py', 'WORKFLOW.md',
          'assets/agentmesh-icon.svg', 'assets/agentmesh-icon-mono.svg',

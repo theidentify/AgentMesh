@@ -342,6 +342,8 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
    investigation, not an automatic verdict. Missing signed-envelope receipts are counted separately
    from legacy receipts because receipts do not retain key/node attribution. Malformed files increase
    `unreadable`. The report never writes, deletes, quarantines or automatically undoes changes.
+   An incomplete WAL/SHM sidecar pair refuses inspection instead of creating a missing sidecar or
+   ignoring uncheckpointed data; inspect or checkpoint the stopped database before retrying.
 
 6. Update remaining pins: re-run the wizard pairing step to update `security_state.peer`, and update
    the profile-memory `SignedChannel` peer fingerprint. Rotation does not rewrite either pin.

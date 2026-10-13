@@ -1,13 +1,18 @@
 """Operator-authorized key recovery; manifests never use the packet JSON codec."""
+import copy
+from contextlib import contextmanager, closing, ExitStack
 import functools
 import hashlib
 import os
 from pathlib import Path
 import re
 import stat
+import sqlite3
 import uuid
 
 import identity_backup as backup
+import key_protection as kp
+import memory_sync as sync
 import signed_packets as signed
 
 FORMAT = 'agentmesh-key-rotation-v1'
@@ -48,6 +53,18 @@ def fixed(reason):
             raise ValueError(reason)
         return wrapped
     return decorate
+
+
+def _sync_directory(directory):
+    if os.name != 'nt':
+        fd = os.open(directory, os.O_RDONLY)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+
+
+def _private_mkdir(directory):
+    backup.private_mkdir(directory)
+    _sync_directory(directory.parent)
 
 
 def _line(pair):
@@ -106,6 +123,7 @@ def write_manifest(path, pairs, *, exclusive=False):
             os.fsync(stream.fileno())
         if exclusive: os.link(temp, path)
         else: signed.replace(temp, path)
+        _sync_directory(path.parent)
     finally:
         temp.unlink(missing_ok=True)
     return read_manifest(path)
@@ -165,19 +183,13 @@ def add_rotation(directory, old_key_id, new_key_id, manifest_path, *, sha256=Non
     registry = read_rotations(directory)
     manifest = read_manifest(manifest_path, sha256=sha256, count=count)
     target = Path(directory) / 'rotations'
-    if not target.exists(): backup.private_mkdir(target)
+    if not target.exists(): _private_mkdir(target)
     signed.private_directory(target)
     write_manifest(target / (old_key_id + '.manifest'), manifest['packets'].items())
     registry['rotations'][old_key_id] = dict(new_key_id=new_key_id, approved_at=backup.now(),
         manifest_sha256=manifest['sha256'], manifest_count=manifest['count'])
     signed.write_local(Path(directory) / 'rotations.json', registry)
     return registry
-
-
-from contextlib import contextmanager, closing, ExitStack
-import sqlite3
-import key_protection as kp
-import memory_sync as sync
 
 LEFTOVERS = 'unfinished rotation or restore exists; inspect or run identity-rotate --resume'
 LEGACY = 'rotation requires a signed (required-policy) database; there is no key to rotate'
@@ -189,16 +201,21 @@ CANCELLED = 'rotation confirmation was not supplied'
 PENDING_EXCHANGE = 'pending packet is already in the exchange; publish or inspect it before rotating'
 PENDING_INVALID = 'invalid pending outbox packet'
 RUNTIME = 'runtime does not match rotation paths'
-REASONS |= {LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME}
-UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GROUP,
+INCOMPLETE_WAL = 'database WAL sidecars are incomplete; inspect or checkpoint the stopped database before retrying'
+REASONS |= {LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
+UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GROUP, backup.TARGET_EXCHANGE,
     backup.PASSPHRASE_SHORT, backup.PASSPHRASE_MISMATCH, 'passphrase entry requires an interactive console'}
 
 
 @contextmanager
 def readonly(db):
     path = signed.no_symlinks(db)
-    sidecars = [Path(str(path) + suffix) for suffix in ('-wal', '-shm')]
-    uri = path.as_uri() + ('?mode=ro' if any(p.exists() for p in sidecars) else '?mode=ro&immutable=1')
+    sidecars = [signed.no_symlinks(Path(str(path) + suffix)) for suffix in ('-wal', '-shm')]
+    present = [p.exists() for p in sidecars]
+    # mode=ro may create a missing WAL index. Never repair partial sidecars as
+    # a side effect of inspection, or silently ignore an uncheckpointed WAL.
+    if any(present) and not all(present): raise ValueError(INCOMPLETE_WAL)
+    uri = path.as_uri() + ('?mode=ro' if all(present) else '?mode=ro&immutable=1')
     with closing(sqlite3.connect(uri, uri=True)) as c:
         c.row_factory = sqlite3.Row
         c.execute('PRAGMA query_only=ON')
@@ -357,7 +374,6 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
     raise ValueError(reason)
 
 
-import copy
 JOURNAL = 'agentmesh-rotation-journal-v1'
 JOURNAL_INVALID = 'invalid rotation journal'
 IN_PROGRESS = 'rotation in progress; run identity-rotate --resume'
@@ -445,9 +461,9 @@ def _write_equal(path, doc):
 def _publish_rotation(directory, exchange, journal):
     p = journal['proposal']
     target = signed.no_symlinks(Path(exchange) / 'pairing')
-    if not target.exists(): backup.private_mkdir(target)
+    if not target.exists(): _private_mkdir(target)
     target = signed.no_symlinks(target / 'rotations')
-    if not target.exists(): backup.private_mkdir(target)
+    if not target.exists(): _private_mkdir(target)
     manifest_path = target / (p['new']['key_id'] + '.manifest')
     stage = _manifest_stage(directory, p['new']['key_id'])
     source = stage if stage.exists() else manifest_path
@@ -520,6 +536,7 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
         next_steps.insert(0, 'Old OS unlock item was NOT removed. Remove the old fingerprint item by hand; identity-os-unlock disable targets the currently installed key.')
     _manifest_stage(directory, new['key_id']).unlink(missing_ok=True)
     (directory / 'rotation-journal.json').unlink()  # Last durable step: signing opens only now.
+    _sync_directory(directory)
     return dict(status='rotated', old_key_id=journal['old_key_id'], new_key_id=new['key_id'], new_fingerprint=new['key_id'],
         reason=journal['reason'], resigned=journal['manifest']['resigned'], manifest_packets=journal['manifest']['count'],
         proposal='pairing/rotations/' + new['key_id'] + '.json', trust_restored=journal['manifest']['trust_restored'],
@@ -542,14 +559,24 @@ def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, ru
             identity = backup.sealed_identity(new, key.private_bytes_raw(), phrase, kp.SCRYPT_N if _test_n is None else _test_n)
             # Validate all trust constraints before writing a journal.
             rotated_trust(plan['trust'], plan['old_key_id'], new, plan['old_public'])
-            if not directory.exists(): backup.private_mkdir(directory)
+            created_directory = not directory.exists()
+            if created_directory: _private_mkdir(directory)
             stage = _manifest_stage(directory, new['key_id'])
-            manifest = write_manifest(stage, plan['manifest'], exclusive=True)
-            journal = dict(format=JOURNAL, old_key_id=plan['old_key_id'], old_public=plan['old_public'],
-                new_identity=identity, reason=reason,
-                manifest=dict(sha256=manifest['sha256'], count=manifest['count'], resigned=len(plan['pending']), trust_restored=plan['trust'] is not None),
-                proposal=proposal(_MemorySigner(new, key), plan['old_key_id'], reason, stage))
-            signed.write_local(directory / 'rotation-journal.json', journal, exclusive=True)
+            staged = False
+            try:
+                manifest = write_manifest(stage, plan['manifest'], exclusive=True)
+                staged = True
+                journal = dict(format=JOURNAL, old_key_id=plan['old_key_id'], old_public=plan['old_public'],
+                    new_identity=identity, reason=reason,
+                    manifest=dict(sha256=manifest['sha256'], count=manifest['count'], resigned=len(plan['pending']), trust_restored=plan['trust'] is not None),
+                    proposal=proposal(_MemorySigner(new, key), plan['old_key_id'], reason, stage))
+                signed.write_local(directory / 'rotation-journal.json', journal, exclusive=True)
+            finally:
+                # After journal publication, every failure must retain forward recovery.
+                # Before it, remove only staging successfully created by this attempt.
+                if not os.path.lexists(directory / 'rotation-journal.json'):
+                    if staged: stage.unlink(missing_ok=True)
+                    if created_directory and not any(directory.iterdir()): directory.rmdir()
         else:
             if any(journal['new_identity'][k] != plan['binding'][k] for k in plan['binding']): raise ValueError(BINDING)
             phrase = ask('New identity passphrase: ')

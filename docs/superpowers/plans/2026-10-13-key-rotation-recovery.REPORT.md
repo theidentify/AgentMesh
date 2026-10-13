@@ -1,69 +1,158 @@
-# Key rotation recovery implementation report
+# Key rotation and recovery implementation report
 
-Worktree: encrypted-key-storage-28470f. Branch: feat/key-recovery. No push, merge, rebase, or other branch changes.
+Worktree: `encrypted-key-storage-28470f`. Branch: `feat/key-recovery`.
+The full design, including “Facts in the current code,” was read before implementation.
+Tasks were executed in order, with one commit per task. No push, merge, rebase, PR, branch switch,
+real-identity access or real OS-store access was performed. This is the only new bookkeeping file.
 
-## Acceptance and execution
+## Tasks, commits and verification
 
-Execute Tasks 1–11 in order, test first, verify from memory-sync and repository root before each commit. Preserve historical verification and enforce exact own-packet bytes. Recovery uses streamed authenticated manifests, fenced forward-only replay, sealed secrets, fixed errors, injectable OS storage, read-only reporting, and disposable fixtures. Final acceptance requires the full suite from both working directories (only the three documented sqlite-consumer failures permitted).
+Green counts below are completed results **from each of memory-sync and repository root**, unless
+explicitly qualified. Focused red runs were executed from memory-sync before implementation. Every task commit ends with the requested GPT (Codex) co-author trailer.
 
-## Task 1
+| Task | Commit | Evidence |
+|---|---|---|
+| 1: exact own-packet bytes (R1) | `0aae4a5` | Red: 2 failed / 3 passed. Green: 129 passed, including memory-sync, signed-packet and security regressions. |
+| 2: proposal, streaming manifest, registry | `5544210` | Red: 25 failed / 5 passed. Green: 30 passed. |
+| 3: revoked-packet manifest verification (R2) | `15d9a1d` | Red: 2 failed / 5 passed. Green: 131 passed including signed-packet/security regressions. |
+| 4: preparation and held fences | `b983cc6` | Red: 20 failed. Green: 57 passed. See timing deviation below. |
+| 5: sealed journal, re-sign and resume | `9e0faec` | Red: 10 failed. Green: 319 passed including backup/OS-unlock/signed-packet regressions. |
+| 6: peer approval | `5788f4f` | Red: 12 failed. Green: 79 passed. |
+| 7: read-only compromise report | `8d79ac4` | Red: 6 failed. Green: 85 passed. |
+| 8: two-peer convergence and restore interplay | `af5eea0` | Red: 2 leftover-refusal failures; 2 existing behaviors passed. Green: 268 passed including backup/signed-packet regressions. |
+| 9: CLI, packaging, smoke and CI | `84bb5b7` | Red: 2 failed. Green: 224 passed including CLI/build/backup tests; source and frozen recovery smoke passed. |
+| 10: complete runbook | `a7e8cec` | 91 recovery tests passed; runbook checked against all eight spec sections and actual CLI behavior. |
+| 11: final review, full suite and this report | This report's commit | Final results below. |
 
-Added sealed disposable fixtures and five R1 regressions. Red: two failures, three passes. Green: 129 passed from memory-sync; 129 passed from the repository root.
+## Final verification
 
-Spec-over-plan correction: own-node byte mismatches are rejected immediately with the existing fixed reason. Falling through as the plan suggests accepts whitespace-different files through `_seen`'s JSON equality. Own-packet matches clear diagnostics and do not record a signature verification attempt.
+**Final results after all code and test changes:**
 
-## Deviations / design issues
+| Working directory | Passed | Known failures | Skipped | Warnings | Duration |
+|---|---:|---:|---:|---:|---:|
+| memory-sync | 1,079 | 3 | 17 | 1 | 188.22 s |
+| repository root | 1,079 | 3 | 17 | 1 | 187.80 s |
 
-- No shared-memory recall: its private database conflicts with the disposable-DB-only scope.
-- No GATES or other bookkeeping files; acceptance evidence stays here.
-- Journal replay must sign and verify internally while ordinary `Security.check_self` refuses the journal. A scoped internal replay mechanism is necessary; the public signing guard must remain closed.
+All 120 recovery tests passed in both full runs. There are no additional failures.
+The final frozen onedir recovery smoke passed after rebuilding the final product code.
+`git diff --check` passed. Tasks 1–11 are complete, with the deviations and verification limits below.
 
-## Remaining
+The complete suite here means all tests under `memory-sync/`, the suite named by the plan, executed
+once with that working directory and once from repository root with the `memory-sync` target.
+Native keychain and native scheduled-task opt-ins are explicitly removed. Commands:
 
-Tasks 3–11 are not yet completed. No final full-suite result yet.
+```sh
+# From memory-sync/
+env -u AGENTMESH_NATIVE_KEYCHAIN_TESTS -u AGENTMESH_NATIVE_TASK_FIXTURE_ROOT \
+  UV_CACHE_DIR=/private/tmp/claude-501/uvcache \
+  uv run --no-project --with pytest==8.4.2 --with pytest-timeout \
+  --with-requirements requirements-security.txt \
+  python -m pytest -q -p no:cacheprovider --timeout 120
 
-## Task 2
+# From repository root
+env -u AGENTMESH_NATIVE_KEYCHAIN_TESTS -u AGENTMESH_NATIVE_TASK_FIXTURE_ROOT \
+  UV_CACHE_DIR=/private/tmp/claude-501/uvcache \
+  uv run --no-project --with pytest==8.4.2 --with pytest-timeout \
+  --with-requirements memory-sync/requirements-security.txt \
+  python -m pytest -q -p no:cacheprovider --timeout 120 memory-sync
+```
 
-Task 1 commit: `0aae4a5`. Added streaming manifest IO, domain-separated proposals, and strict private rotation registry. Red: 25 failed / 5 passed; green: 30 passed from each working directory. A 60,000-entry manifest passes without packet parse/typed limits. Errors are raised outside exception handlers with fixed reasons.
+The three permitted pre-existing failures are all in `test_sqlite_consumers.py`:
 
-## Task 3
+- `ConsumerTests.test_export_complete_collision_safe_manual_notes_and_source_anchors`
+- `ConsumerTests.test_export_infers_transcript_tasks_even_without_structured_task_ref`
+- `ConsumerTests.test_export_resolution_of_last_active_item_clears_current_memory`
 
-Task 2 commit: `5544210`. R2 red: two failures / five passes. Green: 131 tests passed in memory-sync and repository root (recovery, signed-packet, and security-regression suites). Revoked trust selects manifest verification after committed receipts and before validation/application. Membership never bypasses historical signature verification. Lazy caches include failed loads to bound hostile repeated reads.
+They raise `symlink export root refused` for this host's `/var` temporary-directory alias.
+The existing duplicate-ZIP-member test emits the one expected warning.
 
-## Task 4
+The first full runs produced 1,077 passed / 3 known failures / 17 skipped from memory-sync, and
+1,076 passed / 4 failures / 17 skipped from root. The extra root failure was an existing
+`test_key_protection` child process lacking cwd. The smallest test correction supplies explicit cwd
+to its subprocesses and sends its disposable passphrase over stdin instead of argv. Its focused
+root regression then passed. Both full suites passed with only the three known failures after that
+correction, and were rerun again after the two incomplete-sidecar regressions and guard were added.
 
-Task 3 commit: `15d9a1d`. Preparation tests red: 20 failures. Green: 57 tests passed from each location. Refusals snapshot security directory, DB/sidecars and exchange bytes. Locks stay held for the context. Read-only preparation rechecks DB state after acquiring the fence.
+Final recovery coverage contains **120 tests**. Additional Task 11 checks cover:
 
-Small corrections: pending-file refusal uses a fixed reason without interpolated UUID, honoring the strict fixed-error rule. Runtime status calls `Security` internally and therefore fails for lost/revoked identities and journals; in that case recovery reads the same owned worker metadata and liveness directly, still taking both locks. Lock infrastructure can create its usual lock files outside the security directory, DB and exchange; this is necessary to acquire the specified fence.
+- 60,000 manifest entries through peer approval and real receive, beyond typed JSON limits;
+- every new-public-field mutation, source-manifest changes during approval, symlink refusal;
+- raw legacy identity input simulated entirely in memory, and a completely absent security directory;
+- resume's recent-activity, pending-path and lifetime-lock fences;
+- each journal-step crash compared against uninterrupted replay from the same sealed checkpoint:
+  identity/trust/exchange bytes and SQLite row/packet TEXT values match;
+- cleanup interrupted after staging removal, fixed secret-free exception chains, extra-active-key refusal;
+- all Python file-stream write payloads plus resulting files/reports checked for old/new raw keys and passphrase;
+- production scrypt N selection, manifest directory durability, pre-journal cleanup, and refusal of incomplete WAL/SHM pairs without side effects.
 
-## Task 5
+Task 11 found issues with failing tests before fixes: manifests needed a parent-directory fsync,
+and an ordinary pre-journal failure retained staging. Publication now fsyncs directories on POSIX;
+ordinary pre-journal failure removes only this attempt's successfully created staging and its empty
+new directory. After journal publication all recovery material is retained for forward replay. An
+abrupt crash before journal publication can still leave staging for inspection, as documented.
+Read-only opening also refuses an incomplete WAL/SHM pair: ordinary mode=ro can create the missing
+sidecar, while immutable mode would ignore uncheckpointed WAL data. Both intact and cold states use
+the specified install_inspect URI choice; partial state is refused with a fixed reason instead.
 
-Task 4 commit: `b983cc6`. Ten new tests failed before implementation and passed afterward. Recovery, signed-packet, backup and OS-unlock suites: 319 passed from each working directory. Covers each journal-step crash, repeated STOPPED/lock fences, transaction collision rollback, sealed journal writes, lost trust, and fake OS backend success/failure/None.
+Frozen verification used pinned PyInstaller 6.16.0 and hooks 2026.8. The normal macOS arm64 one-file
+build succeeded, but its loader cannot run in this sandbox (`semctl: Operation not permitted`). A
+disposable onedir build ran the complete recovery smoke successfully: three help commands, both
+non-console unchanged-state refusals, and an empty read-only report. It was rebuilt and the smoke
+passed again after the final product fixes. Native Windows execution is delegated to the updated CI
+list; it was not claimed locally.
 
-Replay uses a private internal Security subclass bound to the exact sealed journal identity, with unchanged live trust authorization. Ordinary Security refuses while the journal exists. This resolves the spec's simultaneous journal guard and in-journal signing/verification requirements without a public bypass option. On cleanup failure the report explicitly requests manual removal of the old fingerprint: current `identity-os-unlock disable` targets the new identity and cannot remove an old item.
+## Spec-over-plan decisions and necessary corrections
 
-Process deviation: Task 4's commit was issued after both test processes started but before their final output was collected. Both subsequently completed successfully (57 each); later commits wait for completed results. One initial shell invocation used unavailable `python`; it did not edit files. The stale Task 1 report line was corrected in Task 2.
+1. **R1:** own-node mismatches are rejected explicitly after envelope/filename validation. Falling
+   through, as the plan suggests, would allow whitespace-different JSON through `_seen` equality.
+   Matches clear diagnostics without recording a signature verification attempt. R2 stays after
+   committed receipts and before validation/application; manifest membership never skips historical
+   signature verification. Selection is from a revoked trust entry, never an exception catch.
+2. **Journal guard versus replay:** ordinary `Security.check_self` refuses the journal. A private
+   internal replay subclass requires the exact sealed journal identity and unchanged live trust
+   authorization; there is no public bypass flag. This resolves the spec's simultaneous requirement
+   to refuse ordinary signing and to sign/verify during replay.
+3. **Worker status:** existing status loads Security and cannot inspect a lost/revoked identity or an
+   in-progress journal. Recovery first calls status, then on a ValueError reads the same owned worker
+   metadata/liveness directly. Both specified locks are still mandatory. The usual lock infrastructure
+   may create lock/control files outside security/DB/exchange snapshots.
+4. **Fixed errors:** pending-path errors omit interpolated UUIDs, honoring the strict fixed-reason
+   rule. Public operation boundaries discard underlying exception chains and use an explicit upstream
+   allowlist. New raw keys/passphrases never appear in reports, error messages or file contents.
+5. **OS cleanup:** `identity-os-unlock disable` targets the current installed key. After rotation it
+   cannot remove the old item's fingerprint, so a failed deletion prominently requires manual removal
+   of that old item, not a misleading instruction to disable the new key.
+6. **Reporting:** the additional redacted `uncommitted` list makes the required B-side forgery evidence
+   observable. `in_manifest` requires UUID and digest equality; UUID-only membership would misleadingly
+   mark altered content as approved. It is null without --security-dir and false when supplied but no
+   manifest entry matches. Missing-file counts are independent of the approximate mtime filter.
+7. **Proposal/UI:** `competing_proposals` counts other proposal files, and any positive count warns.
+   The prompt does not show/ghost the expected full fingerprint. --resume uses the journal reason;
+   a fresh rotation still requires a valid reason. Manifests are rechecked against the approved hash
+   when copied, including changes made while the operator is at the prompt.
+8. **Process:** Task 4 was committed after both test processes started but before their final output
+   was collected. Both completed successfully with 57 passed; all later commits waited for results.
+   An early shell edit used unavailable `python` and made no edit; the stale report line was corrected
+   in Task 2. No extra bookkeeping files were created. Shared-memory recall was omitted because its
+   real private DB conflicts with the disposable-only scope.
 
-## Task 6
+## Safety scope and limits
 
-Task 5 commit: `9e0faec`. Twelve peer-rotation tests failed first. Green: 79 recovery tests passed from each location. Peer approval rechecks manifest bytes against the approved hash when copying; wrong fingerprint makes no changes. Competing-proposal count is the number of *other* proposal files, and any positive count triggers the warning. The console never supplies the expected full fingerprint as ghost text.
+No real identity, keychain or Credential Manager item was accessed by these exercises. New recovery
+fixtures generate keys in memory, seal them before writing, use product private-directory helpers,
+use explicit subprocess cwd and bounded parameter IDs, and inject fake OS backends or explicit None.
+The raw legacy rotation case uses an in-memory read substitute, never a new plaintext identity file.
 
-## Task 7
+There is a pre-existing conflict between the required full regression suite and a literal “no raw
+private key ever reaches disk” rule. Legacy tests intentionally call `signed.init_identity` and write
+raw **disposable** identity fixtures to test migration and other old paths. They were run as required;
+the rule therefore cannot honestly be claimed for the whole suite. This same limitation was recorded
+in the preceding backup/restore REPORT. The touched subprocess regression previously also passed a
+disposable test passphrase on argv; this is now corrected to stdin. A broader migration of legacy
+fixtures remains separate from this feature. No real secrets were involved.
 
-Task 6 commit: `5788f4f`. Six reporting tests failed first. Green: 85 recovery tests passed from each location. Byte snapshots confirm DB/sidecars/exchange remain unchanged. Report uses install_inspect's read-only URI selection plus query_only, validates envelope, filename and change schema, and emits only hashed row keys.
-
-Small additions: `uncommitted` exposes redacted foreign forged candidates so the required B-side E2E result is observable. `in_manifest` requires UUID *and digest* equality; UUID-only membership could misleadingly mark altered content as approved. Without --security-dir it is null; a supplied security directory without approval yields false. Missing-file counts are independent of the mtime filter.
-
-## Task 8
-
-Task 7 commit: `8d79ac4`. E2E/restore tests: two expected leftover-refusal failures, two existing behaviors passed before the restore guard change. Green: 268 recovery/backup/signed-packet tests passed from each location. Real capture/publish/receive cycles converge after immediate peer revocation, rotation and approval; a stolen-key forgery is refused and reported, and prior receipts still verify historically. Empty-trust restore regression confirms local restoration does not undo remote revocation.
-
-## Task 9
-
-Task 8 commit: `af5eea0`. CLI and source smoke tests failed first. Green: 224 recovery/CLI/build/backup tests passed from each location. All three commands, error reasons/actions, trusted module, hidden imports, bootstrap allowlist and native CI list are wired. Shared source/frozen recovery smoke uses only sealed disposable identities and explicit subprocess cwd.
-
-Built macOS arm64 with pinned PyInstaller 6.16.0 and hooks 2026.8. One-file binary built but sandbox execution failed before Python: `Failed to initialize sync semaphore; semctl: Operation not permitted`. Built a disposable onedir variant instead and its complete recovery smoke passed (three helps, two non-console unchanged-state refusals, empty read-only report). Native Windows execution remains CI-only. --reason is optional only for replay in practice: a new rotation without a valid reason refuses, while --resume takes the authenticated journal reason.
-
-## Task 10
-
-Task 9 commit: `84bb5b7`. Added the complete eight-part runbook in spec order, including immediate revocation, out-of-band approval, STOPPED/RESIGN, forward-only replay, pins, custody, packet outcomes and limits. Existing recovery tests passed from each location: 91 each. Documentation was checked against the CLI and the actual old-OS-item cleanup behavior; no implementation-mirroring documentation test was added.
+No implementation decision awaits user input. Native Windows execution and one-file loader execution
+outside this sandbox remain verification limits. Approved manifests cannot undo already committed
+forgeries; normal edits and investigation remain necessary. A remote DB clone cannot be fenced by
+local locks. Python memory wiping and secure erasure are not promised. SQLite data is never rolled
+back by key recovery, and the wizard/profile-memory pins are updated manually per the runbook.

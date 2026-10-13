@@ -663,3 +663,281 @@ def test_recovery_source_smoke(tmp_path):
     import sys
     import agentmesh
     smoke_standalone.smoke_recovery([sys.executable, agentmesh.__file__], Path(os.path.realpath(tmp_path)))
+
+
+def test_large_manifest_peer_approval_and_receive(peers):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    sa, sb = peers[3:]
+    with sync.connect(peers[0]) as c:
+        packet = signed.parse(c.execute('SELECT packet FROM _sync_outbox').fetchone()[0])
+    pairs = [(str(uuid.UUID(int=i)), 'a'*64) for i in range(59999)]
+    pairs.append((packet['uuid'], signed.receipt_digest(packet)))
+    rotation.write_manifest(path.with_suffix('.manifest'), sorted(pairs))
+    signed.write_local(path, rotation.proposal(new, sa.public['key_id'], 'planned', path.with_suffix('.manifest')))
+    report = rotation.peer_rotate(sb.directory, path, confirm=lambda: new.public['key_id'])
+    assert report['manifest_packets'] == 60000
+    assert sync.receive(peers[1], peers[2], security=sb)['applied'] == 1
+
+
+@pytest.mark.parametrize('field', sorted(signed.PUBLIC_FIELDS))
+def test_every_new_public_proposal_field_authenticated(peers, field):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    doc = signed.parse(path.read_bytes())
+    doc['new'][field] = str(uuid.uuid4()) if field in ('sender', 'group') else 'windows' if field == 'node' else '0'*len(doc['new'][field])
+    with pytest.raises(ValueError, match='^invalid rotation proposal$'):
+        rotation.check_proposal(doc, path.with_suffix('.manifest'))
+
+
+def test_peer_manifest_changed_during_confirmation_is_refused(peers):
+    import key_rotation as rotation
+    path, new = rotation_offer(peers)
+    sb = peers[4]
+    before = all_bytes(sb.directory)
+    def confirm():
+        path.with_suffix('.manifest').write_bytes(b'')
+        return new.public['key_id']
+    with pytest.raises(ValueError, match='invalid rotation manifest'):
+        rotation.peer_rotate(sb.directory, path, confirm=confirm)
+    assert all_bytes(sb.directory) == before
+
+
+@pytest.mark.parametrize('case', ['raw-in-memory', 'absent-directory'])
+def test_rotation_old_identity_variants_without_raw_disk(peers, case, monkeypatch):
+    import key_rotation as rotation
+    import shutil
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    if case == 'absent-directory':
+        shutil.rmtree(sa.directory)
+        kwargs['old_key'] = sa.public['key_id']
+    else:
+        original = signed.read_local
+        def read(path, **kw):
+            value = original(path, **kw)
+            if Path(path) == sa.directory / 'identity.json' and signed.parse(value)['key_id'] == sa.public['key_id']:
+                return signed.wire({**sa.public, 'private_key': sa.key.private_bytes_raw().hex()})
+            return value
+        monkeypatch.setattr(signed, 'read_local', read)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='lost', **kwargs)
+    assert report['status'] == 'rotated'
+    assert report['trust_restored'] is (case != 'absent-directory')
+
+
+@pytest.mark.parametrize('case', ['recent', 'pending-file', 'lifetime'])
+def test_resume_rechecks_remaining_fences(peers, case, monkeypatch):
+    import key_rotation as rotation
+    import runtime_lock
+    import worker_lifecycle as worker
+    from contextlib import ExitStack
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    def crash(step):
+        if step == 'trust': raise RuntimeError('crash')
+    with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=crash, **kwargs)
+    if case == 'recent': next((ex / 'signed-changes' / 'mac').glob('*.json')).touch()
+    if case == 'pending-file':
+        with sync.connect(a) as c:
+            row = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchone()
+        path = ex / 'signed-changes' / 'mac' / (row[0] + '.json')
+        path.write_bytes(row[1].encode())
+        os.utime(path, (1, 1))
+    with ExitStack() as stack:
+        if case == 'lifetime':
+            runtime = a.parent / 'runtime.json'
+            signed.write_local(runtime, {'database': str(a), 'exchange': str(ex), 'node': 'mac'})
+            kwargs['runtime'] = runtime
+            monkeypatch.setattr(worker, 'status', lambda p: {'state': 'stopped'})
+            stack.enter_context(runtime_lock.lock(worker.control({'database': str(a)}, create=True) / 'lifetime.lock', timeout=0))
+        before = snapshot(peers)
+        with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+        assert snapshot(peers) == before
+
+
+def test_cleanup_crash_after_staging_removal_can_resume(peers, monkeypatch):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    original = Path.unlink
+    def fail(path, *args, **kw):
+        if path.name == 'rotation-journal.json': raise OSError('injected unlink failure')
+        return original(path, *args, **kw)
+    monkeypatch.setattr(Path, 'unlink', fail)
+    with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert not list(sa.directory.glob('.rotate-*'))
+    monkeypatch.setattr(Path, 'unlink', original)
+    assert rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)['status'] == 'rotated'
+
+
+def test_rotation_error_drops_secret_context(peers):
+    import key_rotation as rotation
+    ready(peers)
+    secret = os.urandom(32).hex()
+    def broken(*args): raise RuntimeError(secret)
+    with pytest.raises(ValueError) as caught:
+        rotation.identity_rotate(peers[3].directory, peers[0], peers[2], reason='planned', confirm=lambda w: w, ask=broken, backend=None)
+    assert str(caught.value) == rotation.FAILED
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert not (peers[3].directory / 'rotation-journal.json').exists()
+
+
+def test_same_scope_extra_active_key_refuses_before_journal(peers):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    other = sealed_identity(sa.directory.with_name('extra-active'), 'mac', sender=sa.public['sender'])
+    signed.approve(sa.directory, other.public, other.public['key_id'], GROUP, 'mac', sa.public['sender'])
+    phrase, kwargs = rotate_args(peers)
+    before = snapshot(peers)
+    with pytest.raises(ValueError, match='active identity'):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert snapshot(peers) == before
+
+
+def test_manifest_publication_syncs_parent_directory(tmp_path, monkeypatch):
+    import key_rotation as rotation
+    import stat
+    if os.name == 'nt': pytest.skip('POSIX directory fsync; Windows atomic replace path')
+    path = Path(os.path.realpath(tmp_path)) / 'durable.manifest'
+    directories = []
+    original = os.fsync
+    def fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode): directories.append(True)
+        return original(fd)
+    monkeypatch.setattr(os, 'fsync', fsync)
+    rotation.write_manifest(path, [])
+    assert directories, 'manifest publication must durably precede registry/proposal'
+
+
+def test_streamed_manifest_cannot_follow_symlinks(tmp_path):
+    import key_rotation as rotation
+    if os.name == 'nt': pytest.skip('POSIX symlink fixture; Windows reparse guards are separately tested')
+    root = Path(os.path.realpath(tmp_path))
+    target, link = root / 'target', root / 'link'
+    target.write_bytes(b'')
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match='invalid rotation manifest'):
+        rotation.read_manifest(link)
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_prejournal_failure_removes_only_owned_staging(peers, lost, monkeypatch):
+    import key_rotation as rotation
+    import shutil
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    if lost:
+        shutil.rmtree(sa.directory)
+        kwargs['old_key'] = sa.public['key_id']
+    before = snapshot(peers)
+    original = signed.write_local
+    def fail(path, *args, **kw):
+        if Path(path).name == 'rotation-journal.json': raise OSError('injected before journal')
+        return original(path, *args, **kw)
+    monkeypatch.setattr(signed, 'write_local', fail)
+    with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert snapshot(peers) == before
+    assert not list(sa.directory.glob('.rotate-*'))
+    if lost: assert not sa.directory.exists()
+
+
+def test_every_rotation_write_contains_no_unsealed_secret(peers, monkeypatch):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    original = os.fdopen
+    written = []
+    class Recorder:
+        def __init__(self, stream): self.stream = stream
+        def __enter__(self): self.stream.__enter__(); return self
+        def __exit__(self, *args): return self.stream.__exit__(*args)
+        def __getattr__(self, name): return getattr(self.stream, name)
+        def write(self, data):
+            written.append(bytes(data))
+            return self.stream.write(data)
+    def fdopen(fd, mode='r', *args, **kw):
+        stream = original(fd, mode, *args, **kw)
+        return Recorder(stream) if 'b' in mode and ('w' in mode or '+' in mode) else stream
+    monkeypatch.setattr(os, 'fdopen', fdopen)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    new = signed.Security(sa.directory, unlock=lambda: phrase)
+    secrets = (phrase.encode(), sa.key.private_bytes_raw(), sa.key.private_bytes_raw().hex().encode(),
+               new.key.private_bytes_raw(), new.key.private_bytes_raw().hex().encode())
+    outputs = written + list(all_bytes(a.parent).values()) + [json.dumps(report).encode()]
+    safe = all(secret not in output for secret in secrets for output in outputs)
+    assert safe, 'unsealed secret reached a write or report'
+    assert written
+
+
+def test_production_rotation_seal_uses_production_n(peers, monkeypatch):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    original, calls = kp.seal, []
+    def seal(public, raw, phrase, *, n):
+        calls.append(n)
+        return original(public, raw, phrase, n=2**14)
+    monkeypatch.setattr(kp, 'seal', seal)
+    phrase, kwargs = rotate_args(peers)
+    kwargs.pop('_test_n')
+    rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert calls == [kp.SCRYPT_N]
+
+
+@pytest.mark.parametrize('step', ['trust', 'identity', 'db', 'verify', 'proposal'])
+def test_crashed_replay_is_byte_identical_to_uninterrupted_replay(peers, tmp_path_factory, step):
+    import key_rotation as rotation
+    from contextlib import closing
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    def first_crash(name):
+        if name == 'trust': raise RuntimeError('journal checkpoint')
+    with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=first_crash, **kwargs)
+    clone = Path(os.path.realpath(tmp_path_factory.mktemp('replay-reference')))
+    # Both branches start from the same sealed journal and DB. All directories
+    # use the production private helper; no raw identity fixture is created.
+    for source in sorted(a.parent.rglob('*'), key=lambda p: (len(p.parts), str(p))):
+        destination = clone / source.relative_to(a.parent)
+        if source.is_dir(): backup.private_mkdir(destination)
+        elif source.is_file() and source.name not in (a.name, a.name+'-wal', a.name+'-shm'):
+            destination.write_bytes(source.read_bytes())
+            destination.chmod(0o600)
+            signed.windows_private(destination, provision=True)
+            os.utime(destination, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns))
+    with closing(sqlite3.connect(a)) as source, closing(sqlite3.connect(clone / a.name)) as destination:
+        source.backup(destination)
+    reference = rotation.identity_rotate(clone / sa.directory.name, clone / a.name, clone / ex.name, resume=True, **kwargs)
+    def crash(name):
+        if name == step: raise RuntimeError('replay crash')
+    with pytest.raises(ValueError): rotation.identity_rotate(sa.directory, a, ex, resume=True, _after_step=crash, **kwargs)
+    resumed = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert resumed == reference
+    assert all_bytes(sa.directory) == all_bytes(clone / sa.directory.name)
+    assert all_bytes(ex) == all_bytes(clone / ex.name)
+    with rotation.readonly(a) as original, rotation.readonly(clone / a.name) as reference_db:
+        # Database contents, including packet TEXT bytes and binding, must match;
+        # physical SQLite page layout is not part of packet/recovery identity.
+        for table in ('_sync_outbox', '_sync_security', '_sync_history', '_sync_shadow', 'memory_items'):
+            assert [tuple(r) for r in original.execute('SELECT * FROM '+table)] == [tuple(r) for r in reference_db.execute('SELECT * FROM '+table)]
+
+
+@pytest.mark.parametrize('suffix', ['-wal', '-shm'])
+def test_readonly_refuses_incomplete_sidecars_without_creating_files(peers, suffix):
+    import key_rotation as rotation
+    from contextlib import closing
+    a, b, ex, sa, sb = peers
+    isolated = a.parent / 'incomplete.db'
+    with closing(sqlite3.connect(a)) as source, closing(sqlite3.connect(isolated)) as target:
+        source.backup(target)
+    Path(str(isolated) + suffix).write_bytes(b'')
+    before = all_bytes(a.parent)
+    with pytest.raises(ValueError, match='database WAL sidecars are incomplete'):
+        rotation.compromise_report(isolated, ex, sa.public['key_id'])
+    assert all_bytes(a.parent) == before

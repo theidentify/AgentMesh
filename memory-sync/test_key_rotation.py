@@ -1649,3 +1649,41 @@ def test_round2_drop_resume(indexed_peers, step):
     assert report['dropped_pending'] == [uid]
     with sync.connect(a) as c:
         assert c.execute('SELECT packet FROM _sync_rotation_dropped WHERE uuid=?',(uid,)).fetchone()[0] == text
+
+
+@pytest.mark.parametrize('approve', [False, True])
+def test_round2_quarantine_collision(indexed_peers, approve, capsys):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    uid,text = next(iter(pending_texts(a).items()))
+    _,kwargs = rotate_args(indexed_peers)
+    def crash(step):
+        if step == 'identity': raise RuntimeError('stop')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='compromised',_after_step=crash,**kwargs)
+    p = signed.parse(text)
+    variant = dict(p)
+    variant['signature'] = alternate_signature(sa.key, signed.packet_domain(p)+signed.typed(
+        {k:v for k,v in p.items() if k != 'signature'})).hex()
+    raw = signed.wire(variant)
+    path = ex/'signed-changes'/'mac'/(uid+'.json')
+    path.write_bytes(raw)
+    before = snapshot(indexed_peers)
+    words = []
+    def confirm(word):
+        words.append(word)
+        return word if approve or word != 'QUARANTINE' else ''
+    kwargs['confirm'] = confirm
+    if not approve:
+        with pytest.raises(ValueError, match='rotation confirmation was not supplied'):
+            rotation.identity_rotate(sa.directory,a,ex,resume=True,quarantine_collision=[uid],**kwargs)
+        assert snapshot(indexed_peers) == before
+    else:
+        rotation.identity_rotate(sa.directory,a,ex,resume=True,quarantine_collision=[uid],**kwargs)
+        assert path.read_bytes() == text.encode()
+        target = ex/'pairing'/'rotations'/'quarantine'/(uid+'.'+signed.envelope_digest(variant)+'.json')
+        assert target.read_bytes() == raw
+    assert 'QUARANTINE' in words
+    shown = capsys.readouterr().err
+    assert signed.envelope_digest(p) in shown and signed.envelope_digest(variant) in shown

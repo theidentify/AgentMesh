@@ -106,6 +106,7 @@ def main(argv=None):
     rotate_parser.add_argument('--runtime')
     rotate_parser.add_argument('--resume', action='store_true')
     rotate_parser.add_argument('--drop-pending', action='append', default=[], metavar='UUID')
+    rotate_parser.add_argument('--quarantine-collision', action='append', default=[], metavar='UUID')
     peer_parser = subs.add_parser('peer-rotate', help='approve a key rotation with an out-of-band fingerprint')
     for option in ('security-dir', 'proposal'):
         peer_parser.add_argument('--' + option, required=True)
@@ -250,7 +251,7 @@ def main(argv=None):
             import key_rotation
             if args.action == 'identity-rotate':
                 report = key_rotation.identity_rotate(args.security_dir, args.db, args.exchange,
-                    reason=args.reason, old_key=args.old_key, runtime=args.runtime, resume=args.resume, drop_pending=args.drop_pending)
+                    reason=args.reason, old_key=args.old_key, runtime=args.runtime, resume=args.resume, drop_pending=args.drop_pending, quarantine_collision=args.quarantine_collision)
             elif args.action == 'peer-rotate':
                 report = key_rotation.peer_rotate(args.security_dir, args.proposal, exchange=args.exchange)
             else:

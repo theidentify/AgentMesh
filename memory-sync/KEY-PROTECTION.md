@@ -384,7 +384,13 @@ never a raw key or passphrase; its manifest is kept in a separate private stagin
 
 `--resume` repeats `STOPPED`, the locks, exchange inactivity and pending-path checks before replay.
 Only original pending files pinned by this journal may already exist with identical bytes; different
-bytes refuse. Recent activity in unrelated files still refuses. An interrupted temporary write may
+bytes refuse with `pending packet file differs from the outbox; see compromise-report`.
+For a journal-bound collision, use `--resume --quarantine-collision UUID` (repeatable).
+The command shows the exchange and outbox envelope digests. Type `QUARANTINE` to preserve the
+conflicting file at `EXCHANGE/pairing/rotations/quarantine/<uuid>.<digest>.json` and continue
+with the authoritative outbox bytes. Cancellation leaves the collision in place. Malformed
+envelopes require separate inspection; this option accepts only valid envelope shapes.
+Recent activity in unrelated files still refuses. An interrupted temporary write may
 be retried only at this journal's exact staging name with bytes that are a prefix of the stored packet.
 
 Resume asks for the new identity passphrase and replays trust, identity, publication of the unchanged

@@ -200,11 +200,12 @@ BUSY = 'a worker or cycle is using this database'
 CANCELLED = 'rotation confirmation was not supplied'
 PENDING_EXCHANGE = 'pending packet is already in the exchange; publish or inspect it before rotating'
 PENDING_DIFFERS = 'pending packet file differs from the outbox; see compromise-report'
+QUARANTINE_INVALID = 'quarantine-collision requires a journal-bound differing packet on resume'
 DROP_INVALID = 'drop-pending requires unreferenced pending packets and reason compromised'
 PENDING_INVALID = 'invalid pending outbox packet'
 RUNTIME = 'runtime does not match rotation paths'
 INCOMPLETE_WAL = 'database WAL sidecars are incomplete; inspect or checkpoint the stopped database before retrying'
-REASONS |= {DROP_INVALID, PENDING_DIFFERS, LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
+REASONS |= {QUARANTINE_INVALID, DROP_INVALID, PENDING_DIFFERS, LEFTOVERS, LEGACY, BINDING, OLD_UNKNOWN, UNEXPECTED, BUSY, CANCELLED, PENDING_EXCHANGE, PENDING_INVALID, RUNTIME, INCOMPLETE_WAL}
 UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GROUP, backup.TARGET_EXCHANGE,
     backup.PASSPHRASE_SHORT, backup.PASSPHRASE_MISMATCH, 'passphrase entry requires an interactive console'}
 
@@ -402,7 +403,7 @@ def packet_summary(p):
 
 
 @contextmanager
-def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=backup.console_confirm, _journal=None, drop_pending=(), rotation_reason=None):
+def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=backup.console_confirm, _journal=None, drop_pending=(), rotation_reason=None, quarantine_collision=()):
     reason = FAILED
     try:
         directory = signed.no_symlinks(security_dir)
@@ -418,11 +419,25 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
         rotation_files = None if expected is None else {
             Path(exchange) / 'signed-changes' / initial['binding']['node'] / (uid + '.json'): digest
             for uid, digest in expected.items()}
+        collisions = {}
         expected_bytes = None
         if expected is not None:
             with readonly(db) as c:
                 expected_bytes = {uid: c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()[0].encode('utf-8') for uid in expected}
-            no_pending_files(exchange, initial['binding']['node'], initial['pending'], expected=expected_bytes)
+            for uid in quarantine_collision:
+                if uid not in expected_bytes: raise ValueError(QUARANTINE_INVALID)
+                path = signed.no_symlinks(Path(exchange) / 'signed-changes' / initial['binding']['node'] / (uid + '.json'))
+                raw = signed.read_local(path)
+                if raw == expected_bytes[uid]: raise ValueError(QUARANTINE_INVALID)
+                packet = signed.parse(raw)
+                signed.validate_envelope(packet, initial['binding']['group'], initial['binding']['node'])
+                if packet['uuid'] != uid: raise ValueError(QUARANTINE_INVALID)
+                collisions[uid] = (path, raw, signed.envelope_digest(packet),
+                    signed.envelope_digest(signed.parse(expected_bytes[uid])))
+                rotation_files[path] = hashlib.sha256(raw).hexdigest()
+            allowed = dict(expected_bytes)
+            allowed.update({uid: value[1] for uid, value in collisions.items()})
+            no_pending_files(exchange, initial['binding']['node'], initial['pending'], expected=allowed)
             # A process kill may leave a partial temporary file. Exempt only
             # this journal's exact staging names with a matching outbox prefix;
             # cleanup happens later under both locks, in the shared writer.
@@ -435,6 +450,24 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
                         text = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()[0]
                         if text.encode('utf-8').startswith(raw): rotation_files[temp] = hashlib.sha256(raw).hexdigest()
         with fence(db, exchange, initial['binding'], runtime, confirm, rotation_files=rotation_files):
+            for uid, (path, raw, digest, own_digest) in collisions.items():
+                backup.show(dict(uuid=uid, exchange_envelope_digest=digest, outbox_envelope_digest=own_digest))
+                confirm_word('QUARANTINE', confirm)
+                if signed.read_local(path) != raw: raise ValueError(PENDING_DIFFERS)
+            for uid, (path, raw, digest, own_digest) in collisions.items():
+                target = Path(exchange)
+                for component in ('pairing', 'rotations', 'quarantine'):
+                    target = signed.no_symlinks(target / component)
+                    if not target.exists(): _private_mkdir(target)
+                destination = signed.no_symlinks(target / (uid + '.' + digest + '.json'))
+                if destination.exists():
+                    if signed.read_local(destination) != raw: raise ValueError(QUARANTINE_INVALID)
+                else:
+                    os.link(path, destination)
+                    _sync_directory(target)
+                if signed.read_local(path) != raw: raise ValueError(PENDING_DIFFERS)
+                path.unlink()
+                _sync_directory(path.parent)
             plan = _read_plan(directory, db, old_key=old_key, journal=_journal, drop_pending=drop_pending)
             if plan['binding'] != initial['binding'] or plan['old_key_id'] != initial['old_key_id']: raise ValueError(BINDING)
             no_pending_files(exchange, plan['binding']['node'], plan['pending'], expected=expected_bytes)
@@ -680,15 +713,17 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
 
 
 @safe_operation
-def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, runtime=None, resume=False, drop_pending=(),
+def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, runtime=None, resume=False, drop_pending=(), quarantine_collision=(),
                     ask=kp.console_passphrase, confirm=backup.console_confirm, backend=_AUTO_BACKEND,
                     _test_n=None, _after_step=lambda step: None):
     directory = signed.no_symlinks(security_dir)
+    if quarantine_collision and (not resume or any(not signed.canonical_uuid(uid) for uid in quarantine_collision)):
+        raise ValueError(QUARANTINE_INVALID)
     if drop_pending and (resume or reason != 'compromised' or any(not signed.canonical_uuid(uid) for uid in drop_pending)):
         raise ValueError(DROP_INVALID)
     journal = read_journal(directory, exchange) if resume else None
     if not resume and reason not in ('lost', 'compromised', 'planned'): raise ValueError(INVALID)
-    with prepare(directory, db, exchange, old_key=old_key, runtime=runtime, confirm=confirm, _journal=journal, drop_pending=drop_pending, rotation_reason=reason) as plan:
+    with prepare(directory, db, exchange, old_key=old_key, runtime=runtime, confirm=confirm, _journal=journal, drop_pending=drop_pending, rotation_reason=reason, quarantine_collision=quarantine_collision) as plan:
         if journal is None:
             phrase = backup.new_passphrase(ask, None, 'identity')
             key = signed.crypto()[0].generate()

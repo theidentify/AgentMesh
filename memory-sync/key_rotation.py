@@ -355,3 +355,203 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
         if type(exc) is ValueError and str(exc) in REASONS | UPSTREAM_REASONS:
             reason = str(exc)
     raise ValueError(reason)
+
+
+import copy
+JOURNAL = 'agentmesh-rotation-journal-v1'
+JOURNAL_INVALID = 'invalid rotation journal'
+IN_PROGRESS = 'rotation in progress; run identity-rotate --resume'
+TRUST_CONFLICT = 'rotation conflicts with an active identity or allocation slot'
+REASONS |= {JOURNAL_INVALID, IN_PROGRESS, TRUST_CONFLICT}
+_AUTO_BACKEND = object()
+
+
+def rotated_trust(trust, old, new, old_public):
+    result = copy.deepcopy(trust or backup.empty_trust())
+    if old not in result['peers'] and old_public is not None:
+        result['peers'][old] = {**old_public, 'revoked': True}
+    if old in result['peers']: result['peers'][old]['revoked'] = True
+    existing = result['peers'].get(new['key_id'])
+    if existing and (existing['revoked'] or public_fields(existing) != new): raise ValueError(TRUST_CONFLICT)
+    result['peers'][new['key_id']] = {**new, 'revoked': False}
+    active, slots = set(), set()
+    for p in result['peers'].values():
+        if p['revoked']: continue
+        scope = (p['group'], p['node'], p['sender'])
+        slot = (p['group'], p['node'])
+        if scope in active or slot in slots: raise ValueError(TRUST_CONFLICT)
+        active.add(scope)
+        slots.add(slot)
+    return signed.check_trust(result)
+
+
+class _MemorySigner:
+    def __init__(self, public, key): self.public, self.key = public, key
+    def sign_bytes(self, data): return self.key.sign(data)
+
+
+class _ReplaySecurity(signed.Security):
+    """Internal replay only: require exact journal-bound identity and live trust.
+
+    Ordinary Security has no bypass flag. Replay is created only under both
+    fences, and cannot authorize any identity other than the sealed journal key.
+    """
+    def check_self(self):
+        doc = signed.parse(signed.read_local(self.directory / 'rotation-journal.json', private=True))
+        current = signed.parse(signed.read_local(self.directory / 'identity.json', private=True))
+        if current != doc['new_identity'] or public_fields(current) != self.public:
+            raise ValueError(JOURNAL_INVALID)
+        self._check_self_authorized()
+
+
+def _manifest_stage(directory, new_key):
+    return directory / ('.rotate-' + new_key + '.manifest')
+
+
+@fixed(JOURNAL_INVALID)
+def read_journal(directory, exchange):
+    doc = signed.parse(signed.read_local(directory / 'rotation-journal.json', private=True))
+    if type(doc) is not dict or set(doc) != {'format', 'old_key_id', 'old_public', 'new_identity', 'reason', 'manifest', 'proposal'} or doc['format'] != JOURNAL:
+        raise ValueError(JOURNAL_INVALID)
+    identity = doc['new_identity']
+    if set(identity) != signed.PUBLIC_FIELDS | {'protection'}: raise ValueError(JOURNAL_INVALID)
+    new = public_fields(identity)
+    kp.check(identity['protection'])
+    signed.hex_bytes(doc['old_key_id'], 32)
+    if doc['old_public'] is not None:
+        old = signed.check_public(doc['old_public'])
+        if old['key_id'] != doc['old_key_id'] or any(old[k] != new[k] for k in ('group', 'node', 'sender')):
+            raise ValueError(JOURNAL_INVALID)
+    meta = doc['manifest']
+    if type(meta) is not dict or set(meta) != {'sha256', 'count', 'resigned', 'trust_restored'} or type(meta['resigned']) is not int or meta['resigned'] < 0 or type(meta['trust_restored']) is not bool:
+        raise ValueError(JOURNAL_INVALID)
+    p = doc['proposal']
+    if (p['new'] != new or p['old_key_id'] != doc['old_key_id'] or p['reason'] != doc['reason']
+            or p['manifest_sha256'] != meta['sha256'] or p['manifest_count'] != meta['count']):
+        raise ValueError(JOURNAL_INVALID)
+    stage = _manifest_stage(directory, new['key_id'])
+    # A crash after staging cleanup but before the final journal unlink can use
+    # the already-published, hash-pinned manifest, without trusting exchange data.
+    source = stage if stage.exists() else Path(exchange) / 'pairing' / 'rotations' / (new['key_id'] + '.manifest')
+    check_proposal(p, source)
+    return doc
+
+
+def _write_equal(path, doc):
+    if path.exists() and signed.parse(signed.read_local(path, private=True)) == doc: return
+    signed.write_local(path, doc)
+
+
+def _publish_rotation(directory, exchange, journal):
+    p = journal['proposal']
+    target = signed.no_symlinks(Path(exchange) / 'pairing')
+    if not target.exists(): backup.private_mkdir(target)
+    target = signed.no_symlinks(target / 'rotations')
+    if not target.exists(): backup.private_mkdir(target)
+    manifest_path = target / (p['new']['key_id'] + '.manifest')
+    stage = _manifest_stage(directory, p['new']['key_id'])
+    source = stage if stage.exists() else manifest_path
+    manifest = read_manifest(source, sha256=p['manifest_sha256'], count=p['manifest_count'], private=source == stage)
+    if manifest_path.exists():
+        read_manifest(manifest_path, sha256=p['manifest_sha256'], count=p['manifest_count'])
+    else: write_manifest(manifest_path, manifest['packets'].items(), exclusive=True)
+    proposal_path = target / (p['new']['key_id'] + '.json')
+    if proposal_path.exists():
+        if signed.read_local(proposal_path) != signed.wire(p): raise ValueError(INVALID)
+    else: signed.write_local(proposal_path, p, exclusive=True)
+
+
+def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step):
+    new = public_fields(journal['new_identity'])
+    trust = rotated_trust(plan['trust'], journal['old_key_id'], new, journal['old_public'])
+    _write_equal(directory / 'trust.json', trust)
+    after_step('trust')
+    _write_equal(directory / 'identity.json', journal['new_identity'])
+    after_step('identity')
+    security = _ReplaySecurity(directory, unlock=lambda: phrase)
+    with sync.connect(db) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        if binding(c) != plan['binding']: raise ValueError(BINDING)
+        pending = []
+        for row in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchall():
+            p = signed.parse(row['packet'])
+            if row['uuid'] != p['uuid']: raise ValueError(PENDING_INVALID)
+            if p['key_id'] == journal['old_key_id']:
+                if journal['old_public'] is not None: verify_old(p, journal['old_public'])
+                if any(p[k] != plan['binding'][k] for k in plan['binding']): raise ValueError(BINDING)
+                updated = security.sign({k: v for k, v in p.items() if k not in ('signature', 'key_id', 'sender')})
+                if any(signed.typed(updated[k]) != signed.typed(p[k]) for k in ('uuid', 'body', 'checksum')):
+                    raise ValueError(PENDING_INVALID)
+                c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=? AND published=0', (sync.canonical(updated), p['uuid']))
+                p = updated
+            elif p['key_id'] != new['key_id']: raise ValueError(UNEXPECTED)
+            security.verify(p, new['group'], new['node'])
+            pending.append(p)
+        no_pending_files(exchange, new['node'], pending)
+        security.guard(c, exchange)
+    after_step('db')
+    verified = _ReplaySecurity(directory, unlock=lambda: phrase)
+    verified.check_self()
+    with readonly(db) as c:
+        for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0'):
+            p = signed.parse(row[0])
+            verified.verify(p, new['group'], new['node'])
+            if p['key_id'] != new['key_id']: raise ValueError(PENDING_INVALID)
+    after_step('verify')
+    _publish_rotation(directory, exchange, journal)
+    after_step('proposal')
+    if backend is _AUTO_BACKEND:
+        import os_unlock
+        backend = os_unlock.current_backend()
+    removed = None
+    if backend is not None:
+        removed = False
+        try:
+            backend.delete(journal['old_key_id'])
+            removed = True
+        except Exception:
+            pass
+    next_steps = ['Read the new fingerprint to each peer out of band, then run peer-rotate there.']
+    if journal['reason'] == 'compromised': next_steps.append('Run compromise-report everywhere, including this device.')
+    if not journal['manifest']['trust_restored']: next_steps.append('Re-pin peers using signed_packets trust and out-of-band fingerprints.')
+    next_steps += ['Create a new backup and run a drill; delete backups of the revoked key.',
+                   'Optionally enable identity-os-unlock for the new key.', 'Restart the worker.']
+    if removed is False:
+        next_steps.insert(0, 'Old OS unlock item was NOT removed. Remove the old fingerprint item by hand; identity-os-unlock disable targets the currently installed key.')
+    _manifest_stage(directory, new['key_id']).unlink(missing_ok=True)
+    (directory / 'rotation-journal.json').unlink()  # Last durable step: signing opens only now.
+    return dict(status='rotated', old_key_id=journal['old_key_id'], new_key_id=new['key_id'], new_fingerprint=new['key_id'],
+        reason=journal['reason'], resigned=journal['manifest']['resigned'], manifest_packets=journal['manifest']['count'],
+        proposal='pairing/rotations/' + new['key_id'] + '.json', trust_restored=journal['manifest']['trust_restored'],
+        os_unlock_item_removed=removed, next=next_steps)
+
+
+@safe_operation
+def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, runtime=None, resume=False,
+                    ask=kp.console_passphrase, confirm=backup.console_confirm, backend=_AUTO_BACKEND,
+                    _test_n=None, _after_step=lambda step: None):
+    directory = signed.no_symlinks(security_dir)
+    journal = read_journal(directory, exchange) if resume else None
+    if not resume and reason not in ('lost', 'compromised', 'planned'): raise ValueError(INVALID)
+    with prepare(directory, db, exchange, old_key=old_key, runtime=runtime, confirm=confirm, _journal=journal) as plan:
+        if journal is None:
+            phrase = backup.new_passphrase(ask, None, 'identity')
+            key = signed.crypto()[0].generate()
+            pub = key.public_key().public_bytes_raw()
+            new = dict(format='agentmesh-peer-key-v1', **plan['binding'], key_id=hashlib.sha256(pub).hexdigest(), public_key=pub.hex())
+            identity = backup.sealed_identity(new, key.private_bytes_raw(), phrase, kp.SCRYPT_N if _test_n is None else _test_n)
+            # Validate all trust constraints before writing a journal.
+            rotated_trust(plan['trust'], plan['old_key_id'], new, plan['old_public'])
+            if not directory.exists(): backup.private_mkdir(directory)
+            stage = _manifest_stage(directory, new['key_id'])
+            manifest = write_manifest(stage, plan['manifest'], exclusive=True)
+            journal = dict(format=JOURNAL, old_key_id=plan['old_key_id'], old_public=plan['old_public'],
+                new_identity=identity, reason=reason,
+                manifest=dict(sha256=manifest['sha256'], count=manifest['count'], resigned=len(plan['pending']), trust_restored=plan['trust'] is not None),
+                proposal=proposal(_MemorySigner(new, key), plan['old_key_id'], reason, stage))
+            signed.write_local(directory / 'rotation-journal.json', journal, exclusive=True)
+        else:
+            if any(journal['new_identity'][k] != plan['binding'][k] for k in plan['binding']): raise ValueError(BINDING)
+            phrase = ask('New identity passphrase: ')
+            kp.open_sealed(public_fields(journal['new_identity']), journal['new_identity']['protection'], phrase)
+        return _replay(directory, db, exchange, plan, journal, phrase, backend, _after_step)

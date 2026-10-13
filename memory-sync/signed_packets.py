@@ -299,6 +299,11 @@ class Security:
         return self.require_unlocked().key.sign(data)
 
     def check_self(self):
+        if (self.directory / 'rotation-journal.json').exists():
+            raise ValueError('rotation in progress; run identity-rotate --resume')
+        self._check_self_authorized()
+
+    def _check_self_authorized(self):
         private_directory(self.directory)
         windows_private(self.directory / 'identity.json')
         entry = read_trust(self.directory)['peers'].get(self.public['key_id'])

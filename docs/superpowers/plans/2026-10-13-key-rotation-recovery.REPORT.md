@@ -35,3 +35,11 @@ Task 2 commit: `5544210`. R2 red: two failures / five passes. Green: 131 tests p
 Task 3 commit: `15d9a1d`. Preparation tests red: 20 failures. Green: 57 tests passed from each location. Refusals snapshot security directory, DB/sidecars and exchange bytes. Locks stay held for the context. Read-only preparation rechecks DB state after acquiring the fence.
 
 Small corrections: pending-file refusal uses a fixed reason without interpolated UUID, honoring the strict fixed-error rule. Runtime status calls `Security` internally and therefore fails for lost/revoked identities and journals; in that case recovery reads the same owned worker metadata and liveness directly, still taking both locks. Lock infrastructure can create its usual lock files outside the security directory, DB and exchange; this is necessary to acquire the specified fence.
+
+## Task 5
+
+Task 4 commit: `b983cc6`. Ten new tests failed before implementation and passed afterward. Recovery, signed-packet, backup and OS-unlock suites: 319 passed from each working directory. Covers each journal-step crash, repeated STOPPED/lock fences, transaction collision rollback, sealed journal writes, lost trust, and fake OS backend success/failure/None.
+
+Replay uses a private internal Security subclass bound to the exact sealed journal identity, with unchanged live trust authorization. Ordinary Security refuses while the journal exists. This resolves the spec's simultaneous journal guard and in-journal signing/verification requirements without a public bypass option. On cleanup failure the report explicitly requests manual removal of the old fingerprint: current `identity-os-unlock disable` targets the new identity and cannot remove an old item.
+
+Process deviation: Task 4's commit was issued after both test processes started but before their final output was collected. Both subsequently completed successfully (57 each); later commits wait for completed results. One initial shell invocation used unavailable `python`; it did not edit files. The stale Task 1 report line was corrected in Task 2.

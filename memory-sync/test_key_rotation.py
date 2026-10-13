@@ -302,3 +302,131 @@ def test_prepare_refusals_unchanged(peers, case, monkeypatch):
             with rotation.prepare(sa.directory, a, ex, runtime=runtime, confirm=lambda word: '' if word == case else word):
                 pytest.fail('refusal required')
         assert snapshot(peers) == before
+
+
+class FakeBackend:
+    def __init__(self):
+        self.items, self.calls, self.fail = {}, [], False
+    def delete(self, key_id):
+        self.calls.append(key_id)
+        if self.fail: raise RuntimeError('backend unavailable')
+        self.items.pop(key_id, None)
+
+
+def rotate_args(peers):
+    phrase = os.urandom(32).hex()
+    return phrase, dict(ask=lambda *a: phrase, confirm=lambda w: w, backend=FakeBackend(), _test_n=2**14)
+
+
+def test_rotation_full_and_sealed_writes(peers, monkeypatch):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    with sync.connect(a) as c:
+        before = {r['uuid']: (r['packet'], r['published']) for r in c.execute('SELECT * FROM _sync_outbox')}
+    phrase, kwargs = rotate_args(peers)
+    writes = []
+    original = signed.write_local
+    def record(path, value, **kw):
+        raw = signed.wire(value)
+        assert sa.key.private_bytes_raw().hex().encode() not in raw, 'raw key written'
+        assert phrase.encode() not in raw, 'passphrase written'
+        assert 'private_key' not in raw.decode(), 'raw key field written'
+        writes.append((Path(path).name, value))
+        return original(path, value, **kw)
+    monkeypatch.setattr(signed, 'write_local', record)
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    assert report['status'] == 'rotated'
+    assert report['resigned'] == 1 and report['manifest_packets'] == 1
+    assert report['os_unlock_item_removed'] is True
+    assert kwargs['backend'].calls == [sa.public['key_id']]
+    new = signed.Security(sa.directory, unlock=lambda: phrase)
+    assert new.public['sender'] == sa.public['sender']
+    trust = signed.read_trust(sa.directory)
+    assert trust['peers'][sa.public['key_id']]['revoked']
+    assert sum(not p['revoked'] for p in trust['peers'].values() if p['sender'] == sa.public['sender']) == 1
+    with sync.connect(a) as c:
+        for row in c.execute('SELECT * FROM _sync_outbox'):
+            old = signed.parse(before[row['uuid']][0])
+            p = signed.parse(row['packet'])
+            if row['published']: assert row['packet'] == before[row['uuid']][0]
+            else:
+                assert all(p[k] == old[k] for k in ('uuid', 'body', 'checksum'))
+                new.verify(p, GROUP, 'mac')
+                with pytest.raises(ValueError): sb.verify(p, GROUP, 'mac')
+    proposal_path = ex / report['proposal']
+    doc = signed.parse(signed.read_local(proposal_path))
+    rotation.check_proposal(doc, proposal_path.with_suffix('.manifest'))
+    assert not (sa.directory / 'rotation-journal.json').exists()
+    assert not list(sa.directory.glob('.rotate-*'))
+    assert sync.receive(a, ex, security=new)['invalid'] == 0
+    journal = next(value for name, value in writes if name == 'rotation-journal.json')
+    assert 'protection' in journal['new_identity']
+
+
+@pytest.mark.parametrize('step', ['trust', 'identity', 'db', 'verify', 'proposal'])
+def test_crash_resume_replays_and_fences(peers, step):
+    import key_rotation as rotation
+    import runtime_lock
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    def crash(name):
+        if name == step: raise RuntimeError('injected crash')
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='compromised', _after_step=crash, **kwargs)
+    journal = signed.parse(signed.read_local(sa.directory / 'rotation-journal.json', private=True))
+    with pytest.raises(ValueError, match='rotation in progress'):
+        sa.sign({'group': GROUP, 'node': 'mac', 'uuid': str(uuid.uuid4()), 'body': [{}]})
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', **kwargs)
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory, a, ex, resume=True, **{**kwargs, 'confirm': lambda w: ''})
+    with runtime_lock.lock(a.parent / 'worker.lock', timeout=0):
+        with pytest.raises(ValueError, match='worker or cycle'):
+            rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    report = rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
+    assert report['new_key_id'] == journal['new_identity']['key_id']
+    assert report['reason'] == 'compromised'
+    assert report['resigned'] == 1
+    assert signed.parse(signed.read_local(sa.directory / 'identity.json', private=True)) == journal['new_identity']
+    assert not (sa.directory / 'rotation-journal.json').exists()
+
+
+@pytest.mark.parametrize('case', ['lost', 'failure', 'none'])
+def test_rotation_lost_and_os_cleanup(peers, case):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    if case == 'lost':
+        (sa.directory / 'identity.json').unlink()
+        (sa.directory / 'trust.json').unlink()
+        kwargs['old_key'] = sa.public['key_id']
+    elif case == 'failure': kwargs['backend'].fail = True
+    else: kwargs['backend'] = None
+    report = rotation.identity_rotate(sa.directory, a, ex, reason='lost', **kwargs)
+    assert report['trust_restored'] == (case != 'lost')
+    assert report['os_unlock_item_removed'] is ({'lost': True, 'failure': False, 'none': None}[case])
+    if case == 'lost': assert len(signed.read_trust(sa.directory)['peers']) == 1
+    if case == 'failure': assert any('by hand' in s for s in report['next'])
+
+
+def test_transaction_exchange_race_rolls_back_and_resumes(peers):
+    import key_rotation as rotation
+    ready(peers)
+    a, b, ex, sa, sb = peers
+    phrase, kwargs = rotate_args(peers)
+    with sync.connect(a) as c:
+        before = [tuple(r) for r in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0')]
+    file = ex / 'signed-changes' / 'mac' / (before[0][0] + '.json')
+    def race(step):
+        if step == 'identity':
+            file.write_bytes(before[0][1].encode())
+            os.utime(file, (1, 1))
+    with pytest.raises(ValueError, match='pending packet is already'):
+        rotation.identity_rotate(sa.directory, a, ex, reason='planned', _after_step=race, **kwargs)
+    with sync.connect(a) as c:
+        assert [tuple(r) for r in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0')] == before
+    file.unlink()
+    assert rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)['status'] == 'rotated'

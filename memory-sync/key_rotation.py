@@ -859,8 +859,9 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                 if p['key_id'] != key: continue
                 # Validate table/op/key shape before emitting any untrusted label.
                 if p['format'] == signed.RESOLUTION_FORMAT:
-                    from packet_versions import _validate_rows
-                    _validate_rows(c, p)
+                    import packet_versions
+                    packet_versions.validate_wire(p, group=cfg['group_id'], folder=path.parent.name)
+                    packet_versions._validate_rows(c, p)
                 else:
                     legacy = {k: p[k] for k in ('group', 'node', 'uuid', 'body')}
                     legacy.update(format=sync.FORMAT, checksum=sync.digest(p['body']))
@@ -881,7 +882,8 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                 if '_sync_packet_dispositions' in tables:
                     dispositions = c.execute('SELECT envelope_digest FROM _sync_packet_dispositions WHERE packet_uuid=?',
                                              (p['uuid'],)).fetchall()
-                    item['superseded'] = bool(dispositions) and all(row[0] == complete for row in dispositions)
+                    item['superseded'] = any(row[0] == complete for row in dispositions)
+                    item['variant_superseded'] = any(row[0] != complete for row in dispositions)
                 committed = receipts.get(p['uuid']) == digest and (p['uuid'] not in envelopes or envelopes[p['uuid']] == complete)
                 result['committed' if committed else 'uncommitted'].append(item)
                 if p['node'] == cfg['node']:

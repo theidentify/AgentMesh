@@ -1687,3 +1687,40 @@ def test_round2_quarantine_collision(indexed_peers, approve, capsys):
     assert 'QUARANTINE' in words
     shown = capsys.readouterr().err
     assert signed.envelope_digest(p) in shown and signed.envelope_digest(variant) in shown
+
+
+def test_round2_report_variant_and_version_validation(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import packet_versions as versions
+    import resolution_apply as apply
+    from test_resolution_apply import resolve
+    a,b,ex,sa,sb = indexed_peers
+    p,q,r = pending_resolution(indexed_peers,monkeypatch)
+    resolve(apply,a,[r],dict(x=7,y=2,z=4),sa)
+    sync.publish(a,ex,security=sa)
+    manifest = ex/'report.manifest'
+    rotation.write_manifest(manifest,[(r['uuid'],signed.envelope_digest(r))])
+    rotation.add_rotation(sa.directory,sa.public['key_id'],sb.public['key_id'],manifest)
+    path = ex/'signed-changes'/'mac'/(r['uuid']+'.json')
+    variant = dict(r)
+    variant['signature'] = alternate_signature(sa.key,signed.packet_domain(r)+signed.typed(
+        {k:v for k,v in r.items() if k != 'signature'})).hex()
+    path.write_bytes(signed.wire(variant))
+    called = []
+    original = versions.validate_wire
+    def validate(packet, **kwargs):
+        called.append(packet['uuid'])
+        return original(packet,**kwargs)
+    monkeypatch.setattr(versions,'validate_wire',validate)
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(a,ex,sa.public['key_id'],security_dir=sa.directory)
+    assert all_bytes(a.parent) == before
+    item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+    assert item['superseded'] is False and item['variant_superseded'] is True
+    assert item['in_manifest'] is False and item in report['forged_candidates']
+    assert r['uuid'] in called
+    path.write_bytes(signed.wire(r))
+    report = rotation.compromise_report(a,ex,sa.public['key_id'],security_dir=sa.directory)
+    item = next(v for v in report['uncommitted']+report['committed'] if v['uuid'] == r['uuid'])
+    assert item['superseded'] is True and item['variant_superseded'] is False
+    assert item['in_manifest'] is True and item not in report['forged_candidates']

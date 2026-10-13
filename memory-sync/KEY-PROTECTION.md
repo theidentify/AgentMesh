@@ -348,7 +348,10 @@ are refused; this is intentional. Do not reactivate the compromised key to clear
    without `--security-dir`. Committed packets outside that manifest deserve particular attention.
    `uncommitted` shows other observed old-key files. On the originating device, `forged_candidates`
    identifies own-node files that do not match the outbox byte for byte. These are evidence for
-   investigation, not an automatic verdict. Missing signed-envelope receipts are counted separately
+   investigation, not an automatic verdict. This byte check includes v3 files. When the resolution
+   store exists, `superseded` means a disposition matches this file's envelope digest;
+   `variant_superseded` means a disposition exists for another digest of the same UUID.
+   V3 syntax and row validation use `packet_versions`. Missing signed-envelope receipts are counted separately
    from legacy receipts because receipts do not retain key/node attribution. Malformed files increase
    `unreadable`. For v3 packets, the packet and its change summaries include `kind` (`change` or
    `resolution`). When the resolution store exists, every packet also has `superseded: true|false`;

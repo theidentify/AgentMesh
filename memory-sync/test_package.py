@@ -67,4 +67,4 @@ def test_every_local_module_imported_by_packaged_sources_is_packaged():
 
 def test_gate2_reader_modules_are_packaged():
     import build_package
-    assert {'resolution_protocol.py', 'resolution_store.py', 'packet_versions.py', 'resolution_apply.py', 'conflict_commands.py', 'protocol_activation.py'} <= set(build_package.FILES)
+    assert {'resolution_protocol.py', 'resolution_store.py', 'packet_versions.py', 'resolution_apply.py', 'conflict_commands.py', 'protocol_activation.py', 'key_protection.py', 'os_unlock.py'} <= set(build_package.FILES)

@@ -281,3 +281,31 @@ invitation flow. `invite-peer`/`setup-join` continue to refuse signed invitation
 and retain the pending-install guard on incomplete replay. Existing pairing and
 revocation procedures remain authoritative. Older binaries must be drained before
 activation; managed capability fences do not protect bypassed unmanaged execution.
+
+
+### Protected keys during conflict recovery
+
+Signed `resolve` (including preview), `receive-only`, and confirmed
+`activate-protocol` use the worker's existing OS-unlock path. Enable it explicitly
+for the same local account before running recovery:
+
+```sh
+python agentmesh.py identity-os-unlock enable --security-dir /local/app/identity
+python agentmesh.py identity-os-unlock status --security-dir /local/app/identity
+```
+
+Enrollment uses the existing interactive passphrase flow; recovery commands do
+not add a passphrase flag, prompt, or fallback to unsigned packets. If no OS unlock
+is enrolled, they refuse with `passphrase-protected identity is locked; enable OS
+unlock or unlock interactively`. An unavailable or refused OS store produces its
+existing fixed reason. Unlock refusal occurs before stopping the worker or
+creating recovery control files. No resolution rows or outbox packet are committed.
+After correcting an OS-store refusal, rerun the command in a fresh process because
+the existing unlock helper caches results per process.
+
+`conflicts` and activation preview remain informational and do not access the OS
+key store. Listing works with a locked identity and does not change verification
+telemetry. Enrolling or disabling OS unlock changes the identity file, so discard
+an older preview and generate a new one before confirmation. Keep private plan
+files local. See [KEY-PROTECTION.md](KEY-PROTECTION.md) for supported OS stores,
+passphrase recovery and the limits of protection against same-user processes.

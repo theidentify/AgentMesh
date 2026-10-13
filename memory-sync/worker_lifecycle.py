@@ -329,15 +329,18 @@ def recovery(runtime):
 
     Leave failed metadata intact. Recovery never starts ingestion or a worker.
     """
-    config, scope = load(runtime)
+    config, scope = load(runtime, authoritative=False)
     from protocol_activation import require_capability
     require_capability(runtime,config['database'])
+    # Match the worker's unlock policy before stopping it or creating control files.
+    security=None
+    if scope['policy']=='required':
+        from signed_packets import Security
+        security=Security(security_paths(config,runtime)[0], os_unlock=True).require_unlocked()
+    if load(runtime)!=(config,scope): raise ValueError('runtime or trust changed')
     if status(runtime)['state']=='running': stop(runtime)
     directory=control(config,create=True)
     with lock(directory/'lifetime.lock',timeout=0), lock(Path(config['database']).parent/'worker.lock',timeout=0):
         if load(runtime)!=(config,scope): raise ValueError('runtime or trust changed')
-        security=None
-        if scope['policy']=='required':
-            from signed_packets import Security
-            security=Security(security_paths(config,runtime)[0])
+        if security is not None: security.check_self()
         yield config,security

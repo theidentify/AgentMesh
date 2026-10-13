@@ -206,3 +206,138 @@ def test_pending_receive_does_not_recommend_worker_restart(commands,tmp_path):
     report=commands.receive_only(args['runtime'])
     assert report['receive']['pending']==1
     assert report['next_action']=='review-diagnostics'
+
+
+def protected_conflict(tmp_path):
+    import signed_packets as signed
+    import key_protection as kp
+    import protocol_activation as activation
+    from test_key_protection import PASS, FAST
+    from test_memory_sync import GROUP
+    args=runtime_for(tmp_path)
+    other=tmp_path/'others';other.mkdir();_,b,_=peers(other)
+    remote=tmp_path/'remote-key'
+    pa=signed.init_identity(args['security_dir'],GROUP,'mac')
+    pb=signed.init_identity(remote,GROUP,'windows')
+    signed.approve(args['security_dir'],pb,pb['key_id'],GROUP,'windows',pb['sender'])
+    signed.approve(remote,pa,pa['key_id'],GROUP,'mac',pa['sender'])
+    sa,sb=signed.Security(args['security_dir']),signed.Security(remote)
+    p=edit(args['database'],dict(x=1,y=2),sa);q=edit(b,dict(x=3,z=4),sb)
+    put(args['exchange'],p);put(args['exchange'],q)
+    sync.receive(args['database'],args['exchange'],security=sa)
+    enable(activation,args['runtime'])
+    kp.protect_identity(args['security_dir'],lambda prompt:PASS,**FAST)
+    return args,p,q
+
+
+def test_locked_protected_key_cannot_sign_or_commit_resolution(tmp_path):
+    import signed_packets as signed
+    import resolution_apply as apply
+    import key_protection as kp
+    from test_key_protection import PASS
+    from test_resolution_apply import ref,choices,snapshot
+    args,p,q=protected_conflict(tmp_path)
+    unlocked=signed.Security(args['security_dir'],unlock=lambda:PASS)
+    locked=signed.Security(args['security_dir'])
+    with sync.connect(args['database']) as c,c:
+        plan=apply.prepare_resolution(c,[ref(p),ref(q)],choices(x=3,y=2,z=4),security=unlocked)
+    before=snapshot(args['database'])
+    with sync.connect(args['database']) as c,c:
+        with pytest.raises(ValueError) as error:
+            locked._sign_resolution(c,json.loads(plan.payload_json))
+        assert str(error.value)==kp.LOCKED
+        with pytest.raises(ValueError) as error:
+            apply.commit_resolution(c,plan,security=locked,operation_id='locked')
+        assert str(error.value)==kp.LOCKED
+    assert snapshot(args['database'])==before
+    # Real positive control: the same protected identity can sign after unlocking.
+    with sync.connect(args['database']) as c,c:
+        packet=apply.commit_resolution(c,plan,security=unlocked,operation_id='unlocked')
+        unlocked.verify(packet,packet['group'],packet['node'])
+
+
+def test_resolve_preview_reports_locked_reason_without_writes(tmp_path,capsys):
+    import agentmesh
+    import key_protection as kp
+    args,p,q=protected_conflict(tmp_path);before=files(tmp_path)
+    assert agentmesh.main(['resolve','--runtime',str(args['runtime']),'--packet',q['uuid'],
+                           '--choice','theirs','--preview'])==1
+    error=json.loads(capsys.readouterr().err)
+    assert error['reason']==kp.LOCKED
+    assert files(tmp_path)==before
+
+
+def test_protected_resolution_uses_os_unlock_and_locked_commit_is_write_free(tmp_path,monkeypatch,capsys):
+    import agentmesh
+    import conflict_commands as commands
+    import key_protection as kp
+    import os_unlock as ou
+    from test_os_unlock import FakeBackend
+    from test_key_protection import PASS
+    args,p,q=protected_conflict(tmp_path)
+    backend=FakeBackend();ou.reset_cache()
+    monkeypatch.setattr(ou,'current_backend',lambda:backend)
+    ou.enable(args['security_dir'],ask=lambda prompt:PASS,backend=backend)
+    try:
+        plan=commands.preview_resolution(args['runtime'],[q['uuid']],{'mode':'theirs'})
+        # Loss of the OS secret does not change identity/trust or stale the plan.
+        backend.fail['load']=ou.MISSING;ou.reset_cache();before=files(tmp_path)
+        argv=['resolve','--runtime',str(args['runtime']),'--plan-digest',plan['plan_digest'],
+              '--operation-id','protected','--yes','--confirm','RESOLVE']
+        assert agentmesh.main(argv)==1
+        assert json.loads(capsys.readouterr().err)['reason']==ou.MISSING
+        assert files(tmp_path)==before
+        backend.fail.clear();ou.reset_cache()
+        assert agentmesh.main(argv)==0
+        assert json.loads(capsys.readouterr().out)['status']=='resolved'
+    finally: ou.reset_cache()
+
+
+def test_locked_signed_conflicts_cli_is_read_only_without_os_access(tmp_path,monkeypatch,capsys):
+    import agentmesh
+    import os_unlock as ou
+    args,p,q=protected_conflict(tmp_path)
+    def forbidden(): raise AssertionError('listing must not access OS key store')
+    monkeypatch.setattr(ou,'current_backend',forbidden)
+    before=files(tmp_path)
+    assert agentmesh.main(['conflicts','--runtime',str(args['runtime']),'--json'])==0
+    report=json.loads(capsys.readouterr().out)
+    assert report['conflicts'] and report['content_shown'] is False
+    assert 'last_event_id' not in json.dumps(report)
+    assert files(tmp_path)==before
+
+
+@pytest.mark.parametrize('action',['receive-only','activate-protocol'])
+def test_signed_recovery_requires_unlock_before_control_or_database_writes(tmp_path,monkeypatch,capsys,action):
+    import agentmesh
+    import key_protection as kp
+    import os_unlock as ou
+    import protocol_activation as activation
+    import signed_packets as signed
+    from test_memory_sync import GROUP
+    from test_key_protection import PASS,FAST
+    from test_os_unlock import FakeBackend
+    args=runtime_for(tmp_path)
+    signed.init_identity(args['security_dir'],GROUP,'mac')
+    security=signed.Security(args['security_dir'])
+    sync.capture(args['database'],security=security)
+    kp.protect_identity(args['security_dir'],lambda prompt:PASS,**FAST)
+    argv=[action,'--runtime',str(args['runtime'])]
+    if action=='activate-protocol':
+        plan=activation.activation_plan(args['runtime'],inventory())
+        argv+=['--plan-digest',plan['plan_digest'],'--yes','--confirm','ACTIVATE']
+    before=files(tmp_path)
+    assert agentmesh.main(argv)==1
+    assert json.loads(capsys.readouterr().err)['reason']==kp.LOCKED
+    assert files(tmp_path)==before
+    backend=FakeBackend();ou.reset_cache()
+    monkeypatch.setattr(ou,'current_backend',lambda:backend)
+    ou.enable(args['security_dir'],ask=lambda prompt:PASS,backend=backend)
+    try:
+        # Enrolling changes identity bytes, so activation must be previewed again.
+        if action=='activate-protocol':
+            plan=activation.activation_plan(args['runtime'],inventory())
+            argv[argv.index('--plan-digest')+1]=plan['plan_digest']
+        assert agentmesh.main(argv)==0
+        assert json.loads(capsys.readouterr().out)['status'] in ('received','activated')
+    finally: ou.reset_cache()

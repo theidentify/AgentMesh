@@ -1,7 +1,7 @@
 # Conflict resolution implementation plan
 
 2026-10-12; approved design: `../specs/2026-10-12-conflict-resolution-design.md`.
-Checkpoint policy: implement and review each gate separately. This change implements **gate 1 only**. No git writes, no network. No emission until explicit gate-4 group activation. Retain unsigned-v1 and signed-v2 readers permanently, including after activation.
+Checkpoint policy: implement and review each gate separately. This document records gates 1–4; the current work is **gate 4 only**. No git writes, no network. No emission until explicit gate-4 group activation. Retain unsigned-v1 and signed-v2 readers permanently, including after activation.
 
 ## Scope and invariants
 
@@ -27,7 +27,7 @@ Inspected HEAD `15fcdfc`, not the historical `ac6b814` copy. `memory-sync/instal
 Use this interpreter for **every pytest invocation** (shell variable `TEST_PY` below is shorthand only):
 
 ```sh
-TEST_PY=/private/tmp/claude-501/-Users-krisanathep-Workspaces-AgentMesh--claude-worktrees-gitbook-agent-mesh-usage-1839e8/726c4aa1-e480-4547-b773-90d2bb8f75d5/scratchpad/testvenv/bin/python
+TEST_PY=/Users/krisanathep/.cache/agentmesh-testvenv/bin/python
 "$TEST_PY" -m pytest -q memory-sync
 ```
 
@@ -588,3 +588,188 @@ readiness from the mocked OS-boundary installer tests.
   explicit verification limits. No operational activation or deployment was done.
 
 Gate-4 implementation and local acceptance are complete under the approved baseline: 39 additional tests pass, and the three failure identities are unchanged. Native CI acceptance remains pending the explicit commands above. Work stops here for review; no operational activation or deployment was performed.
+
+## Gate-4 merged-WIP resume audit (2026-10-13)
+
+This section supersedes the earlier local test totals for the merged tree only
+when new executions are recorded below. PR #26 and PR #33 introduced protected
+keys, `Security.sign_bytes`, OS unlock and frozen-build hooks after the earlier
+Gate-4 run. Earlier results are historical evidence, not validation of this merge.
+
+Initial audit:
+
+- `_sign_resolution` now calls `self.sign_bytes(...)` with the v3 domain. This is
+  the correct merge resolution: `require_unlocked` supplies the fixed protected-key
+  refusal rather than dereferencing a missing key. Public legacy signing and v3
+  activation guards remain separate.
+- `cli_errors.py` retains both protocol reasons and `KEY_REASONS`, including OS
+  refusal reasons; `resolve` is included in the protected error-reporting actions.
+- No `gate3-test-only` or `test_activation` remains in production Python modules.
+  Real inventory-backed activation is the sole supported emission switch.
+- `memory_sync.receive` routes every packet through `receive_indexed` when the
+  resolution store exists, and preserves the old path for legacy-only databases.
+  The signed/unsigned preactivation interoperability regression remains present.
+- Listing uses a disposable DB/WAL snapshot, performs structural checks only,
+  and does not capture, migrate, authorize signatures or write telemetry. The
+  runtime binding loads public identity data without requesting OS unlock.
+- `install_join.observed_slots` recognizes both unsigned formats and refuses
+  baseline parents/origins. Signed invitations remain refused and incomplete
+  replay retains `.setup-pending.json`.
+- Source `FILES` and frozen hidden imports contain `conflict_commands`,
+  `protocol_activation`, `key_protection` and `os_unlock`. The merged OS smoke
+  runtime-hook support is retained; ordinary builds do not inject a test hook.
+- Integration gap to test before changing implementation: authoring/recovery
+  creates `Security` without opting into OS unlock. A properly enrolled protected
+  identity therefore still appears locked to the new commands.
+
+The exact requested interpreter was attempted for the full baseline on this
+resume, but its path no longer exists (`exit 127`). A replacement path has been
+requested. No baseline count, red/green result or completion is inferred from
+that failed launch. New tests have been written before any production changes.
+
+
+### Resume implementation and TDD evidence (2026-10-13)
+
+The maintainer supplied `/Users/krisanathep/.cache/agentmesh-testvenv/bin/python`;
+the top-level `TEST_PY` reference now uses it. Every test invocation in this resume
+uses that interpreter (pytest 9.1.1, cryptography 50.0.2). Historical interpreter
+paths and results above are intentionally preserved as historical evidence.
+
+Changes relative to the merged WIP:
+
+- `conflict_commands.py`: signed preview/preflight uses
+  `Security(..., os_unlock=True).require_unlocked()`, exactly the worker's #33
+  path. No prompt, passphrase argument, alternative key store or new unlock
+  mechanism was introduced.
+- `worker_lifecycle.py`: common recovery for resolve, receive-only and activation
+  checks unlock before worker stop/control-file creation. The initial scope check
+  is non-authoritative/read-only; scope is revalidated authoritatively before
+  stopping and again under the locks. Current self-trust is checked under lock.
+  This ordering also avoids creating a missing SQLite WAL index on locked refusal.
+- `test_conflict_commands.py`: adds six real-SQLite/real-crypto cases (one test is
+  parameterized over receive-only/activation): direct locked signing and atomic
+  authoring refusal with an unlocked positive control; CLI preview's exact locked
+  reason and no writes; OS-enrolled resolution with failed-unlock confirmed retry;
+  locked signed CLI listing with no OS access; and locked/unlocked recovery and
+  activation. OS stores are disposable fake backends from #33, not host credentials.
+- `test_package.py`, `test_standalone_build.py`: explicit joint assertions for
+  Gate-4 modules plus key_protection/os_unlock; a new test inspects both the ordinary
+  hidden-import arguments and Windows spec. Existing merged packaging already
+  satisfied these tests. Normal builds retain no injected OS test hook.
+- `test_key_protection.py`: existing merged restart test now sets its child Python
+  process's cwd to the module directory. The repository-root pytest command
+  otherwise failed with ModuleNotFoundError for signed_packets. No production
+  import behavior or failure policy changed.
+- `SYNC.md`, `SIGNED-SYNC.md`: protected recovery, standard locked/OS reasons,
+  read-only inspection, explicit OS enrollment, fresh-process retries after cached
+  failures and preview invalidation after identity changes. This plan records the
+  audit, commands and handoff.
+
+The merged `_sign_resolution`/sign_bytes change and combined cli_errors reasons
+needed no further production edit. Original signed-v2/unsigned-v1 packet handling,
+activation predicates, join guards and wire formats are unchanged in this resume.
+The plan deviations are #26/#33 integration, the initial recovery read-order
+fix demonstrated by byte snapshots, and the two merged test-fixture corrections
+described here (subprocess cwd and frozen-hook cleanup).
+
+| Run | Actual result |
+|---|---|
+| Existing merged suite before production edits | 1118 passed, 4 failed, 17 skipped, 5 deselected; 20 subtests passed; 186.26s |
+| New protected-key/packaging tests plus their existing files, before implementation | 37 passed, 3 failed; 6.14s |
+| First fix plus protected-key suite | 60 passed, 2 failed; 15.04s |
+| Unlock/read-order and subprocess corrections | 62 passed; 10.30s |
+
+The baseline excluded only the five new test functions already present at
+collection; the two additional parametrized recovery cases were written after
+baseline collection. No existing test was deselected. The fourth baseline failure
+was `test_key_protection.py::test_protected_identity_stays_locked_across_restarts_and_the_restarted_worker_refuses`,
+whose child could not import signed_packets from the repository-root cwd. The
+three approved sqlite_consumer symlink failures were also present.
+
+The initial three red failures established that enrolled resolution preview did
+not attempt OS unlock, and locked receive-only/activation incorrectly succeeded
+when no new signature was needed. Direct signing/commit refusal and packaging
+were already correct after the merge and passed without artificial breakage.
+The next two failures showed new DB `-wal`/`-shm` files on locked refusal; the
+read-order fix made the complete filesystem snapshots equal. The baseline child
+import failure also passed after the explicit cwd fix.
+
+Focused command extends the earlier 16-file Gate-4 regression command with
+`memory-sync/test_key_protection.py memory-sync/test_os_unlock.py`. Final full
+command is `"$TEST_PY" -m pytest -q memory-sync`, with no exclusions. Logs for this
+resume are under `$TMPDIR/conflict-g4-resume/{baseline,red,green,green2,focused,full}.log`.
+
+### Additional native CI handoff after the merge
+
+The three native entry points listed above remain unrun: standalone_build.py,
+smoke_worker_lifetime.py and Windows smoke_windows_install.py. Also run the merged
+#33 credential/frozen smoke on supported Mac/Windows CI with its explicit opt-in
+and private disposable RUNNER_TEMP:
+
+```sh
+AGENTMESH_NATIVE_KEYCHAIN_TESTS=1 "$TEST_PY" memory-sync/smoke_os_unlock.py
+```
+
+Use Windows environment syntax on Windows. This script builds a separate test
+binary with a disposable-store hook; never distribute that binary as a release.
+Normal builds have no such hook. Native frozen recovery commands with an enrolled
+protected key still require OS-level validation; local tests use real Ed25519 and
+AES/KDF operations with fake OS storage. No native credentials or live runtime
+were accessed here, and no group was operationally activated.
+
+
+The expanded focused ordering also exposed a second merged test-fixture defect:
+`test_frozen_smoke_hook_binds_only_the_disposable_store` restored its backend with
+`monkeypatch.setattr` in `finally`, which registered the *temporary* backend as the
+teardown value and reinstated it after the test. Consequently
+`test_os_unlock.py::test_current_backend_by_platform` saw a Windows fixture on
+Linux. The first expanded run was 619 passed, 1 failed, 4 skipped (101.33s).
+The hook test now restores the original function directly in `finally`; this is
+an additional test-isolation deviation, with no production hook changes. The
+ordered standalone-build + OS-unlock regression is recorded in `hook-order.log`.
+
+
+Final expanded focused run: **620 passed, 4 skipped**, 105.86s, recorded in
+`focused-final.log`. The standalone-build/OS-unlock ordering check was **88 passed**,
+12.39s (`hook-order.log`). The real source CLI returned protocol capability 1;
+`--help` exposes conflicts, resolve, receive-only, activate-protocol,
+protocol-capability and identity-os-unlock (`cli-help.log`).
+
+Resume risks remain bounded by the original design: operator inventory/drain
+assertions cannot fence unmanaged old binaries; missing/oversized ancestry is
+refused; private previews contain row content; filesystem trust and SQLite are
+not one atomic store. The existing #33 helper caches unlock success/refusal per
+process, so fixing an OS-store problem requires a new command process, and an
+already-unlocked process retains its in-memory key until exit. These commands do
+not add an interactive passphrase fallback. Read-only listing remains available
+without unlock. Native OS/frozen behavior is not established by the local fake
+backend tests.
+
+
+### Final merged-tree acceptance
+
+The exact full command `"$TEST_PY" -m pytest -q memory-sync` completed with
+**1126 passed, 3 failed, 17 skipped; 20 subtests passed**, 188.36s. The only failures
+are the same three `test_sqlite_consumers.py::ConsumerTests` symlink-export cases
+listed above, each reporting `ValueError: symlink export root refused`. No tests
+were deselected in this final full run. The existing duplicate ZIP warning remains.
+Compared with the initial merged baseline, seven new cases pass and the existing
+protected-key child-import failure is fixed; the frozen-hook isolation failure
+exposed by focused ordering is also fixed. Final focused, full and scope evidence
+are in `focused-final.log`, `full.log` and the local acceptance audit.
+
+Nine files differ from the merged WIP: this plan, SYNC.md, SIGNED-SYNC.md,
+conflict_commands.py, worker_lifecycle.py, test_conflict_commands.py,
+test_key_protection.py, test_package.py and test_standalone_build.py. Only the two
+recovery modules changed production behavior. Packet schemas, legacy readers,
+activation records, signed wire/sign_bytes integration, join logic and packaging
+module manifests remain unchanged from the audited merged WIP. Source capability
+and help commands ran; `git diff --check` is clean; no staged changes or new
+untracked repository files were introduced.
+
+Gate 4 is complete for local review under the approved three-failure baseline.
+The four local acceptance checks cover scope/invariants, red/green and regression
+evidence, unlock/doc review, and explicit native handoff. Native CI remains pending
+the commands above; this is not a claim of native-release acceptance. No git writes,
+network, live-key operations, deployment or operational group activation occurred.
+Work stops after Gate 4 for maintainer review.

@@ -65,7 +65,7 @@ def _security(bound):
     if bound['scope']['policy']=='required':
         from install_adopt import security_paths
         from signed_packets import Security
-        return Security(security_paths(bound['config'],bound['runtime'])[0])
+        return Security(security_paths(bound['config'],bound['runtime'])[0], os_unlock=True).require_unlocked()
     return None
 
 

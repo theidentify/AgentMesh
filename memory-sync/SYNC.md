@@ -247,6 +247,16 @@ lifetime/cycle locks, and captures local edits before receiving. It never runs
 transcript ingestion or summarization. A failed/stopped worker's metadata is
 preserved. This command does not publish the local outbox or restart a worker.
 
+For a signed runtime with a protected device key, `resolve` (including preview),
+`receive-only`, and confirmed activation use the same OS unlock as the worker.
+Enroll it using `identity-os-unlock enable --security-dir ...` before recovery;
+otherwise these commands report the standard locked-key reason before worker
+stop/control-file creation. OS-store failures retain their fixed refusal reason.
+There is no unsigned fallback or recovery-specific passphrase mechanism.
+`conflicts` and activation preview do not request unlock. Identity-file changes,
+including OS enrollment, require a fresh confirmation plan. See
+[SIGNED-SYNC.md](SIGNED-SYNC.md#protected-keys-during-conflict-recovery).
+
 ### Activate the protocol deliberately
 
 Run `python agentmesh.py protocol-capability` on each upgraded executable. This

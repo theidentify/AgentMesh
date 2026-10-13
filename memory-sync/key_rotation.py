@@ -242,21 +242,30 @@ def confirm_word(word, confirm):
     if confirm(word) != word: raise ValueError(CANCELLED)
 
 
-def no_pending_files(exchange, node, pending):
+def no_pending_files(exchange, node, pending, *, expected=None):
     for p in pending:
         for namespace in ('signed-changes', 'changes'):
             path = signed.no_symlinks(Path(exchange) / namespace / node / (p['uuid'] + '.json'))
-            if os.path.lexists(path): raise ValueError(PENDING_EXCHANGE)
+            if os.path.lexists(path):
+                if (namespace == 'signed-changes' and expected is not None
+                        and expected.get(p['uuid']) == hashlib.sha256(signed.read_local(path)).hexdigest()):
+                    continue
+                raise ValueError(PENDING_EXCHANGE)
+
+
+def validate_packet(p, group, node):
+    signed.validate_envelope(p, group, node)
+    if p['format'] == signed.FORMAT and (type(p['body']) is not list or not p['body']
+            or hashlib.sha256(signed.typed(p['body'])).hexdigest() != p['checksum']):
+        raise ValueError(PENDING_INVALID)
 
 
 def verify_old(p, own):
-    signed.validate_envelope(p, own['group'], own['node'])
+    validate_packet(p, own['group'], own['node'])
     if p['sender'] != own['sender'] or p['key_id'] != own['key_id']: raise ValueError(PENDING_INVALID)
     unsigned = {k: v for k, v in p.items() if k != 'signature'}
     signed.crypto()[1].from_public_bytes(signed.hex_bytes(own['public_key'], 32)).verify(
-        signed.hex_bytes(p['signature'], 64), signed.DOMAIN + signed.typed(unsigned))
-    if type(p['body']) is not list or not p['body'] or hashlib.sha256(signed.typed(p['body'])).hexdigest() != p['checksum']:
-        raise ValueError(PENDING_INVALID)
+        signed.hex_bytes(p['signature'], 64), signed.packet_domain(p) + signed.typed(unsigned))
 
 
 def _runtime_config(runtime, db, exchange):
@@ -280,7 +289,7 @@ def _worker_running(runtime, config):
 
 
 @contextmanager
-def fence(db, exchange, own, runtime, confirm):
+def fence(db, exchange, own, runtime, confirm, *, rotation_files=None):
     import runtime_lock
     import worker_lifecycle as worker
     config = _runtime_config(runtime, db, exchange)
@@ -295,7 +304,7 @@ def fence(db, exchange, own, runtime, confirm):
         except TimeoutError:
             busy = True
         if busy: raise ValueError(BUSY)
-        backup.exchange_activity(exchange, own)
+        backup.exchange_activity(exchange, own, _rotation_files=rotation_files)
         yield
 
 
@@ -318,26 +327,37 @@ def _read_plan(directory, db, *, old_key=None, journal=None):
             if own is None and trust and key_id in trust['peers']:
                 own = public_fields(trust['peers'][key_id])
                 if any(own[k] != scope[k] for k in scope): raise ValueError(BINDING)
-        pending, manifest = [], []
+        pending, manifest, texts = [], [], {}
         for row in c.execute('SELECT uuid,packet,published FROM _sync_outbox ORDER BY uuid'):
             p = signed.parse(row['packet'])
             if row['published']:
                 if p.get('key_id') == key_id:
                     if p['uuid'] != row['uuid']: raise ValueError(PENDING_INVALID)
-                    signed.validate_envelope(p, scope['group'], scope['node'])
+                    validate_packet(p, scope['group'], scope['node'])
                     if p['sender'] != scope['sender']: raise ValueError(PENDING_INVALID)
                     manifest.append((p['uuid'], signed.receipt_digest(p)))
                 continue
-            permitted = {key_id} if journal is None else {key_id, journal['new_identity']['key_id']}
-            if p.get('key_id') not in permitted: raise ValueError(UNEXPECTED)
-            signed.validate_envelope(p, scope['group'], scope['node'])
+            if p.get('key_id') != key_id: raise ValueError(UNEXPECTED)
+            validate_packet(p, scope['group'], scope['node'])
             if p['uuid'] != row['uuid'] or p['sender'] != scope['sender']: raise ValueError(PENDING_INVALID)
-            verifier = own if p['key_id'] == key_id else public_fields(journal['new_identity'])
+            verifier = own
             if verifier is not None:
                 try: verify_old(p, verifier)
                 except Exception: raise ValueError(PENDING_INVALID) from None
             pending.append(p)
-    return dict(binding=scope, old_key_id=key_id, old_public=own, trust=trust, pending=pending, manifest=manifest)
+            manifest.append((p['uuid'], signed.receipt_digest(p)))
+            texts[p['uuid']] = hashlib.sha256(row['packet'].encode('utf-8')).hexdigest()
+        if journal is not None:
+            expected = journal['manifest']['pending_packets']
+            # Published rows must still match too, including after a DB commit.
+            for uid, digest in expected.items():
+                row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
+                if row is None or hashlib.sha256(row[0].encode('utf-8')).hexdigest() != digest:
+                    raise ValueError(PENDING_INVALID)
+            if any(expected.get(uid) != digest for uid, digest in texts.items()):
+                raise ValueError(PENDING_INVALID)
+    return dict(binding=scope, old_key_id=key_id, old_public=own, trust=trust, pending=pending,
+                manifest=manifest, pending_packets=texts)
 
 
 @contextmanager
@@ -353,19 +373,37 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
                     or list(directory.glob('.restore-*')) or (directory / 'trust.json.pre-restore').exists()):
                 raise ValueError(LEFTOVERS)
         initial = _read_plan(directory, db, old_key=old_key, journal=_journal)
-        with fence(db, exchange, initial['binding'], runtime, confirm):
+        expected = None if _journal is None else _journal['manifest']['pending_packets']
+        rotation_files = None if expected is None else {
+            Path(exchange) / 'signed-changes' / initial['binding']['node'] / (uid + '.json'): digest
+            for uid, digest in expected.items()}
+        if expected is not None:
+            # A process kill may leave a partial temporary file. Exempt only
+            # this journal's exact staging names with a matching outbox prefix;
+            # cleanup happens later under both locks, in the shared writer.
+            with readonly(db) as c:
+                for uid in expected:
+                    temp = signed.no_symlinks(Path(exchange) / 'signed-changes' / initial['binding']['node'] /
+                        ('.' + uid + '.rotate-' + _journal['new_identity']['key_id'] + '.tmp'))
+                    if temp.exists():
+                        raw = signed.read_local(temp)
+                        text = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()[0]
+                        if text.encode('utf-8').startswith(raw): rotation_files[temp] = hashlib.sha256(raw).hexdigest()
+        with fence(db, exchange, initial['binding'], runtime, confirm, rotation_files=rotation_files):
             plan = _read_plan(directory, db, old_key=old_key, journal=_journal)
             if plan['binding'] != initial['binding'] or plan['old_key_id'] != initial['old_key_id']: raise ValueError(BINDING)
-            no_pending_files(exchange, plan['binding']['node'], plan['pending'])
+            no_pending_files(exchange, plan['binding']['node'], plan['pending'], expected=expected)
             if plan['pending'] and _journal is None:
-                tables = {}
+                tables, formats = {}, {}
                 for packet in plan['pending']:
+                    formats[packet['format']] = formats.get(packet['format'], 0) + 1
                     for change in packet['body']:
                         table = change['table']
                         if table not in sync.TABLES: raise ValueError(PENDING_INVALID)
-                        tables[table] = tables.get(table, 0) + 1
-                backup.show({'pending_packets': len(plan['pending']), 'operations_by_table': tables})
-                confirm_word('RESIGN', confirm)
+                        counts = tables.setdefault(table, {'upsert': 0, 'delete': 0})
+                        counts['delete' if change['row'] is None else 'upsert'] += 1
+                backup.show({'pending_packets': len(plan['pending']), 'packets_by_format': formats, 'operations_by_table': tables})
+                confirm_word('PUBLISH', confirm)
             yield plan
         return
     except Exception as exc:
@@ -374,7 +412,7 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
     raise ValueError(reason)
 
 
-JOURNAL = 'agentmesh-rotation-journal-v1'
+JOURNAL = 'agentmesh-rotation-journal-v2'
 JOURNAL_INVALID = 'invalid rotation journal'
 IN_PROGRESS = 'rotation in progress; run identity-rotate --resume'
 TRUST_CONFLICT = 'rotation conflicts with an active identity or allocation slot'
@@ -439,8 +477,13 @@ def read_journal(directory, exchange):
         if old['key_id'] != doc['old_key_id'] or any(old[k] != new[k] for k in ('group', 'node', 'sender')):
             raise ValueError(JOURNAL_INVALID)
     meta = doc['manifest']
-    if type(meta) is not dict or set(meta) != {'sha256', 'count', 'resigned', 'trust_restored'} or type(meta['resigned']) is not int or meta['resigned'] < 0 or type(meta['trust_restored']) is not bool:
+    if type(meta) is not dict or set(meta) != {'sha256', 'count', 'published_pending', 'pending_packets', 'trust_restored'} or type(meta['published_pending']) is not int or meta['published_pending'] < 0 or type(meta['trust_restored']) is not bool:
         raise ValueError(JOURNAL_INVALID)
+    pending = meta['pending_packets']
+    if type(pending) is not dict or len(pending) != meta['published_pending']: raise ValueError(JOURNAL_INVALID)
+    for uid, digest in pending.items():
+        if not signed.canonical_uuid(uid): raise ValueError(JOURNAL_INVALID)
+        signed.hex_bytes(digest, 32)
     p = doc['proposal']
     if (p['new'] != new or p['old_key_id'] != doc['old_key_id'] or p['reason'] != doc['reason']
             or p['manifest_sha256'] != meta['sha256'] or p['manifest_count'] != meta['count']):
@@ -485,34 +528,47 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
     _write_equal(directory / 'identity.json', journal['new_identity'])
     after_step('identity')
     security = _ReplaySecurity(directory, unlock=lambda: phrase)
+    stage = _manifest_stage(directory, new['key_id'])
+    source = stage if stage.exists() else Path(exchange) / 'pairing' / 'rotations' / (new['key_id'] + '.manifest')
+    manifest = read_manifest(source, sha256=journal['manifest']['sha256'],
+                             count=journal['manifest']['count'])['packets']
+    if dict(plan['manifest']) != manifest: raise ValueError(PENDING_INVALID)
+    expected = journal['manifest']['pending_packets']
     with sync.connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         if binding(c) != plan['binding']: raise ValueError(BINDING)
-        pending = []
-        for row in c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchall():
+        # Recheck the outbox under the write lock, then publish each original
+        # stored text. A failed file write rolls back all published flags.
+        pending = c.execute('SELECT uuid,packet FROM _sync_outbox WHERE published=0').fetchall()
+        for row in pending:
+            if expected.get(row['uuid']) != hashlib.sha256(row['packet'].encode('utf-8')).hexdigest():
+                raise ValueError(PENDING_INVALID)
+        for uid, digest in expected.items():
+            row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
+            if row is None or hashlib.sha256(row['packet'].encode('utf-8')).hexdigest() != digest:
+                raise ValueError(PENDING_INVALID)
             p = signed.parse(row['packet'])
-            if row['uuid'] != p['uuid']: raise ValueError(PENDING_INVALID)
-            if p['key_id'] == journal['old_key_id']:
-                if journal['old_public'] is not None: verify_old(p, journal['old_public'])
-                if any(p[k] != plan['binding'][k] for k in plan['binding']): raise ValueError(BINDING)
-                updated = security.sign({k: v for k, v in p.items() if k not in ('signature', 'key_id', 'sender')})
-                if any(signed.typed(updated[k]) != signed.typed(p[k]) for k in ('uuid', 'body', 'checksum')):
-                    raise ValueError(PENDING_INVALID)
-                c.execute('UPDATE _sync_outbox SET packet=? WHERE uuid=? AND published=0', (sync.canonical(updated), p['uuid']))
-                p = updated
-            elif p['key_id'] != new['key_id']: raise ValueError(UNEXPECTED)
-            security.verify(p, new['group'], new['node'])
-            pending.append(p)
-        no_pending_files(exchange, new['node'], pending)
+            validate_packet(p, new['group'], new['node'])
+            if (p['uuid'] != uid or p['sender'] != new['sender'] or p['key_id'] != journal['old_key_id']
+                    or manifest.get(uid) != signed.receipt_digest(p)):
+                raise ValueError(PENDING_INVALID)
+            if journal['old_public'] is not None: verify_old(p, journal['old_public'])
+            no_pending_files(exchange, new['node'], [p], expected=expected)
+            sync.write_packet(Path(exchange) / 'signed-changes' / new['node'], uid, row['packet'],
+                              signed_packet=True, staging_id=new['key_id'])
+            c.execute('UPDATE _sync_outbox SET published=1 WHERE uuid=?', (uid,))
         security.guard(c, exchange)
-    after_step('db')
+    after_step('publish')
     verified = _ReplaySecurity(directory, unlock=lambda: phrase)
     verified.check_self()
     with readonly(db) as c:
-        for row in c.execute('SELECT packet FROM _sync_outbox WHERE published=0'):
-            p = signed.parse(row[0])
-            verified.verify(p, new['group'], new['node'])
-            if p['key_id'] != new['key_id']: raise ValueError(PENDING_INVALID)
+        if c.execute('SELECT 1 FROM _sync_outbox WHERE published=0').fetchone():
+            raise ValueError(PENDING_INVALID)
+        for uid, digest in expected.items():
+            row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
+            path = Path(exchange) / 'signed-changes' / new['node'] / (uid + '.json')
+            if row is None or signed.read_local(path) != row['packet'].encode('utf-8'):
+                raise ValueError(PENDING_INVALID)
     after_step('verify')
     _publish_rotation(directory, exchange, journal)
     after_step('proposal')
@@ -538,7 +594,7 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
     (directory / 'rotation-journal.json').unlink()  # Last durable step: signing opens only now.
     _sync_directory(directory)
     return dict(status='rotated', old_key_id=journal['old_key_id'], new_key_id=new['key_id'], new_fingerprint=new['key_id'],
-        reason=journal['reason'], resigned=journal['manifest']['resigned'], manifest_packets=journal['manifest']['count'],
+        reason=journal['reason'], published_pending=journal['manifest']['published_pending'], manifest_packets=journal['manifest']['count'],
         proposal='pairing/rotations/' + new['key_id'] + '.json', trust_restored=journal['manifest']['trust_restored'],
         os_unlock_item_removed=removed, next=next_steps)
 
@@ -568,7 +624,7 @@ def identity_rotate(security_dir, db, exchange, *, reason=None, old_key=None, ru
                 staged = True
                 journal = dict(format=JOURNAL, old_key_id=plan['old_key_id'], old_public=plan['old_public'],
                     new_identity=identity, reason=reason,
-                    manifest=dict(sha256=manifest['sha256'], count=manifest['count'], resigned=len(plan['pending']), trust_restored=plan['trust'] is not None),
+                    manifest=dict(sha256=manifest['sha256'], count=manifest['count'], published_pending=len(plan['pending']), pending_packets=plan['pending_packets'], trust_restored=plan['trust'] is not None),
                     proposal=proposal(_MemorySigner(new, key), plan['old_key_id'], reason, stage))
                 signed.write_local(directory / 'rotation-journal.json', journal, exclusive=True)
             finally:

@@ -224,14 +224,14 @@ def test_publication_recovers_commit_and_rename_crashes(peers,monkeypatch):
     sync.initialize(a,'mac',GROUP); sync.initialize(b,'windows',GROUP)
     with sqlite3.connect(a) as c: c.execute("UPDATE memory_items SET content='durable' WHERE id=1")
     sync.capture(a)
-    original=sync.os.replace
+    original=sync.os.link
     def broken(*args): raise OSError('offline')
-    monkeypatch.setattr(sync.os,'replace',broken)
+    monkeypatch.setattr(sync.os,'link',broken)
     assert sync.publish(a,ex)['unavailable']
     assert sync.status(a)['outbox']==1 and not list(ex.rglob('*.json'))
-    monkeypatch.setattr(sync.os,'replace',original)
+    monkeypatch.setattr(sync.os,'link',original)
     assert sync.publish(a,ex)['published']==1
-    # Simulate crash after fsynced rename, before published flag transaction.
+    # Simulate crash after fsynced publication, before published flag transaction.
     with sqlite3.connect(a) as c: c.execute('UPDATE _sync_outbox SET published=0')
     assert sync.publish(a,ex)['published']==1
     assert len(list(ex.rglob('*.json')))==1

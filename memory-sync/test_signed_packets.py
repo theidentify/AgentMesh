@@ -200,11 +200,11 @@ def test_publish_symlink_refused_and_crash_retry_is_immutable(secure_peers, monk
     with pytest.raises(ValueError): sync.publish(a, ex, security=sa)
     assert not list(outside.iterdir())
     (ex / 'signed-changes').unlink()
-    original = sync.os.replace
+    original = sync.os.link
     def broken(*args): raise OSError('offline')
-    monkeypatch.setattr(sync.os, 'replace', broken)
+    monkeypatch.setattr(sync.os, 'link', broken)
     assert sync.publish(a, ex, security=sa)['unavailable']
-    monkeypatch.setattr(sync.os, 'replace', original)
+    monkeypatch.setattr(sync.os, 'link', original)
     assert sync.publish(a, ex, security=sa)['published'] == 1
     path = next(ex.rglob('*.json')); data = path.read_bytes()
     with sync.connect(a) as c, c: c.execute('UPDATE _sync_outbox SET published=0')

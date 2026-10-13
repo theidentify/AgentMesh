@@ -208,13 +208,20 @@ UPSTREAM_REASONS = backup.UPSTREAM_REASONS | {backup.ACTIVE, backup.EXCHANGE_GRO
 
 
 @contextmanager
-def readonly(db):
+def readonly(db, *, snapshot_wal=False):
     path = signed.no_symlinks(db)
     sidecars = [signed.no_symlinks(Path(str(path) + suffix)) for suffix in ('-wal', '-shm')]
     present = [p.exists() for p in sidecars]
     # mode=ro may create a missing WAL index. Never repair partial sidecars as
     # a side effect of inspection, or silently ignore an uncheckpointed WAL.
     if any(present) and not all(present): raise ValueError(INCOMPLETE_WAL)
+    if snapshot_wal and all(present):
+        # Even mode=ro can update SHM read marks. Inspection of a live WAL
+        # therefore uses the existing stable-copy reader, never source SQLite.
+        from protocol_activation import snapshot
+        with snapshot(path) as c:
+            yield c
+        return
     uri = path.as_uri() + ('?mode=ro' if all(present) else '?mode=ro&immutable=1')
     with closing(sqlite3.connect(uri, uri=True)) as c:
         c.row_factory = sqlite3.Row
@@ -725,7 +732,7 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                   legacy_receipts=0, filtered_by_since=0, unreadable=0)
     root = signed.no_symlinks(Path(exchange) / 'signed-changes')
     present = set()
-    with readonly(db) as c:
+    with readonly(db, snapshot_wal=True) as c:
         cfg = sync.config(c)
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         receipts = dict(c.execute('SELECT uuid,checksum FROM _sync_receipts')) if '_sync_receipts' in tables else {}
@@ -736,14 +743,18 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                 if not stat.S_ISREG(path.lstat().st_mode): continue
                 raw = signed.read_local(path)
                 p = signed.parse(raw)
-                signed.validate_envelope(p, cfg['group_id'], path.parent.name)
+                validate_packet(p, cfg['group_id'], path.parent.name)
                 if path.name != p['uuid'] + '.json': raise ValueError(INVALID)
                 present.add(p['uuid'])
                 if p['key_id'] != key: continue
                 # Validate table/op/key shape before emitting any untrusted label.
-                legacy = {k: p[k] for k in ('group', 'node', 'uuid', 'body')}
-                legacy.update(format=sync.FORMAT, checksum=sync.digest(p['body']))
-                sync._validate(c, legacy)
+                if p['format'] == signed.RESOLUTION_FORMAT:
+                    from packet_versions import _validate_rows
+                    _validate_rows(c, p)
+                else:
+                    legacy = {k: p[k] for k in ('group', 'node', 'uuid', 'body')}
+                    legacy.update(format=sync.FORMAT, checksum=sync.digest(p['body']))
+                    sync._validate(c, legacy)
                 when = path.stat().st_mtime
                 if cutoff is not None and when < cutoff:
                     result['filtered_by_since'] += 1
@@ -753,7 +764,15 @@ def compromise_report(db, exchange, key, *, security_dir=None, since=None):
                     changes=[dict(table=ch['table'], op='delete' if ch['row'] is None else 'upsert',
                                   key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16]) for ch in p['body']],
                     in_manifest=None if manifest is None else manifest.get(p['uuid']) == digest)
-                committed = receipts.get(p['uuid']) == digest and (p['uuid'] not in envelopes or envelopes[p['uuid']] == signed.envelope_digest(p))
+                if p['format'] == signed.RESOLUTION_FORMAT:
+                    item['kind'] = p['kind']
+                    for change in item['changes']: change['kind'] = p['kind']
+                complete = signed.envelope_digest(p)
+                if '_sync_packet_dispositions' in tables:
+                    dispositions = c.execute('SELECT envelope_digest FROM _sync_packet_dispositions WHERE packet_uuid=?',
+                                             (p['uuid'],)).fetchall()
+                    item['superseded'] = bool(dispositions) and all(row[0] == complete for row in dispositions)
+                committed = receipts.get(p['uuid']) == digest and (p['uuid'] not in envelopes or envelopes[p['uuid']] == complete)
                 result['committed' if committed else 'uncommitted'].append(item)
                 if p['node'] == cfg['node']:
                     row = c.execute('SELECT packet FROM _sync_outbox WHERE uuid=?', (p['uuid'],)).fetchone()

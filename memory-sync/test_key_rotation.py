@@ -1369,3 +1369,101 @@ def test_publish_rotation_resume_does_not_excuse_changed_state(indexed_peers, da
     with pytest.raises(ValueError):
         rotation.identity_rotate(sa.directory, a, ex, resume=True, **kwargs)
     assert snapshot(indexed_peers) == before
+
+
+def test_compromise_report_v3_kinds_dispositions_and_live_wal(indexed_peers, monkeypatch):
+    import key_rotation as rotation
+    import resolution_apply as apply
+    from test_resolution_apply import resolve, edit
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    s = resolve(apply, a, [r], dict(x=6, y=2, z=4), sa)
+    u = edit(a, dict(x=8), sa)
+    assert u['format'] == signed.RESOLUTION_FORMAT and u['kind'] == 'change'
+    sync.publish(a, ex, security=sa)
+    sync.publish(b, ex, security=sb)
+    result = sync.receive(b, ex, security=sb)
+    assert result['invalid'] == result['pending'] == result['conflict'] == 0
+    with sync.connect(b) as c, c:
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute('CREATE TABLE report_wal_fixture(value INTEGER)')
+        c.execute('INSERT INTO report_wal_fixture VALUES(1)')
+        c.commit()
+        before = all_bytes(a.parent)
+        report = rotation.compromise_report(b, ex, sa.public['key_id'])
+        assert all_bytes(a.parent) == before
+        assert report['unreadable'] == 0
+        packets = {item['uuid']: item for item in report['committed'] + report['uncommitted']}
+        assert set(packets) == {v['uuid'] for v in (p, r, s, u)}
+        assert packets[p['uuid']]['superseded'] is True
+        assert packets[r['uuid']]['superseded'] is True
+        assert packets[s['uuid']]['superseded'] is False
+        assert packets[u['uuid']]['superseded'] is False
+        for packet in (r, s, u):
+            item = packets[packet['uuid']]
+            assert item['kind'] == packet['kind']
+            assert item['changes'] == [dict(kind=packet['kind'], table=ch['table'],
+                op='delete' if ch['row'] is None else 'upsert',
+                key_sha256=hashlib.sha256(sync.canonical(ch['key']).encode('utf-8')).hexdigest()[:16])
+                for ch in packet['body']]
+        encoded = json.dumps(report)
+        assert all(value not in encoded for value in ('fixture', 'last_event_id', 'consumer', '"row"', '"key"', '"body"'))
+        assert rotation.compromise_report(b, ex, sa.public['key_id'], since='2099-01-01T00:00:00Z')['filtered_by_since'] == 4
+        assert all_bytes(a.parent) == before
+
+
+@pytest.mark.parametrize('with_store', [False, True])
+def test_compromise_report_v3_uncommitted_without_migration(peers, monkeypatch, with_store):
+    import key_rotation as rotation
+    import resolution_store as store
+    a, b, ex, sa, sb = peers
+    p, q, r = pending_resolution(peers, monkeypatch)
+    sync.publish(a, ex, security=sa)
+    if with_store:
+        with sync.connect(b) as c, c: store.migrate(c)
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(b, ex, sa.public['key_id'])
+    assert all_bytes(a.parent) == before
+    assert report['unreadable'] == 0 and len(report['uncommitted']) == 2
+    item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+    assert item['kind'] == 'resolution'
+    if with_store: assert item['superseded'] is False
+    else: assert 'superseded' not in item
+    with sync.connect(b) as c:
+        assert store.exists(c) is with_store
+
+
+@pytest.mark.parametrize('damage', ['signature', 'kind', 'body', 'checksum', 'extra'])
+def test_compromise_report_v3_hostile_envelopes(indexed_peers, monkeypatch, damage):
+    import key_rotation as rotation
+    import packet_versions as versions
+    import resolution_protocol as protocol
+    import resolution_apply as apply
+    from test_resolution_apply import resolve
+    a, b, ex, sa, sb = indexed_peers
+    p, q, r = pending_resolution(indexed_peers, monkeypatch)
+    resolve(apply, a, [r], dict(x=7, y=2, z=4), sa)
+    sync.publish(a, ex, security=sa)
+    path = ex / 'signed-changes' / 'mac' / (r['uuid'] + '.json')
+    changed = signed.parse(path.read_bytes())
+    if damage == 'signature': changed['signature'] = '0' * 128
+    elif damage == 'kind': changed['kind'] = 'untrusted-label-must-not-appear'
+    elif damage == 'body':
+        changed['body'][0]['table'] = 'untrusted-label-must-not-appear'
+        changed['checksum'] = protocol.payload_digest(versions.semantic(changed))
+    elif damage == 'checksum': changed['checksum'] = '0' * 64
+    else: changed['extra'] = 'untrusted-label-must-not-appear'
+    path.write_bytes(signed.wire(changed))
+    before = all_bytes(a.parent)
+    report = rotation.compromise_report(a, ex, sa.public['key_id'])
+    assert all_bytes(a.parent) == before
+    assert 'untrusted-label-must-not-appear' not in json.dumps(report)
+    if damage == 'signature':
+        # This read-only inventory does not authenticate signatures. A changed
+        # complete envelope must never inherit the original disposition.
+        item = next(v for v in report['uncommitted'] if v['uuid'] == r['uuid'])
+        assert item['superseded'] is False and item in report['forged_candidates']
+        assert report['unreadable'] == 0
+    else:
+        assert report['unreadable'] == 1
+        assert all(v['uuid'] != r['uuid'] for v in report['committed'] + report['uncommitted'])

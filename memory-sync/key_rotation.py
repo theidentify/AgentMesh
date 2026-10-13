@@ -432,8 +432,10 @@ def prepare(security_dir, db, exchange, *, old_key=None, runtime=None, confirm=b
                 raw = signed.read_local(path)
                 if raw == expected_bytes[uid]: raise ValueError(QUARANTINE_INVALID)
                 packet = signed.parse(raw)
-                signed.validate_envelope(packet, initial['binding']['group'], initial['binding']['node'])
-                if packet['uuid'] != uid: raise ValueError(QUARANTINE_INVALID)
+                # The path is journal-bound; the hostile contents need not claim
+                # its UUID or scope. Quarantine preserves bytes, never authorizes them.
+                if type(packet) is not dict or packet.get('format') not in (signed.FORMAT, signed.RESOLUTION_FORMAT):
+                    raise ValueError(QUARANTINE_INVALID)
                 collisions[uid] = (path, raw, signed.envelope_digest(packet),
                     signed.envelope_digest(signed.parse(expected_bytes[uid])))
                 rotation_files[path] = hashlib.sha256(raw).hexdigest()

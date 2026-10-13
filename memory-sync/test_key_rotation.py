@@ -1653,7 +1653,8 @@ def test_round2_drop_resume(indexed_peers, step):
 
 
 @pytest.mark.parametrize('approve', [False, True])
-def test_round2_quarantine_collision(indexed_peers, approve, capsys):
+@pytest.mark.parametrize('foreign', [False, True])
+def test_round2_quarantine_collision(indexed_peers, approve, foreign, capsys):
     import key_rotation as rotation
     a,b,ex,sa,sb = indexed_peers
     ready(indexed_peers)
@@ -1665,8 +1666,10 @@ def test_round2_quarantine_collision(indexed_peers, approve, capsys):
         rotation.identity_rotate(sa.directory,a,ex,reason='compromised',_after_step=crash,**kwargs)
     p = signed.parse(text)
     variant = dict(p)
+    if foreign:
+        variant.update(uuid=str(uuid.uuid4()), group=str(uuid.uuid4()))
     variant['signature'] = alternate_signature(sa.key, signed.packet_domain(p)+signed.typed(
-        {k:v for k,v in p.items() if k != 'signature'})).hex()
+        {k:v for k,v in variant.items() if k != 'signature'})).hex()
     raw = signed.wire(variant)
     path = ex/'signed-changes'/'mac'/(uid+'.json')
     path.write_bytes(raw)

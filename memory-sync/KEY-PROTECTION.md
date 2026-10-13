@@ -392,7 +392,8 @@ For a journal-bound collision, use `--resume --quarantine-collision UUID` (repea
 The command shows the exchange and outbox envelope digests. Type `QUARANTINE` to preserve the
 conflicting file at `EXCHANGE/pairing/rotations/quarantine/<uuid>.<digest>.json` and continue
 with the authoritative outbox bytes. Cancellation leaves the collision in place. Malformed
-envelopes require separate inspection; this option accepts only valid envelope shapes.
+JSON or unsupported formats require separate inspection. Supported envelope JSON can be
+quarantined even when it claims another UUID or scope; moving it never authorizes its contents.
 Recent activity in unrelated files still refuses. An interrupted temporary write may
 be retried only at this journal's exact staging name with bytes that are a prefix of the stored packet.
 

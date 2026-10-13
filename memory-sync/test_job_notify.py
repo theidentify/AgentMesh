@@ -48,6 +48,27 @@ def test_failed_alert_is_retried_next_tick(tmp_path, webhook):
     assert len(calls) == 2
 
 
+def test_failure_before_webhook_is_alerted_once_configured(tmp_path, webhook):
+    sent = []
+    sender = lambda url, content: sent.append(content)
+    fail = job(tmp_path, 1, '{"error_class": "ValidationError"}')
+    job_notify.run('summary', fail, tmp_path, tmp_path / 'missing', sender=sender, now='t0')
+    job_notify.run('summary', fail, tmp_path, tmp_path / 'missing', sender=sender, now='t1')
+    assert sent == []
+    job_notify.run('summary', fail, tmp_path, webhook, sender=sender, now='t2')
+    job_notify.run('summary', fail, tmp_path, webhook, sender=sender, now='t3')
+    assert len(sent) == 1 and 'since t0' in sent[0]
+    job_notify.run('summary', job(tmp_path, 0), tmp_path, webhook, sender=sender, now='t4')
+    assert len(sent) == 2 and 'recovered' in sent[1]
+
+
+def test_legacy_failing_state_without_alerted_flag_alerts(tmp_path, webhook):
+    (tmp_path / 'job-summary.json').write_text(json.dumps({'ok': False, 'exit': 1, 'since': 'old', 'at': 'old'}))
+    sent = []
+    job_notify.run('summary', job(tmp_path, 1), tmp_path, webhook, sender=lambda u, c: sent.append(c), now='t1')
+    assert len(sent) == 1 and 'since old' in sent[0]
+
+
 def test_no_webhook_file_logs_only(tmp_path):
     sent = []
     assert job_notify.run('ingest', job(tmp_path, 1), tmp_path, tmp_path / 'missing',

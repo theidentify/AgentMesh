@@ -72,20 +72,21 @@ def post(url, content, timeout=15):
         return response.status
 
 
-def transition(previous, ok):
-    """Return 'failed', 'recovered' or None for a state change worth alerting."""
-    if not ok and (previous is None or previous.get('ok', True)):
-        return 'failed'
-    if ok and previous is not None and not previous.get('ok', True):
-        return 'recovered'
-    return None
+def transition(previous, ok, now):
+    """Return (event, since, alerted): alert a failure until it is delivered once,
+    and a recovery only for a failure that was alerted."""
+    failing = bool(previous) and not previous.get('ok', True)
+    if not ok:
+        since = previous.get('since', now) if failing else now
+        alerted = bool(previous.get('alerted')) if failing else False
+        return (None if alerted else 'failed'), since, alerted
+    return ('recovered' if failing and previous.get('alerted') else None), now, False
 
 
-def message(name, event, code, fields, previous, now):
+def message(name, event, code, fields, since, now):
     if event == 'failed':
         detail = ', '.join('%s=%s' % kv for kv in sorted(fields.items())) or 'no status'
-        return '🔴 AgentMesh `%s` failed (exit %d, %s) at %s' % (name, code, detail, now)
-    since = (previous or {}).get('since', 'unknown')
+        return '🔴 AgentMesh `%s` failing (exit %d, %s) since %s' % (name, code, detail, since)
     return '🟢 AgentMesh `%s` recovered at %s (failing since %s)' % (name, now, since)
 
 
@@ -105,20 +106,23 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
     now = now or datetime.now(timezone.utc).isoformat(timespec='seconds')
     ok = code == 0
     fields = summary_fields(out + '\n' + err)
-    event = transition(previous, ok)
-    state = dict(ok=ok, exit=code, at=now, fields=fields,
-                 since=(previous or {}).get('since', now) if not ok and previous and not previous.get('ok', True) else now)
+    event, since, alerted = transition(previous, ok, now)
+    state = dict(ok=ok, exit=code, at=now, fields=fields, since=since, alerted=alerted)
     notified = None
     if event:
+        failed_since = since if event == 'failed' else previous.get('since', 'unknown')
         try:
             url = read_webhook(webhook_file)
             if url:
-                sender(url, message(name, event, code, fields, previous, now))
+                sender(url, message(name, event, code, fields, failed_since, now))
                 notified = event
+                state['alerted'] = event == 'failed'
         except Exception as exc:
-            # A failed alert retries on the next tick: keep the previous state.
+            # Undelivered alerts retry next tick: a failure stays unalerted, and a
+            # recovery keeps the previous (alerted, failing) state.
             print(json.dumps({'job': name, 'notify_error': type(exc).__name__}), file=sys.stderr)
-            state = dict(previous or {}, at=now) if previous else dict(state, ok=True)
+            if event == 'recovered':
+                state = dict(previous, at=now)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_suffix('.tmp')
     tmp.write_text(json.dumps(state, sort_keys=True))

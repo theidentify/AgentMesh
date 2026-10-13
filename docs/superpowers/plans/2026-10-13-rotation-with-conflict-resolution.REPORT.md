@@ -151,3 +151,134 @@ was triggered. Atomic hard-link publication requires filesystem support and fail
 it was exercised on this macOS host, not on a native Windows filesystem. Existing manifests cannot undo
 already committed forgeries, and local locks cannot fence a remote DB clone. No implementation decision
 requires user input; unfinished old-format journals require separate operator review as documented.
+
+## Round 2
+
+Implemented the binding security-review amendments (items 1–7) on
+`fix/rotation-resolution-packets`, on top of round 1. This section supersedes round 1's
+receipt-digest manifest description and its statement that proposal/registry formats remain unchanged.
+The full follow-up spec, round-1 report, original recovery spec/ground rules, and signing/revocation
+decision were read. Read-only project-memory recall was also performed.
+
+### Amendment commits and test-first evidence
+
+Every commit ends with `Co-Authored-By: GPT (Codex) <noreply@openai.com>`.
+Focused green runs below were executed from both `memory-sync/` and the repository root.
+
+| Item | Commit | Evidence |
+|---|---|---|
+| 1 — H1 | `15b9b64` | Two new tests failed before the fix, then both passed in each directory. A full rotation-file run also passed (161 tests). Manifests and receive authorization bind `signed.envelope_digest`; proposals/registries use v2 and refuse v1. The v1 proposal test includes a valid signature under its old domain. |
+| 2 — H2 | `789d719` | The differing-file test failed on the old activity-fence reason. Six focused resume/batch cases then passed in each directory. Resume compares exact stored UTF-8 bytes, accepts identical files, and reports the specified fixed reason for different files. Fresh rotation retains the absent-file requirement. |
+| 3 — M1 | `3d00c42` | A test deleting the later of two pending rows during replay first demonstrated an earlier file being written. After the fix, all rows and the exact pending set are validated under `BEGIN IMMEDIATE` against the staged signed manifest before any file write; three focused transaction/resume cases passed in each directory. |
+| 4 — M2 | `61ad266` | The new archive/review success test failed before implementation. Seven drop tests passed in each directory: archival, review redaction, reason/UUID/reference refusals, and resume before/after the archive transaction. |
+| 5 — M3 | `794d496` | The new quarantine tests failed before the option existed. Approval/cancellation tests then passed as part of 11 drop/resume/quarantine cases in each directory. Both actual envelope digests are shown, and only typed `QUARANTINE` permits the move. |
+| 6 — M4 | `72d275d` | The new v3 variant test first failed on missing `variant_superseded`. Fifteen reporting tests then passed in each directory, covering versioned validation, complete-envelope dispositions, manifest membership, v3 forged candidates, redaction and unchanged source bytes. |
+| 7 — included improvements | `c6a57e4` | A cached missing entry first remained refused after registry creation; it now refreshes on registry mtime/size changes. The pre-rotation resolution-plan test passes and explicitly proves unchanged DB state plus a changed trust digest. CLI option forwarding and fixed-reason tests are included; 21 focused cases passed in each directory. |
+
+The signature-variant tests use a small **test-only raw Ed25519 implementation** with a chosen
+nonce (`r = 42)) and the fixture's old private key held in memory. They construct a different,
+mathematically valid signature over identical unsigned content. The pinned cryptography verifier
+accepts it before revocation. After rotation authorization, the peer rejects that variant and
+subsequently accepts A's original packet. No signature-verification monkeypatch or simulation was
+needed. The reporting variant test uses the same real-signature technique for a v3 resolution.
+
+### Resulting recovery behavior
+
+- The manifest covers signature bytes as well as unsigned content. Historical receipt digests remain
+  unchanged solely for their existing committed-receipt purpose; `compromise-report.in_manifest`
+  uses the complete envelope digest.
+- All publication candidates, their journal-pinned stored-text hashes, historical signatures,
+  manifest envelope digests and existing files are checked before writing the first file. Replay
+  skips already-committed published flags and preserves byte-identical packet text.
+- Compromised-key preparation prints each pending UUID, format, v3 kind and table/operation with
+  `key_sha256`, without raw keys or row bodies. Repeatable `--drop-pending UUID` is accepted only
+  for fresh compromised rotation. References from any other pending packet's covers/evidence
+  refuse the drop. The private journal pins dropped packet text hashes; dropped rows remain
+  unpublished until finish, then move transactionally to
+  `_sync_rotation_dropped(uuid, packet, dropped_at)`. Replay checks archived bytes and preserves
+  existing archive timestamps. The report lists `dropped_pending`.
+- With drops, the normal pending-backlog guard runs after the finish-time archive transaction,
+  because intentionally retained old-key pending rows must remain in the outbox until then.
+  Binding and complete publication-set checks still run inside the earlier publish transaction.
+  Ordinary signing remains fenced by the journal throughout.
+- Repeatable `--resume --quarantine-collision UUID` is restricted to journal-bound packets.
+  It shows the exchange and authoritative outbox envelope digests, confirms all requested moves
+  before moving any file, and preserves a flushed snapshot of the confirmed bytes using no-clobber publication
+  followed by source unlink in `pairing/rotations/quarantine/<uuid>.<digest>.json`. Source bytes are rechecked
+  around confirmation and movement. Cancelling leaves DB, trust, outbox and exchange unchanged.
+- A disposition matching this file sets `superseded`; a disposition for another envelope of the
+  same UUID sets `variant_superseded`. V3 reporting uses `packet_versions.validate_wire` and
+  its row validator, and runs the same own-outbox byte comparison as v2.
+- KEY-PROTECTION.md and SIGNED-SYNC.md describe v2-only manifests, both CLI options, archive and
+  quarantine recovery, and the authorization state `verified` rather than `applied`.
+
+### Final review correction
+
+Commit `0d1c688` contains the final review correction. A new negative test demonstrated that
+compromise review could print an unrecognized table label
+before the existing aggregate validation rejected it. Review now checks the fixed table allowlist
+before emitting metadata. The test failed first and then passed, together with the drop/report
+regressions, in both directories. A prior race test's expected error was updated to the exact H2
+reason; its initial broader run had 175 passes and that one obsolete expectation failure.
+CLI help now describes option scope and repeatability. Archive timestamps record the archive step.
+Nine focused review/drop/CLI cases passed in each directory after these final changes.
+Commit `8649c2d` adds a further test-first quarantine correction permits a colliding envelope that claims a different
+UUID/group from its journal-bound path. The two new approval/cancellation cases failed before the
+fix; six quarantine/option-scope cases then passed in each directory. Quarantining hostile bytes
+does not grant them trust. This avoids making recovery depend on the attacker's scope claims.
+
+Commit `eddd226` adds a race regression that demonstrated that hard-linking the hostile source itself allowed an in-place
+writer to change the quarantined evidence. Quarantine now copies the confirmed bytes into a private,
+flushed temporary file, publishes that snapshot without clobbering a destination, rechecks the source
+and only then unlinks it. A changed source is retained and refused while the confirmed snapshot stays
+intact. The regression failed before this fix; all five quarantine cases then passed in each
+directory.
+
+All three new refusal reasons are included in `cli_errors.KEY_REASONS` through its existing
+union with `key_rotation.REASONS`; a CLI regression verifies that allowlist and the rendered reasons.
+
+### Full-suite verification
+
+Final full suites ran against committed code at `eddd226`:
+
+| Working directory | Passed | Known failures | Skipped | Warnings | Duration |
+|---|---:|---:|---:|---:|---|
+| memory-sync | 1,430 | 3 | 17 | 1 | 291.90 s |
+| repository root | 1,430 | 3 | 17 | 1 | 292.36 s |
+
+All 183 rotation/recovery tests passed in each full run, including 24 additional cases since round 1.
+The only failures remain the same three `test_sqlite_consumers.py::ConsumerTests` cases documented
+above: complete collision-safe export, transcript-task inference, and clearing the last active item.
+All report `symlink export root refused` on this host's temporary-directory alias. The one warning
+is the existing duplicate-ZIP-member fixture. There are no new failures.
+
+`git diff --check` passed. No GATES.md exists. The seven amendments and the test-first final-review
+corrections are complete. The final commit only records these results; it does not change tested code.
+
+The full-suite commands are the same as round 1's recorded commands above, with native keychain/task
+opt-ins removed and pytest cache writing disabled. The suite covers all `memory-sync/` tests,
+invoked from each required working directory. An initial full run before the final label-redaction
+test was collected had 1,426 passed, the three known consumer failures, 17 skipped and one warning
+in 272.77 seconds. Intermediate complete runs after the label correction had 1,427 passes in
+each directory (324.04 seconds from memory-sync and 331.47 seconds from root), again only the
+three known failures, 17 skips and one warning. Final verification was repeated after the
+quarantine scope and source-mutation corrections.
+
+### Safety and compatibility limits
+
+Only disposable test data, sealed fixture identities and fake OS backends were used for new work.
+No real identity, OS key store, deployment, push, merge, rebase, branch switch or remote operation
+was performed. No GATES.md or other repository bookkeeping file was created. As documented in
+round 1, the pre-existing full suite still includes raw disposable identity fixtures; these were not
+expanded by this work.
+
+Native Windows execution was not available. New fixtures use the existing private-directory and
+sealed-identity helpers and do not rely on the invocation directory. Hard-link publication and
+quarantine require filesystem support and fail closed when unavailable.
+
+V1 proposals and registries are refused, as required. Round-1 journals with v1 proposals or without
+the new drop metadata are also refused rather than reinterpreted. Unparseable collision files or unsupported formats
+cannot supply a supported envelope digest and require separate inspection. The quarantine option
+accepts parsed v2/v3 envelopes even if they claim a different UUID or scope; its authority comes
+from the journal-bound path and explicit confirmation, never the hostile contents. Local worker locks still
+cannot fence a remote clone. Already-committed forgeries remain a review/recovery concern.

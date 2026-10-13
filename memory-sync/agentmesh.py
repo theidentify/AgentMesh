@@ -86,6 +86,18 @@ def main(argv=None):
     os_unlock_parser = subs.add_parser('identity-os-unlock', help='enable, disable or inspect OS-protected unattended unlock')
     os_unlock_parser.add_argument('mode', choices=('enable', 'disable', 'status'))
     os_unlock_parser.add_argument('--security-dir', required=True, help='existing private identity directory')
+    backup_parser = subs.add_parser('identity-backup', help='create, verify or drill an encrypted identity backup')
+    backup_modes = backup_parser.add_subparsers(dest='mode', required=True)
+    for mode in ('create', 'verify', 'drill', 'status'):
+        command = backup_modes.add_parser(mode)
+        command.add_argument('--security-dir', required=mode in ('create', 'status'))
+        if mode == 'create':
+            command.add_argument('--output', required=True)
+        elif mode in ('verify', 'drill'):
+            command.add_argument('--file', required=True)
+    restore_parser = subs.add_parser('identity-restore', help='restore a backup after fencing the old device')
+    for option in ('file', 'security-dir', 'exchange'):
+        restore_parser.add_argument('--' + option, required=True)
     replacement = subs.add_parser('mac-replace', help='operator-confirmed Mac replacement; planning is read-only')
     replacement.add_argument('--manifest', required=True, help='private explicit existing-install manifest')
     replacement.add_argument('--binary', help='bundled standalone executable; defaults to this frozen executable')
@@ -217,6 +229,18 @@ def main(argv=None):
                 prompt.result(True, verb + ' complete', done.get(report['status'], report['status'])
                               + ('\nWorker restarted and healthy.' if report.get('worker_changed') else ''))
             return 2 if report['status'] in ('pending', 'staged', 'cancelled') else 0
+        if args.action in ('identity-backup', 'identity-restore'):
+            import identity_backup
+            if args.action == 'identity-restore':
+                report = identity_backup.restore(args.file, args.security_dir, args.exchange)
+            elif args.mode == 'status':
+                report = identity_backup.status(args.security_dir)
+            elif args.mode == 'create':
+                report = identity_backup.create(args.security_dir, args.output)
+            else:
+                report = getattr(identity_backup, args.mode)(args.file, args.security_dir)
+            print(json.dumps(report, sort_keys=True))
+            return 0
         if args.action == 'identity-os-unlock':
             import os_unlock
             report = getattr(os_unlock, args.mode)(args.security_dir)

@@ -34,7 +34,7 @@ jobs:
       - name: Verify OS unlock backends on a disposable keychain / credential
         env:
           AGENTMESH_NATIVE_KEYCHAIN_TESTS: '1'
-        run: python -m pytest -q -rs memory-sync/test_native_os_unlock.py memory-sync/test_os_unlock.py
+        run: python -m pytest -q -rs memory-sync/test_native_os_unlock.py memory-sync/test_os_unlock.py memory-sync/test_identity_backup.py
       - name: Verify Windows program lifecycle and disposable native tasks
         if: runner.os == 'Windows'
         env:

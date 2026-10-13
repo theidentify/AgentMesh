@@ -131,7 +131,7 @@ verify decryption or detect a leftover item; it never prints K or the device key
   with the login password. A Windows profile backup plus the password, or the domain DPAPI backup
   key, can decrypt the credential. Such a backup is only as strong as the **weaker** of the
   passphrase and the OS login password. The portable backup remains `identity.json` with `protection`
-  plus the passphrase; issue #8 adds backup/restore commands.
+  plus the passphrase; use the encrypted backup commands below for portable recovery.
 - A locked or password-out-of-sync Mac keychain can display a system unlock dialog. The worker OS
   read is capped at 15 seconds and attempted at most once per identity per process, including after
   refusal. Killing the security process does not promise that the system dialog closes.
@@ -160,3 +160,97 @@ verify decryption or detect a leftover item; it never prints K or the device key
 Native and frozen OS-store tests are CI-only, opt-in, and use temporary keychains or random test
 credential targets with cleanup. Never enable native tests on a production workstation. Normal
 standalone binaries contain no test-store override; CI builds a separate disposable smoke binary.
+
+## Backup and restore (#8)
+
+Use a separate, long backup passphrase (at least 12 characters). Keep it separately from both the
+backup file and the identity passphrase, for example in a password manager with a recovery procedure.
+The interactive prompts never accept passphrases from argv, environment variables or files.
+
+```
+agentmesh identity-backup create --security-dir <security dir> --output <offline backup file>
+agentmesh identity-backup verify --file <backup file> --security-dir <security dir>
+agentmesh identity-backup drill --file <backup file> --security-dir <security dir>
+agentmesh identity-backup status --security-dir <security dir>
+agentmesh identity-restore --file <backup file> --security-dir <new security dir> --exchange <group exchange>
+```
+
+`create` unlocks a protected identity with its identity passphrase, never OS unlock. Legacy raw
+identities can also be backed up. Confirm the displayed public identity by typing `BACKUP`, then enter
+the new backup passphrase twice. It must differ from the identity passphrase when one was used.
+Creation refuses overwriting an existing file, verifies the written ciphertext immediately, and
+records evidence only after that verification succeeds. A failed readback removes the new backup.
+
+Keep backups on offline media outside Syncthing and git. The location check resolves symlinks and
+rejects ancestors containing `.stfolder` or a `.git` file/directory. Syncthing's marker name is
+configurable, so this is a best-effort check: inspect your actual sync configuration. Detected iCloud,
+OneDrive, Dropbox and Google Drive locations require typing `CLOUD`: uploading an encrypted file
+still exposes its metadata and permits offline guessing. Cloud detection cannot discover every
+custom sync root. Backup publication uses an atomic no-clobber hard link, falling back to an
+exclusive create on filesystems without hard links. POSIX mode 0600 or a Windows private ACL is used
+where supported; `permissions: unsupported-by-filesystem` means the medium cannot enforce it.
+
+### Portable format and evidence
+
+The JSON format is `agentmesh-identity-backup-v1`: scrypt (N=2^17, r=8, p=1, random 16-byte salt) and
+AES-256-GCM (random 12-byte nonce). The public manifest contains `key_id`, `public_key`, `sender`,
+`group`, `node` and UTC `created_at`. **Anyone holding the file can read this metadata.** It is bound
+as authenticated associated data and displayed by the commands only after authentication succeeds.
+There is no unauthenticated inspect command. Exact fields and bounded KDF/ciphertext sizes are checked
+before key derivation. Wrong passphrases and damaged encrypted files produce the same opening error.
+
+The encrypted payload contains the device key, the captured trust object and `trust_captured_at`.
+Neither the identity's `protection` envelope nor its `os_unlock` envelope is exported. Decrypted keys
+and passphrases stay in memory; every identity written by restore or drill is sealed. Python cannot
+reliably wipe secret memory. This retains the same-user-code threat model described above.
+
+`verify` authenticates and validates the whole file. `drill` additionally creates two disposable,
+sealed identities, signs and verifies a probe and a signed ACK, then removes both directories even
+on failure. It never writes to the exchange, adopts an identity, or needs `FENCED`. Verify and drill
+warn for an older backup whose scrypt N is below the production value. `--security-dir` is optional
+for these two commands; evidence is recorded only when its public identity matches the backup.
+
+`backup-status.json` is private evidence indexed by identity key ID and encrypted-file SHA-256. It
+stores creation, verification and drill timestamps, never paths or secret material. Read-only
+`status` reports `none`, `verified` or `drilled`, plus the age in seconds of each timestamp. Evidence
+means a check passed at that time; it does not prove the file still exists or is readable. File
+existence alone is never evidence. Same-user code could forge this evidence file.
+
+### Restore, fencing and trust
+
+Stop or wipe the old device before restoring its identity. **Never run this identity on two active
+devices.** The required exchange must contain `.stfolder` and a status file for the backup's group.
+Recent activity (within 15 minutes), future timestamps, or unreadable entries on this node's status,
+signed-changes or changes slot refuse restore. The check is repeated immediately before adoption.
+It is only a heuristic: **typing `FENCED` is the operator's confirmation and the real control**;
+a quiet exchange cannot prove that a disconnected old device is stopped.
+
+The target must be private, outside git, Syncthing and the exchange, and contain no identity. Cloud
+targets require `CLOUD`. A leftover `.restore-*` or `trust.json.pre-restore` blocks another attempt:
+inspect the interrupted restore and remove its recovery artifacts only after deciding which trust
+state to retain. Staging contains only a sealed identity and trust. Trust is adopted first and the
+identity last without overwriting an identity; ordinary adoption failures roll trust back. A crash
+can leave the private pre-restore trust copy for operator recovery.
+
+Current trust wins. A revoked own key, conflicting own public fields, a newer active key on the same
+slot, or current trust from another group refuses the entire restore. Existing peer entries are
+retained and revocation from either copy wins. Backup-only revoked peers are imported automatically
+as revoked. For each new active peer, type its full 64-character fingerprint to pin it; Enter or a
+wrong fingerprint skips it. Slot conflicts are skipped. Skipped peers must be paired again through
+the wizard. The captured trust is a historical snapshot: restore sees only local revocations.
+Revocations held by remote peers become visible when the required live roundtrip fails.
+
+Restore asks for the backup passphrase and a new identity passphrase twice. The new identity
+passphrase must differ from the backup passphrase; the old identity passphrase is unnecessary.
+The restored `key_id`, public key, sender, group and node are unchanged. It is read back and checked
+under the new passphrase before success. Stale backup evidence is removed from the target.
+
+After restore, run a live signed roundtrip with a real peer using the wizard probe before treating
+the device as restored. OS unlock is off. A `stray_os_unlock_item: true` report means an existing OS
+item was detected: explicitly run `identity-os-unlock disable` or `enable` to remove or replace it.
+Then optionally enable OS unlock, explicitly run `worker-start`, and create a new encrypted backup.
+Restore never starts, stops or signals workers, enables OS unlock, touches databases, or writes the
+exchange. An offline drill is not a substitute for the live peer check.
+
+A backup cannot make a compromised or revoked key safe. Rotate and re-pair after compromise (#9);
+this feature does not recover missing backups or restore SQLite data.

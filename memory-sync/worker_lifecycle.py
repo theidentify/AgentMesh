@@ -134,7 +134,6 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     runtime_bytes = read_local(runtime, private=True)
     config, scope = load(runtime, allow_exchange_unavailable=True)
     from protocol_activation import require_capability
-    require_capability(runtime, config['database'])
     # Bootstrap runtimes omit security paths; use the wizard's defaults.
     security_dir, security_state = security_paths(config, runtime)
     if scope['policy'] == 'legacy' and not legacy_drained:
@@ -147,6 +146,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     with lock(directory / 'lifetime.lock', timeout=0):
         if startup_deadline is not None and time.monotonic() > startup_deadline:
             raise TimeoutError('startup deadline expired')
+        require_capability(runtime, config['database'])
         # Sole lifetime owner now: a request for another (finished) instance is stale.
         try:
             previous = _stop_request(directory)
@@ -243,11 +243,11 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     positive(timeout)
     config, scope = load(runtime, allow_exchange_unavailable=True)
     from protocol_activation import require_capability
-    require_capability(runtime, config['database'])
     if scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly')
     if status(runtime)['state'] == 'running':
         raise ValueError('worker already running; stop it first')
+    require_capability(runtime, config['database'])
     # Protect shared control storage before the child can expose it to status.
     # Windows native provisioning takes time; an unprotected mkdir is not ready.
     control(config, create=True)
@@ -331,12 +331,12 @@ def recovery(runtime):
     """
     config, scope = load(runtime, authoritative=False)
     from protocol_activation import require_capability
-    require_capability(runtime,config['database'])
     # Match the worker's unlock policy before stopping it or creating control files.
     security=None
     if scope['policy']=='required':
         from signed_packets import Security
         security=Security(security_paths(config,runtime)[0], os_unlock=True).require_unlocked()
+    require_capability(runtime,config['database'])
     if load(runtime)!=(config,scope): raise ValueError('runtime or trust changed')
     if status(runtime)['state']=='running': stop(runtime)
     directory=control(config,create=True)

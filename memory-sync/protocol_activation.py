@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 
 import memory_sync as sync
 import resolution_store as store
@@ -18,7 +19,11 @@ CAPABILITY = 1
 
 @contextmanager
 def snapshot(database, *, writable=False):
-    """Copy a stable DB/WAL pair; never open the source with a writable WAL index."""
+    """Copy a stable DB/WAL pair without opening source SQLite or its WAL index.
+
+    At most 20 copies with 4.25s total backoff, plus filesystem I/O time.
+    A continuously busy source fails closed; callers may retry the command.
+    """
     db=no_symlinks(database)
     paths=[db,db.with_name(db.name+'-wal')]
     def stamp():
@@ -31,13 +36,20 @@ def snapshot(database, *, writable=False):
         return result
     with tempfile.TemporaryDirectory(prefix='agentmesh-inspect-') as directory:
         target=Path(directory)/'memory.db'
-        for attempt in range(3):
+        for attempt in range(20):
             before=stamp()
             if before[0] is None: raise ValueError('database missing')
-            for source,dest in zip(paths,[target,Path(str(target)+'-wal')]):
-                if source.exists(): shutil.copyfile(source,dest); dest.chmod(0o600)
-                else: dest.unlink(missing_ok=True)
-            if stamp()==before: break
+            try:
+                for source,dest in zip(paths,[target,Path(str(target)+'-wal')]):
+                    if source.exists(): shutil.copyfile(source,dest); dest.chmod(0o600)
+                    else: dest.unlink(missing_ok=True)
+            except (FileNotFoundError, PermissionError):
+                # Checkpoint/removal or Windows sharing races: retry the whole pair.
+                pass
+            else:
+                if stamp()==before: break
+            if attempt < 19:
+                time.sleep(min(0.05 * (attempt + 1), 0.25))
         else: raise ValueError('database changed during snapshot; retry')
         c=sqlite3.connect(target); c.row_factory=sqlite3.Row
         try:

@@ -773,3 +773,66 @@ evidence, unlock/doc review, and explicit native handoff. Native CI remains pend
 the commands above; this is not a claim of native-release acceptance. No git writes,
 network, live-key operations, deployment or operational group activation occurred.
 Work stops after Gate 4 for maintainer review.
+
+
+## PR #35 native Windows snapshot follow-up
+
+The reported duplicate worker-start failure was caused by the capability snapshot
+preceding the already-running refusal. Deterministic TDD first produced **6 failed,
+46 deselected** (0.98s): start/run legacy-drain ordering, duplicate start ordering,
+direct run lifetime-lock ordering, and finite/permanent concurrent writer cases.
+The copy-step fixture commits real SQLite WAL changes after copying the database;
+it writes on four attempts then stops, or writes on every attempt. Sleeps are
+recorded rather than actually delayed so bounds are deterministic.
+
+Changes:
+
+- `worker_lifecycle.start`: drain acknowledgment and already-running refusal before
+  capability snapshot. `run`: drain acknowledgment first; acquire lifetime ownership
+  and check startup deadline before capability. No duplicate process can skip the
+  existing exclusive lock. Recovery checks protected-key unlock before capability;
+  capability remains before stopping the worker, preserving downgrade safety.
+- `protocol_activation.snapshot`: 20 full-pair attempts, increasing 50ms backoff
+  capped at 250ms (19 sleeps, at most 4.25s total). Whole-pair retries also handle
+  source disappearance during copy and Windows sharing PermissionError. A stable
+  pre/post stat match is still required before opening only the private copy.
+  Exhaustion preserves `database changed during snapshot; retry`. File I/O itself
+  is not covered by a hard wall-clock timeout.
+- `cli_errors.py` exposes that fixed refusal instead of withholding it. SYNC.md
+  documents the bound and operator retry/explicit-stop option.
+- Tests prove eventual success after four writer mutations, bounded refusal under
+  continuous mutation, source DB/WAL/SHM unchanged except injected writer commits,
+  query-only copy, temporary cleanup, transient copy failures and public reason.
+
+Caller audit: conflicts listing, resolution/activation preview and resolution
+preflight need a snapshot to inspect current state and have no duplicate-start
+refusal to perform. Wrong words/digests/selection are already checked first.
+Recovery intentionally stops a running worker rather than refusing one, and retains
+its capability fence before stop. Installer inspection and executable capability
+checks also require a DB read; they inherit bounded retries, and installer checks
+remain before drain/launch/rollback side effects. Windows installer cheap task and
+rollback checks already precede its capability call. The standalone
+`protocol-capability` CLI returns a constant and never snapshots a DB; its internal
+installer helpers do. No snapshot-based read was replaced with a writable source
+connection or source WAL-index access.
+
+First green lifecycle/activation/conflicts run: **74 passed**, 16.79s. Final focused
+run including copy-error/public-reason cases and adopt/Mac/Windows installer
+regressions: **167 passed, 4 skipped**, 29.33s. All runs use
+`/Users/krisanathep/.cache/agentmesh-testvenv/bin/python -m pytest -q`.
+Logs: `$TMPDIR/snapshot-fix/{red,green,focused,full}.log`.
+
+Residual Windows timing risk: sustained writes or sharing contention can outlast
+the retry budget, so inspection/capability reads can still refuse safely; this is
+not an unconditional snapshot-success guarantee. Duplicate-start and legacy-drain
+refusals no longer depend on obtaining a stable copy. Actual native Windows CI must
+rerun the reported lifecycle test; local deterministic injection is not native
+filesystem scheduling evidence. No wire format, activation bypass, source database
+writes, network operation or git write was introduced.
+
+Full follow-up run: **1247 passed, 3 failed, 17 skipped; 20 subtests passed**, 219.29s,
+using the exact `"$TEST_PY" -m pytest -q memory-sync` command without exclusions.
+Only the three previously documented sqlite_consumer symlink-export cases failed;
+the duplicate ZIP warning remains. The reported lifecycle test passed in both
+focused and full local runs. `git diff --check` is clean. Native Windows CI was not
+run locally; no claim is made that persistent contention can never exhaust retries.

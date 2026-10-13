@@ -116,3 +116,65 @@ def test_activated_capture_self_replay_is_noop(activation,tmp_path):
     report=sync.cycle(args['database'],args['exchange'])
     assert report['receive']['conflict']==report['receive']['invalid']==0
     assert report['receive']['applied']==0
+
+
+@pytest.mark.parametrize('forever',[False,True])
+def test_snapshot_retries_writer_with_bounded_backoff(tmp_path,monkeypatch,forever):
+    import sqlite3
+    import protocol_activation as activation
+    args=runtime_for(tmp_path);db=args['database']
+    writer=sqlite3.connect(db)
+    writer.execute('PRAGMA journal_mode=WAL')
+    writer.execute('CREATE TABLE snapshot_probe(value INTEGER)')
+    writer.execute('INSERT INTO snapshot_probe VALUES(0)');writer.commit()
+    original=activation.shutil.copyfile;copy_calls=[];sleeps=[];expected=[];targets=[]
+    def files(): return {p.name:p.read_bytes() for p in db.parent.glob(db.name+'*')}
+    def copying(source,target):
+        result=original(source,target)
+        if str(source)==str(db):
+            copy_calls.append(source);targets.append(target)
+            if forever or len(copy_calls)<=4:
+                writer.execute('UPDATE snapshot_probe SET value=value+1');writer.commit()
+            expected[:]=[files()]
+        return result
+    monkeypatch.setattr(activation.shutil,'copyfile',copying)
+    # Patch the existing stdlib module; the implementation must actually back off.
+    import time
+    monkeypatch.setattr(time,'sleep',sleeps.append)
+    try:
+        if forever:
+            with pytest.raises(ValueError,match='^database changed during snapshot; retry$'):
+                with activation.snapshot(db): pytest.fail('unstable pair must not be opened')
+            assert len(copy_calls)==20 and len(sleeps)==19
+        else:
+            with activation.snapshot(db) as c:
+                assert c.execute('SELECT value FROM snapshot_probe').fetchone()[0]==4
+                assert c.execute('PRAGMA query_only').fetchone()[0]==1
+                assert files()==expected[0]
+            assert len(copy_calls)==5 and len(sleeps)==4
+        assert all(0<delay<=0.25 for delay in sleeps) and sum(sleeps)<=5
+        assert files()==expected[0]  # DB, WAL and SHM only changed by the injected writer
+        assert all(not target.parent.exists() for target in targets)
+    finally: writer.close()
+
+
+@pytest.mark.parametrize('error',[FileNotFoundError,PermissionError])
+def test_snapshot_retries_transient_copy_failure(tmp_path,monkeypatch,error):
+    import protocol_activation as activation
+    args=runtime_for(tmp_path);original=activation.shutil.copyfile;calls=[];sleeps=[]
+    before={p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    def copying(source,target):
+        calls.append(source)
+        if len(calls)==1: raise error('simulated checkpoint/sharing race')
+        return original(source,target)
+    monkeypatch.setattr(activation.shutil,'copyfile',copying)
+    monkeypatch.setattr(activation.time,'sleep',sleeps.append)
+    with activation.snapshot(args['database']) as c: assert sync.config(c)['node']=='mac'
+    assert len(sleeps)==1 and len(calls)>=2
+    assert {p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==before
+
+
+def test_busy_snapshot_cli_reason_is_actionable():
+    from cli_errors import report
+    reason='database changed during snapshot; retry'
+    assert report(ValueError(reason),'conflicts')['reason']==reason

@@ -6,6 +6,7 @@ USED_EXCHANGE_REASON = ('exchange folder is already used; each sync group needs 
 # Exact constants emitted by installation/lifecycle/private-storage guards.
 # Do not expose arbitrary exception text, paths, keys or subprocess output.
 PROTOCOL_REASONS = frozenset({
+    'database changed during snapshot; retry',
     'stale resolution plan', 'protocol activation required', 'protocol already activated',
     'RESOLVE confirmation required', 'ACTIVATE confirmation required',
     'runtime paths or trust changed; preview again', 'runtime or trust changed',

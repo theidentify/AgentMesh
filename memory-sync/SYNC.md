@@ -242,6 +242,15 @@ local and incoming rows locally and cannot be combined with `--json`. Listings
 are labeled **unverified preview**; execution rechecks signatures and evidence.
 Nothing in a listing is published to peer status or the exchange.
 
+While a worker writes, inspection retries a changed DB/WAL copy up to 20 times
+with short backoff (at most 4.25 seconds of waiting, plus filesystem copy time).
+Only a stable pair is opened, in a private temporary directory; the source SQLite
+database and its WAL index are never opened by the snapshot helper. Sustained
+writes or file-sharing contention can still produce
+`database changed during snapshot; retry`. Retry later, or explicitly stop the
+worker before inspection if no stable interval is available. A second
+`worker-start` refuses an already-running worker before attempting this snapshot.
+
 `receive-only` cooperatively stops an owned running worker, holds the worker
 lifetime/cycle locks, and captures local edits before receiving. It never runs
 transcript ingestion or summarization. A failed/stopped worker's metadata is

@@ -1576,3 +1576,20 @@ def test_round2_resume_file_bytes(indexed_peers, same):
             rotation.identity_rotate(sa.directory,a,ex,resume=True,**kwargs)
         assert snapshot(indexed_peers) == before
 
+
+def test_round2_publish_prevalidates_entire_manifest(indexed_peers):
+    import key_rotation as rotation
+    a,b,ex,sa,sb = indexed_peers
+    ready(indexed_peers)
+    with sync.connect(a) as c,c:
+        c.execute("UPDATE memory_items SET content='third' WHERE id=1")
+    sync.capture(a,security=sa)
+    pending = pending_texts(a)
+    _,kwargs = rotate_args(indexed_peers)
+    def race(step):
+        if step == 'identity':
+            with sync.connect(a) as c,c:
+                c.execute('DELETE FROM _sync_outbox WHERE uuid=?',(sorted(pending)[-1],))
+    with pytest.raises(ValueError):
+        rotation.identity_rotate(sa.directory,a,ex,reason='planned',_after_step=race,**kwargs)
+    assert not any((ex/'signed-changes'/'mac'/(uid+'.json')).exists() for uid in pending)

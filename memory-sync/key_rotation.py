@@ -555,6 +555,7 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
         for row in pending:
             if expected.get(row['uuid']) != hashlib.sha256(row['packet'].encode('utf-8')).hexdigest():
                 raise ValueError(PENDING_INVALID)
+        validated = []
         for uid, digest in expected.items():
             row = c.execute('SELECT packet,published FROM _sync_outbox WHERE uuid=?', (uid,)).fetchone()
             if row is None or hashlib.sha256(row['packet'].encode('utf-8')).hexdigest() != digest:
@@ -566,6 +567,10 @@ def _replay(directory, db, exchange, plan, journal, phrase, backend, after_step)
                 raise ValueError(PENDING_INVALID)
             if journal['old_public'] is not None: verify_old(p, journal['old_public'])
             no_pending_files(exchange, new['node'], [p], expected={uid: row['packet'].encode('utf-8')})
+            validated.append((uid, row))
+        if {row['uuid'] for row in pending} != {uid for uid, row in validated if not row['published']}:
+            raise ValueError(PENDING_INVALID)
+        for uid, row in validated:
             sync.write_packet(Path(exchange) / 'signed-changes' / new['node'], uid, row['packet'],
                               signed_packet=True, staging_id=new['key_id'])
             if not row['published']:

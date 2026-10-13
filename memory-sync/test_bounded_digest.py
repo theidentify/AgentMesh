@@ -160,6 +160,24 @@ class BoundedTests(unittest.TestCase):
         self.assertEqual(row['events_processed'], 0)
         self.assertEqual(api.prepare(self.db)['events'][0]['id'], 1)
 
+    def test_reported_cost_is_summed_across_fallback_and_unknown_if_any_missing(self):
+        api = self.api()
+        for costs, expected in [((0.002, 0.03), 0.032), ((0.002, None), None)]:
+            self.setUp()
+            metrics = self.db.with_suffix('.cost.jsonl')
+            def extractor(request, *, model):
+                task = api.prepare(self.db)
+                if model == 'fallback':
+                    payload, cost = self.payload(task), costs[1]
+                else:
+                    payload, cost = dict(items=[], reviewed_event_ids=[1], conflicts=['explicit']), costs[0]
+                return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1,
+                            usage=dict(input_total_tokens=100, output_tokens=30, actual_cost_usd=cost))
+            api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
+            row = json.loads(metrics.read_text())
+            self.assertEqual(row['fallbacks'], 1)
+            self.assertEqual(row['actual_cost_usd'], expected)
+
     def test_atomic_coverage_failure_rolls_back_items_evidence_summary_and_ids(self):
         api = self.api()
         task = api.prepare(self.db)

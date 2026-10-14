@@ -143,27 +143,34 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def run_lock(db):
-    """OS lock is held across model calls, no long database write transaction."""
+def run_lock(db, *, wait=0.0, name='bounded digest'):
+    """OS lock is held across model calls, no long database write transaction.
+
+    `wait` seconds retries a held lock before reporting `overlap: <name>`."""
     import os
+    import time
     from pathlib import Path
     path = str(Path(db).resolve()) + '.bounded.lock'
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     acquired = False
+    deadline = time.monotonic() + wait
     try:
-        try:
-            if os.name == 'nt':
-                import msvcrt
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b'0')
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError:
-            raise ValidationError('overlap: bounded digest already running') from None
+        while not acquired:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b'0')
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValidationError('overlap: %s already running' % name) from None
+                time.sleep(0.25)
         yield
     finally:
         if acquired:

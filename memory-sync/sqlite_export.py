@@ -10,6 +10,8 @@ import tempfile
 from recall_memory import open_readonly, _decode
 from bounded_digest import run_lock
 
+EXPORT_LOCK_WAIT = 120
+
 
 def name(value):
     value = str(value or 'Global')
@@ -121,7 +123,8 @@ def publish(database, root):
     if any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError('symlink export root refused')
     root.parent.mkdir(parents=True, exist_ok=True)
-    with run_lock(str(root) + '.export'), tempfile.TemporaryDirectory(prefix='.agentmesh-export-', dir=root.parent) as temp:
+    # Ingest and summary both export; wait out a sibling export instead of failing.
+    with run_lock(str(root) + '.export', wait=EXPORT_LOCK_WAIT, name='export'), tempfile.TemporaryDirectory(prefix='.agentmesh-export-', dir=root.parent) as temp:
         staged = Path(temp)
         notes, stats = projection(database)
         for path, contents in notes.items():

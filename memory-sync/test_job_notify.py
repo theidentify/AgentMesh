@@ -87,6 +87,14 @@ def test_webhook_file_must_be_private_and_a_discord_url(tmp_path, webhook):
 
 
 def test_only_allow_listed_identifiers_are_forwarded():
-    fields = job_notify.summary_fields('{"error_class": "ValueError", "detail": "secret"}\n'
+    fields = job_notify.summary_fields('{"error_class": "ValueError", "message": "secret"}\n'
                                        '{"status": "has spaces and secrets"}\nplain text')
     assert fields == {'error_class': 'ValueError'}
+
+
+def test_protocol_detail_is_forwarded_but_free_text_is_not():
+    fields = job_notify.summary_fields('{"error_class": "ValidationError", "detail": "unsupported evidence quote"}')
+    assert fields['detail'] == 'unsupported evidence quote'
+    assert 'detail' not in job_notify.summary_fields('{"detail": "token=sk-ant-abc \\"quoted\\" <html>"}')
+    text = job_notify.message('summary', 'failed', 1, fields, 't0', 't1')
+    assert 'error_class=ValidationError: unsupported evidence quote' in text

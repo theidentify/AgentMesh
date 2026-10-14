@@ -245,3 +245,10 @@ class BoundedTests(unittest.TestCase):
         self.event(2, 'A correction.')
         with self.assertRaises(ValueError):
             api.prepare(self.db, related_chars=1)
+
+
+def test_error_detail_exposes_only_protocol_messages():
+    from bounded_protocol import ValidationError, ConflictError, error_detail
+    assert error_detail(ValidationError('unsupported evidence quote')) == 'unsupported evidence quote'
+    assert error_detail(ConflictError('explicit model conflict')) == 'explicit model conflict'
+    assert error_detail(RuntimeError('provider said: secret evidence')) is None

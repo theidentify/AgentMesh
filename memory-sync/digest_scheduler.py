@@ -6,7 +6,7 @@ from pathlib import Path
 import uuid
 
 import bounded_digest
-from bounded_protocol import ValidationError
+from bounded_protocol import ValidationError, error_detail
 from memory_sync import connect, config, canonical, digest
 from recall_memory import open_readonly
 from shared_memory_context import pending_ids
@@ -134,7 +134,7 @@ def main(argv=None):
         print(canonical(tick(**options)))
         return 0
     except Exception as exc:
-        print(canonical(dict(status='blocked', error_class=type(exc).__name__)), file=sys.stderr)
+        print(canonical(dict(status='blocked', error_class=type(exc).__name__, detail=error_detail(exc))), file=sys.stderr)
         return 1
 
 

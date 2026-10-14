@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 
-from bounded_protocol import ValidationError, collect, validate, build_request, encode
+from bounded_protocol import ValidationError, collect, validate, build_request, encode, error_detail
 from memory_sync import connect, config, allocate_id, canonical, digest
 from summarize_memory import DEFAULT_CONSUMER, _options
 
@@ -219,7 +219,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                   start=datetime.now(timezone.utc).isoformat(), status='running', provider=None, model=model,
                   events_processed=0, llm_api_calls=0, fallbacks=0, retries=0, actual_cost_usd=None,
                   context_max_input_tokens=None, context_max_chars=0, submitted_chars=0, raw_chars=0,
-                  accepted_items=0, upserted_items=0, source_coverage=None, errors=[])
+                  accepted_items=0, upserted_items=0, source_coverage=None, errors=[], error_detail=None)
     metric.update({f: None for f in usage_fields})
     results = []
     try:
@@ -271,6 +271,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
     except Exception as exc:
         metric['status'] = 'failed'
         metric['errors'] = [type(exc).__name__]
+        metric['error_detail'] = error_detail(exc)
         raise
     finally:
         metric['end'] = datetime.now(timezone.utc).isoformat()
@@ -315,7 +316,7 @@ def main(argv=None):
         print(canonical(result))
         return 0 if result['status'] != 'stale' else 2
     except Exception as exc:
-        print(canonical(dict(status='blocked', error_class=type(exc).__name__)), file=sys.stderr)
+        print(canonical(dict(status='blocked', error_class=type(exc).__name__, detail=error_detail(exc))), file=sys.stderr)
         return 1
 
 

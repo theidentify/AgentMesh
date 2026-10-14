@@ -245,3 +245,37 @@ class BoundedTests(unittest.TestCase):
         self.event(2, 'A correction.')
         with self.assertRaises(ValueError):
             api.prepare(self.db, related_chars=1)
+
+
+def test_error_detail_exposes_only_protocol_messages():
+    from bounded_protocol import ValidationError, ConflictError, error_detail
+    assert error_detail(ValidationError('unsupported evidence quote')) == 'unsupported evidence quote'
+    assert error_detail(ConflictError('explicit model conflict')) == 'explicit model conflict'
+    assert error_detail(RuntimeError('provider said: secret evidence')) is None
+
+
+def test_run_lock_names_the_lock_and_waits_for_release(tmp_path):
+    import threading
+    import time
+    import pytest
+    from bounded_digest import run_lock
+    from bounded_protocol import ValidationError
+    target = tmp_path / 'root'
+    release = threading.Event()
+    held = threading.Event()
+    def holder():
+        with run_lock(target):
+            held.set()
+            release.wait(5)
+    thread = threading.Thread(target=holder)
+    thread.start()
+    held.wait(5)
+    with pytest.raises(ValidationError, match='overlap: export already running'):
+        with run_lock(target, name='export'):
+            pass
+    threading.Timer(0.5, release.set).start()
+    start = time.monotonic()
+    with run_lock(target, wait=5, name='export'):
+        waited = time.monotonic() - start
+    thread.join()
+    assert 0.3 < waited < 5

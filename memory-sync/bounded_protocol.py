@@ -14,6 +14,12 @@ class ConflictError(ValidationError):
     pass
 
 
+def error_detail(exc):
+    """Fixed protocol message for our own ValidationErrors; never other exceptions,
+    whose text may carry source evidence or provider diagnostics."""
+    return str(exc)[:200] if isinstance(exc, ValidationError) else None
+
+
 def guard_secrets(text):
     # Fail closed: don't redact event contents and silently lose evidence.
     patterns = [r'\bsk-[A-Za-z0-9_-]{20,}', r'\b(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}',

@@ -21,6 +21,8 @@ import urllib.request
 
 WEBHOOK = re.compile(r'^https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$')
 SAFE = re.compile(r'^[A-Za-z0-9_.:-]{1,80}$')
+# Fixed protocol messages such as "unsupported evidence quote" or "oversize event 7; ...".
+DETAIL = re.compile(r'^[A-Za-z0-9 _.,:;/()=-]{1,200}$')
 SYSTEM_CA = ('/etc/ssl/cert.pem', '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
 
 
@@ -36,6 +38,8 @@ def summary_fields(text):
             for key in ('status', 'action', 'error_class'):
                 if isinstance(value.get(key), str) and SAFE.match(value[key]):
                     fields[key] = value[key]
+            if isinstance(value.get('detail'), str) and DETAIL.match(value['detail']):
+                fields['detail'] = value['detail']
     return fields
 
 
@@ -85,7 +89,9 @@ def transition(previous, ok, now):
 
 def message(name, event, code, fields, since, now):
     if event == 'failed':
-        detail = ', '.join('%s=%s' % kv for kv in sorted(fields.items())) or 'no status'
+        detail = ', '.join('%s=%s' % kv for kv in sorted(fields.items()) if kv[0] != 'detail') or 'no status'
+        if fields.get('detail'):
+            detail += ': ' + fields['detail']
         return '🔴 AgentMesh `%s` failing (exit %d, %s) since %s' % (name, code, detail, since)
     return '🟢 AgentMesh `%s` recovered at %s (failing since %s)' % (name, now, since)
 

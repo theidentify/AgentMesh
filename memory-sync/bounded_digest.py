@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 
-from bounded_protocol import ValidationError, collect, validate, build_request, encode
+from bounded_protocol import ValidationError, collect, validate, build_request, encode, error_detail
 from memory_sync import connect, config, allocate_id, canonical, digest
 from summarize_memory import DEFAULT_CONSUMER, _options
 
@@ -143,27 +143,34 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def run_lock(db):
-    """OS lock is held across model calls, no long database write transaction."""
+def run_lock(db, *, wait=0.0, name='bounded digest'):
+    """OS lock is held across model calls, no long database write transaction.
+
+    `wait` seconds retries a held lock before reporting `overlap: <name>`."""
     import os
+    import time
     from pathlib import Path
     path = str(Path(db).resolve()) + '.bounded.lock'
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     acquired = False
+    deadline = time.monotonic() + wait
     try:
-        try:
-            if os.name == 'nt':
-                import msvcrt
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b'0')
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError:
-            raise ValidationError('overlap: bounded digest already running') from None
+        while not acquired:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b'0')
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValidationError('overlap: %s already running' % name) from None
+                time.sleep(0.25)
         yield
     finally:
         if acquired:
@@ -219,7 +226,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                   start=datetime.now(timezone.utc).isoformat(), status='running', provider=None, model=model,
                   events_processed=0, llm_api_calls=0, fallbacks=0, retries=0, actual_cost_usd=None,
                   context_max_input_tokens=None, context_max_chars=0, submitted_chars=0, raw_chars=0,
-                  accepted_items=0, upserted_items=0, source_coverage=None, errors=[])
+                  accepted_items=0, upserted_items=0, source_coverage=None, errors=[], error_detail=None)
     metric.update({f: None for f in usage_fields})
     results = []
     try:
@@ -271,6 +278,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
     except Exception as exc:
         metric['status'] = 'failed'
         metric['errors'] = [type(exc).__name__]
+        metric['error_detail'] = error_detail(exc)
         raise
     finally:
         metric['end'] = datetime.now(timezone.utc).isoformat()
@@ -315,7 +323,7 @@ def main(argv=None):
         print(canonical(result))
         return 0 if result['status'] != 'stale' else 2
     except Exception as exc:
-        print(canonical(dict(status='blocked', error_class=type(exc).__name__)), file=sys.stderr)
+        print(canonical(dict(status='blocked', error_class=type(exc).__name__, detail=error_detail(exc))), file=sys.stderr)
         return 1
 
 

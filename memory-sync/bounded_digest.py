@@ -254,9 +254,21 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                 costs = [(r.get('usage') or {}).get('actual_cost_usd') for r in results]
                 metric['actual_cost_usd'] = round(sum(costs), 6) if all(type(v) in (int, float) and v >= 0 for v in costs) else None
                 return result
-            result = call(model)
+            def first_valid(chosen):
+                # One same-model retry when output fails validation (e.g. evidence
+                # coverage); explicit conflicts and worker failures are not retried.
+                result = call(chosen)
+                try:
+                    validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                except ConflictError:
+                    raise
+                except ValidationError:
+                    metric['retries'] += 1
+                    result = call(chosen)
+                    validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                return result
             try:
-                validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                result = first_valid(model)
             except ConflictError:
                 if conflict_model is None:
                     raise

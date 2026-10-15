@@ -235,7 +235,41 @@ class BoundedTests(unittest.TestCase):
                         provider='synthetic-test', model=model, api_calls=1, usage={})
         with self.assertRaises(ValueError):
             api.run_once(self.db, extractor=extractor, conflict_model='fallback')
-        self.assertEqual(calls, ['gpt-6-luna'])
+        # Invalid output gets one same-model retry, never the conflict model.
+        self.assertEqual(calls, ['gpt-6-luna', 'gpt-6-luna'])
+
+    def test_invalid_output_is_retried_once_with_same_model(self):
+        api = self.api()
+        metrics = self.db.with_suffix('.retry.jsonl')
+        calls = []
+        def extractor(request, *, model):
+            calls.append(model)
+            payload = self.payload(api.prepare(self.db))
+            if len(calls) == 1:
+                payload['items'][0]['evidence'][0]['event_id'] = 99  # evidence/source mismatch
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1,
+                        usage=dict(input_total_tokens=10, output_tokens=2, actual_cost_usd=0.001))
+        result = api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
+        self.assertEqual(result['status'], 'committed')
+        self.assertEqual(calls, ['gpt-6-luna', 'gpt-6-luna'])
+        row = json.loads(metrics.read_text())
+        self.assertEqual((row['retries'], row['fallbacks'], row['llm_api_calls'], row['actual_cost_usd']), (1, 0, 2, 0.002))
+
+    def test_second_invalid_output_fails_without_more_calls(self):
+        api = self.api()
+        metrics = self.db.with_suffix('.retry-fail.jsonl')
+        calls = []
+        def extractor(request, *, model):
+            calls.append(model)
+            payload = self.payload(api.prepare(self.db))
+            payload['reviewed_event_ids'] = []
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        with self.assertRaises(ValueError):
+            api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
+        self.assertEqual(len(calls), 2)
+        row = json.loads(metrics.read_text())
+        self.assertEqual((row['retries'], row['error_detail']), (1, 'incomplete event coverage'))
+        self.assertEqual(api.prepare(self.db)['events'][0]['id'], 1)
 
     def test_bounds_do_not_truncate_event_or_related_context(self):
         api = self.api()

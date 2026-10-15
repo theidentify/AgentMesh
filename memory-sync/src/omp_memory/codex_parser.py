@@ -55,7 +55,9 @@ def is_reviewer_session(meta: dict[str, Any] | None) -> bool:
 def infer_codex_project(meta: dict[str, Any] | None) -> str:
     cwd = str((meta or {}).get("cwd") or "").rstrip("/")
     if cwd.startswith(WORKSPACES_ROOT + "/"):
-        return cwd[len(WORKSPACES_ROOT) + 1 :].replace("/", "-")
+        # Match Claude Code's project-folder encoding (every non-alphanumeric
+        # character becomes "-") so one workspace is one project for both agents.
+        return re.sub(r"[^A-Za-z0-9]", "-", cwd[len(WORKSPACES_ROOT) + 1 :])
     if cwd.startswith(CODEX_SCRATCH_ROOT + "/"):
         return "codex-scratch"
     return Path(cwd).name or "unknown"

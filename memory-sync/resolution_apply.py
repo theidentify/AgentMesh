@@ -57,6 +57,8 @@ def _index_local(c, security):
     # No row scan/capture here. Old immutable outboxes are a source of proof.
     for row in c.execute('SELECT packet FROM _sync_outbox').fetchall():
         raw = sync.load_packet(row[0])
+        retained=c.execute('SELECT envelope_digest FROM _sync_packet_evidence WHERE uuid=?',(raw['uuid'],)).fetchone()
+        if retained and retained[0]==versions.envelope_identity(raw): continue
         try: _decode(c,raw,security)
         except protocol.MissingEvidence: pass
 
@@ -132,28 +134,40 @@ def prepare_resolution(c, source_refs, choices, *, security):
 
 def _write(c, transitions):
     """Install a complete vector, retaining newer proved heads. No relational repair."""
-    current=sync.rows(c)
-    expected={(r['table_name'],r['key']):json.loads(r['row']) for r in c.execute('SELECT * FROM _sync_shadow WHERE row IS NOT NULL')}
+    keys={(t.key.table,sync.canonical(list(t.key.values))) for t in transitions}
+    current=sync._keyed_rows(c,keys)
+    expected=sync._shadow_rows(c,keys)
     if current != expected: raise ValueError('uncaptured local edits')
     c.execute('UPDATE _sync_config SET importing=1')
     installs=[t for t in transitions if t.action=='install']
     try:
-        for t in sorted(installs,key=lambda t:(t.key.table!='memory_sources',t.key.table=='observation_events')):
-            table=t.key.table; key=sync.canonical(list(t.key.values))
-            if t.row_json is None:
-                c.execute('DELETE FROM '+table+' WHERE '+' AND '.join(k+'=?' for k in sync.KEYS[table]),t.key.values)
-                expected.pop((table,key),None)
-        for t in installs:
-            if t.row_json is None: continue
-            table=t.key.table; row=json.loads(t.row_json); columns=list(row)
-            update=','.join(k+'=excluded.'+k for k in columns if k not in sync.KEYS[table])
-            c.execute('INSERT INTO '+table+' ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') ON CONFLICT ('+','.join(sync.KEYS[table])+') DO '+('UPDATE SET '+update if update else 'NOTHING'),
-                      [sync.canonical(row[k]) if k=='metadata' else row[k] for k in columns])
-            expected[table,sync.canonical(list(t.key.values))]=row
-        if sync.rows(c)!=expected or c.execute('PRAGMA foreign_key_check').fetchall():
-            raise ValueError('unsupported relational repair')
+        with sync._track_writes(c):
+            _install_rows(c,installs,expected,keys)
     except sqlite3.IntegrityError as exc:
         raise ValueError('unsupported relational repair') from exc
+    _finish_write(c,transitions,installs)
+
+
+def _install_rows(c,installs,expected,keys):
+    for t in sorted(installs,key=lambda t:(t.key.table!='memory_sources',t.key.table=='observation_events')):
+        table=t.key.table; key=sync.canonical(list(t.key.values))
+        if t.row_json is None:
+            c.execute('DELETE FROM '+table+' WHERE '+' AND '.join(k+'=?' for k in sync.KEYS[table]),t.key.values)
+            expected.pop((table,key),None)
+    for t in installs:
+        if t.row_json is None: continue
+        table=t.key.table; row=json.loads(t.row_json); columns=list(row)
+        update=','.join(k+'=excluded.'+k for k in columns if k not in sync.KEYS[table])
+        c.execute('INSERT INTO '+table+' ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') ON CONFLICT ('+','.join(sync.KEYS[table])+') DO '+('UPDATE SET '+update if update else 'NOTHING'),
+                  [sync.canonical(row[k]) if k=='metadata' else row[k] for k in columns])
+        expected[table,sync.canonical(list(t.key.values))]=row
+    allowed={(t.key.table,sync.canonical(list(t.key.values))) for t in installs}
+    expected={key:expected.get(key) for key in keys}
+    if not sync._verify_writes(c,allowed,expected) or c.execute('PRAGMA foreign_key_check').fetchall():
+        raise ValueError('unsupported relational repair')
+
+
+def _finish_write(c,transitions,installs):
     _checkpoint('rows')
     for t in installs:
         key=sync.canonical(list(t.key.values))
@@ -271,7 +285,7 @@ def receive_indexed(c, envelope, path, *, security):
     # its row. Exact committed/own replays must not trigger per-packet row scans.
     auth=versions._authorize(c,envelope,security,envelope['node'])
     if auth.state not in ('applied','superseded','local'):
-        with store.atomic(c): sync._capture(c,security=security)
+        with store.atomic(c): sync._capture(c,security=security,keys=sync._packet_keys(envelope))
     try:
         with store.atomic(c):
             if versions.is_new(envelope):

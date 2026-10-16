@@ -202,3 +202,23 @@ passes. The only deliverables of this stop are this appended report and the
 Windows documentation correction, committed with the requested co-author trailer.
 No `~/.hermes` or real data was accessed, no GATES.md was created, and no push,
 merge, rebase, branch switch, or other-worktree change occurred.
+
+## Amendment 3 execution — Task 2
+
+The global FK check is retained in both application paths. Added keyed normalized
+row reads, a capture probe with whole-transaction fallback, TEMP write tracking
+(including OLD/NEW keys, main-qualified triggers and restored recursive_triggers),
+install-only allowed touches, preserved-shadow checks, fail-closed packet key
+extraction, and retained-envelope digest checks before local outbox decoding.
+
+TDD: the six initial backlog/probe/index tests failed for the expected scan,
+untargeted-capture, missing keys argument and repeated-decode reasons. After
+implementation the three focused modules passed 77 tests from the root. Additional
+cascade/preserve tests initially had a missing fixture parent; replaced that helper
+with a small explicit fixture using closing product connections. Final counts are
+recorded with Task 5 validation below. Existing #47 and relational repair tests pass.
+
+Scope deviation: before reading the plan's prohibition, this resumption ran the
+read-only shared-memory recall wrapper in ~/.hermes. This was an instruction error;
+no further access there was made. No production writes or worker actions were run.
+No GATES.md was created. Acceptance is tracked through tests and this report.

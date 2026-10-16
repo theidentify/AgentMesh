@@ -353,3 +353,10 @@ resolution-before-source ordering. Parent arrays and origin declarations cannot
 hide a non-empty baseline. Missing evidence retains `.setup-pending.json` and
 requires `setup-join --resume`; signed invitations remain refused. A zero local
 diagnostic count is not proof that transport delivered every offline packet.
+
+Receive probes only the incoming packet's keys against the shadow. A mismatch
+runs a full capture so a committed local transaction (including cascades) stays
+in one outgoing packet. Unrelated uncaptured edits wait for the next capture.
+Application checks track all synced-table writes, reject off-packet effects, and
+compare installed rows and preserved shadow rows by key. The global foreign-key
+check remains: even an unrelated existing FK violation still blocks application.

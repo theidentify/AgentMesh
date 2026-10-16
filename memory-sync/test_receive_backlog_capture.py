@@ -77,3 +77,84 @@ def test_backlog_bounds_full_scans_and_targets_capture(backlog,monkeypatch,index
                 'full_rows_calls':len(scans), 'capture_calls':len(captures),
                 'capture_scans':sum(capture_scans), 'other_scans':len(scans)-sum(capture_scans),
                 'capture_key_sets':captures, 'expected_keys':sorted(expected)}
+
+@pytest.mark.parametrize('indexed',[False,True])
+def test_unrelated_edit_waits_for_next_capture(backlog,indexed):
+    db,exchange,_=backlog
+    with sync.connect(db) as c,c:
+        if indexed: resolution_store.migrate(c)
+        c.execute("UPDATE summary_state SET last_event_id=9 WHERE consumer='row-2999'")
+    assert sync.receive(db,exchange,capture_first=False)['applied']==52
+    with sync.connect(db) as c:
+        assert c.execute('SELECT count(*) FROM _sync_outbox').fetchone()[0]==0
+    assert sync.capture(db)['changes']==1
+
+
+def test_probe_falls_back_for_entire_local_transaction(backlog):
+    db,_,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("UPDATE summary_state SET last_event_id=9 WHERE consumer IN ('row-0','row-2999')")
+        result=sync._capture(c,keys={('summary_state',sync.canonical(['row-0']))})
+        assert result['changes']==2
+    with sync.connect(db) as c,c:
+        assert sync._capture(c,keys={('summary_state',sync.canonical(['row-0']))})['changes']==0
+        with pytest.raises(ValueError): sync._capture(c,keys={('unknown','[]')})
+
+
+def test_index_local_decodes_once(backlog,monkeypatch):
+    import resolution_apply as app
+    db,_,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("UPDATE summary_state SET last_event_id=9 WHERE consumer='row-0'")
+    sync.capture(db)
+    calls=[]; original=app._decode
+    def decode(*args):
+        calls.append(1)
+        return original(*args)
+    monkeypatch.setattr(app,'_decode',decode)
+    with sync.connect(db) as c,c:
+        resolution_store.migrate(c)
+        app._index_local(c,None)
+        app._index_local(c,None)
+    assert len(calls)==1
+
+
+def test_write_preserved_child_and_recursive_setting(tmp_path):
+    import resolution_apply as app
+    import resolution_protocol as protocol
+    db=tmp_path/'tracking.db'; sqlite_memory.init_database(db)
+    sync.initialize(db,'mac',GROUP)
+    ids=family(db); sync.capture(db)
+    with sync.connect(db) as c:
+        parent=protocol.Transition(protocol.Key('memory_items',(ids['memory_items'],)),str(uuid.uuid4()),None,'install')
+        child_key=protocol.Key('memory_sources',(ids['memory_items'],ids['observation_events']))
+        child=protocol.Transition(child_key,str(uuid.uuid4()),None,'preserve')
+        c.execute('PRAGMA recursive_triggers=OFF')
+        with pytest.raises(ValueError,match='relational repair'), c:
+            c.execute('BEGIN IMMEDIATE')
+            app._write(c,[parent,child])
+        assert c.execute('PRAGMA recursive_triggers').fetchone()[0]==0
+        assert c.execute('SELECT count(*) FROM memory_sources').fetchone()[0]==1
+
+
+def test_probe_captures_cascade_together(tmp_path):
+    db=tmp_path/'cascade.db'; sqlite_memory.init_database(db)
+    sync.initialize(db,'mac',GROUP); ids=family(db); sync.capture(db)
+    with sync.connect(db) as c,c:
+        c.execute('DELETE FROM memory_items WHERE id=?',(ids['memory_items'],))
+        assert sync._capture(c,keys={('memory_items',sync.canonical([ids['memory_items']]))})['changes']==2
+        body=sync.load_packet(c.execute('SELECT packet FROM _sync_outbox ORDER BY rowid DESC').fetchone()[0])['body']
+        assert {ch['table'] for ch in body}=={'memory_items','memory_sources'}
+
+
+def test_packet_keys_fail_closed():
+    for body in (None,{},[],[{'table':'summary_state'}]):
+        with pytest.raises(ValueError): sync._packet_keys({'body':body})
+
+
+def family(db):
+    with sync.connect(db) as c,c:
+        c.execute("INSERT INTO memory_items(id,kind,scope,content) VALUES(1,'fact','global','fixture')")
+        c.execute("INSERT INTO observation_events(id,event_key,source_path,kind,content,source_hash) VALUES(1,'event','fixture','message','fixture','hash')")
+        c.execute('INSERT INTO memory_sources VALUES(1,1)')
+    return dict(memory_items=1,observation_events=1)

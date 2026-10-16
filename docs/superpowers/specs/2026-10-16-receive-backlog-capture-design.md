@@ -135,3 +135,58 @@ The tests use disposable DBs.
   `test_replays_do_not_rescan_full_memory_per_retained_file`.
 - **Performance evidence:** a scripted benchmark on a disposable DB of comparable size (generated, not
   real data), with before and after `receive` CPU time for a 200-packet backlog, recorded in the report.
+
+## Amendment 1 (2026-10-16, binding): application verification by changed-row tracking
+
+Codex's Task 1 stopped with a finding that holds. Application also does a full-database scan per
+packet:
+- `memory_sync._apply` compares `rows(c)` against the whole shadow plus the packet, after writing.
+- `resolution_apply._write` compares the whole DB before writing (`uncaptured local edits`) and after.
+
+Those whole-DB comparisons have two consequences:
+- **Cost:** they keep the per-packet cost proportional to the DB.
+- **Correctness conflict:** they **reject any unrelated uncaptured local edit**, which conflicts with
+  targeted capture.
+
+Replace them, in both `_apply` and `_write`, with **exact changed-row tracking**.
+
+1. **Tracking.** Once per connection, create TEMP triggers
+   `AFTER INSERT/UPDATE/DELETE ON <t>` for every synced table in `TABLES`. Each trigger inserts
+   `(table, canonical key)` into a TEMP table `_sync_apply_touched`, using `NEW`/`OLD` key columns per
+   `KEYS[t]`.
+   - **Canonical key in SQL:** build it so it equals `canonical([...])`. If that isn't reliable in SQL,
+     record the key columns as `json_array(...)` and canonicalize in Python.
+   - **Scope:** the triggers fire for FK `ON DELETE CASCADE` / `SET NULL` actions and for other triggers'
+     writes (SQLite runs FK actions as triggers). Confirm this with a test using the real schema's
+     cascades, and with a test trigger.
+   - **REPLACE:** where REPLACE conflict resolution can delete rows, make sure `recursive_triggers` is
+     enabled for the apply, or prove that REPLACE is never used on synced tables.
+   - **Lifecycle:** clear `_sync_apply_touched` right before a packet's writes, and read it right after.
+2. **Check after the writes:**
+   - (a) Every touched `(table, key)` must be in the packet's own key set. Anything else raises
+     `Conflict('off-packet cascade or trigger changed a concurrent row')`, the same reason as today.
+   - (b) For every packet key, the live row read **by key** must equal the packet's row (or be absent
+     for a deletion).
+   - (c) `PRAGMA foreign_key_check` stays as it is, with the same pending/conflict classification.
+3. **`_write`'s pre-check** becomes key-scoped: for the keys the resolution or change will write, the
+   live row must equal the shadow row. That holds right after the targeted capture. Unrelated
+   uncaptured edits elsewhere no longer reject the packet; they are captured and published by the
+   next cycle's capture. `_write`'s post-check uses the same tracking (a)–(c) as `_apply`.
+4. **Equivalence.** Anything the old whole-DB comparison rejected because of the packet's own effects
+   is still rejected:
+   - off-packet changes are caught by tracking
+   - wrong on-packet values are caught by the keyed comparison
+   - FK problems are caught by `foreign_key_check`
+   
+   What the old check also rejected, unrelated pre-existing uncaptured edits, is intentionally no
+   longer a reason to refuse. Document this in SYNC.md.
+5. **Tests**, in addition to the earlier list:
+   - a real-schema cascade (deleting a parent whose children aren't in the packet) is detected as off-
+     packet
+   - a test-only trigger that writes another synced row is detected
+   - an UPSERT path fires the tracking
+   - an unrelated uncaptured local edit no longer blocks an incoming packet, and is published by the
+     next `capture()`
+   - the new scan bound: a backlog receive does at most 2 full `rows()` calls in total, counting
+     capture **and** verification
+   - all existing `_apply` / `_write` conflict tests stay green

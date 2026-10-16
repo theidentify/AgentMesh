@@ -154,3 +154,65 @@ def test_v2_chain(chain,monkeypatch):
     assert sync.receive(db,exchange)==dict(applied=20,pending=0,conflict=0,invalid=0,unavailable=False)
     # Includes the mandatory first-migration replay.
     assert len(attempts)<=60
+
+
+def test_mtime_then_filename_order(chain,monkeypatch):
+    db,exchange,make,order=chain
+    packets=[make(1,str(n),n*100)[0] for n in range(3)]
+    order([packets[2],packets[1],packets[0]])
+    stamp=packets[1][0].stat().st_mtime_ns
+    os.utime(packets[0][0],ns=(stamp,stamp))
+    attempts=instrument(monkeypatch)
+    assert sync.receive(db,exchange)['applied']==3
+    assert attempts==[packets[n][1]['uuid'] for n in (2,0,1)]
+
+
+@pytest.mark.parametrize('indexed',[False,True],ids=['legacy','indexed'])
+def test_multiple_parents_are_retried_under_normal_rules(chain,monkeypatch,indexed):
+    db,exchange,make,order=chain
+    a=make(2,'a'); b=make(2,'b',100)
+    path,packet=a[1]
+    packet['body']+=b[1][1]['body']; packet['checksum']=sync.digest(packet['body'])
+    path.write_text(sync.canonical(packet),encoding='utf-8'); b[1][0].unlink()
+    order([a[1],a[0],b[0]])
+    if indexed:
+        with sync.connect(db) as c,c: store.migrate(c)
+    attempts=instrument(monkeypatch)
+    assert sync.receive(db,exchange)==dict(applied=3,pending=0,conflict=0,invalid=0,unavailable=False)
+    assert attempts.count(packet['uuid'])==3
+    with sync.connect(db) as c:
+        assert [r[0] for r in c.execute('SELECT last_event_id FROM summary_state')]==[2,2]
+
+
+def test_no_parent_hint_uses_fallback(chain,monkeypatch):
+    db,exchange,make,order=chain
+    held=make(1,'held')[0]; other=make(1,'other',100)[0]; order([held,other])
+    original=sync._apply; applied=[]
+    def apply(c,p):
+        if p['uuid']==held[1]['uuid'] and not applied: raise sync.Pending('waiting for foreign key targets')
+        result=original(c,p); applied.append(p['uuid']); return result
+    monkeypatch.setattr(sync,'_apply',apply)
+    assert sync.receive(db,exchange)['applied']==2
+    assert applied==[other[1]['uuid'],held[1]['uuid']]
+
+
+def test_interrupt_after_resolution_clears_deferred_covered_diagnostic(tmp_path):
+    import resolution_apply as app
+    from test_resolution_apply import branches,resolve,activate
+    a,b,db,p,q=branches(tmp_path)
+    # Precreate helper fixture directories with Windows-safe private permissions.
+    for path in (a.with_suffix('.activation'),db.with_suffix('.activation'),
+                 tmp_path/'activation-exchange',tmp_path/'activation-exchange'/'.stfolder'):
+        identity_backup.private_mkdir(path)
+    resolution=resolve(app,a,[p,q],dict(x=5,y=2,z=4)); activate(db)
+    exchange=tmp_path/'exchange'; identity_backup.private_mkdir(exchange)
+    identity_backup.private_mkdir(exchange/'changes')
+    for n,packet in enumerate((p,q,resolution)):
+        directory=exchange/'changes'/packet['node']
+        if not directory.exists(): identity_backup.private_mkdir(directory)
+        path=directory/(packet['uuid']+'.json'); path.write_text(sync.canonical(packet),encoding='utf-8')
+        stamp=1_700_000_000_000_000_000+n*1_000_000_000; os.utime(path,ns=(stamp,stamp))
+    checks=[]
+    def interrupt(): checks.append(1); return len(checks)>3
+    report=sync.receive(db,exchange,interrupt=interrupt)
+    assert report==dict(applied=2,pending=0,conflict=0,invalid=0,unavailable=False,interrupted=True)

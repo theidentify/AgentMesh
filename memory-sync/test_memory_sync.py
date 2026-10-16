@@ -202,12 +202,75 @@ def prepare_packet(peers):
     path=next(ex.rglob('*.json'))
     return a,b,ex,path,json.loads(path.read_text())
 
+@pytest.mark.parametrize('sender',[False,True])
+def test_unchanged_received_files_skip_read_and_parse(peers,monkeypatch,sender):
+    a,b,ex,path,p=prepare_packet(peers)
+    db=a if sender else b
+    assert sync.receive(db,ex)['applied']==(0 if sender else 1)
+    calls=[]; original=sync.load_packet; read=Path.read_text
+    def counted(text): calls.append('parse'); return original(text)
+    def counted_read(self,*args,**kwargs):
+        if self==path: calls.append('read')
+        return read(self,*args,**kwargs)
+    monkeypatch.setattr(sync,'load_packet',counted)
+    monkeypatch.setattr(Path,'read_text',counted_read)
+    report=sync.receive(db,ex)
+    assert report['applied']==0 and report['invalid']==0
+    assert calls==[]
+
+@pytest.mark.parametrize('change',['size','mtime'])
+def test_marked_file_tampering_is_revalidated(peers,monkeypatch,change):
+    a,b,ex,path,p=prepare_packet(peers)
+    assert sync.receive(b,ex)['applied']==1
+    stat=path.stat()
+    p['body'][0]['row']['content']='tampered' if change=='mtime' else 'tampered longer'
+    p['checksum']=sync.digest(p['body'])
+    path.write_text(sync.canonical(p))
+    if change=='mtime':
+        assert path.stat().st_size==stat.st_size
+        sync.os.utime(path,ns=(stat.st_atime_ns,stat.st_mtime_ns+1000000000))
+    else:
+        assert path.stat().st_size!=stat.st_size
+        sync.os.utime(path,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+    calls=[]; original=sync.load_packet
+    def counted(text): calls.append(1); return original(text)
+    monkeypatch.setattr(sync,'load_packet',counted)
+    report=sync.receive(b,ex)
+    assert report['invalid']==1 and report['applied']==0 and calls==[1]
+    with sqlite3.connect(b) as c:
+        assert c.execute('SELECT message FROM _sync_diagnostics').fetchone()[0]=='packet UUID reused'
+        assert c.execute('SELECT count(*) FROM _sync_file_marks').fetchone()[0]==0
+
+def test_cycle_scans_unchanged_tables_once(peers,monkeypatch):
+    a,b,ex,path,p=prepare_packet(peers)
+    sync.receive(b,ex)
+    calls=[]; original=sync.rows
+    def counted(c): calls.append(1); return original(c)
+    monkeypatch.setattr(sync,'rows',counted)
+    report=sync.cycle(b,ex)
+    assert report['capture']['changes']==0 and report['receive']['applied']==0
+    assert calls==[1]
+
+def test_receive_creates_file_marks_for_existing_database(peers):
+    a,b,ex,path,p=prepare_packet(peers)
+    with sqlite3.connect(b) as c:
+        assert not c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_file_marks'").fetchone()
+    assert sync.receive(b,ex)['applied']==1
+    stat=path.stat()
+    with sqlite3.connect(b) as c:
+        assert c.execute('SELECT * FROM _sync_file_marks').fetchone()==(
+            str(path),p['uuid'],stat.st_size,stat.st_mtime_ns)
+    assert '_sync_file_marks' not in sync.TABLES
+
 def test_reversed_chain_pending_then_retry_and_duplicate_files(peers):
     a,b,ex,path,p=prepare_packet(peers)
     first=path.read_bytes(); path.unlink() # Test transport hides predecessor only.
     with sqlite3.connect(a) as c: c.execute("UPDATE memory_items SET content='second' WHERE id=1")
     sync.capture(a); sync.publish(a,ex)
     second=next(ex.rglob('*.json'))
+    assert sync.receive(b,ex)['pending']==1
+    with sqlite3.connect(b) as c:
+        assert c.execute('SELECT count(*) FROM _sync_file_marks').fetchone()[0]==0
     assert sync.receive(b,ex)['pending']==1
     (path.parent/'z-first.json').write_bytes(first)
     (path.parent/'0-second.json').write_bytes(second.read_bytes())

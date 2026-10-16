@@ -422,11 +422,11 @@ def _apply(c,p):
         c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
     return True
 
-def receive(db, exchange, *, security=None):
+def receive(db, exchange, *, security=None, capture_first=True):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
-    capture(db, security=security)
+    if capture_first: capture(db, security=security)
     root=Path(exchange)
     namespace = 'signed-changes' if security is not None else 'changes'
     if security is not None:
@@ -447,9 +447,26 @@ def receive(db, exchange, *, security=None):
     while retry:
         pending=[]; conflicts=[]; progress=False
         was_indexed=indexed
+        marks=None
+        if security is None:
+            from resolution_store import exists
+            with connect(db) as c, c:
+                if not exists(c):
+                    c.execute('CREATE TABLE IF NOT EXISTS _sync_file_marks('
+                              'path TEXT PRIMARY KEY,uuid TEXT NOT NULL,'
+                              'size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL)')
+                    marks={r[0]:(r[1],r[2]) for r in c.execute(
+                        'SELECT path,size,mtime_ns FROM _sync_file_marks WHERE '
+                        'uuid IN (SELECT uuid FROM _sync_receipts) OR '
+                        'uuid IN (SELECT uuid FROM _sync_outbox WHERE published=1)')}
         for path in retry:
             verified_signature = False
+            stat=None
             try:
+                if marks is not None and not indexed:
+                    stat=os.stat(path)
+                    if marks.get(str(path)) == (stat.st_size,stat.st_mtime_ns):
+                        continue
                 if security is not None:
                     from signed_packets import read_local, parse
                     packet_bytes = read_local(path)
@@ -503,14 +520,22 @@ def receive(db, exchange, *, security=None):
                     else:
                         _capture(c, security=security)
                         changed=_apply(c,p)
+                    if security is None and stat is not None:
+                        c.execute('INSERT OR REPLACE INTO _sync_file_marks VALUES(?,?,?,?)',
+                                  (str(path),p['uuid'],stat.st_size,stat.st_mtime_ns))
                     c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
                 applied+=int(changed); progress |= changed
             except OSError as exc:
                 # A packet that cannot be read is not an invalid packet. Retry next cycle.
                 io_error = type(exc).__name__
+                if marks is not None:
+                    with connect(db) as c, c:
+                        c.execute('DELETE FROM _sync_file_marks WHERE path=?',(str(path),))
             except (ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
                 kind='pending' if isinstance(e,Pending) else 'conflict' if isinstance(e,(Conflict,sqlite3.IntegrityError)) else 'invalid'
                 with connect(db) as c, c:
+                    if marks is not None:
+                        c.execute('DELETE FROM _sync_file_marks WHERE path=?',(str(path),))
                     # Signed failures must not leak memory contents into diagnostics/status.
                     message = type(e).__name__ if security is not None else str(e)
                     from resolution_store import exists
@@ -537,7 +562,7 @@ def cycle(db, exchange, *, security=None):
         _security_policy(c, security, exchange)
     captured=capture(db, security=security)
     sent=publish(db,exchange, security=security)
-    received=receive(db,exchange, security=security)
+    received=receive(db,exchange, security=security, capture_first=False)
     return {'capture':captured,'publish':sent,'receive':received}
 
 

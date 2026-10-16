@@ -474,3 +474,37 @@ def test_run_lifetime_lock_refusal_precedes_snapshot(tmp_path,monkeypatch):
     monkeypatch.setattr(activation,'require_capability',forbidden)
     with lock(directory/'lifetime.lock',timeout=0):
         with pytest.raises(TimeoutError): worker.run(args['runtime'],once=True,legacy_drained=True)
+
+
+def test_stop_during_receive_is_normal_and_consumed(tmp_path,monkeypatch):
+    import uuid
+    import memory_sync as sync
+    import worker_lifecycle as worker
+    from signed_packets import write_local
+    from identity_backup import private_mkdir
+    args=bound(tmp_path,monkeypatch)
+    config,_=worker.load(args['runtime'],authoritative=False)
+    directory=worker.control(config,create=True)
+    incoming=args['exchange']/'changes'/'windows'
+    for path in (incoming.parent,incoming): private_mkdir(path)
+    with sync.connect(args['database']) as c: group=sync.config(c)['group_id']
+    for n in range(5):
+        body=[dict(table='summary_state',key=[str(n)],row=dict(consumer=str(n),last_event_id=1,updated_at='fixture'),
+                   revision=str(uuid.uuid4()),parent=None)]
+        packet=dict(format=sync.FORMAT,group=group,node='windows',uuid=str(uuid.uuid4()),body=body,checksum=sync.digest(body))
+        (incoming/(packet['uuid']+'.json')).write_text(sync.canonical(packet),encoding='utf-8')
+    original=sync._apply; seen=[]
+    def apply(c,p):
+        result=original(c,p)
+        seen.append(p['uuid'])
+        record=worker.metadata(directory,args['runtime'])
+        write_local(directory/'stop.json',{'nonce':record['nonce']})
+        return result
+    monkeypatch.setattr(sync,'_apply',apply)
+    assert worker.run(args['runtime'],legacy_drained=True)==0
+    record=worker.status(args['runtime'])
+    assert record['state']=='stopped' and record['cycles']==1 and record['last_error'] is None
+    assert len(seen)==1
+    report=json.loads((args['exchange']/'status'/'mac.json').read_text())
+    assert report['cycle']['receive']['interrupted'] is True
+    assert not (directory/'stop.json').exists()

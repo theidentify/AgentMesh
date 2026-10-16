@@ -195,6 +195,9 @@ def report(exc, action):
     if is_windows:
         hint = 'Retain installed-state and program files for operator review; do not retry blindly or restore the database.'
     result.update(code=code, next_action=hint)
+    worker_state=getattr(exc,'worker_state',None)
+    if is_windows and worker_state in ('running','stopped','failed','stale'):
+        result['worker_state']=worker_state
     for key in ('errno', 'winerror', 'sqlite_errorcode'):
         value = getattr(exc, key, None)
         if type(value) is int:

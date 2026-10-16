@@ -453,8 +453,15 @@ def mark_failed(state_path):
         pass
 
 
+def replace_stopping(state):
+    pending=state.get('pending') or {}
+    return (pending.get('operation')=='replace' and pending.get('phase')=='stop'
+            and pending.get('old')==state['active'] and pending.get('new') in state['programs'])
+
+
 def recoverable(state):
-    """Only an upgrade interrupted after the new binding, before commit, rolls forward."""
+    """Reset an unswitched replace or finish an interrupted start."""
+    if replace_stopping(state): return
     pending = state.get('pending') or {}
     if not (pending.get('operation') == 'upgrade' and pending.get('phase') == 'start'
             and pending.get('new') == state['active'] and pending.get('new') in state['programs']
@@ -572,7 +579,12 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
         prompt.show(text)
         if hasattr(prompt, 'remember'):
             prompt.remember(info)  # the same plan, structured for a native dialog
-    if not approve(prompt, action, token, yes=yes, confirm_word=confirm_word, enable=enable):
+    if recovering and replace_stopping(state):
+        approved=((confirm_word or '').strip().upper()=='RECOVER' if yes else
+                  prompt.interactive() and prompt.typed('RECOVER','Reset the unswitched replacement'))
+    else:
+        approved=approve(prompt, action, token, yes=yes, confirm_word=confirm_word, enable=enable)
+    if not approved:
         prompt.show('Cancelled. Nothing was changed.')
         return {'status': 'cancelled'}
 
@@ -613,6 +625,12 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
         with lock(root / 'installer.lock', timeout=0):
             if not fresh:
                 revalidate()
+            if recovering and replace_stopping(state):
+                health=managed.status(runtime)
+                state.update(status='ready',pending=None)
+                save(state_path,state)
+                return {'status':'recovered','version':state['active'],'worker_changed':False,
+                        'worker_state':health['state']}
             if recovering:
                 return finish_interrupted_start(state, state_path, root, runtime, timeout)
             if action in ('install', 'upgrade'):
@@ -645,7 +663,23 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
                 state['status'] = 'in_progress'
                 state['pending'] = {'operation': 'replace', 'phase': 'stop', 'old': state['active'], 'new': key, 'task': state['task']}
                 save(state_path, state)
-                managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
+                nonce=managed.status(runtime).get('nonce')
+                try:
+                    managed.stop(runtime, timeout=timeout)  # nonce-cooperative, never PID termination
+                except Exception as exc:
+                    # Withdraw only this instance's exact plain stop request.
+                    try:
+                        stop_path=managed.control(config)/'stop.json'
+                        if nonce and stop_path.exists() and parse(read_local(stop_path,private=True))=={'nonce':nonce}:
+                            stop_path.unlink()
+                        exc.worker_state=managed.status(runtime)['state']
+                        if (replace_stopping(state) and adapter.read(name)==report
+                                and parse(read_local(state_path,private=True))==state):
+                            state.update(status='ready',pending=None)
+                            save(state_path,state)
+                    except Exception:
+                        pass  # Preserve the original stop error and uncertain recovery state.
+                    raise
                 restarting = True
             with stopped(config, runtime, scope, legacy_drained, unmanaged_drained):
                 protocol_check()

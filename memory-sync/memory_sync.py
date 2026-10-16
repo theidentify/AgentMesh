@@ -41,15 +41,72 @@ def config(c):
     if r is None: raise ValueError('sync is not initialized')
     return {'node':r[0],'group_id':r[1]}
 
+def _normalize(t, row):
+    row = dict(row)
+    if 'metadata' in row: row['metadata'] = json.loads(row['metadata'])
+    return canonical([row[k] for k in KEYS[t]]), row
+
+
 def rows(c):
-    result = {}
-    for t in TABLES:
-        for r in c.execute('SELECT * FROM '+t):
-            r = dict(r)
-            if 'metadata' in r: r['metadata'] = json.loads(r['metadata'])
-            key = canonical([r[k] for k in KEYS[t]])
-            result[t,key] = r
+    return {(t,k):row for t in TABLES for r in c.execute('SELECT * FROM '+t)
+            for k,row in [_normalize(t,r)]}
+
+
+def _keyed_rows(c, keys):
+    result={}
+    for t,k in keys:
+        if t not in TABLES: raise ValueError('invalid table')
+        values=json.loads(k)
+        if not isinstance(values,list) or len(values)!=len(KEYS[t]): raise ValueError('invalid key')
+        row=c.execute('SELECT * FROM '+t+' WHERE '+' AND '.join(col+'=?' for col in KEYS[t]),values).fetchone()
+        if row is not None:
+            actual,row=_normalize(t,row)
+            if actual!=k: raise ValueError('noncanonical key')
+            result[t,k]=row
     return result
+
+
+def _shadow_rows(c, keys):
+    result={}
+    for t,k in keys:
+        row=c.execute('SELECT row FROM _sync_shadow WHERE table_name=? AND key=?',(t,k)).fetchone()
+        if row and row[0] is not None: result[t,k]=json.loads(row[0])
+    return result
+
+
+def _packet_keys(packet):
+    body=packet.get('body')
+    if not isinstance(body,list) or not body: raise ValueError('invalid packet body')
+    result=set()
+    for ch in body:
+        if not isinstance(ch,dict) or ch.get('table') not in TABLES or not isinstance(ch.get('key'),list):
+            raise ValueError('invalid packet body')
+        if len(ch['key'])!=len(KEYS[ch['table']]): raise ValueError('invalid packet key')
+        result.add((ch['table'],canonical(ch['key'])))
+    return result
+
+
+@contextmanager
+def _track_writes(c):
+    recursive=c.execute('PRAGMA recursive_triggers').fetchone()[0]
+    c.execute('PRAGMA recursive_triggers=ON')
+    try:
+        c.execute('CREATE TEMP TABLE IF NOT EXISTS _sync_apply_touched(table_name TEXT,key TEXT)')
+        for t in TABLES:
+            for event,aliases in [('INSERT',('NEW',)),('DELETE',('OLD',)),('UPDATE',('OLD','NEW'))]:
+                statements=' '.join("INSERT INTO _sync_apply_touched VALUES('"+t+"',json_array("+
+                    ','.join(alias+'.'+k for k in KEYS[t])+'));' for alias in aliases)
+                c.execute(f'CREATE TEMP TRIGGER IF NOT EXISTS _sync_apply_track_{t}_{event} AFTER {event} ON main.{t} BEGIN {statements} END')
+        c.execute('DELETE FROM _sync_apply_touched')
+        yield
+    finally:
+        c.execute('PRAGMA recursive_triggers='+str(recursive))
+
+
+def _verify_writes(c, allowed, expected):
+    touched={(r[0],canonical(json.loads(r[1]))) for r in c.execute('SELECT * FROM _sync_apply_touched')}
+    return touched <= allowed and _keyed_rows(c,expected.keys() | allowed)=={k:v for k,v in expected.items() if v is not None}
+
 
 def initialize(db, node, group_id):
     if node not in RANGES: raise ValueError('node must be mac, windows or linux')
@@ -134,8 +191,12 @@ def _security_policy(c, security=None, exchange=None):
     from signed_packets import require_policy
     require_policy(c, security, exchange)
 
-def _capture(c, *, security=None):
+def _capture(c, *, security=None, keys=None):
     config(c)
+    if keys is not None:
+        if _keyed_rows(c,keys)==_shadow_rows(c,keys): return {"changes":0,"packets":0}
+        # A colliding edit captures the entire committed local transaction.
+        return _capture(c,security=security)
     current = rows(c)
     old = {(r['table_name'],r['key']):r for r in c.execute('SELECT * FROM _sync_shadow')}
     changes = []
@@ -375,54 +436,50 @@ def _apply(c,p):
     if problems:
         if any(p[0]=='conflict' for p in problems): raise Conflict(canonical(problems))
         raise Pending(canonical(problems))
-    c.execute('UPDATE _sync_config SET importing=1')
-    # Child links first: RESTRICT is immediate even with deferred foreign keys.
-    deletes = [ch for ch in p['body'] if ch['row'] is None]
-    deletes.sort(key=lambda ch: (ch['table'] != 'memory_sources', ch['table'] == 'observation_events'))
-    for ch in deletes:
-        t=ch['table']
-        where=' AND '.join(k+'=?' for k in KEYS[t])
-        c.execute('DELETE FROM '+t+' WHERE '+where,ch['key'])
-    for ch in p['body']:
-        if ch['row'] is None: continue
-        t,row = ch['table'],ch['row']
-        columns = list(row)
-        values = [canonical(row[k]) if k=='metadata' else row[k] for k in columns]
-        update = ','.join(k+'=excluded.'+k for k in columns if k not in KEYS[t])
-        sql = 'INSERT INTO '+t+' ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') ON CONFLICT ('+','.join(KEYS[t])+') DO '+('UPDATE SET '+update if update else 'NOTHING')
-        c.execute(sql,values)
-    # Cascades/triggers must not erase an unrelated concurrent row off-packet.
-    actual=rows(c)
-    expected={(r['table_name'],r['key']):json.loads(r['row']) for r in c.execute('SELECT * FROM _sync_shadow WHERE row IS NOT NULL')}
-    for ch in p['body']:
-        ident=(ch['table'],canonical(ch['key']))
-        if ch['row'] is None: expected.pop(ident,None)
-        else: expected[ident]=ch['row']
-    if actual != expected: raise Conflict('off-packet cascade or trigger changed a concurrent row')
-    violations=c.execute('PRAGMA foreign_key_check').fetchall()
-    if violations:
-        missing=[]
-        for table,rowid,parent,fkid in violations:
-            foreign=[r for r in c.execute('PRAGMA foreign_key_list('+table+')') if r['id']==fkid]
-            child=c.execute('SELECT * FROM '+table+' WHERE rowid=?',(rowid,)).fetchone()
-            key=canonical([child[r['from']] for r in foreign])
-            known=c.execute('SELECT 1 FROM _sync_shadow WHERE table_name=? AND key=?',(parent,key)).fetchone()
-            missing.append((parent,key,bool(known)))
-        if any(known for _,_,known in missing): raise Conflict('foreign key targets deleted or changed: '+canonical(missing))
-        raise Pending('waiting for foreign key targets: '+canonical(missing))
-    for ch in p['body']:
-        t,k=ch['table'],canonical(ch['key'])
-        c.execute('INSERT OR REPLACE INTO _sync_shadow VALUES(?,?,?,?)',(t,k,canonical(ch['row']) if ch['row'] is not None else None,ch['revision']))
-        c.execute('INSERT INTO _sync_history VALUES(?,?,?)',(ch['revision'],t,k))
-    c.execute('UPDATE _sync_config SET importing=0')
-    c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],_receipt_checksum(p)))
-    from signed_packets import FORMAT as signed_format
-    if p['format'] == signed_format:
-        from signed_packets import envelope_digest
-        c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
-    return True
+    with _track_writes(c):
+        c.execute('UPDATE _sync_config SET importing=1')
+        # Child links first: RESTRICT is immediate even with deferred foreign keys.
+        deletes = [ch for ch in p['body'] if ch['row'] is None]
+        deletes.sort(key=lambda ch: (ch['table'] != 'memory_sources', ch['table'] == 'observation_events'))
+        for ch in deletes:
+            t=ch['table']
+            where=' AND '.join(k+'=?' for k in KEYS[t])
+            c.execute('DELETE FROM '+t+' WHERE '+where,ch['key'])
+        for ch in p['body']:
+            if ch['row'] is None: continue
+            t,row = ch['table'],ch['row']
+            columns = list(row)
+            values = [canonical(row[k]) if k=='metadata' else row[k] for k in columns]
+            update = ','.join(k+'=excluded.'+k for k in columns if k not in KEYS[t])
+            sql = 'INSERT INTO '+t+' ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') ON CONFLICT ('+','.join(KEYS[t])+') DO '+('UPDATE SET '+update if update else 'NOTHING')
+            c.execute(sql,values)
+        expected={(ch['table'],canonical(ch['key'])):ch['row'] for ch in p['body']}
+        if not _verify_writes(c,set(expected),expected):
+            raise Conflict('off-packet cascade or trigger changed a concurrent row')
+        violations=c.execute('PRAGMA foreign_key_check').fetchall()
+        if violations:
+            missing=[]
+            for table,rowid,parent,fkid in violations:
+                foreign=[r for r in c.execute('PRAGMA foreign_key_list('+table+')') if r['id']==fkid]
+                child=c.execute('SELECT * FROM '+table+' WHERE rowid=?',(rowid,)).fetchone()
+                key=canonical([child[r['from']] for r in foreign])
+                known=c.execute('SELECT 1 FROM _sync_shadow WHERE table_name=? AND key=?',(parent,key)).fetchone()
+                missing.append((parent,key,bool(known)))
+            if any(known for _,_,known in missing): raise Conflict('foreign key targets deleted or changed: '+canonical(missing))
+            raise Pending('waiting for foreign key targets: '+canonical(missing))
+        for ch in p['body']:
+            t,k=ch['table'],canonical(ch['key'])
+            c.execute('INSERT OR REPLACE INTO _sync_shadow VALUES(?,?,?,?)',(t,k,canonical(ch['row']) if ch['row'] is not None else None,ch['revision']))
+            c.execute('INSERT INTO _sync_history VALUES(?,?,?)',(ch['revision'],t,k))
+        c.execute('UPDATE _sync_config SET importing=0')
+        c.execute('INSERT INTO _sync_receipts VALUES(?,?)',(p['uuid'],_receipt_checksum(p)))
+        from signed_packets import FORMAT as signed_format
+        if p['format'] == signed_format:
+            from signed_packets import envelope_digest
+            c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
+        return True
 
-def receive(db, exchange, *, security=None, capture_first=True):
+def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
@@ -444,6 +501,8 @@ def receive(db, exchange, *, security=None, capture_first=True):
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
     indexed=False
+    interrupted=False
+    if not retry and interrupt is not None: interrupted=bool(interrupt())
     while retry:
         pending=[]; conflicts=[]; progress=False
         was_indexed=indexed
@@ -460,6 +519,9 @@ def receive(db, exchange, *, security=None, capture_first=True):
                         'uuid IN (SELECT uuid FROM _sync_receipts) OR '
                         'uuid IN (SELECT uuid FROM _sync_outbox WHERE published=1)')}
         for path in retry:
+            if interrupt is not None and interrupt():
+                interrupted=True
+                break
             verified_signature = False
             stat=None
             try:
@@ -518,7 +580,7 @@ def receive(db, exchange, *, security=None, capture_first=True):
                     else: _validate(c,p)
                     if _seen(c,p): changed=False
                     else:
-                        _capture(c, security=security)
+                        _capture(c, security=security, keys=_packet_keys(p))
                         changed=_apply(c,p)
                     if security is None and stat is not None:
                         c.execute('INSERT OR REPLACE INTO _sync_file_marks VALUES(?,?,?,?)',
@@ -548,22 +610,23 @@ def receive(db, exchange, *, security=None, capture_first=True):
                 if security is not None and verified_signature is not None:
                     from signed_packets import record_verification
                     record_verification(db, verified_signature)
-        if not progress: break
+        if interrupted or not progress: break
         # The first migration must index earlier legacy files too. Thereafter
         # only held paths need retry; committed exact replays cannot unblock proof.
         retry=paths if indexed and not was_indexed else pending+conflicts if indexed else pending
     report=status(db)
     return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
-            **({'error': io_error} if io_error else {})}
+            **({'error': io_error} if io_error else {}), **({'interrupted':True} if interrupted else {})}
 
-def cycle(db, exchange, *, security=None):
+def cycle(db, exchange, *, security=None, interrupt=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
     captured=capture(db, security=security)
     sent=publish(db,exchange, security=security)
-    received=receive(db,exchange, security=security, capture_first=False)
-    return {'capture':captured,'publish':sent,'receive':received}
+    received=receive(db,exchange, security=security, capture_first=False, **({"interrupt":interrupt} if interrupt is not None else {}))
+    return {'capture':captured,'publish':sent,'receive':received,
+            **({'interrupted':True} if received.get('interrupted') else {})}
 
 
 def main(argv=None):

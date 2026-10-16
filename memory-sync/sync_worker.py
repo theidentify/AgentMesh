@@ -18,7 +18,7 @@ from runtime_lock import cycle_locked
 @cycle_locked
 def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
              force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None,
-             security_state=None, preflight=None):
+             security_state=None, preflight=None, interrupt=None):
     if preflight is not None:
         preflight()  # Inside cycle lock, before any ingestion or policy writes.
     exchange = Path(exchange)
@@ -61,8 +61,12 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         workflow_report = {'ingestion': {'error': type(exc).__name__}}
     if progress:
         progress('Publishing and receiving peer changes')
-    cycle = memory_sync.cycle(database, exchange, security=security)
-    if settings is not None:
+    interrupted=interrupt is not None and interrupt()
+    cycle = ({'interrupted':True} if interrupted else memory_sync.cycle(database, exchange,
+             security=security, **({'interrupt':interrupt} if interrupt is not None else {})))
+    interrupted=cycle.get('interrupted',False) or (interrupt is not None and interrupt())
+    if interrupted: cycle['interrupted']=True
+    if settings is not None and not interrupted:
         try:
             if progress:
                 progress('Checking primary summarization')
@@ -73,7 +77,8 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
             if result['status'] == 'committed':
                 if progress:
                     progress('Publishing generated memory and provenance')
-                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange, security=security)
+                workflow_report['summary_sync'] = memory_sync.cycle(database, exchange, security=security,
+                    **({'interrupt':interrupt} if interrupt is not None else {}))
         except Exception as exc:
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
     state = memory_sync.status(database)

@@ -831,3 +831,20 @@ def test_failed_replace_withdraws_only_exact_stop_nonce(existing,monkeypatch,sto
     assert public['code']=='WORKER_STOP_TIMEOUT' and public['worker_state']=='running'
     state=json.loads((existing['program_root']/'installed.json').read_bytes())
     assert state['status']=='ready' and state['pending'] is None
+
+
+@pytest.mark.parametrize('damage',['old','new','task','phase','confirmation'])
+def test_replace_stop_recovery_refuses_changed_shape(existing,monkeypatch,damage):
+    command(existing,monkeypatch)
+    path=existing['program_root']/'installed.json'; state=json.loads(path.read_bytes())
+    pending=dict(operation='replace',phase='stop',old=state['active'],new=state['active'])
+    if damage in ('old','new'): pending[damage]='missing'
+    if damage=='phase': pending['phase']='select'
+    state.update(status='recovery_required',pending=pending); installer.save(path,state)
+    if damage=='task': existing['adapter'].tasks[state['task_name']]={'foreign':True}
+    before=path.read_bytes()
+    if damage=='confirmation':
+        assert command(existing,monkeypatch,'recover','Y\n')['status']=='cancelled'
+    else:
+        with pytest.raises(ValueError): command(existing,monkeypatch,'recover','RECOVER\n')
+    assert path.read_bytes()==before and existing['adapter'].operations==[]

@@ -130,7 +130,7 @@ def test_write_preserved_child_and_recursive_setting(tmp_path):
         child_key=protocol.Key('memory_sources',(ids['memory_items'],ids['observation_events']))
         child=protocol.Transition(child_key,str(uuid.uuid4()),None,'preserve')
         c.execute('PRAGMA recursive_triggers=OFF')
-        with pytest.raises(ValueError,match='relational repair'), c:
+        with pytest.raises(protocol.ResolutionConflict,match='relational repair'), c:
             c.execute('BEGIN IMMEDIATE')
             app._write(c,[parent,child])
         assert c.execute('PRAGMA recursive_triggers').fetchone()[0]==0
@@ -172,3 +172,85 @@ def test_receive_interrupt_resumes(backlog,indexed):
     report=sync.receive(db,exchange,interrupt=interrupt)
     assert report['interrupted'] is True and report['applied']==2
     assert sync.receive(db,exchange)['applied']==50
+
+
+def test_v2_backlog_bounds_scans_and_local_decodes(backlog,monkeypatch):
+    import resolution_apply as app
+    import resolution_protocol as protocol
+    db,exchange,packets=backlog
+    with sync.connect(db) as c,c:
+        resolution_store.migrate(c)
+        origins={r['key']:r['revision'] for r in c.execute("SELECT key,revision FROM _sync_shadow WHERE table_name='summary_state'")}
+    for packet in packets:
+        for ch in packet['body']:
+            ch['parents']=[ch.pop('parent')]
+            ch['origin']=origins[sync.canonical(ch['key'])]
+        packet.update(kind='change',covers=[],evidence=[])
+        packet['format']='omp-memory-changes-v2'
+        packet['checksum']=protocol.payload_digest({k:packet[k] for k in ('group','node','uuid','kind','body','covers','evidence')})
+        (exchange/'changes'/'mac'/(packet['uuid']+'.json')).write_text(sync.canonical(packet),encoding='utf-8')
+    for n in range(5):
+        with sync.connect(db) as c,c:
+            c.execute("UPDATE summary_state SET last_event_id=? WHERE consumer='row-2999'",(n+1,))
+        sync.capture(db)
+    scans=[]; decodes=[]; original_rows=sync.rows; original_decode=app._decode
+    def rows(c): scans.append(1); return original_rows(c)
+    def decode(c,p,security):
+        if p['node']=='windows': decodes.append(p['uuid'])
+        return original_decode(c,p,security)
+    monkeypatch.setattr(sync,'rows',rows); monkeypatch.setattr(app,'_decode',decode)
+    assert sync.receive(db,exchange)['applied']==52
+    assert len(scans)<=2 and len(decodes)==5 and len(set(decodes))==5
+
+
+@pytest.mark.parametrize('mode',['signed','v2'])
+def test_targeted_capture_emission_new_and_deleted(tmp_path,monkeypatch,mode):
+    import signed_packets as signed
+    import packet_versions
+    import protocol_activation
+    db=tmp_path/'emission.db'; sqlite_memory.init_database(db); sync.initialize(db,'mac',GROUP)
+    security=None
+    if mode=='signed':
+        signed.init_identity(tmp_path/'identity',GROUP,'mac')
+        security=signed.Security(tmp_path/'identity')
+    else:
+        with sync.connect(db) as c,c: resolution_store.migrate(c)
+        monkeypatch.setattr(protocol_activation,'emission_enabled',lambda c: True)
+    key={('summary_state',sync.canonical(['é']))}
+    for delete in (False,True):
+        with sync.connect(db) as c,c:
+            c.execute('BEGIN IMMEDIATE')
+            if delete: c.execute('DELETE FROM summary_state')
+            else: c.execute("INSERT INTO summary_state VALUES('é',1,'fixture')")
+            assert sync._capture(c,security=security,keys=key)['changes']==1
+            packet=sync.load_packet(c.execute('SELECT packet FROM _sync_outbox ORDER BY rowid DESC').fetchone()[0])
+            assert packet['format']==(signed.FORMAT if mode=='signed' else 'omp-memory-changes-v2')
+            packet_versions.decode_packet(c,packet,security=security,folder='mac',filename=packet['uuid']+'.json')
+            assert packet['body'][0]['row'] is None if delete else packet['body'][0]['row']['consumer']=='é'
+
+
+def test_write_allows_unrelated_edit_and_checks_preserved_shadow(backlog):
+    import resolution_apply as app
+    import resolution_protocol as protocol
+    db,_,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("UPDATE summary_state SET last_event_id=99 WHERE consumer='row-2999'")
+        install=protocol.Transition(protocol.Key('summary_state',('row-0',)),str(uuid.uuid4()),
+            sync.canonical(dict(consumer='row-0',last_event_id=1,updated_at='fixture')),'install')
+        preserve=protocol.Transition(protocol.Key('summary_state',('row-1',)),str(uuid.uuid4()),
+            sync.canonical(dict(consumer='row-1',last_event_id=77,updated_at='fixture')),'preserve')
+        app._write(c,[install,preserve])
+        assert c.execute("SELECT last_event_id FROM summary_state WHERE consumer='row-1'").fetchone()[0]==0
+    assert sync.capture(db)['changes']==1
+
+
+def test_write_tracks_import_flag_trigger(backlog):
+    import resolution_apply as app
+    import resolution_protocol as protocol
+    db,_,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("CREATE TRIGGER test_import_side_effect AFTER UPDATE ON _sync_config WHEN NEW.importing=1 BEGIN UPDATE summary_state SET last_event_id=8 WHERE consumer='row-2999'; END")
+    transition=protocol.Transition(protocol.Key('summary_state',('row-0',)),str(uuid.uuid4()),
+        sync.canonical(dict(consumer='row-0',last_event_id=1,updated_at='fixture')),'install')
+    with sync.connect(db) as c, pytest.raises(protocol.ResolutionConflict), c:
+        app._write(c,[transition])

@@ -249,3 +249,122 @@ behavior. The installer module then passed **83 tests** from the repository root
 WORKER_STOP_TIMEOUT reporting. Existing unsupported-shape and start-recovery tests
 remain green. Native Windows execution is unavailable; tests use disposable files
 and the existing fake Task Scheduler boundary.
+
+## Task 5 — final verification and benchmark
+
+Added `memory-sync/support/benchmark_receive_backlog.py`. It creates its own
+TemporaryDirectory, generates 200,000 baseline rows plus 20 local outbox rows,
+then receives 200 independent v2 packets. Default padding is 450 bytes; the
+initialized/migrated DB is 437,862,400 bytes. It asserts all packets apply with no
+pending/conflict/invalid diagnostics, and measures process CPU, elapsed time,
+full rows() calls, local decodes, and time spent executing/fetching the retained
+global FK checks. `--mode legacy` is also available. No existing DB path is accepted.
+
+Final verification added signed/v2 targeted capture tests, new-row/deletion and
+Unicode-key checks, a v2 pending-chain decode-count bound, preserved-shadow and
+unrelated-edit checks for _write, stricter recovery refusal tests, and a lifecycle
+test requesting stop after the first real incoming packet applies.
+
+These tests exposed three implementation corrections, fixed before final runs:
+
+- Local outbox evidence was initially indexed inside an application savepoint.
+  The first pending packet rolled it back, causing five outbox packets to decode
+  ten times. Retaining that evidence before the application savepoint gives five
+  decodes total across the 52-packet pending-chain fixture.
+- A preserved-child cascade initially raised generic ValueError. The regression
+  now requires ResolutionConflict (still a ValueError subclass); FK failures keep
+  the existing classification. Existing relational-repair assertions remain green.
+- _write initially set the import flag before starting tracking. A new trigger
+  test failed because an off-packet change from that flag update escaped tracking.
+  Tracking now starts first, and the test passes.
+
+The focused capture/resolution modules pass **50 tests** after these corrections.
+The installer module passed **83 tests** from memory-sync (13.55 s); five additional
+shape/confirmation refusal tests also pass. The first broader root invocation of
+`pytest ... memory-sync` completed with **1496 passed, 17 skipped, 1 known failure**
+(`test_digest_api.py::test_client_envelope_satisfies_bounded_extract_command`),
+424.31 s. Fresh full runs of the final code and final measurements follow below.
+
+Benchmark reproduction (run from repository root):
+
+```sh
+mkdir -p /private/tmp/agentmesh-backlog-baseline
+git archive fcd4203 memory-sync | tar -x -C /private/tmp/agentmesh-backlog-baseline
+PYTHONPATH=/private/tmp/agentmesh-backlog-baseline/memory-sync UV_CACHE_DIR=/private/tmp/claude-501/uvcache uv run --no-project --with-requirements memory-sync/requirements-security.txt python memory-sync/support/benchmark_receive_backlog.py
+PYTHONPATH=memory-sync UV_CACHE_DIR=/private/tmp/claude-501/uvcache uv run --no-project --with-requirements memory-sync/requirements-security.txt python memory-sync/support/benchmark_receive_backlog.py
+```
+
+The baseline is a disposable archive, not another worktree or branch. The source
+at fcd4203 contains the approved amendments but the pre-implementation Python.
+The benchmark checks only its own generated data. Its summary_state-heavy schema
+has no populated FK-bearing application tables, so its FK timing is not a
+replacement for the production-sized FK measurement documented in Amendment 3.
+Timings are illustrative local process-CPU measurements; suite processes also ran
+on this host, so elapsed times should not be treated as isolated hardware results.
+
+### Final suite results (final implementation)
+
+From `memory-sync/`:
+
+```sh
+UV_CACHE_DIR=/private/tmp/claude-501/uvcache uv run --no-project --with pytest==8.4.2 --with pytest-timeout --with-requirements requirements-security.txt python -m pytest -q -p no:cacheprovider --timeout 300
+```
+
+**1507 passed, 17 skipped**, 449.29 s. This includes #47, conflict/pending,
+relational-repair, signed packet, rotation, interruption and installer coverage.
+
+From the repository root, the same command with
+`--with-requirements memory-sync/requirements-security.txt` and no path restriction
+also discovered profile-memory and Insight. It completed with **1752 passed,
+55 skipped, 9 failed**, 521.68 s: the one known digest API failure plus eight
+profile-memory tests requiring optional NumPy/HNSW packages. The latter are an
+environment mismatch, not receive regressions. Reran the entire additional scope
+with its declared requirements:
+
+```sh
+UV_CACHE_DIR=/private/tmp/claude-501/uvcache uv run --no-project --with pytest==8.4.2 --with pytest-timeout --with-requirements memory-sync/requirements-security.txt --with-requirements profile-memory/requirements-dev.txt python -m pytest -q -p no:cacheprovider --timeout 300 profile-memory insight
+```
+
+**254 passed, 38 skipped**, 47.40 s. Thus the final repository-root validation has
+only the explicitly allowed digest API failure unresolved; all additional scope
+passes with its declared dependencies. This is a split verification, not a claim
+that a single root invocation passed. Native/optional skips remain skips.
+The existing duplicate-ZIP-member warning is from its intentional rejection test.
+An earlier overlapping memory-sync run imported the pre-correction exception
+classification and failed the new preserved-child assertion; the fresh 1507-pass
+run above supersedes that intermediate run.
+
+### Final benchmark results
+
+Same generated 437,862,400-byte DB shape, 200,000 baseline rows, 20 own outbox
+packets and 200 incoming v2 packets:
+
+| Measurement | Before (fcd4203) | After |
+| --- | ---: | ---: |
+| Receive process CPU seconds | 864.706651 | 32.561953 |
+| Receive elapsed seconds | 980.233899 | 40.638671 |
+| Full rows() calls | 601 | 1 |
+| Local packet decodes | 4000 | 20 |
+| Global FK checks | 200 | 200 |
+| Total FK-check CPU seconds | 0.012403 | 0.003608 |
+| Applied packets | 200 | 200 |
+| Pending / conflict / invalid | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Measured CPU improvement: **26.56×** on this synthetic fixture.
+The full-scan bound includes capture and application verification. The global FK
+checks were retained, not bypassed. Local decoding is bounded by the outbox size,
+not backlog × outbox. The separate 52-packet fixture verifies pending-chain retries.
+
+### Completion
+
+Tasks **2–5 are complete**, superseding the historical blocked statuses above.
+Task 2: c46d93a. Task 3: 073c424. Task 4: 61a94c5. This final Task 5 commit
+contains the benchmark, additional verification regressions, the three corrections
+found during final validation, and this appended report. All task commits end with
+the requested co-author trailer. `git diff --check` passes.
+
+No new design gap remains. The only unresolved test failure is the known root-only
+digest API test allowed by the plan. Windows-native execution was unavailable.
+The initial read-only shared-memory access deviation is documented above; all
+implementation, tests, and benchmark data were disposable, with no production
+writes, worker actions, GATES.md, push, merge, rebase, or branch/worktree changes.

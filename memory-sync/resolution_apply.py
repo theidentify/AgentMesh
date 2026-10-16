@@ -138,10 +138,10 @@ def _write(c, transitions):
     current=sync._keyed_rows(c,keys)
     expected=sync._shadow_rows(c,keys)
     if current != expected: raise ValueError('uncaptured local edits')
-    c.execute('UPDATE _sync_config SET importing=1')
     installs=[t for t in transitions if t.action=='install']
     try:
         with sync._track_writes(c):
+            c.execute('UPDATE _sync_config SET importing=1')
             _install_rows(c,installs,expected,keys)
     except sqlite3.IntegrityError as exc:
         raise ValueError('unsupported relational repair') from exc
@@ -163,7 +163,9 @@ def _install_rows(c,installs,expected,keys):
         expected[table,sync.canonical(list(t.key.values))]=row
     allowed={(t.key.table,sync.canonical(list(t.key.values))) for t in installs}
     expected={key:expected.get(key) for key in keys}
-    if not sync._verify_writes(c,allowed,expected) or c.execute('PRAGMA foreign_key_check').fetchall():
+    if not sync._verify_writes(c,allowed,expected):
+        raise protocol.ResolutionConflict('unsupported relational repair')
+    if c.execute('PRAGMA foreign_key_check').fetchall():
         raise ValueError('unsupported relational repair')
 
 
@@ -285,7 +287,11 @@ def receive_indexed(c, envelope, path, *, security):
     # its row. Exact committed/own replays must not trigger per-packet row scans.
     auth=versions._authorize(c,envelope,security,envelope['node'])
     if auth.state not in ('applied','superseded','local'):
-        with store.atomic(c): sync._capture(c,security=security,keys=sync._packet_keys(envelope))
+        with store.atomic(c):
+            sync._capture(c,security=security,keys=sync._packet_keys(envelope))
+            # Retain local proof outside the application savepoint: a pending
+            # predecessor must not make the next packet decode this outbox again.
+            if versions.is_new(envelope): _index_local(c,security)
     try:
         with store.atomic(c):
             if versions.is_new(envelope):

@@ -483,6 +483,8 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
+        from resolution_store import exists
+        indexed=exists(c)
     if capture_first: capture(db, security=security)
     root=Path(exchange)
     namespace = 'signed-changes' if security is not None else 'changes'
@@ -492,19 +494,44 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
     try:
         if not root.is_dir():
             return {'applied':0,'pending':0,'conflict':0,'invalid':0,'unavailable':True}
-        paths = sorted((root/namespace).glob('*/*.json'))
+        def creation_order(path):
+            # A disappearing/unreadable file still goes through normal attempt
+            # handling; one failed stat must not hide the rest of the backlog.
+            try: stamp=path.stat().st_mtime_ns
+            except OSError: stamp=0
+            return stamp,path.name,str(path)
+        paths = sorted((root/namespace).glob('*/*.json'),key=creation_order)
     except OSError as exc:
         return {'applied':0,'pending':0,'conflict':0,'invalid':0,
                 'unavailable':True,'error':type(exc).__name__}
     io_error = None
     applied=0
-    # Multiple passes let predecessors arriving after successors unlock a chain.
+    # Dependencies are scheduling hints only. The existing no-progress loop
+    # remains the safety net for missing proof and foreign-key dependencies.
     retry=paths
-    indexed=False
+    rank={path:n for n,path in enumerate(paths)}
+    waiting={}; parents_by_path={}; diagnostics={}
+    pending=set(); conflicts=set()
+    def forget(path):
+        for revision in parents_by_path.pop(path,()):
+            dependants=waiting[revision]
+            dependants.discard(path)
+            if not dependants: del waiting[revision]
+    def remember(path,packet):
+        parents=set()
+        if isinstance(packet,dict) and isinstance(packet.get('body'),list):
+            for change in packet['body']:
+                if not isinstance(change,dict): continue
+                values=change.get('parents',[change.get('parent')])
+                if isinstance(values,list):
+                    parents.update(value for value in values if isinstance(value,str))
+        parents_by_path[path]=parents
+        for revision in parents: waiting.setdefault(revision,set()).add(path)
+        # No usable parents: leave it in pending for the fallback pass.
     interrupted=False
     if not retry and interrupt is not None: interrupted=bool(interrupt())
     while retry:
-        pending=[]; conflicts=[]; progress=False
+        progress=False
         was_indexed=indexed
         marks=None
         if security is None:
@@ -518,12 +545,17 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
                         'SELECT path,size,mtime_ns FROM _sync_file_marks WHERE '
                         'uuid IN (SELECT uuid FROM _sync_receipts) OR '
                         'uuid IN (SELECT uuid FROM _sync_outbox WHERE published=1)')}
-        for path in retry:
+        stack=list(reversed(retry)); queued=set(retry)
+        while stack:
+            path=stack.pop()
+            if path not in queued: continue
+            queued.remove(path)
             if interrupt is not None and interrupt():
                 interrupted=True
                 break
+            pending.discard(path); conflicts.discard(path); forget(path)
             verified_signature = False
-            stat=None
+            stat=None; p=None; changed=False
             try:
                 if marks is not None and not indexed:
                     stat=os.stat(path)
@@ -549,12 +581,12 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
                         if (security is not None or is_new(p)) and path.name != p['uuid']+'.json':
                             raise ValueError('packet filename mismatch')
                         cached_signature = security is not None and _has_committed_envelope(c,p.get('uuid'))
-                        outcome, added = receive_indexed(c,p,path,security=security)
+                        outcome, added = receive_indexed(c,p,path,security=security,diagnostics=diagnostics)
                         verified_signature = True if security is not None and not cached_signature else None
                         changed = outcome == 'applied'
                         applied += int(changed); progress |= changed or added
-                        if outcome=='pending': pending.append(path)
-                        if outcome=='conflict': conflicts.append(path)
+                        if outcome=='pending': pending.add(path)
+                        if outcome=='conflict': conflicts.add(path)
                         continue
                     if security is not None:
                         from signed_packets import validate_envelope
@@ -566,11 +598,13 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
                                 raise ValueError('unknown packet claiming local node')
                             verified_signature = None
                             c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
+                            diagnostics.pop(str(path),None)
                             continue
                         received = _received_signed(c, p, security, path.parent.name)
                         if received is not None:
                             verified_signature = True if received == 'verified' else None
                             c.execute('DELETE FROM _sync_diagnostics WHERE path=?', (str(path),))
+                            diagnostics.pop(str(path),None)
                             continue
                         _verify_signed(c, p, security, path.parent.name)
                         verified_signature = True
@@ -586,14 +620,17 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
                         c.execute('INSERT OR REPLACE INTO _sync_file_marks VALUES(?,?,?,?)',
                                   (str(path),p['uuid'],stat.st_size,stat.st_mtime_ns))
                     c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
+                    diagnostics.pop(str(path),None)
                 applied+=int(changed); progress |= changed
             except OSError as exc:
+                changed=False
                 # A packet that cannot be read is not an invalid packet. Retry next cycle.
                 io_error = type(exc).__name__
                 if marks is not None:
                     with connect(db) as c, c:
                         c.execute('DELETE FROM _sync_file_marks WHERE path=?',(str(path),))
             except (ValueError,TypeError,KeyError,sqlite3.IntegrityError,Pending,Conflict,RecursionError) as e:
+                changed=False
                 kind='pending' if isinstance(e,Pending) else 'conflict' if isinstance(e,(Conflict,sqlite3.IntegrityError)) else 'invalid'
                 with connect(db) as c, c:
                     if marks is not None:
@@ -603,17 +640,33 @@ def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
                     from resolution_store import exists
                     if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_packet_paths'").fetchone():
                         c.execute('DELETE FROM _sync_packet_paths WHERE path=?',(str(path),))
-                    c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',(str(path),kind,message))
-                if kind=='pending': pending.append(path)
-                if kind=='conflict': conflicts.append(path)
+                    diagnostics[str(path)]=(kind,message)
+                if kind=='pending': pending.add(path)
+                if kind=='conflict': conflicts.add(path)
             finally:
+                if path in pending: remember(path,p)
+                if changed:
+                    # Push onto a LIFO stack after the packet transaction has
+                    # committed. This avoids recursion limits on long chains.
+                    dependants=set()
+                    for change in p['body']:
+                        dependants.update(waiting.get(change['revision'],()))
+                    for dependant in sorted(dependants,key=rank.__getitem__,reverse=True):
+                        # Promote even a path already queued for a safety-net
+                        # pass; its older stack entry becomes a harmless skip.
+                        stack.append(dependant); queued.add(dependant)
                 if security is not None and verified_signature is not None:
                     from signed_packets import record_verification
                     record_verification(db, verified_signature)
         if interrupted or not progress: break
         # The first migration must index earlier legacy files too. Thereafter
         # only held paths need retry; committed exact replays cannot unblock proof.
-        retry=paths if indexed and not was_indexed else pending+conflicts if indexed else pending
+        retry=paths if indexed and not was_indexed else sorted(
+            pending|conflicts if indexed else pending,key=rank.__getitem__)
+    if diagnostics:
+        with connect(db) as c,c:
+            c.executemany('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',
+                          ((path,kind,message) for path,(kind,message) in diagnostics.items()))
     report=status(db)
     return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
             **({'error': io_error} if io_error else {}), **({'interrupted':True} if interrupted else {})}

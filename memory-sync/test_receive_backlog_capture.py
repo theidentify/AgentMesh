@@ -158,3 +158,17 @@ def family(db):
         c.execute("INSERT INTO observation_events(id,event_key,source_path,kind,content,source_hash) VALUES(1,'event','fixture','message','fixture','hash')")
         c.execute('INSERT INTO memory_sources VALUES(1,1)')
     return dict(memory_items=1,observation_events=1)
+
+
+@pytest.mark.parametrize('indexed',[False,True])
+def test_receive_interrupt_resumes(backlog,indexed):
+    db,exchange,_=backlog
+    if indexed:
+        with sync.connect(db) as c,c: resolution_store.migrate(c)
+    checks=[]
+    def interrupt():
+        checks.append(1)
+        return len(checks)>3
+    report=sync.receive(db,exchange,interrupt=interrupt)
+    assert report['interrupted'] is True and report['applied']==2
+    assert sync.receive(db,exchange)['applied']==50

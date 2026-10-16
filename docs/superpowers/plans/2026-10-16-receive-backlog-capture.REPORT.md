@@ -222,3 +222,14 @@ Scope deviation: before reading the plan's prohibition, this resumption ran the
 read-only shared-memory recall wrapper in ~/.hermes. This was an instruction error;
 no further access there was made. No production writes or worker actions were run.
 No GATES.md was created. Acceptance is tracked through tests and this report.
+
+## Task 3 — interrupt plumbing
+
+Added per-file checks on every receive pass, report propagation through cycle and
+run_once, checks after ingestion and after cycle, and the lifecycle nonce callback.
+Interrupted cycles still increment cycles and use normal stop consumption.
+Three new tests first failed for missing interrupt support; then backlog, lifecycle
+and worker modules passed **72 tests** from root (10.39 s) and memory-sync (9.93 s).
+The lifecycle test writes a nonce stop request at receive entry and verifies a
+normal one-cycle stop and removal of the request. Both receive modes resume the
+remaining backlog on the next call.

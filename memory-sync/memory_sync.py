@@ -479,7 +479,7 @@ def _apply(c,p):
             c.execute('INSERT INTO _sync_receipt_envelopes VALUES(?,?)', (p['uuid'], envelope_digest(p)))
         return True
 
-def receive(db, exchange, *, security=None, capture_first=True):
+def receive(db, exchange, *, security=None, capture_first=True, interrupt=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
@@ -501,6 +501,8 @@ def receive(db, exchange, *, security=None, capture_first=True):
     # Multiple passes let predecessors arriving after successors unlock a chain.
     retry=paths
     indexed=False
+    interrupted=False
+    if not retry and interrupt is not None: interrupted=bool(interrupt())
     while retry:
         pending=[]; conflicts=[]; progress=False
         was_indexed=indexed
@@ -517,6 +519,9 @@ def receive(db, exchange, *, security=None, capture_first=True):
                         'uuid IN (SELECT uuid FROM _sync_receipts) OR '
                         'uuid IN (SELECT uuid FROM _sync_outbox WHERE published=1)')}
         for path in retry:
+            if interrupt is not None and interrupt():
+                interrupted=True
+                break
             verified_signature = False
             stat=None
             try:
@@ -605,22 +610,23 @@ def receive(db, exchange, *, security=None, capture_first=True):
                 if security is not None and verified_signature is not None:
                     from signed_packets import record_verification
                     record_verification(db, verified_signature)
-        if not progress: break
+        if interrupted or not progress: break
         # The first migration must index earlier legacy files too. Thereafter
         # only held paths need retry; committed exact replays cannot unblock proof.
         retry=paths if indexed and not was_indexed else pending+conflicts if indexed else pending
     report=status(db)
     return {'applied':applied,**{k:report[k] for k in ('pending','conflict','invalid')},'unavailable':bool(io_error),
-            **({'error': io_error} if io_error else {})}
+            **({'error': io_error} if io_error else {}), **({'interrupted':True} if interrupted else {})}
 
-def cycle(db, exchange, *, security=None):
+def cycle(db, exchange, *, security=None, interrupt=None):
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         _security_policy(c, security, exchange)
     captured=capture(db, security=security)
     sent=publish(db,exchange, security=security)
-    received=receive(db,exchange, security=security, capture_first=False)
-    return {'capture':captured,'publish':sent,'receive':received}
+    received=receive(db,exchange, security=security, capture_first=False, **({"interrupt":interrupt} if interrupt is not None else {}))
+    return {'capture':captured,'publish':sent,'receive':received,
+            **({'interrupted':True} if received.get('interrupted') else {})}
 
 
 def main(argv=None):

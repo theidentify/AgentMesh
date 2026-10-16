@@ -474,3 +474,27 @@ def test_run_lifetime_lock_refusal_precedes_snapshot(tmp_path,monkeypatch):
     monkeypatch.setattr(activation,'require_capability',forbidden)
     with lock(directory/'lifetime.lock',timeout=0):
         with pytest.raises(TimeoutError): worker.run(args['runtime'],once=True,legacy_drained=True)
+
+
+def test_stop_during_receive_is_normal_and_consumed(tmp_path,monkeypatch):
+    import memory_sync as sync
+    import worker_lifecycle as worker
+    from signed_packets import write_local
+    args=bound(tmp_path,monkeypatch)
+    config,_=worker.load(args['runtime'],authoritative=False)
+    directory=worker.control(config,create=True)
+    original=sync.receive
+    seen=[]
+    def receive(*a,**kw):
+        record=worker.metadata(directory,args['runtime'])
+        write_local(directory/'stop.json',{'nonce':record['nonce']})
+        assert kw['interrupt']()
+        result=original(*a,**kw)
+        seen.append(result)
+        return result
+    monkeypatch.setattr(sync,'receive',receive)
+    assert worker.run(args['runtime'],legacy_drained=True)==0
+    record=worker.status(args['runtime'])
+    assert record['state']=='stopped' and record['cycles']==1 and record['last_error'] is None
+    assert seen[0]['interrupted'] is True
+    assert not (directory/'stop.json').exists()

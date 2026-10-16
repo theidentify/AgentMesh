@@ -187,7 +187,8 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 report = sync_worker.run_once(config['database'], config['exchange'],
                     workflow_config=config.get('workflow_config'), force_summary=False,
                     security_dir=security_dir if scope['policy'] == 'required' else None,
-                    security_state=security_state, preflight=preflight)
+                    security_state=security_state, preflight=preflight,
+                    interrupt=lambda: stop_requested(directory, nonce))
                 sync_worker.classify(report)
                 result = int(sync_worker.failed(report) if once else sync_worker.permanent_failure(report))
                 record['failure_kind'] = report['failure_kind']

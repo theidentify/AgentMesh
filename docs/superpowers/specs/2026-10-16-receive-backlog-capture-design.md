@@ -190,3 +190,79 @@ Replace them, in both `_apply` and `_write`, with **exact changed-row tracking**
    - the new scan bound: a backlog receive does at most 2 full `rows()` calls in total, counting
      capture **and** verification
    - all existing `_apply` / `_write` conflict tests stay green
+
+## Amendment 2 (2026-10-16, binding): review findings on Amendment 1
+
+**1. Allowed touches are what is written, and expected rows come from shadow for everything else.**
+- **Which keys may change.** In `_write`, the touched set must be a subset of the keys of `install`
+  transitions only. `preserve` keys (where the local head is newer) must not be touched: their
+  expected live row is the current shadow row. In `_apply`, allowed touches are the packet's keys, as
+  every legacy change is written.
+- **What each written key must hold.** For every allowed key, the live row read by key must equal the
+  install/packet row, or be absent for a deletion.
+- **Preserved keys.** For every preserved key, the live row must equal its shadow row.
+- **Test:** a resolution that deletes an `install` parent while a `preserve` child exists must
+  conflict, not delete the newer child.
+
+**2. Never split a local transaction (rationale in §1 corrected).**
+- Targeted capture is a cheap probe. For the packet's keys, compare live rows against shadow.
+- **No difference** (the normal case): capture nothing and continue.
+- **Any difference:** an uncaptured local edit exists on a key the packet touches. Discard the targeted
+  diff and run one full `_capture` for that packet, exactly as today. A committed local transaction is
+  then never split across outgoing packets, at a cost only when a real local edit collides with an
+  incoming packet.
+- **Test:** a local uncaptured delete with a cascade, colliding with an incoming update, produces one
+  outgoing packet holding both the deletion and the cascade.
+
+**3. `_index_local` cost.**
+- `apply_resolution` calls it for each non-replay packet, and it decodes every `_sync_outbox` row.
+  Skip outbox rows already retained in `_sync_packet_evidence` with a matching envelope digest, so
+  each own packet is decoded once overall.
+- Add a decode-count bound to the reproduction and benchmark: decodes per receive must not grow
+  with backlog × outbox.
+
+**4. Targeted foreign-key checks** replace the per-packet whole-DB `PRAGMA foreign_key_check`.
+- **Rows the packet writes:** for every row the packet inserts or updates, look up each of its FK
+  parents by key.
+- **Parents the packet deletes:** for every parent key it deletes, look up child rows referencing it,
+  using the schema's FK list.
+  - Add an index for `memory_items.supersedes_id` if no index exists. Use a schema migration that is
+    idempotent and safe on existing DBs.
+  - Otherwise accept a scan restricted to deletions.
+- **Classification:** violations found this way are classified exactly as today (pending vs
+  conflict).
+- **Unrelated violations:** existing violations elsewhere must no longer block packets.
+- **Tests:** an unrelated pre-existing FK violation doesn't block; a packet-caused violation still
+  pends or conflicts as before.
+
+**5. Exact value comparison** compares normalized dicts (as `rows()` builds them, with `metadata`
+parsed), never canonical strings. That keeps REAL-column `1.0` equal to `1` as the old code did.
+
+**6. Trigger hygiene.**
+- **Naming:** TEMP triggers are `... ON main.<t>`, and their names are unique to this feature.
+- **UPDATE:** log both OLD and NEW keys.
+- **Keys:** canonicalize logged keys in Python (`canonical(json.loads(json_array(...)))`).
+- **recursive_triggers:** set it ON for the apply and restore the previous value afterwards.
+
+**7. `_packet_keys`** on an unrecognized body fails closed: the packet is `invalid`, not a full-capture
+fallback. This is effectively unreachable after decode/`_validate`, and a fallback would let a
+crafted file force full scans every cycle.
+
+**8. Installer stop failure.**
+- **Withdrawing the stop request.** On a `replace` stop failure, withdraw `stop.json` only if it still
+  equals `{'nonce': N}`, so the old worker isn't told to stop later.
+- **Error report.** Re-read worker status and include `worker_state` in the fixed error report.
+- **windows-recover for `replace/stop`:**
+  - reports `managed.status` (running or not) along with the reset to `ready`
+  - must not go through `finish_interrupted_start`; give it its own branch
+- **Interrupted cycles** increment `cycles`; this is acceptable, since it only happens on stop.
+
+**9. Operator procedure for today's Windows host** (WINDOWS-INSTALLATION.md, recovery section).
+- **First, the old worker must not be running.** The stuck rc.12 worker can't be interrupted, because
+  it predates this fix. Keep the task disabled, then sign out and back in, or restart, and confirm with
+  `worker-status` that no worker is running.
+- **Then, in one session without signing out:**
+  1. Re-enable the task (`schtasks /Change /ENABLE`).
+  2. Run `windows-recover` (`replace/stop` → ready).
+  3. Upgrade **without** `--replace`, so `precheck_stopped` verifies nothing is running.
+  4. The upgrade starts the fixed worker.

@@ -61,6 +61,16 @@ nothing else. Any other pending state is refused for manual review. Do not edit
 .\agentmesh.exe windows-recover --runtime "$env:LOCALAPPDATA\AgentMesh\data\runtime.json"
 ```
 
+An upgrade **without `--replace` does not start the worker**. It verifies the worker
+is stopped, selects the installed version, and updates an existing task binding.
+To resume immediately after that upgrade, run the selected installed version's
+`agentmesh.exe worker-start --runtime 'C:\absolute\existing\runtime.json'`, using
+the configured interval/timeout and `--legacy-drained` when required by the legacy
+policy. Otherwise, an enabled logon task starts it at the next logon. Re-enabling
+the task does not itself start the worker. The `replace/stop` recovery shape is
+still unsupported by the current code; do not use the `upgrade/start` procedure
+above for that shape.
+
 ## Install program files only
 
 Extract the development ZIP locally **outside Syncthing**. Keep `agentmesh.exe`

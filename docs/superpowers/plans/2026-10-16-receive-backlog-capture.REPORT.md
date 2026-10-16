@@ -91,3 +91,114 @@ The known unrelated digest test was not run by the focused commands above.
 Only disposable test data was used. No `~/.hermes`, real database, identity,
 exchange, launchd job, or running worker was accessed. No `GATES.md` was created.
 There was no push, PR, merge, rebase, branch switch, or other-worktree change.
+
+## Resumption after Amendments 1 and 2 — second design gap
+
+2026-10-16, starting at `973e496`. Read the complete spec and plan. The first
+blocker is resolved by the amendments; it is not the reason for this stop.
+Tasks 2–5 remain unimplemented because the amended FK-check scope misses an
+existing required regression. No production Python or tests were changed.
+
+`test_resolution_apply.py::test_relational_repairs_refused_atomically[foreign-key]`
+creates an unsynced `test_child` with a deferred FK to `test_parent`, and an
+`AFTER UPDATE ON summary_state` trigger that inserts missing parent ID 99 into
+`test_child`. The packet updates `summary_state`; it deletes no parents.
+`summary_state` has no FKs. The current `_write` detects the trigger's violation
+with its global `PRAGMA foreign_key_check`, raises
+`ValueError('unsupported relational repair')`, and rolls back atomically.
+
+Amendment 1 tracks only `TABLES`, so it does not record the `test_child` insert.
+Amendment 2 checks FK parents of packet-written rows and children of deleted
+parents. Neither check visits this violating row. Synced-row value comparisons
+also cannot see it. This is a packet-caused violation, not an unrelated existing
+violation that Amendment 2 deliberately permits.
+
+### Disposable experiment
+
+Used `tempfile.TemporaryDirectory`, `sqlite_memory.init_database`, and
+`sync.initialize` with a synthetic UUID. Seeded `summary_state('x',1,'fixture')`
+before initialization, then installed the same two tables and trigger as the
+existing regression. Constructed one `protocol.Transition` installing x=5.
+Inside `BEGIN IMMEDIATE`, invoked `_write` normally and rolled back. Repeated
+inside `BEGIN IMMEDIATE; SAVEPOINT packet` with a connection proxy that delegates
+every `execute` except the exact `PRAGMA foreign_key_check`, which returns an
+empty cursor (`SELECT 1 WHERE 0`). No repository code was modified by the probe.
+
+Observed output:
+
+```text
+Existing checker: unsupported relational repair
+Without global FK check: _write and nested savepoint release returned successfully
+Packet table FK list: []
+Deleted packet parents: 0
+Actual deferred violations: [('test_child', 1, 'test_parent', 0)]
+Unsynced violating table: True
+Outer commit: IntegrityError FOREIGN KEY constraint failed
+```
+
+This isolates the existing global check's role; it is not a completed targeted
+implementation. From the specified scope, the proposed tracking and targeted
+checks have no additional observation that would detect this violation.
+SQLite's outer commit still protects integrity, but a nested packet savepoint
+does not enforce deferred constraints. Relying on outer commit would change
+the existing exception/classification and rollback boundary, failing the required
+regression. Keeping global FK scans would violate Amendment 2.
+
+**Required decision:** specify how packet-induced FK violations in unsynced
+tables are detected before releasing the application savepoint, without global
+FK scans and without rejecting unrelated existing violations. For example,
+authorize broader changed-row tracking for FK-bearing unsynced tables (including
+their row identifiers and trigger lifecycle), or explicitly revise the supported
+trigger contract and this regression. Neither choice was assumed or implemented.
+Stopped under the user's explicit instruction to report another real design gap.
+
+### Verified Windows startup behavior and corrected operator procedure
+
+`windows_install.run` initializes `restarting=False`. Only the `if replace` branch
+sets it to true. The `worker-start` launch and health checks are guarded by
+`if restarting`. Without `--replace`, upgrade calls `precheck_stopped`, selects
+the version/task binding, writes `ready` with no pending operation, and returns
+`worker_changed=False` (or `unchanged` for the already selected version).
+Therefore Amendment 2 section 9 step 4 is factually incorrect: that upgrade
+does **not** start the fixed worker. `windows_task` registers a logon trigger;
+binding/enabling it is not a worker launch.
+
+The correct procedure **once replace/stop recovery is implemented and shipped**:
+
+1. Keep the task disabled; sign out and back in, or restart, to end the old rc.12
+   worker. Confirm with `worker-status` that no worker is running.
+2. In one session without signing out, re-enable the exact recorded task with
+   `schtasks /Change /TN "<recorded task name>" /ENABLE`.
+3. Run the fixed bundle's `windows-recover --runtime "<existing runtime>"` and
+   confirm `RECOVER`, resetting only the supported `replace/stop` state.
+4. Run the fixed bundle's `windows-upgrade --runtime "<existing runtime>"`
+   **without `--replace`**, with `--legacy-drained` if required by legacy policy.
+   The stopped-worker precheck must pass.
+5. Start the **selected installed version's** executable explicitly with
+   `worker-start --runtime "<existing runtime>" --interval <configured interval>
+   --timeout <configured timeout>` (and `--legacy-drained` when required).
+   Verify `worker-status` reports the selected worker running and healthy cycles.
+   Alternatively, leave it stopped until the next logon invokes the enabled task.
+
+This procedure cannot yet clear today's stuck shape with the repository's current
+code: `recoverable` still accepts only `upgrade/start`. No installer/recovery
+commands were executed. WINDOWS-INSTALLATION.md now explicitly documents the
+no-replace startup behavior and current recovery limitation. Native Windows
+execution was not available; the startup conclusion comes from code inspection.
+
+### Resumption validation and scope
+
+Re-ran the same three focused modules and commands recorded above, including
+the existing FK regression and both named #47 tests:
+
+- From `memory-sync/`: **71 passed, 2 failed**, 15.18 seconds.
+- From the repository root: **71 passed, 2 failed**, 14.41 seconds.
+
+Only the two committed Task 1 backlog reproductions fail, still at 106 scans.
+The existing conflict/pending tests in these modules remain green. Full-suite
+runs, the amended implementation's tests, and the benchmark remain unperformed;
+no Task 2–5 completion or performance improvement is claimed. `git diff --check`
+passes. The only deliverables of this stop are this appended report and the
+Windows documentation correction, committed with the requested co-author trailer.
+No `~/.hermes` or real data was accessed, no GATES.md was created, and no push,
+merge, rebase, branch switch, or other-worktree change occurred.

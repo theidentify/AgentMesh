@@ -233,3 +233,19 @@ and worker modules passed **72 tests** from root (10.39 s) and memory-sync (9.93
 The lifecycle test writes a nonce stop request at receive entry and verifies a
 normal one-cycle stop and removal of the request. Both receive modes resume the
 remaining backlog on the next call.
+
+## Task 4 — installer stop recovery
+
+Replace stop errors now withdraw only the matching plain nonce request, reread
+worker state for the fixed public error report, and reset unchanged installation
+state to ready while retaining staged programs. mark_failed leaves ready intact.
+A separate replace/stop recovery branch requires typed RECOVER, retains binding
+checks, reports worker state, and performs no worker/task actions. Updated the
+operator procedure, including explicit worker-start after a no-replace upgrade.
+
+The changed stop-timeout test and two recovery tests first failed on the old
+behavior. The installer module then passed **83 tests** from the repository root
+(13.27 s), including exact/mismatched/reason-bearing nonce withdrawal and fixed
+WORKER_STOP_TIMEOUT reporting. Existing unsupported-shape and start-recovery tests
+remain green. Native Windows execution is unavailable; tests use disposable files
+and the existing fake Task Scheduler boundary.

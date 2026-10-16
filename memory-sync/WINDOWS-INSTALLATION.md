@@ -40,7 +40,7 @@ After you confirm, Ctrl+C is ignored until the operation finishes (the installer
 its `worker-start` child), so an upgrade cannot be split by an interrupt. If an older
 release was interrupted and `installed.json` says `recovery_required`, every
 `windows-*` command refuses until it is resolved. `windows-recover` rolls forward
-only this case:
+the following start-phase case:
 
 - the pending transaction is an upgrade in its `start` phase and the new version is
   already selected and intact (onedir, RC.8+);
@@ -67,9 +67,29 @@ To resume immediately after that upgrade, run the selected installed version's
 `agentmesh.exe worker-start --runtime 'C:\absolute\existing\runtime.json'`, using
 the configured interval/timeout and `--legacy-drained` when required by the legacy
 policy. Otherwise, an enabled logon task starts it at the next logon. Re-enabling
-the task does not itself start the worker. The `replace/stop` recovery shape is
-still unsupported by the current code; do not use the `upgrade/start` procedure
-above for that shape.
+the task does not itself start the worker.
+
+A failed replacement stop returns the installer to `ready` when the old selected
+version and task binding are unchanged. The staged version remains available.
+The installer withdraws only the exact stop request for that worker nonce and
+reports the current worker state with the original stop error.
+
+`windows-recover` also accepts an interrupted `replace/stop` when the old version
+is still selected, the new version is staged and intact, and the live task matches
+the recorded binding. Type `RECOVER` (or use `--yes --confirm RECOVER`). This resets
+only `status=ready` and `pending=null`, reports worker status, and neither starts nor
+stops a worker nor changes the task. Other shapes remain refused.
+
+For the old stuck rc.12 worker, keep the task disabled and sign out/back in or
+restart first. Confirm `worker-status` shows no running worker. Then, in one
+session without signing out:
+
+1. Re-enable the recorded task with `schtasks /Change /TN "<recorded task name>" /ENABLE`.
+2. Run the fixed bundle's `windows-recover` and type `RECOVER`.
+3. Run `windows-upgrade` **without `--replace`**, adding `--legacy-drained` when required.
+4. Explicitly run the selected installed version's `worker-start` with the existing
+   runtime and configured interval/timeout, or wait until the next logon.
+5. Verify `worker-status` and healthy completed cycles.
 
 ## Install program files only
 

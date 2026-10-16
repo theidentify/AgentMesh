@@ -316,7 +316,7 @@ def test_strict_scope_preserves_identity_trust_and_policy(existing, monkeypatch)
     assert all(after[k] == value for k, value in before.items())
 
 
-def test_replace_stop_timeout_retains_descriptor_and_never_launches_new_binary(existing, monkeypatch):
+def test_replace_stop_timeout_restores_ready_and_never_launches_new_binary(existing, monkeypatch):
     command(existing, monkeypatch)
     next_binary = package(existing['binary'].parent.parent, '0.2.0-rc.6', 'b' * 40)
     def stop(runtime, timeout):
@@ -328,9 +328,9 @@ def test_replace_stop_timeout_retains_descriptor_and_never_launches_new_binary(e
     with pytest.raises(TimeoutError, match='cooperative'):
         command(existing, monkeypatch, 'upgrade', 'UPGRADE\nREPLACE\n', binary=next_binary, replace=True, legacy_drained=True)
     state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
-    assert state['status'] == 'recovery_required'
-    assert state['pending']['operation'] == 'replace' and state['pending']['old'] != state['pending']['new']
-    assert state['active'] == state['pending']['old']
+    assert state['status'] == 'ready' and state['pending'] is None
+    assert len(state['programs'])==2
+    assert state['active'].startswith('0.2.0-rc.5-')
     assert existing['adapter'].operations == []
 
 
@@ -603,8 +603,7 @@ def test_same_selected_version_replace_stops_cooperatively_only_after_approval(e
         command(existing, monkeypatch, 'upgrade', 'UPGRADE\n', replace=True, legacy_drained=True)
     assert called == [existing['runtime']]
     state = json.loads((existing['program_root'] / 'installed.json').read_bytes())
-    assert state['pending']['operation'] == 'replace'
-    assert state['pending']['old'] == state['pending']['new']
+    assert state['status']=='ready' and state['pending'] is None
 
 
 def test_plan_summary_shown_once_with_steps_time_and_rollback(existing, monkeypatch):
@@ -790,3 +789,45 @@ def test_activated_database_blocks_owned_rollback_before_changes(existing,monkey
         command(existing,monkeypatch,'rollback','ROLLBACK\n',legacy_drained=True)
     assert snapshot(existing['program_root'])==before
 
+
+
+@pytest.mark.parametrize('running',[False,True])
+def test_recover_replace_stop_only_resets_state(existing,monkeypatch,running):
+    command(existing,monkeypatch)
+    path=existing['program_root']/'installed.json'
+    state=json.loads(path.read_bytes())
+    state.update(status='recovery_required',pending=dict(operation='replace',phase='stop',old=state['active'],new=state['active'],task=state['task']))
+    installer.save(path,state)
+    monkeypatch.setattr(installer.managed,'status',lambda runtime: {'state':'running' if running else 'stopped'})
+    def forbidden(*a,**kw): pytest.fail('recovery touched worker')
+    monkeypatch.setattr(installer.managed,'stop',forbidden)
+    monkeypatch.setattr(installer,'finish_interrupted_start',forbidden)
+    result=command(existing,monkeypatch,'recover','RECOVER\n')
+    assert result['worker_state']==('running' if running else 'stopped')
+    assert json.loads(path.read_bytes())==dict(state,status='ready',pending=None)
+    assert existing['adapter'].operations==[]
+
+
+@pytest.mark.parametrize('stop_kind',['mine','other','reason'])
+def test_failed_replace_withdraws_only_exact_stop_nonce(existing,monkeypatch,stop_kind):
+    import uuid
+    from cli_errors import report
+    command(existing,monkeypatch)
+    config,_=installer.load(existing['runtime'])
+    directory=installer.managed.control(config,create=True)
+    nonce=str(uuid.uuid4())
+    value={'nonce':nonce if stop_kind!='other' else str(uuid.uuid4())}
+    if stop_kind=='reason': value['reason']='startup deadline exceeded'
+    monkeypatch.setattr(installer.managed,'status',lambda runtime: {'state':'running','nonce':nonce})
+    def stop(runtime,timeout):
+        write_local(directory/'stop.json',value)
+        raise TimeoutError('worker did not acknowledge stop; no process was signalled')
+    monkeypatch.setattr(installer.managed,'stop',stop)
+    with pytest.raises(TimeoutError) as failure:
+        command(existing,monkeypatch,'upgrade','UPGRADE\n',replace=True,legacy_drained=True)
+    assert (directory/'stop.json').exists()==(stop_kind!='mine')
+    if stop_kind!='mine': assert json.loads((directory/'stop.json').read_bytes())==value
+    public=report(failure.value,'windows-upgrade')
+    assert public['code']=='WORKER_STOP_TIMEOUT' and public['worker_state']=='running'
+    state=json.loads((existing['program_root']/'installed.json').read_bytes())
+    assert state['status']=='ready' and state['pending'] is None

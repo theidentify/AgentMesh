@@ -266,3 +266,29 @@ crafted file force full scans every cycle.
   2. Run `windows-recover` (`replace/stop` → ready).
   3. Upgrade **without** `--replace`, so `precheck_stopped` verifies nothing is running.
   4. The upgrade starts the fixed worker.
+
+## Amendment 3 (2026-10-16, binding): keep the global FK check; operator procedure corrected
+
+**1. Amendment 2 item 4 (targeted FK checks) is withdrawn.** Both `_apply` and `_write` keep the
+existing global `PRAGMA foreign_key_check`, with its classification unchanged.
+- **Why:** it catches packet-induced violations in unsynced tables created by triggers. The existing
+  regression `test_relational_repairs_refused_atomically[foreign-key]` stays as it is.
+- **Cost:** measured on a 340 MB production-sized DB (read-only, immutable), it takes 0.16 s cold and
+  1–2 ms warm. It is not the backlog bottleneck; the full `rows()` canonicalization is.
+- **Behaviour on violations:** an unrelated pre-existing violation still blocks packets, exactly as
+  today. That is not a regression, and it is documented.
+- **What stays from Amendments 1 and 2:**
+  - changed-row tracking (touched ⊆ allowed keys)
+  - keyed value checks for installed and preserved keys
+  - the targeted capture probe with a full-capture fallback
+  - `_index_local` decode-once
+  - normalized-dict comparison and trigger hygiene
+  - `_packet_keys` failing closed
+  - the installer changes
+- **The bound:** the reproduction's scan bound counts `rows()` calls only. The benchmark records the
+  time taken by `foreign_key_check`.
+
+**2. Operator procedure.** Amendment 2 item 9 step 4 was wrong. An upgrade without `--replace` does
+not start the worker. The authoritative procedure is the one now in WINDOWS-INSTALLATION.md (commit
+99af5aa): recover, then upgrade without `--replace`, then an explicit `worker-start` of the selected
+installed version (or the next logon).

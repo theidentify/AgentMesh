@@ -254,3 +254,32 @@ def test_write_tracks_import_flag_trigger(backlog):
         sync.canonical(dict(consumer='row-0',last_event_id=1,updated_at='fixture')),'install')
     with sync.connect(db) as c, pytest.raises(protocol.ResolutionConflict), c:
         app._write(c,[transition])
+
+
+def test_apply_refuses_a_trigger_rewriting_an_allowed_row(backlog):
+    # Only the keyed value check can see this: the touched key is one the packet writes.
+    db,exchange,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("CREATE TRIGGER test_rewrite_same_row AFTER UPDATE ON summary_state "
+                  "WHEN NEW.consumer='row-1' AND NEW.updated_at!='tampered' "
+                  "BEGIN UPDATE summary_state SET updated_at='tampered' WHERE consumer=NEW.consumer; END")
+    result=sync.receive(db,exchange)
+    assert result['conflict']>=1
+    with sync.connect(db) as c:
+        assert tuple(c.execute("SELECT last_event_id,updated_at FROM summary_state WHERE consumer='row-1'").fetchone())==(0,'fixture')
+
+
+def test_write_refuses_touching_a_preserved_row_even_unchanged(backlog):
+    # Only touch tracking can see this: the preserved row keeps its shadow value.
+    import resolution_apply as app
+    import resolution_protocol as protocol
+    db,_,_=backlog
+    with sync.connect(db) as c,c:
+        c.execute("CREATE TRIGGER test_touch_preserved AFTER UPDATE ON summary_state WHEN NEW.consumer='row-0' "
+                  "BEGIN UPDATE summary_state SET last_event_id=last_event_id WHERE consumer='row-1'; END")
+    install=protocol.Transition(protocol.Key('summary_state',('row-0',)),str(uuid.uuid4()),
+        sync.canonical(dict(consumer='row-0',last_event_id=1,updated_at='fixture')),'install')
+    preserve=protocol.Transition(protocol.Key('summary_state',('row-1',)),str(uuid.uuid4()),
+        sync.canonical(dict(consumer='row-1',last_event_id=0,updated_at='fixture')),'preserve')
+    with sync.connect(db) as c, pytest.raises(protocol.ResolutionConflict), c:
+        app._write(c,[install,preserve])

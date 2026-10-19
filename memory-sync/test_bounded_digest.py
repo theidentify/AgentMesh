@@ -271,6 +271,26 @@ class BoundedTests(unittest.TestCase):
         self.assertEqual((row['retries'], row['error_detail']), (1, 'incomplete event coverage'))
         self.assertEqual(api.prepare(self.db)['events'][0]['id'], 1)
 
+    def test_invalid_conflict_model_output_is_retried_once(self):
+        api = self.api()
+        metrics = self.db.with_suffix('.fallback-retry.jsonl')
+        calls = []
+        def extractor(request, *, model):
+            calls.append(model)
+            task = api.prepare(self.db)
+            if model != 'fallback':
+                payload = dict(items=[], reviewed_event_ids=[1], conflicts=['explicit'])
+            else:
+                payload = self.payload(task)
+                if calls.count('fallback') == 1:
+                    payload['items'][0]['evidence'][0]['event_id'] = 99
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        result = api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
+        self.assertEqual(result['status'], 'committed')
+        self.assertEqual(calls, ['gpt-6-luna', 'fallback', 'fallback'])
+        row = json.loads(metrics.read_text())
+        self.assertEqual((row['retries'], row['fallbacks']), (1, 1))
+
     def test_bounds_do_not_truncate_event_or_related_context(self):
         api = self.api()
         with self.assertRaises(ValueError):

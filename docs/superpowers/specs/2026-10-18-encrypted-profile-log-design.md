@@ -1,6 +1,7 @@
 # Encrypted profile log, device identity and memory broker (next-generation sync): design
 
-Status: proposed. Discussed in conversation on 2026-10-18; not yet approved. No code changes. Builds on main
+Status: approved by the owner on 2026-10-19 (discussed 2026-10-18). Phases 1–2 are implemented in
+`profile-log/` (theidentify/AgentMesh#52); later phases are not started. Builds on main
 (SQLite authority + Syncthing packet exchange, `memory_sync.py`).
 
 ## Motivation

@@ -278,8 +278,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                     metric[field] = None
                 metric['context_max_input_tokens'] = None
                 metric['actual_cost_usd'] = None
-                result = call(conflict_model)
-                validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                result = first_valid(conflict_model)
             metric['accepted_items'] = len(result['payload']['items'])
             report = apply(db, task, result['payload'], provider=result['provider'], model=result['model']) if apply_result else dict(status='validated', events=len(task['events']), items=len(result['payload']['items']))
             metric['status'] = report['status']

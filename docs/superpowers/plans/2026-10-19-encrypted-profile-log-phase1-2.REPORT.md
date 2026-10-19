@@ -226,3 +226,16 @@ $ env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p
 ```
 
 The live suite was not enabled with usable R2 configuration. No live success is claimed.
+
+## Live Cloudflare R2 run (owner's account, 2026-10-19)
+
+- Run by the owner from their own terminal with a bucket-scoped "Object Read & Write" R2 token;
+  credentials were entered with `read -rs` and never passed through the agent.
+- `AGENTMESH_R2_LIVE=1 … pytest -q -s profile-log/tests/test_r2_live.py`: **3 passed in 8.38s**.
+  Summary line: `puts=11 gets=5 lists=5 events=3 deleted=10 elapsed=8.37s` (11 puts include one
+  identical re-put of the same key, so 10 objects were created and all 10 were removed).
+- Proven against real R2 with boto3 1.43.114 default settings (no checksum overrides needed):
+  put/get round trip, missing key → `ObjectNotFound`, sorted nested prefix listing, `page_size=2`
+  pagination, identical re-put, and three encrypted `work/client-a` events (one from a write-only
+  key) listed, fetched, verified and opened, with the sibling and write-only keys refused and no
+  body, tags, task, label or email in the stored bytes.

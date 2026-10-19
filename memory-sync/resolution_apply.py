@@ -273,7 +273,7 @@ def commit_resolution(c, plan, *, security, operation_id):
         return envelope
 
 
-def receive_indexed(c, envelope, path, *, security):
+def receive_indexed(c, envelope, path, *, security, diagnostics=None):
     """Receive-loop adapter: retain evidence while rolling back failed row writes."""
     before=c.execute('SELECT count(*) FROM _sync_packet_evidence').fetchone()[0] if store.exists(c) else 0
     missing=None
@@ -317,9 +317,21 @@ def receive_indexed(c, envelope, path, *, security):
                                 raise protocol.ResolutionConflict('later edit on superseded branch')
                         raise
             c.execute('DELETE FROM _sync_diagnostics WHERE path=?',(str(path),))
+            if diagnostics is not None:
+                diagnostics.pop(str(path),None)
+                # Mirror apply_resolution's covered-path clears only after the
+                # entire resolution succeeds, including when receive interrupts.
+                if outcome=='applied' and versions.is_new(envelope):
+                    for ref in envelope['covers']:
+                        for row in c.execute('SELECT path FROM _sync_packet_paths WHERE packet_uuid=? AND envelope_digest=?',
+                                             (ref['uuid'],ref['envelope_digest'])):
+                            diagnostics.pop(row[0],None)
     except (ValueError,sync.Pending,sync.Conflict,sqlite3.IntegrityError) as exc:
         outcome=('pending' if isinstance(exc,(protocol.MissingEvidence,sync.Pending)) else
                  'conflict' if isinstance(exc,(protocol.ResolutionConflict,sync.Conflict,sqlite3.IntegrityError)) else 'invalid')
-        c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',
-                  (str(path),outcome,type(exc).__name__ if security else str(exc)))
+        message=type(exc).__name__ if security else str(exc)
+        if diagnostics is None:
+            c.execute('INSERT OR REPLACE INTO _sync_diagnostics VALUES(?,?,?)',
+                      (str(path),outcome,message))
+        else: diagnostics[str(path)]=(outcome,message)
     return outcome,added

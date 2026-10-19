@@ -38,6 +38,18 @@ class Account:
         self.account_id = new_id()
         self._root = Ed25519PrivateKey.generate()
 
+    @classmethod
+    def from_private(cls, account_id, raw):
+        hex_bytes(account_id, 16)
+        if type(raw) is not bytes or len(raw) != 32: raise ValidationError('invalid private key')
+        obj = cls.__new__(cls)
+        obj.account_id, obj.email = account_id, None
+        obj._root = Ed25519PrivateKey.from_private_bytes(raw)
+        return obj
+
+    def private_bytes(self):
+        return self._root.private_bytes_raw()
+
     def public_record(self):
         return {'format': 'agentmesh-account-v1', 'account_id': self.account_id,
                 'root_public_key': self._root.public_key().public_bytes_raw().hex()}
@@ -83,6 +95,10 @@ class ScopeTree:
         from .keys import ScopeReadKey, wrap_key
         if parent not in self.scopes or kind not in ('common', 'project'):
             raise ValidationError('invalid scope parent or kind')
+        if type(name) is not str or not name or '/' in name:
+            raise ValidationError('invalid scope name')
+        if any(s.parent == parent and s.name == name for s in self.scopes.values()):
+            raise ValidationError('duplicate scope name')
         scope = Scope(self.root.profile_id, parent, kind, name, default_label)
         key = ScopeReadKey.generate(scope.profile_id, scope.scope_id)
         record = wrap_key(key, self.keys[parent])

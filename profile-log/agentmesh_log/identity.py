@@ -36,6 +36,18 @@ class DeviceIdentity:
         self.device_id = new_id()
         self._private = Ed25519PrivateKey.generate()
 
+    @classmethod
+    def from_private(cls, device_id, raw):
+        hex_bytes(device_id, 16)
+        if type(raw) is not bytes or len(raw) != 32: raise IdentityError('invalid private key')
+        obj = cls.__new__(cls)
+        obj.device_id = device_id
+        obj._private = Ed25519PrivateKey.from_private_bytes(raw)
+        return obj
+
+    def private_bytes(self):
+        return self._private.private_bytes_raw()
+
     @property
     def public_bytes(self):
         return self._private.public_key().public_bytes_raw()
@@ -56,6 +68,20 @@ class AgentIdentity:
         self._certificate = sign({'format': 'agentmesh-agent-cert-v1', 'account_id': account_id,
             'device_id': self.device_id, 'agent_id': self.agent_id, 'agent_public_key': self.public_bytes.hex(),
             'issued_at': milliseconds(time.time_ns() // 1_000_000 if issued_at is None else issued_at)}, device._private, AGENT_DOMAIN)
+
+    @classmethod
+    def from_private(cls, cert, raw):
+        validate_agent_certificate(cert)
+        if type(raw) is not bytes or len(raw) != 32: raise IdentityError('invalid private key')
+        obj = cls.__new__(cls)
+        obj._private = Ed25519PrivateKey.from_private_bytes(raw)
+        obj.account_id, obj.device_id, obj.agent_id = (cert[k] for k in ('account_id', 'device_id', 'agent_id'))
+        if obj.public_bytes.hex() != cert['agent_public_key']: raise IdentityError('agent key mismatch')
+        obj._certificate = dict(cert)
+        return obj
+
+    def private_bytes(self):
+        return self._private.private_bytes_raw()
 
     @property
     def public_bytes(self):

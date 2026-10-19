@@ -1,0 +1,2 @@
+# Synthetic detector corpus is an intentional test fixture.
+!tests/fixtures/detector_corpus/benign.jsonl

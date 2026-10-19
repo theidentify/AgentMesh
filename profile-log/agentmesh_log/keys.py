@@ -48,6 +48,14 @@ class ScopeReadKey:
     def generate(cls, profile_id, scope_id):
         return cls(profile_id, scope_id, X25519PrivateKey.generate())
 
+    @classmethod
+    def from_private(cls, profile_id, scope_id, raw):
+        if type(raw) is not bytes or len(raw) != 32: raise KeyAccessError('invalid private key')
+        return cls(profile_id, scope_id, X25519PrivateKey.from_private_bytes(raw))
+
+    def private_bytes(self):
+        return self._private.private_bytes_raw()
+
     @property
     def write_key(self):
         return ScopeWriteKey(self.profile_id, self.scope_id, self._private.public_key().public_bytes_raw())

@@ -33,8 +33,8 @@ def validate_payload(payload):
     return payload
 
 
-def seal_event(write_key: ScopeWriteKey, agent, body, *, label=Label.general, created_at=None,
-               revises=None, tags=None, task=None, previous_label=None, user_confirmed=False) -> bytes:
+def prepare_event(write_key: ScopeWriteKey, agent, body, *, label=Label.general, created_at=None,
+               revises=None, tags=None, task=None, previous_label=None, user_confirmed=False) -> dict:
     if not isinstance(write_key, ScopeWriteKey): raise KeyAccessError('write key required')
     if not isinstance(label, Label): raise ValidationError('invalid label')
     if previous_label is not None:
@@ -47,7 +47,18 @@ def seal_event(write_key: ScopeWriteKey, agent, body, *, label=Label.general, cr
         'profile': write_key.profile_id, 'scope': write_key.scope_id, 'scope_key_id': write_key.key_id,
         'device': agent.device_id, 'agent': agent.agent_id, 'agent_cert': agent.certificate()}
     ciphertext = encrypt(wire(payload), write_key, INFO_DOMAIN + typed(header))
-    return wire(sign({**header, 'ciphertext': ciphertext}, agent._private, EVENT_DOMAIN))
+    return {**header, 'ciphertext': ciphertext}
+
+
+def attach_signature(unsigned, signature):
+    fields(unsigned, EVENT_FIELDS - {'signature'}, 'agentmesh-event-v1')
+    hex_bytes(signature, 64)
+    return wire({**unsigned, 'signature': signature})
+
+
+def seal_event(write_key, agent, body, **kwargs):
+    unsigned = prepare_event(write_key, agent, body, **kwargs)
+    return attach_signature(unsigned, agent._private.sign(EVENT_DOMAIN + typed(unsigned)).hex())
 
 
 def verify_event(data: bytes, registry) -> dict:

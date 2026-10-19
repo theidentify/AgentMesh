@@ -10,7 +10,7 @@ from agentmesh_log.storage.filesystem import FilesystemStorage
 from agentmesh_log.storage.s3 import S3Storage
 
 
-@pytest.fixture(params=['filesystem', 's3'])
+@pytest.fixture(params=['filesystem', 's3'], ids=['fs', 's3'])
 def backend(request, tmp_path):
     if request.param == 'filesystem':
         yield FilesystemStorage(tmp_path / 'store')
@@ -24,7 +24,7 @@ def backend(request, tmp_path):
             yield S3Storage('profile-log-tests', client=client)
 
 
-class TestStorageContract:
+class TestContract:
     def test_roundtrip_and_missing(self, backend):
         backend.put('events/a/01.json', b'\x00opaque\xff')
         assert backend.get('events/a/01.json') == b'\x00opaque\xff'
@@ -39,8 +39,9 @@ class TestStorageContract:
         assert list(backend.list('no-match')) == []
 
     @pytest.mark.parametrize('key', ['', '/', '../a', 'a/../b', '/abs', 'a\\b', 'a//b',
-        './a', 'a/./b', '.hidden', 'a/.hidden', 'a/', 'a b', 'é', 'a'*1025, None, 1])
-    def test_key_safety_before_io(self, backend, monkeypatch, key):
+        './a', 'a/./b', '.hidden', 'a/.hidden', 'a/', 'a b', 'é', 'a'*1025, None, 1],
+        ids=['empty', 'slash', 'up', 'traverse', 'abs', 'back', 'double', 'dot', 'dotseg', 'hidden', 'nested', 'trail', 'space', 'unicode', 'long', 'null', 'type'])
+    def test_key_before_io(self, backend, monkeypatch, key):
         def forbidden(*args, **kwargs): pytest.fail('I/O attempted for invalid key')
         if isinstance(backend, S3Storage):
             for name in ('put_object', 'get_object', 'get_paginator'):
@@ -172,8 +173,9 @@ else:
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize('stray', ['notes bar.json', 'mémoire.json', 'stray folder/item.json'])
-def test_listing_skips_invalid_stored_names(backend, stray):
+@pytest.mark.parametrize('stray', ['notes bar.json', 'mémoire.json', 'stray folder/item.json'],
+    ids=['space', 'unicode', 'dir'])
+def test_list_skips_invalid_names(backend, stray):
     backend.put('events/good.json', b'good')
     backend.put('events/z.json', b'last')
     key = 'events/' + stray
@@ -187,8 +189,9 @@ def test_listing_skips_invalid_stored_names(backend, stray):
     assert list(backend.list('')) == ['events/good.json', 'events/z.json']
 
 
-@pytest.mark.parametrize('kind', ['symlink', 'fifo'])
-def test_invalid_name_does_not_hide_unsafe_file(tmp_path, kind):
+@pytest.mark.parametrize('kind', ['symlink', 'fifo'],
+    ids=['link', 'fifo'])
+def test_invalid_name_unsafe_file(tmp_path, kind):
     store = FilesystemStorage(tmp_path / 'store')
     path = store.root / 'stray name'
     if kind == 'symlink':
@@ -205,7 +208,8 @@ def test_invalid_name_does_not_hide_unsafe_file(tmp_path, kind):
     ('events/pr', 'events', ['events/profile/scope/a.json']),
     ('events/missing/scope/', None, []),
     ('events/profile/scope/a.json/', None, []),
-])
+],
+    ids=['full', 'partial', 'missing', 'file'])
 def test_filesystem_prefix_limits_walk(tmp_path, monkeypatch, prefix, start, expected):
     store = FilesystemStorage(tmp_path / 'store')
     for key in ('events/profile/scope/a.json', 'events/other/scope/b.json', 'keys/unrelated/c.json'):
@@ -232,3 +236,37 @@ def test_filesystem_prefix_checks_each_ancestor(tmp_path):
     make_symlink(store.root / 'events', outside, True)
     with pytest.raises(StorageError): list(store.list('events/scope/'))
     with pytest.raises(StorageError): list(store.list('events/missing/'))
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows directory junctions only')
+@pytest.mark.parametrize('location', ['root', 'child'], ids=['root', 'child'])
+def test_windows_junction_refusal(tmp_path, location):
+    import _winapi
+    import stat
+
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'secret').write_bytes(b'private')
+    store = FilesystemStorage(tmp_path / 'store')
+    if location == 'root':
+        junction = store.root
+        junction.rmdir()
+        prefix = ''
+    else:
+        junction = store.root / 'sub'
+        prefix = 'sub/'
+    # Junctions do not require the symlink privilege or Developer Mode.
+    _winapi.CreateJunction(str(outside), str(junction))
+    try:
+        assert junction.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        if location == 'root':
+            with pytest.raises(StorageError): FilesystemStorage(junction)
+        with pytest.raises(StorageError): store.put(prefix + 'new', b'new')
+        with pytest.raises(StorageError): store.get(prefix + 'secret')
+        with pytest.raises(StorageError): list(store.list(''))
+        with pytest.raises(StorageError): list(store.list(prefix))
+        assert (outside / 'secret').read_bytes() == b'private'
+        assert not (outside / 'new').exists()
+    finally:
+        # Remove the junction itself, never recursively delete its target.
+        os.rmdir(junction)

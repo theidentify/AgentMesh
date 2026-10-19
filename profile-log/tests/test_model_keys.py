@@ -54,7 +54,8 @@ def test_tree_descendants_and_independent_keys(tree):
         with pytest.raises(LogError): unwrap_key(record, a)
 
 
-@pytest.mark.parametrize('field', ['format', 'profile', 'parent_scope', 'parent_key_id', 'child_scope', 'child_key_id', 'ciphertext', 'auth'])
+@pytest.mark.parametrize('field', ['format', 'profile', 'parent_scope', 'parent_key_id', 'child_scope', 'child_key_id', 'ciphertext', 'auth'],
+    ids=['format', 'profile', 'parent', 'pkey', 'child', 'ckey', 'cipher', 'auth'])
 def test_wrap_tamper(tree, field):
     record = copy.deepcopy(next(iter(tree.wraps.values())))
     record[field] = ('0' if record[field][0] != '0' else '1') + record[field][1:]
@@ -143,7 +144,7 @@ def test_write_only_wrap_forgery_rejected(tree):
     with pytest.raises(LogError): wrap_key(attacker, public)
 
 
-def test_wrap_auth_contract_and_before_decryption(tree, monkeypatch):
+def test_wrap_auth_before_decrypt(tree, monkeypatch):
     import agentmesh_log.keys as keys
     parent = tree.keys[tree.root.scope_id]
     record = copy.deepcopy(next(iter(tree.wraps.values())))

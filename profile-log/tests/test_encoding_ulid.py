@@ -12,12 +12,14 @@ def test_typed_injective_and_canonical():
 
 @pytest.mark.parametrize('data', [b'{"a":1,"a":2}', b'NaN', b'Infinity', b'1e999',
     b'"\\ud800"', b'\xff', b'{', b'9223372036854775808', b'[' * 66 + b'0' + b']' * 66,
-    b' ' * (1024 * 1024 + 1), 'null', 1])
+    b' ' * (1024 * 1024 + 1), 'null', 1],
+    ids=['dup', 'nan', 'inf', 'overflow', 'unicode', 'utf8', 'json', 'integer', 'depth', 'size', 'text', 'type'])
 def test_strict_parse(data):
     with pytest.raises(ValidationError): encoding.parse(data)
 
 
-@pytest.mark.parametrize('value', [float('nan'), {1: 'a'}, (1,), 2**63, '\ud800'])
+@pytest.mark.parametrize('value', [float('nan'), {1: 'a'}, (1,), 2**63, '\ud800'],
+    ids=['nan', 'key', 'tuple', 'integer', 'unicode'])
 def test_encoding_rejects(value):
     with pytest.raises(ValidationError): encoding.typed(value)
 
@@ -41,6 +43,7 @@ def test_ulid_monotonic_and_time(monkeypatch):
 
 
 @pytest.mark.parametrize('value', ['', '0'*25, '0'*27, '8'+'0'*25, 'Z'*26,
-    '0'*25+'I', '0'*25+'O', '0'*25+'L', '0'*25+'U', '0'*25+'a', None, 1])
+    '0'*25+'I', '0'*25+'O', '0'*25+'L', '0'*25+'U', '0'*25+'a', None, 1],
+    ids=['empty', 'short', 'long', 'overflow', 'max', 'i', 'o', 'l', 'u', 'lower', 'null', 'type'])
 def test_ulid_rejections(value):
     with pytest.raises(ValidationError): ulid.parse(value)

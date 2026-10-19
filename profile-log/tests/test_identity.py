@@ -27,7 +27,8 @@ def test_identity_chain(identities):
 
 
 @pytest.mark.parametrize('attack', ['wrong-device', 'wrong-account', 'unknown-issuer', 'self-issued',
-    'duplicate-device', 'bad-signature', 'cross-device-to-agent', 'cross-agent-to-device'])
+    'duplicate-device', 'bad-signature', 'cross-device-to-agent', 'cross-agent-to-device'],
+    ids=['device', 'account', 'issuer', 'self', 'duplicate', 'sig', 'd2a', 'a2d'])
 def test_identity_rejections(identities, attack):
     account, first, second, registry, agent, first_cert, second_cert = identities
     if attack == 'wrong-device':
@@ -52,14 +53,15 @@ def test_identity_rejections(identities, attack):
 
 
 @pytest.mark.parametrize('field,value', [('issued_at', True), ('device_id', []), ('signature', None),
-    ('agent_public_key', 'bad'), ('format', 'bad'), ('extra', 1)])
+    ('agent_public_key', 'bad'), ('format', 'bad'), ('extra', 1)],
+    ids=['time', 'device', 'sig', 'key', 'format', 'extra'])
 def test_agent_certificate_strict_shape(identities, field, value):
     registry, agent = identities[3:5]
     cert = agent.certificate(); cert[field] = value
     with pytest.raises(LogError): registry.verify_agent(cert)
 
 
-def test_registry_does_not_keep_callers_mutable_records(identities):
+def test_registry_copies_records(identities):
     account, first, second, registry, agent, first_cert, second_cert = identities
     second_cert['device_public_key'] = first.public_bytes.hex()
     assert registry.verify_agent(agent.certificate()) == agent.public_bytes
@@ -73,7 +75,7 @@ def test_signature_domains(identities):
     with pytest.raises(LogError): registry.add_device(cert)
 
 
-def test_device_account_binding_with_valid_root_signature(identities):
+def test_device_account_binding(identities):
     account, _, _, registry, *_ = identities
     cert = DeviceIdentity().certificate(account)
     cert['account_id'] = Account().account_id
@@ -81,7 +83,7 @@ def test_device_account_binding_with_valid_root_signature(identities):
     with pytest.raises(LogError, match='wrong account'): registry.add_device(cert)
 
 
-def test_agent_account_binding_with_valid_device_signature(identities):
+def test_agent_account_binding(identities):
     _, _, device, registry, *_ = identities
     agent = AgentIdentity(device, Account().account_id)
     with pytest.raises(LogError, match='wrong account'): registry.verify_agent(agent.certificate())

@@ -41,7 +41,8 @@ def test_event_roundtrip_write_only_and_paths(context):
 
 
 @pytest.mark.parametrize('field', ['format', 'id', 'account', 'profile', 'scope', 'scope_key_id',
-    'device', 'agent', 'agent_cert', 'ciphertext', 'signature'])
+    'device', 'agent', 'agent_cert', 'ciphertext', 'signature'],
+    ids=['format', 'id', 'account', 'profile', 'scope', 'key', 'device', 'agent', 'cert', 'cipher', 'sig'])
 def test_every_envelope_field_tamper(context, field):
     p = parse(sealed(context))
     if field == 'agent_cert': p[field]['issued_at'] += 1
@@ -61,7 +62,8 @@ def test_resign_attack_header_binding(context):
     with pytest.raises(LogError): open_event(wire(p), registry, key)
 
 
-@pytest.mark.parametrize('wrong', ['sibling', 'profile', 'epoch'])
+@pytest.mark.parametrize('wrong', ['sibling', 'profile', 'epoch'],
+    ids=['sibling', 'profile', 'epoch'])
 def test_wrong_key(context, wrong):
     tree, old = context[4:6]
     if wrong == 'sibling': key = context[6]
@@ -96,7 +98,8 @@ def test_envelope_metadata_and_email_privacy(context):
 
 
 @pytest.mark.parametrize('attack', ['duplicate', 'extra', 'missing', 'wrong-type', 'oversize', 'ulid',
-    'cert-type', 'ciphertext-type', 'signature-type', 'nonfinite', 'bool-time'])
+    'cert-type', 'ciphertext-type', 'signature-type', 'nonfinite', 'bool-time'],
+    ids=['dup', 'extra', 'missing', 'type', 'size', 'ulid', 'cert', 'cipher', 'sig', 'nan', 'time'])
 def test_strict_before_signature(context, monkeypatch, attack):
     p = parse(sealed(context))
     if attack == 'duplicate': data = b'{"id":"a","id":"b"}'
@@ -118,7 +121,8 @@ def test_strict_before_signature(context, monkeypatch, attack):
 
 
 @pytest.mark.parametrize('field,value', [('body', []), ('label', 'unknown'), ('created_at', True),
-    ('revises', 'bad'), ('tags', 'not-list'), ('tags', [1]), ('task', 1), ('extra', None)])
+    ('revises', 'bad'), ('tags', 'not-list'), ('tags', [1]), ('task', 1), ('extra', None)],
+    ids=['body', 'label', 'time', 'revises', 'tags', 'item', 'task', 'extra'])
 def test_decrypted_payload_validation(context, field, value):
     p = parse(sealed(context))
     payload = open_event(wire(p), context[2], context[5]); payload[field] = value
@@ -134,8 +138,9 @@ def test_cert_envelope_binding(context):
     with pytest.raises(LogError): verify_event(wire(p), context[2])
 
 
-@pytest.mark.parametrize('isolate_envelope_check', [False, True])
-def test_event_account_binding_with_valid_signatures(context, monkeypatch, isolate_envelope_check):
+@pytest.mark.parametrize('isolate_envelope_check', [False, True],
+    ids=['chain', 'envelope'])
+def test_event_account_binding(context, monkeypatch, isolate_envelope_check):
     _, device, registry, _, _, key, _ = context
     foreign_agent = AgentIdentity(device, Account().account_id)
     data = seal_event(key.write_key, foreign_agent, 'private body')

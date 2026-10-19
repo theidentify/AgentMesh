@@ -1,4 +1,5 @@
 """Disposable backlog reproduction for the receive capture design."""
+import os
 import uuid
 
 import pytest
@@ -31,10 +32,13 @@ def backlog(tmp_path):
                    revision=str(uuid.UUID(int=1000+number)),parent=parent)]
         p=dict(format=sync.FORMAT,group=GROUP,node='mac',uuid=str(uuid.UUID(int=number)),
                body=body,checksum=sync.digest(body))
-        (directory/(p['uuid']+'.json')).write_text(sync.canonical(p),encoding='utf-8')
+        path=directory/(p['uuid']+'.json')
+        path.write_text(sync.canonical(p),encoding='utf-8')
+        stamp=1_700_000_000_000_000_000+number*1_000_000_000
+        os.utime(path,ns=(stamp,stamp))
         packets.append(p)
         return body[0]['revision']
-    # Successor sorts before predecessor, forcing a pending retry on both paths.
+    # Explicit mtimes keep the successor before its predecessor on both paths.
     parent=packet(2,'row-0',1,parents[sync.canonical(['row-0'])])
     packet(1,'row-0',2,parent)
     for n in range(1,51):

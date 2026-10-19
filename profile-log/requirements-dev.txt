@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements-s3.txt
+pytest==8.4.2
+moto[s3,server]==5.2.4

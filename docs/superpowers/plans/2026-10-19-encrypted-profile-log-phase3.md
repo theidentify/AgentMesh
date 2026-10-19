@@ -153,7 +153,7 @@ Responses have exact field sets. **No op returns key material, wrap records, oth
 | op | fields | result |
 | --- | --- | --- |
 | `whoami` | — | `agent_id`, readable/writable scope **names**, `default_profile`, `allow_secret` |
-| `recall` | `query` (1–2048 chars), `project`, `task`, `limit` (1–100, default 12), `profiles` (list or null) | recall shape below |
+| `recall` | `query` (1–2048 chars), `project`, `task`, `limit` (1–100, default 12), `profiles` (list or null), `scopes` (list of scope names or null) | recall shape below |
 | `remember` | `body`, `scope` (name or null → `default_write`), `tags`, `task`, `label` (agent label or null) | `{"stage":"sign","unsigned": <envelope without signature>}` |
 | `revise` | as `remember` plus `revises` (ULID) | same two-step |
 | `sign` | `signature` (for the pending unsigned envelope of this session) | `{"id": ULID, "label": …, "redactions": [kinds]}` |
@@ -169,6 +169,11 @@ Responses have exact field sets. **No op returns key material, wrap records, oth
   scope** as the new revision; otherwise `denied`. The broker passes the previous label as `previous_label`.
   Lowering needs user confirmation, which no agent can give in Phase 3, so a lowering revise is refused with
   `label_lowering_requires_confirmation`.
+- `recall` scope selection: `scopes=null` searches every scope the agent may read within the selected
+  profiles. A list of names (`work/client-a`, `work`) restricts the search to those scopes (a named scope
+  includes its descendants). Naming any scope the agent may not read, or one outside the selected profiles,
+  returns `denied` for the whole request; it is never silently dropped. `project` stays what it is in
+  `recall_memory`: a filter on the body's `project` field, not a security boundary.
 - `recall` defaults to `profiles=[default_profile]`. More than one profile requires `allow_cross_profile` and
   is audited as `cross_profile: true` (`TODO(phase4-presence)`). Results come only from this agent's index.
 - Errors are fixed codes (`denied`, `invalid_request`, `unauthenticated`, `unavailable`,
@@ -265,7 +270,7 @@ convention; tamper evidence is deferred.
   [--default-write …] [--allow-secret] [--allow-cross-profile]`: prints the agent key file path.
 - `broker revoke --home H AGENT_ID`, `broker run --home H [--sync-interval S]`.
 - `broker sync --home H --filesystem PATH | --s3-bucket B [--s3-prefix P --s3-endpoint URL]`.
-- `recall QUERY [--project P] [--task T] [--limit 12] [--profile NAME …] --agent-key FILE`: prints the
+- `recall QUERY [--project P] [--task T] [--limit 12] [--profile NAME …] [--scope NAME …] --agent-key FILE`: prints the
   recall JSON shape above, mirroring `recall_memory.py`'s `QUERY --project --task --limit`.
 - `remember --agent-key FILE [--scope work/client-a] [--kind fact] [--tag …] [--task …] CONTENT`.
 

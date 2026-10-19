@@ -270,3 +270,18 @@ def test_windows_junction_refusal(tmp_path, location):
     finally:
         # Remove the junction itself, never recursively delete its target.
         os.rmdir(junction)
+
+
+def test_s3_page_size():
+    import boto3
+    with mock_aws():
+        client = boto3.client('s3', region_name='us-east-1', aws_access_key_id='testing',
+                              aws_secret_access_key='testing')
+        client.create_bucket(Bucket='profile-page-size')
+        store = S3Storage('profile-page-size', client=client)
+        for index in reversed(range(5)): store.put(f'events/{index}', b'data')
+        requests = []
+        def record(params, **kwargs): requests.append(params['MaxKeys'])
+        client.meta.events.register('before-parameter-build.s3.ListObjectsV2', record)
+        assert list(store.list('events/', page_size=2)) == [f'events/{i}' for i in range(5)]
+        assert requests == [2, 2, 2]

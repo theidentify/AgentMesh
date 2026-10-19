@@ -1,5 +1,13 @@
 """S3-compatible plain PUT storage. Unique keys, not the backend, ensure immutability."""
+import re
 from . import validate_key, validate_data, InvalidKey, StorageError, ObjectNotFound
+
+
+def _failed(action, exc):
+    # Only a well-formed S3 error code or the exception class name; never messages, keys or credentials.
+    code = getattr(exc, 'response', {}).get('Error', {}).get('Code') if isinstance(getattr(exc, 'response', None), dict) else None
+    reason = code if type(code) is str and re.fullmatch('[A-Za-z0-9.]{1,64}', code) else type(exc).__name__
+    return StorageError(f'S3 {action} failed ({reason})')
 
 
 class S3Storage:
@@ -19,7 +27,7 @@ class S3Storage:
     def put(self, key, data):
         validate_key(key); validate_data(data)
         try: self.client.put_object(Bucket=self.bucket, Key=self.prefix + key, Body=data)
-        except Exception: raise StorageError('S3 put failed') from None
+        except Exception as exc: raise _failed('put', exc) from None
 
     def get(self, key):
         validate_key(key)
@@ -30,14 +38,15 @@ class S3Storage:
         except Exception as exc:
             code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
             if code in ('NoSuchKey', '404', 'NotFound'): raise ObjectNotFound('object not found') from None
-            raise StorageError('S3 get failed') from None
+            raise _failed('get', exc) from None
 
-    def list(self, prefix):
+    def list(self, prefix, *, page_size=None):
         validate_key(prefix, prefix=True)
         keys = []
         try:
             paginator = self.client.get_paginator('list_objects_v2')
-            for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix):
+            options = {} if page_size is None else {'PaginationConfig': {'PageSize': page_size}}
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix, **options):
                 for item in page.get('Contents', []):
                     full = item['Key']
                     if not full.startswith(self.prefix + prefix): continue
@@ -46,5 +55,5 @@ class S3Storage:
                     except InvalidKey: continue
                     keys.append(key)
         except StorageError: raise
-        except Exception: raise StorageError('S3 list failed') from None
+        except Exception as exc: raise _failed('list', exc) from None
         return iter(sorted(keys))

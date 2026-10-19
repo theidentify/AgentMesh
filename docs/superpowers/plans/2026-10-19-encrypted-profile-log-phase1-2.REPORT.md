@@ -155,3 +155,74 @@ remains the reviewer's external-environment check.
   existing device with a different key as "already registered", so the check is defence in depth.
 - Not verified: Windows execution, real Cloudflare R2 (tested only against moto in-process and a
   loopback moto HTTP server), and interoperability with any non-Python implementation.
+
+## Opt-in live Cloudflare R2 check
+
+Added the live harness without running it against R2. No real credentials were read,
+installed or printed, and no external network request was made. Changes remain under
+`profile-log/**` and this REPORT; no commits, installs or GATES.md were created.
+The results in this section supersede the earlier full-suite counts.
+
+- `S3Storage.list(prefix, *, page_size=None)` forwards `PaginationConfig={'PageSize': n}`
+  only when a page size is supplied. The default call remains unchanged.
+  `tests/test_storage.py::test_s3_page_size` first failed with an unexpected-keyword
+  TypeError, then passed against moto: five keys returned sorted over exactly three
+  ListObjectsV2 requests with MaxKeys=2. Existing pagination/isolation coverage also passes.
+- `tests/test_r2_live.py` has a module-wide skip marker unless `AGENTMESH_R2_LIVE=1`.
+  Its module-scoped fixture constructs boto3 explicitly from the four dedicated
+  `AGENTMESH_R2_*` settings, requires an HTTPS endpoint, and passes the client to S3Storage.
+  It uses no AWS credential fallback. Configuration/client errors are sanitized and SDK
+  logging is suppressed during the live fixture. Missing settings when enabled fail setup.
+- `test_contract`, `test_identical_reput`, and `test_encrypted_events` cover random bytes,
+  missing objects, sorted nested/paged listings, identical re-put and three encrypted
+  work/client-a events using the existing taxonomy fixture. One event uses the phone's
+  write-only key; sibling and write-only opening fail. Raw fetched objects are checked
+  for the body, tags, task, label value and account email.
+- Each run gets `agentmesh-live-tests/<ULID>/`. The registered module finalizer lists all
+  run keys using the raw client, validates every key against that exact prefix, deletes
+  batches of at most 1,000, verifies the prefix is empty and emits one counts/time-only
+  summary. It executes on assertion failures too. Process termination or lost access can
+  prevent cleanup; this limitation and manual abandoned-prefix cleanup are documented.
+  No delete method was added to the library Storage interface.
+- README contains private-bucket and bucket-scoped Object Read & Write token instructions,
+  all environment variable names, silent `read -rs` credential entry, the exact requested
+  live command with `-s`, and the rule that CI leaves live mode disabled.
+
+Offline safety evidence (`tests/test_r2_safety.py`, helpers in `tests/r2_support.py`):
+
+| Requirement | Tests |
+| --- | --- |
+| Required configuration, explicit dedicated credentials, HTTPS | `test_missing_env` (four cases), `test_explicit_credentials`, `test_endpoint_and_error_redaction` |
+| Enabled mode fails rather than skips with missing settings | `test_enabled_missing_env_fails` runs a subprocess with the flag enabled and all four required settings removed; all three live tests error before client construction, with no network possible |
+| Prefix restrictions and protection of unrelated objects | `test_cleanup_prefix_guard` (five cases), `test_cleanup_refuses_foreign_result`, `test_cleanup_batches_and_isolation` (1,001 run objects, batches 1,000 + 1, sibling object preserved) |
+| Sanitized cleanup failures | `test_cleanup_error_redaction` first failed on an injected SDK RuntimeError containing dummy credential text; implementation now exposes only a fixed error with suppressed context |
+| Full harness, finalizer and summary | `test_live_harness_offline` calls the three live test functions against moto, verifies cleanup, and checks exactly one summary line: 11 successful puts, 5 gets, 5 lists, 3 verified events and 10 deleted objects |
+
+The safety tests were written before their helper module existed and failed collection for
+that missing module; all 16 now pass. Actual R2 endpoint/authentication behavior remains
+explicitly unverified here and must be checked by the operator.
+
+Latest default full run, with `AGENTMESH_R2_LIVE` unset, from the repository root:
+
+```text
+$ env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests
+FAILED profile-log/tests/test_storage.py::test_s3_custom_http_endpoint - Fail...
+1 failed, 184 passed, 5 skipped in 9.28s
+```
+
+Inside `profile-log/`, the equivalent full command ended:
+
+```text
+1 failed, 184 passed, 5 skipped in 8.95s
+```
+
+The five skips are the three opt-in live cases and two Windows-only junction cases.
+The sole failure remains the previously documented sandbox denial of 127.0.0.1 bind,
+not an R2 check. Excluding only that known local HTTP blocker:
+
+```text
+$ env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests -k 'not custom_http_endpoint'
+184 passed, 5 skipped, 1 deselected in 9.01s
+```
+
+The live suite was not enabled with usable R2 configuration. No live success is claimed.

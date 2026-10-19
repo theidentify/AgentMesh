@@ -95,3 +95,52 @@ access policy, redaction and user-presence rules. There is no automatic promotio
 
 See [FORMAT.md](FORMAT.md) for normative wire rules and the implementation REPORT under
 `docs/superpowers/plans/2026-10-19-encrypted-profile-log-phase1-2.REPORT.md` for gate evidence.
+
+## Live Cloudflare R2 check
+
+This is an opt-in integration check that you run yourself. The default suite skips it;
+CI must leave `AGENTMESH_R2_LIVE` unset and never runs the live check. Offline moto tests
+exercise the harness without cloud access. No dependencies need to be installed in the
+prepared environment.
+
+1. Create a dedicated **private** R2 bucket with no public access.
+2. Create an R2 API token with **Object Read & Write**, scoped to that bucket only.
+3. Set the dedicated variables below. The client receives these credentials explicitly;
+   it does not fall back to your other `AWS_*` credentials. Once live mode is enabled,
+   missing configuration fails the test instead of skipping it. The endpoint must start
+   with `https://`.
+
+```sh
+export AGENTMESH_R2_ENDPOINT='https://<account>.r2.cloudflarestorage.com'
+export AGENTMESH_R2_BUCKET='<private-test-bucket>'
+# Enter the access key ID at the prompt without echo or shell history:
+read -rs AGENTMESH_R2_ACCESS_KEY_ID; export AGENTMESH_R2_ACCESS_KEY_ID
+# Enter the secret at the prompt without echo or shell history:
+read -rs AGENTMESH_R2_SECRET_ACCESS_KEY; export AGENTMESH_R2_SECRET_ACCESS_KEY
+
+AGENTMESH_R2_LIVE=1 ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -s -p no:cacheprovider profile-log/tests/test_r2_live.py
+
+unset AGENTMESH_R2_ACCESS_KEY_ID AGENTMESH_R2_SECRET_ACCESS_KEY
+```
+
+Do not enable shell tracing (`set -x`) when entering credentials. The test suppresses SDK
+logging, sanitizes client/cleanup errors and prints one summary line containing only
+operation counts and elapsed time. `-s` makes that finalizer output visible.
+
+The check uses a fresh `agentmesh-live-tests/<ULID>/` prefix and covers random-byte
+roundtrips, missing keys, nested/sorted listing, pagination with `page_size=2`, identical
+re-put, and three encrypted `work/client-a` events including a write-only phone. It checks
+that sibling keys cannot open events and fetched raw objects expose none of the tested
+private payload metadata or account email. Plain S3 PUT does **not** provide exclusive
+create: identical re-put is checked, not an overwrite-prevention guarantee.
+
+On normal completion, including test assertion failures, a module finalizer deletes only
+objects under that run's full prefix and verifies it is empty, leaving no test objects
+behind. It refuses broad/invalid prefixes, checks returned keys before deletion, and uses
+batches of at most 1,000. Cleanup failures fail the run. A killed process or loss of access
+can prevent cleanup; in that case remove only the abandoned run prefix from the dedicated
+bucket. The library's Storage interface still has no delete operation; cleanup is test-only.
+
+`S3Storage.list(prefix, page_size=None)` accepts an optional keyword page size. With a
+value such as `2`, it configures boto's paginator while still returning all matching keys
+sorted; leaving it unset preserves the backend's default page size.

@@ -9,7 +9,7 @@ PACKAGE = str(Path(__file__).resolve().parents[2])
 
 def cli(*args):
     return subprocess.run([sys.executable,'-m','agentmesh_log.cli',*map(str,args)],
-        env={**os.environ,'PYTHONPATH':PACKAGE,'PYTHONDONTWRITEBYTECODE':'1'},capture_output=True,text=True,timeout=15)
+        env={**os.environ,'PYTHONPATH':PACKAGE,'PYTHONDONTWRITEBYTECODE':'1'},capture_output=True,text=True, encoding='utf-8',timeout=15)
 
 
 def test_admin(tmp_path):
@@ -19,7 +19,7 @@ def test_admin(tmp_path):
     assert cli('broker','scope','add','--home',home,'work/a').returncode==0
     result=cli('broker','grant','--home',home,'--name','fixture','--read','work/a','--write','work/a')
     assert result.returncode==0, result.stderr
-    record=json.loads(Path(json.loads(result.stdout)['agent_key']).read_text())
+    record=json.loads(Path(json.loads(result.stdout)['agent_key']).read_text(encoding='utf-8'))
     assert set(record)=={'format','agent_cert','agent_private_key','device_public_key','address'}
     assert cli('broker','revoke','--home',home,record['agent_cert']['agent_id']).returncode==0
     assert cli('broker','sync','--home',home,'--filesystem',tmp_path/'remote').returncode==0

@@ -88,8 +88,8 @@ def test_filesystem_symlinks(tmp_path):
 def test_filesystem_dot_and_temp_files(tmp_path):
     store = FilesystemStorage(tmp_path / 'root'); store.put('a/b', b'data')
     (tmp_path / 'root/.stfolder').mkdir()
-    (tmp_path / 'root/.stfolder/marker').write_text('marker')
-    (tmp_path / 'root/a/.pending.tmp').write_text('pending')
+    (tmp_path / 'root/.stfolder/marker').write_text('marker', encoding='utf-8')
+    (tmp_path / 'root/a/.pending.tmp').write_text('pending', encoding='utf-8')
     assert list(store.list('')) == ['a/b']
 
 
@@ -169,7 +169,7 @@ else:
 '''
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
     result = subprocess.run([sys.executable, '-c', 'ROOT = ' + repr(str(tmp_path / 'isolated')) + '\n' + code],
-                            env=env, capture_output=True, text=True)
+                            env=env, capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr
 
 

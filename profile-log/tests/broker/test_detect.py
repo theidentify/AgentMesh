@@ -47,7 +47,7 @@ def test_p3_10_pii():
 
 def test_p3_10_budget():
     path = Path(__file__).parents[1] / 'fixtures/detector_corpus/benign.jsonl'
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
     assert len(lines) >= 500
     counts = {k: sum(any(f.category == k for f in RegexDetector().scan(line)) for line in lines)
               for k in ('secret', 'pii')}
@@ -59,7 +59,7 @@ def test_p3_10_budget():
 def test_epoch_corpus():
     import re
     path=Path(__file__).parents[1]/'fixtures/detector_corpus/benign.jsonl'
-    lines=[json.loads(line) for line in path.read_text().splitlines()]
+    lines=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
     timestamps=[line for line in lines if re.search(r'\b1[0-9]{12}\b',line)]
     assert len(timestamps)>=200
     assert any('created_at' in line for line in timestamps)

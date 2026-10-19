@@ -22,10 +22,10 @@ def test_p3_7_audit(tmp_path, monkeypatch):
     for req in ({'op':'recall','query':'unique query marker'}, {'op':'recall','query':'unique query marker'},
                 {'op':'recall','query':'x','scopes':['work/b']}, {'op':'bad'}):
         b.request(s,req)
-        rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text().splitlines()]
+        rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text(encoding='utf-8').splitlines()]
         assert len(rows) == before+1; before+=1
     assert rows[0]['query_hmac'] == rows[1]['query_hmac']
-    assert 'unique query marker' not in (home.root/'audit.jsonl').read_text()
+    assert 'unique query marker' not in (home.root/'audit.jsonl').read_text(encoding='utf-8')
     assert [r['outcome'] for r in rows] == ['ok','ok','denied','invalid']
     def fail(*args,**kwargs): raise OSError('injected')
     monkeypatch.setattr(b.audit,'append',fail)
@@ -42,7 +42,7 @@ def test_p3_8_policies(tmp_path):
     grant=state.grants[agents[0].agent_id]; grant.allow_secret=True; grant.allow_cross_profile=True
     grant.read.append(state.trees[1].root.scope_id); store.save(state)
     assert len(recall(b,s,profiles=['work','personal'])['results'])==1
-    rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text().splitlines()]
+    rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text(encoding='utf-8').splitlines()]
     assert rows[-1]['cross_profile'] is True
     grant.default_write=resolve(state,'work/common'); grant.write.append(grant.default_write); store.save(state)
     assert remember(b,s,agents[0])=={'error':'denied'}

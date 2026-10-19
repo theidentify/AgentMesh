@@ -64,7 +64,7 @@ def test_p3_1_processes():
         responses=[]
         for key in keys:
             p=subprocess.Popen([sys.executable,'-m','agentmesh_log.cli','recall','migrate database','--agent-key',str(key)],
-                env={**os.environ,'PYTHONPATH':PACKAGE,'PYTHONDONTWRITEBYTECODE':'1'},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                env={**os.environ,'PYTHONPATH':PACKAGE,'PYTHONDONTWRITEBYTECODE':'1'},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True, encoding='utf-8')
             responses.append(p)
         assert responses[0].pid!=responses[1].pid
         for process,name in zip(responses,('work/a','work/b')):
@@ -168,7 +168,7 @@ def test_p3_7_wire_audit(tmp_path, monkeypatch):
         count=0
         def send(self,obj):
             if obj.get('format')!='agentmesh-broker-challenge-v1':
-                rows=(home.root/'audit.jsonl').read_text().splitlines()
+                rows=(home.root/'audit.jsonl').read_text(encoding='utf-8').splitlines()
                 self.count+=1
                 assert len(rows)==self.count
             super().send(obj)
@@ -187,7 +187,7 @@ def test_p3_7_wire_audit(tmp_path, monkeypatch):
     channel.send(hello()); channel.receive(); channel.send({'format':'bad'})
     assert channel.receive()=={'error':'unauthenticated'}
     thread.join(5)
-    rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text().splitlines()]
+    rows=[json.loads(line) for line in (home.root/'audit.jsonl').read_text(encoding='utf-8').splitlines()]
     assert len(rows)==6 and rows[-1]['outcome']=='unauthenticated'
 
 
@@ -210,7 +210,7 @@ def test_p3_10_outputs(tmp_path):
     result=client.write('migrate database '+value)
     assert result['label']=='secret' and result['redactions']==['aws']
     assert value.encode() not in b''.join(sent)
-    audit=(home.root/'audit.jsonl').read_text()
+    audit=(home.root/'audit.jsonl').read_text(encoding='utf-8')
     assert value not in audit
     assert json.loads(audit.splitlines()[-1])['redactions']=={'aws':1}
     state.grants[agents[0].agent_id].allow_secret=True; store.save(state)

@@ -123,7 +123,7 @@ def test_enabled_missing_env_fails():
     # Missing configuration fails before client construction: no network is possible.
     result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
                              str(Path(__file__).with_name('test_r2_live.py'))],
-                            env=env, capture_output=True, text=True, timeout=30)
+                            env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 1
     assert 'missing required R2 environment configuration' in result.stdout
     assert '3 errors' in result.stdout and 'skipped' not in result.stdout

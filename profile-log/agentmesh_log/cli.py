@@ -11,10 +11,15 @@ from .broker.service import Broker
 from .broker.client import BrokerClient
 
 
+def emit(text):
+    # UTF-8 bytes regardless of the console code page (Windows defaults to cp1252).
+    sys.stdout.buffer.write(text.encode('utf-8') + b'\n'); sys.stdout.flush()
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
         # argparse's default error embeds arbitrary command-line values.
-        print('{"error":"invalid_request"}')
+        emit('{"error":"invalid_request"}')
         raise SystemExit(2)
 
 
@@ -110,11 +115,11 @@ def main(argv=None):
     p=parser(); args=p.parse_args(argv)
     try:
         result=execute(args)
-        print(json.dumps(result,ensure_ascii=False,sort_keys=True))
+        emit(json.dumps(result,ensure_ascii=False,sort_keys=True))
         return 1 if 'error' in result or result.get('errors',0) else 0
     except KeyboardInterrupt: return 0
     except Exception:
-        print('{"error":"unavailable"}'); return 1
+        emit('{"error":"unavailable"}'); return 1
 
 
 if __name__=='__main__': sys.exit(main())

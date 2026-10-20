@@ -279,7 +279,12 @@ def test_rollback_reports_updates_and_keeps_new_exchange_packets(full_install, m
     monkeypatch.setattr('sys.stdin', io.StringIO('ROLLBACK\n'))
     restored = mac_relocate.rollback(result['backup'], supervisor=options['supervisor'], transport=options['transport'])
     assert restored['post_move_rows']['memory_items'] == 1
-    assert (Path(options['transport'].exchange) / 'signed-changes/mac/synthetic.json').read_bytes() == packet.read_bytes()
+    # A local-node packet would crash-loop the restored worker; it is quarantined, not restored.
+    assert not (Path(options['transport'].exchange) / 'signed-changes/mac/synthetic.json').exists()
+    held = Path(result['backup']) / 'quarantined-local-packets/signed-changes/mac/synthetic.json'
+    assert held.read_bytes() == packet.read_bytes()
+    journal = json.loads((Path(result['backup']) / 'relocation.json').read_text(encoding='utf-8'))
+    assert journal['quarantined_local_packets'] == 1
 
 
 def test_rewrite_is_boundary_aware_and_non_cascading():

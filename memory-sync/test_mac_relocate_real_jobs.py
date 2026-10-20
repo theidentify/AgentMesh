@@ -346,3 +346,20 @@ def test_copy_database_keeps_source_journal_mode(tmp_path, mode):
     destination = tmp_path / 'copy.db'
     assert mac_relocate.copy_database(source, destination) == {'t': 1}
     assert mac_relocate.journal_mode(destination) == mode
+
+
+
+def test_rollback_quarantines_local_node_packets(tmp_path):
+    # A local-node packet copied back would crash-loop the restored worker
+    # ("unknown packet claiming local node"); peers' packets are still preserved.
+    import mac_relocate
+    new, old, held = tmp_path / 'new', tmp_path / 'old', tmp_path / 'held'
+    for p in (new / 'changes/mac/a.json', new / 'changes/windows/b.json'):
+        p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        p.write_text('{}', encoding='utf-8'); p.chmod(0o600)
+    (old / 'changes').mkdir(parents=True, mode=0o700)
+    count = mac_relocate.preserve_packets(new, old, local_node='mac', quarantine=held)
+    assert count == 1
+    assert not (old / 'changes/mac/a.json').exists()
+    assert (held / 'changes/mac/a.json').exists()
+    assert (old / 'changes/windows/b.json').exists()

@@ -846,8 +846,14 @@ def _restore_modes(operation):
             path(str(target / relative)).chmod(mode)
 
 
-def preserve_packets(source, destination):
-    """Union immutable packet namespaces; collisions never overwrite either side."""
+def preserve_packets(source, destination, *, local_node=None, quarantine=None):
+    """Union immutable packet namespaces; collisions never overwrite either side.
+
+    Packets the relocated worker wrote as the local node are unknown to the restored
+    database, and the old worker rejects them ("unknown packet claiming local node"),
+    failing every cycle. Those go to the private quarantine instead. Returns their count.
+    """
+    quarantined = 0
     for namespace in ('changes', 'signed-changes'):
         packet_root = Path(source) / namespace
         if not packet_root.exists():
@@ -855,12 +861,20 @@ def preserve_packets(source, destination):
         for entry in tree(packet_root):
             if not entry.is_file():
                 continue
+            if local_node is not None and entry.relative_to(packet_root).parts[0] == local_node:
+                held = absolute(Path(quarantine) / entry.relative_to(source))
+                held.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                if not held.exists():
+                    copy_file(entry, held)
+                quarantined += 1
+                continue
             target = absolute(Path(destination) / entry.relative_to(source))
             if target.exists():
                 if digest(target) != digest(entry):
                     raise ValueError('rollback immutable packet collision')
             else:
                 copy_file(entry, target)
+    return quarantined
 
 
 def _restore(journal, supervisor, syncthing, *, timeout, archived=False):
@@ -934,7 +948,10 @@ def _restore(journal, supervisor, syncthing, *, timeout, archived=False):
     if record.get('syncthing_touched'):
         syncthing.pause()
         old_exchange = rewrite(cfg['from']['exchange'], archive_mapping)
-        preserve_packets(Path(cfg['to_root']) / 'exchange', Path(old_exchange))
+        record['quarantined_local_packets'] = preserve_packets(
+            Path(cfg['to_root']) / 'exchange', Path(old_exchange), local_node=record['scope']['node'],
+            quarantine=journal.backup / 'quarantined-local-packets')
+        journal.save()
         syncthing.set_path(old_exchange)
         syncthing.resume()
         syncthing.wait_idle(timeout=timeout)

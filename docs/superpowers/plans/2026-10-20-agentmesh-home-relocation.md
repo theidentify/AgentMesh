@@ -96,7 +96,7 @@ its parts: drain, backup, plist rewrite, bootstrap, health wait and rollback.
   locks, or the copy aborts and restarts the service unchanged.
 - **R-3 Refusals (amended 2026-10-20):**
   - The root `~/.agentmesh` may already exist and be populated (settings, profile-log, agents, venv, app,
-    services, logs). Its existing entries are never modified, except `settings.local.json`.
+    services, logs). The relocation never rewrites, moves or deletes its existing entries, except `settings.local.json`. Normal writes by running services and by the verify step are expected and allowed: broker audit and presence logs, index snapshots, catch-up and apply logs, and the bridge config render.
   - The **new** destinations must each be absent or an empty, user-owned 0700 directory: `memory-sync/`,
     `exchange/`, `versions/`, `jobs/`, `status/` and `backups/archive/`.
   - Separation is checked between those destinations: the exchange must not be inside `memory-sync/` or any

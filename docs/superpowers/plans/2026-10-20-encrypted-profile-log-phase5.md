@@ -314,7 +314,11 @@ agent's broker already holds migration events written by **another device**, unl
 - **P5-5 Nothing sensitive leaves the device or enters events:** marker strings placed only in
   `observation_events.content`, item `metadata.evidence` / `evidence_history` and summary metadata never appear in
   any decrypted event body. Markers in row content never appear in plaintext under the broker home, replica or
-  parity temp directory (P3-5 style, UTF-8 and UTF-16). A generated secret in row content is redacted and labelled
+  parity temp directory (P3-5 style, UTF-8 and UTF-16). **Exception (amended 2026-10-20):** the parity snapshot
+  file and its `-wal`/`-shm`/`-journal` sidecars are a plaintext copy of the source DB by design and are excluded
+  from the scan. Instead the test asserts that they live only in the 0700 temporary directory as 0600 files, that
+  the snapshot is the only file there holding markers, and that the whole directory is gone after the tool exits,
+  on success **and** on an injected error. A generated secret in row content is redacted and labelled
   `secret`. The migrator, hook and parity create no remote storage and never call `sync_once` (spy); the replica
   outbox afterwards equals the number of migrated objects. The parity report contains none of the query, content
   or project-name markers.

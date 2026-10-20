@@ -275,8 +275,7 @@ Owner decisions during implementation:
 Independent mutation testing of the Phase 4 security checks. Each mutant was applied alone, and the full suite
 was run against it.
 
-- Round 1: 13 of 23 mutants killed. The survivors were K2, K6, K7, K8, R3, R4, P2, P5 and P6, a total of 9
-  listed in the follow-up plus one counted twice.
+- Round 1: 14 of 23 mutants killed. The 9 survivors were K2, K6, K7, K8, R3, R4, P2, P5 and P6.
 - Round 2: Codex added 25 regression cases. **All 23 are killed**: keyring K1–K8, revocation/registry R1–R4,
   pairing P1–P6 and presence S1–S5.
 - The Phase 3 isolation mutants (19) were rerun on the Phase 4 code and are all still killed.

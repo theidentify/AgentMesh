@@ -7,7 +7,7 @@ from .source import rows
 
 def target_valid(value):
     return type(value) is str and (value == 'skip' or
-        (len(value.split('/')) >= 2 and all(p and p not in ('.','..') for p in value.split('/'))
+        (len(value.split('/')) >= 1 and all(p and p not in ('.','..') for p in value.split('/'))
          and not any(unicodedata.category(c) == 'Cc' or c == '\\' for c in value)))
 
 

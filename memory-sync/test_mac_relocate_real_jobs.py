@@ -310,3 +310,23 @@ def test_safe_interpreter_python_org_only(monkeypatch, target, uid, gid, mode, p
     monkeypatch.setattr(mac_relocate.sys, 'platform', platform)
     info = types.SimpleNamespace(st_mode=0o100000 | mode, st_uid=uid, st_gid=gid)
     assert mac_relocate.safe_interpreter(target, info) is ok
+
+
+
+def test_make_venv_strips_group_write_from_templates(tmp_path, monkeypatch):
+    # python.org venv --copies writes group-writable activate scripts; the new venv must still validate.
+    import mac_relocate
+    destination = tmp_path / 'venv'
+    requirements = tmp_path / 'inputs' / 'requirements.txt'
+    requirements.parent.mkdir(mode=0o700); (requirements.parent / 'wheels').mkdir(mode=0o700)
+    requirements.write_text('', encoding='utf-8')
+
+    def fake_execute(argv, *, timeout, env=None):
+        if argv[1:3] == ['-m', 'venv']:
+            (destination / 'bin').mkdir(parents=True, mode=0o755)
+            for name, mode in (('python', 0o755), ('activate', 0o664), ('Activate.ps1', 0o664)):
+                (destination / 'bin' / name).write_text('x', encoding='utf-8')
+                (destination / 'bin' / name).chmod(mode)
+    monkeypatch.setattr(mac_relocate, 'execute', fake_execute)
+    mac_relocate.make_venv(destination, requirements, timeout=5, python='/usr/bin/python3')
+    assert all(not p.stat().st_mode & 0o022 for p in destination.rglob('*'))

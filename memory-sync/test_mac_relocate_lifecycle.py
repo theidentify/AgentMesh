@@ -333,3 +333,24 @@ def test_installed_bridge_hook_executes_real_child_code(full_install, monkeypatc
     assert observed[0][3:5] == ['migrate', 'rows']
     assert '--ref' in observed[0] and 'memory_items:1' in observed[0]
     assert str(Path(config['to_root']) / 'memory-sync/data/mac.db') in observed[0]
+
+
+@pytest.mark.parametrize('outcomes,ok', [
+    ({'unchanged': 3, 'created': 1, 'revised': 1, 'retired': 1}, True),
+    ({'unchanged': 3, 'failed': 1}, False),
+    ({'created': 1}, False),
+])
+def test_catch_up_accepts_rows_added_during_verification(full_install, monkeypatch, outcomes, ok):
+    # The summary tick may add memory rows that catch-up imports; anything else still fails closed.
+    options, manifest, args = full_install
+    runner = options['runner']
+    original = runner.__call__
+
+    def call(argv, *, timeout, env=None):
+        if 'catch-up' in argv:
+            runner.calls.append(argv)
+            return dict(outcomes=dict(outcomes), errors=[], unmapped=[])
+        return original(argv, timeout=timeout, env=env)
+    options = dict(options, runner=call)
+    result = move(options, monkeypatch)
+    assert (result['status'] == 'relocated') is ok, result

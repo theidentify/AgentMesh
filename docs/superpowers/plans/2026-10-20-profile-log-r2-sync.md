@@ -1,0 +1,195 @@
+# Profile log remote sync to Cloudflare R2 (Mac) — plan
+
+> Status: **plan only.** Nothing in this document has been run on the live Mac. Deploying (D-1 to D-7)
+> needs the owner's explicit go-ahead at each **owner checkpoint**. The agent never reads, prints, stores or
+> passes R2 credentials; the owner enters them in their own terminal.
+
+## Already decided (not reopened here)
+
+From `docs/superpowers/specs/2026-10-18-encrypted-profile-log-design.md` (approved in #50) and later work:
+
+- R2 is the default S3-compatible backend. The storage interface is `put/get/list` only, with no deletes,
+  locks or conditional writes. Objects are already encrypted or signed, so moving to another backend is
+  `rclone sync` plus a config change.
+- Sizing assumes **1-minute polling**, which fits easily in R2's free tier.
+- The Cloudflare Worker gatekeeper is optional and later. Until it exists, the device holds a
+  **bucket-scoped** token ("Object Read & Write" on one private bucket). This is the same token shape the
+  owner used for the live check on 2026-10-19 (phase 1-2 REPORT: 3 passed, boto3 1.43.114 default settings,
+  no checksum overrides).
+- Phase 5 rollout rule: no broker sync until the migration is accepted. The owner accepted it on the Mac on
+  2026-10-20 (438 rows migrated).
+- Windows, the Worker, dual-write and compaction are out of scope here.
+
+## What is still open (this plan)
+
+Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no replica contents):
+
+| Fact | Consequence |
+|---|---|
+| Live `~/Library/LaunchAgents/org.agentmesh.profile-log.broker.plist` runs `~/.agentmesh/venv/bin/python -m agentmesh_log.cli broker run --home ~/.agentmesh/profile-log` with `StandardOutPath`/`StandardErrorPath` under `~/.agentmesh/logs/`. | No remote, so nothing has ever been uploaded. The generator does not emit the log paths: they were added by hand during rollout, and a newly rendered plist must keep them. |
+| `~/.agentmesh/venv` has **no boto3**. | `--s3-bucket` fails today with `S3 backend requires optional boto3 dependency`. Install the pin from `profile-log/requirements-s3.txt` (`boto3==1.43.114`). |
+| `S3Storage` builds `boto3.client('s3', …)` with the **default credential chain**, and `~/.aws/config` exists (Amazon Q). | Credentials under launchd would be ambiguous or wrong. The broker must receive credentials **explicitly** and never fall back to `AWS_*`, `~/.aws` or instance metadata. |
+| `render_profile_units()` (`memory-sync/platform_service.py`) renders only `broker run --home H`. | It needs remote flags, `--sync-interval` and log paths. |
+| `Broker.serve()` sync thread: `while not stopped.wait(i): self.sync_once(remote)`. The result is discarded, and an exception (for example from `sync_control` while offline) **ends the thread silently** while the broker keeps serving. | Sync can stop with nothing visible. The loop needs exception handling and a status record. |
+| Local replica: events 438, keys 2, registry 7, keyring 12 (459 objects). `sync_control` also pushes `registry/ keyring/ keys/ profiles/ alerts/`. | The first upload is about 459 objects. Control objects are signed public records or age-encrypted, and events and wraps are sealed. The ciphertext-only gate checks every one. |
+| `profile-log-status.json` and the Insight Profile log tab come from PR #61 (`agentmesh_log/status.py`, sections `overview/migration/last_apply/last_catch_up`). | `last_sync` is a new section. **I-4 depends on #61 being merged first.** |
+
+## Decisions proposed (owner confirms at checkpoint C-0)
+
+1. **Credentials in the login Keychain.** Two generic-password items under service
+   `org.agentmesh.profile-log.r2`, accounts `access-key-id` and `secret-access-key`. The owner creates them
+   with `security add-generic-password … -w`, using the interactive prompt, so nothing goes to argv or
+   history. The broker reads them through `/usr/bin/security find-generic-password -w <login keychain>`,
+   the same pattern and ACL as `oskeystore.MacKeychainFile` (default creator `/usr/bin/security`, so
+   launchd runs read without a GUI prompt once the user is logged in). Not chosen: plist
+   `EnvironmentVariables` (plaintext in the plist), `~/.aws/credentials` (plaintext, and it collides with
+   the existing `~/.aws/config`).
+2. **Bucket:** a new dedicated private bucket (suggested name `agentmesh-profile-log`), with a new token
+   scoped to that bucket only. The 2026-10-19 test token is revoked. Prefix `v1/`. Endpoint
+   `https://<account>.r2.cloudflarestorage.com`; the account ID is not secret and goes in the plist.
+3. **Interval:** `--sync-interval 60`, as in the design's sizing.
+4. **Fail open for recall, closed for remote.** If credentials are missing or R2 is unreachable, the broker
+   still serves local recall/remember. Each sync attempt records `last_sync.outcome` (for example
+   `credentials_missing`, `remote_error`) and never crash-loops under `KeepAlive`.
+5. **Remote objects are never deleted by AgentMesh.** Rollback stops syncing. Removing remote data is a
+   manual owner action (the R2 dashboard or `rclone purge` on the prefix).
+
+## Implementation (Codex implements, Claude reviews; PR against main)
+
+### I-1 Explicit credentials (`profile-log/agentmesh_log/storage/r2creds.py`, `cli.py`)
+- `load_keychain_credentials(service, runner=subprocess.run, keychain=None)` returns
+  `(access_key_id, secret)` or raises `StorageError('S3 credentials missing'|'S3 credentials refused')`.
+  It validates the shape (R2: 32 lowercase hex / 64 lowercase hex), has a timeout, uses a minimal env
+  `PATH=/usr/bin:/bin`, and raises outside the `except` block so no captured stdout is chained.
+- CLI: `--s3-credentials keychain:<service>` on `broker run` and `broker sync`. It is **required** whenever
+  `--s3-bucket` is given (no default chain). `remote_storage()` passes a `client_factory` that calls
+  `boto3.client('s3', endpoint_url=…, region_name='auto', aws_access_key_id=…, aws_secret_access_key=…)`.
+  `--s3-endpoint` must be `https://`.
+- Tests (fake runner + moto): missing item → `credentials_missing`; malformed value → refused; `AWS_*` env
+  and `~/.aws` set to bogus values are ignored (moto asserts the explicit key ID); no credential text in
+  any exception, log record or `repr`.
+
+### I-2 Resilient sync loop with status (`broker/service.py`, `status.py`)
+- The loop runs **once immediately**, then every `sync_interval`. Every exception becomes an outcome, and
+  the thread never exits while the broker runs.
+- After each attempt, `status.write(root, last_sync={at, outcome, uploaded, downloaded, invalid, errors,
+  outbox, local_objects, remote_objects, interval_s, backend:'s3'})`. It holds counts and identifiers only,
+  with no bucket, endpoint, key or object names. Extend `status.valid()` with a strict schema. To avoid
+  churn, write only on a change of outcome or counts, or every 10 minutes, whichever comes first.
+- One content-free stderr line per outcome change (`profile-log sync: ok uploaded=… outbox=…`).
+- Tests: a raising remote keeps the thread alive and records `remote_error`; recovery records `ok`; the
+  status schema rejects extra fields; the broker accepts connections while the remote is failing.
+
+### I-3 Plist rendering (`memory-sync/platform_service.py`)
+- `render_profile_units(..., remote=None, logs=None)`, where `remote = dict(bucket, prefix, endpoint,
+  credentials, sync_interval)`, validated as: bucket `[a-z0-9][a-z0-9-]{1,61}[a-z0-9]`, `https://`
+  endpoint, prefix passes `validate_key(prefix=True)`, credentials `keychain:[A-Za-z0-9.-]+`, finite
+  interval ≥ 10. With remote set, the broker argv gains `--s3-bucket B --s3-prefix P --s3-endpoint E
+  --s3-credentials keychain:S --sync-interval N`. `logs` adds `StandardOutPath/StandardErrorPath`
+  (`broker.out.log`/`broker.err.log`). Without `remote`, output is byte-identical to today (the fixture in
+  `memory-sync/tests/fixtures/profile_log_units.json` is unchanged).
+- `generate … --unit broker` gains `--s3-bucket/--s3-prefix/--s3-endpoint/--s3-credentials/--sync-interval/
+  --logs`. It still writes only into a new output directory, never registers or loads anything, and never
+  takes credentials as input.
+- Tests: plist round-trip with `plistlib`; the argv contains no secret-shaped values; invalid bucket,
+  http endpoint or control characters are rejected; the macOS output matches the live plist exactly apart
+  from the added flags.
+
+### I-4 Insight (after #61 merges; `insight/`)
+- The Profile log tab gets a **Remote sync** card from `last_sync`. If absent: "Off — not configured". If
+  `ok`: "Last sync <relative time>, outbox N, local L / remote R". If an error: the outcome in amber or red,
+  plus the last ok time. The card shows "stale" when `at` is older than 3× `interval_s`.
+- Read-only, as before; Insight never reads credentials or contacts R2.
+
+### I-5 Verification tool (`profile-log/tools/verify_remote.py`, read-only)
+- Inputs: home, the same `--s3-*` flags, `--markers FILE` (local plaintext probes, see G-5).
+- It lists the remote prefix, compares the key set with the local replica (`events/ keys/ registry/
+  keyring/ profiles/ alerts/`), and compares the **sha256 of every object** on both sides. It parses every
+  `events/` and `keys/` object as a sealed envelope or wrap, and every control object as a signed record.
+  It scans every remote byte string for each marker. It does a restore rehearsal: `Replica.sync_once` from
+  R2 into a disposable empty `FilesystemStorage` under `$TMPDIR`, then verifies and opens events with the
+  local keys, compares counts, and deletes the temp directory.
+- Output: one JSON line of counts and booleans only (`missing_remote, missing_local, hash_mismatch,
+  unparsable, marker_hits, restored_events, opened_events`). It never prints keys, markers, bodies or
+  object names.
+
+## Acceptance gates
+
+| Gate | Check | Pass |
+|---|---|---|
+| G-1 Tests | `profile-log` and `memory-sync` suites + new tests, CI on 3 OS | all green; no live network in CI (`AGENTMESH_R2_LIVE` unset) |
+| G-2 No credential leakage (code) | grep diff + tests: no `AWS_` fallback, no secret in argv/plist/status/logs/exceptions | test asserts with sentinel secrets |
+| G-3 Default unchanged | rendering without `remote` is byte-identical; `broker run` without flags behaves as today | fixture test |
+| G-4 Live smoke (owner's terminal) | `AGENTMESH_R2_LIVE=1 pytest profile-log/tests/test_r2_live.py` against the **new** bucket/token via Keychain-backed env | 3 passed, cleanup verified |
+| G-5 Ciphertext only | `verify_remote.py` with markers: all profile/scope paths, agent names, owner email, device hostname, 25 random memory snippets of 6+ words from `mac.db` (generated locally into a 0600 temp file the owner deletes after) | `marker_hits=0`, `unparsable=0` |
+| G-6 Heads match | same run | `missing_remote=0 missing_local=0 hash_mismatch=0`; remote events = 438 (+ new since) |
+| G-7 Restore rehearsal | same run | `restored_events == local events`, `opened_events == restored_events` |
+| G-8 Steady state | 10 min after D-6: status `last_sync.outcome=ok`, `outbox=0`; `remember` a synthetic memory → within 2 intervals `uploaded≥1`, then `outbox=0`; `launchctl print` shows one broker PID, no restarts | all hold |
+| G-9 Failure behaviour | owner temporarily renames the Keychain item (or pulls network): recall still works; status shows `credentials_missing`/`remote_error`; restoring it returns `ok` with no broker restart | all hold |
+| G-10 Insight | Profile log tab shows the Remote sync card per I-4 for ok, error and stale | screenshot by owner or reviewer |
+
+## Deployment on the Mac (owner at terminal; each step needs a go-ahead)
+
+**C-0 owner checkpoint:** confirm decisions 1-5, bucket name and prefix, and that #61 merges first (or I-4
+waits).
+
+- **D-1 Bucket + token (owner, Cloudflare dashboard).** Create a private bucket, no public access, no
+  r2.dev URL. Create a token: Object Read & Write, scoped to that bucket only. Revoke the 2026-10-19 test
+  token if it is unused.
+- **D-2 Keychain (owner's terminal).** Enter each value at the prompt:
+  ```sh
+  security add-generic-password -U -s org.agentmesh.profile-log.r2 -a access-key-id -w
+  security add-generic-password -U -s org.agentmesh.profile-log.r2 -a secret-access-key -w
+  ```
+  The agent may verify **only presence** with
+  `security find-generic-password -s org.agentmesh.profile-log.r2 -a access-key-id` (no `-w`; it prints
+  attributes, not the secret).
+- **D-3 Install boto3** into `~/.agentmesh/venv` from `profile-log/requirements-s3.txt` (pinned, hash-checked
+  wheel), and deploy the merged `agentmesh_log` to the runtime the same way the Phase 5 rollout did.
+- **D-4 Backup.** Copy the current broker plist to `~/.agentmesh/backups/r2-sync-<ts>/` and tar
+  `~/.agentmesh/profile-log/replica` (0600) there. Record the counts (459 objects).
+- **D-5 First sync, one-shot (owner's terminal).** `launchctl bootout gui/$UID/org.agentmesh.profile-log.broker`,
+  then `agentmesh-log broker sync --home ~/.agentmesh/profile-log --s3-bucket B --s3-prefix v1/
+  --s3-endpoint E --s3-credentials keychain:org.agentmesh.profile-log.r2`. Expect
+  `uploaded≈459 downloaded=0 invalid=0 errors=0`. Then run `verify_remote.py` → **G-5, G-6, G-7**. If any
+  gate fails, stop: go to rollback R-1 and leave the remote data for analysis.
+- **D-6 New plist.** `platform_service.py generate --unit broker … --s3-* … --sync-interval 60 --logs
+  ~/.agentmesh/logs --output <new dir>`. `diff` against the live plist shows only the added flags. Then
+  install it and `launchctl bootstrap gui/$UID …`.
+- **D-7 Watch.** G-8 and G-9, then G-10 in Insight.
+
+## Rollback
+
+- **R-1 Stop syncing (any time).** `launchctl bootout` the broker, restore the backed-up plist from D-4,
+  `launchctl bootstrap`. Local recall is unaffected: sync only adds verified objects to the replica, and
+  the replica tarball restores the exact pre-sync state if needed (stop the broker first; restarting
+  rebuilds indexes from the replica).
+- **R-2 Revoke access.** Delete the R2 token in the dashboard, then
+  `security delete-generic-password -s org.agentmesh.profile-log.r2 -a …` for both items.
+- **R-3 Remove remote data (optional, owner only).** Delete the `v1/` prefix or the whole bucket in the
+  dashboard. The objects are ciphertext or signed public records, so a leftover copy exposes no memory
+  contents, but it does reveal counts, timestamps (ULIDs) and device/profile IDs.
+- The code changes (I-1 to I-4) are inert without the new flags, so reverting the PR is not needed for
+  rollback.
+
+## What should show afterwards
+
+- `~/.agentmesh/profile-log-status.json` → `last_sync: {outcome:"ok", outbox:0, local_objects==remote_objects,
+  interval_s:60, at: < 3 min old}`; the other sections are unchanged.
+- Insight Profile log tab → "Remote sync: ok · last <1m ago · outbox 0 · local 459+ / remote 459+".
+  Before deploy it shows "Off — not configured".
+- `~/.agentmesh/logs/broker.err.log` → one `profile-log sync: ok …` line after start, then only lines on
+  outcome changes.
+- The R2 dashboard → objects under `v1/events/`, `v1/keys/`, `v1/registry/`, `v1/keyring/`, growing by
+  about 1-1.5 KB per new memory.
+
+## Known limits
+
+- The bucket token is account-wide for that bucket. A stolen Mac login session can read and overwrite
+  ciphertext, and plain PUT has no overwrite prevention. The Worker gatekeeper (design, optional) is what
+  removes this; it is not in scope.
+- The Keychain item is readable by any process running as the user (the same boundary as `keystore.sealed`).
+- Without a second device there is nothing to download yet. Windows pairing is a later, separate plan.
+- Each sync lists 5 control prefixes once and `events/`+`keys/` twice (about 9 LIST calls, which are R2 Class A).
+  At 60 s that is about 13k a day or 390k a month, inside the 1M free Class A, with little headroom for a second
+  device at the same interval. Raise the interval or add change notification (Worker) before adding devices.

@@ -61,15 +61,114 @@ def path(value, *, missing=False, directory=None, private=False):
     return result
 
 
-def tree(root):
+def tree(root, *, archive_only=False):
     """Validate each entry without following links, including empty directories."""
     root = path(str(root))
     entries = [root]
     if root.is_dir():
-        entries += sorted(root.rglob('*'))
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            entries.extend(Path(directory) / name for name in sorted(dirs + files))
     for entry in entries:
-        path(str(entry))
+        if archive_only and entry.is_symlink():
+            # Only the link itself is inspected. Its target may be external,
+            # a directory, or dangling; none is traversed.
+            path(str(entry.parent), directory=True)
+            if (entry.lstat().st_uid != os.getuid() or
+                    any(ord(c) < 32 or ord(c) == 127 for c in str(entry))):
+                raise ValueError('invalid archive symlink')
+        else:
+            path(str(entry))
     return entries
+
+
+def archive_allows_links(source, config, app):
+    protected = [app, config['from']['exchange'], config['jobs']['status_dir'],
+                 config['jobs']['production_config'], *config['jobs']['files'],
+                 *config['rules'], config['from']['plist'],
+                 *[j['plist'] for j in config['jobs']['plists']]]
+    source = Path(source)
+    return not any(source.is_relative_to(Path(p)) or Path(p).is_relative_to(source)
+                   for p in protected)
+
+
+def interpreter(value):
+    """Interpreter-only exception: inspect the resolved user/root-owned binary."""
+    if (type(value) is not str or not Path(value).is_absolute() or '..' in Path(value).parts or
+            any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise ValueError('invalid job interpreter')
+    try:
+        target = Path(os.path.realpath(value, strict=True))
+        info = target.stat()
+    except (OSError, ValueError):
+        raise ValueError('job interpreter missing or invalid') from None
+    if not stat.S_ISREG(info.st_mode) or not safe_interpreter(target, info) or not os.access(target, os.X_OK):
+        raise ValueError('job interpreter must be a safe executable owned by user or root')
+    return target
+
+
+PYTHON_ORG = Path('/Library/Frameworks/Python.framework')
+
+
+def safe_interpreter(target, info):
+    """User- or root-owned and not writable by others. The python.org macOS installer is root-owned
+    and admin-group (gid 80) writable; accept exactly that layout, never world-writable."""
+    if info.st_mode & 0o002 or info.st_uid not in (0, os.getuid()):
+        return False
+    if not info.st_mode & 0o020:
+        return True
+    return (sys.platform == 'darwin' and info.st_uid == 0 and info.st_gid == 80
+            and Path(target).is_relative_to(PYTHON_ORG))
+
+
+def job_command(argv, jobs, app):
+    """Parse script commands and the narrowly supported job_notify wrapper."""
+    if (not isinstance(argv, list) or len(argv) < 2 or
+            not all(type(a) is str and a and not any(ord(c) < 32 or ord(c) == 127 for c in a) for a in argv)):
+        raise ValueError('unsupported job command')
+
+    def script_command(command):
+        if len(command) < 2:
+            raise ValueError('job interpreter and script required')
+        resolved = interpreter(command[0])
+        index = 1
+        while index < len(command) and command[index] in ('-u', '-I', '-B'):
+            index += 1
+        if index == len(command) or command[index].startswith('-'):
+            raise ValueError('unsupported interpreter flags')
+        script = path(command[index], directory=False)
+        return resolved, script, index
+
+    outer, script, index = script_command(argv)
+    resolved = [outer]
+    if script == Path(app) / 'job_notify.py':
+        tail = argv[index + 1:]
+        if '--' not in tail:
+            raise ValueError('wrapper command separator required')
+        split = tail.index('--')
+        options, inner = tail[:split], tail[split + 1:]
+        if len(options) % 2:
+            raise ValueError('invalid wrapper options')
+        values = {}
+        for key, value in zip(options[::2], options[1::2]):
+            if key not in ('--name', '--state-dir', '--webhook-file', '--timeout') or key in values:
+                raise ValueError('invalid wrapper options')
+            values[key] = value
+        if (not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', values.get('--name', '')) or
+                values.get('--state-dir') != jobs['status_dir']):
+            raise ValueError('invalid wrapper name or status directory')
+        if '--webhook-file' in values:
+            path(values['--webhook-file'], directory=False, private=True)
+        if '--timeout' in values:
+            if not values['--timeout'].isdigit() or int(values['--timeout']) <= 0:
+                raise ValueError('invalid wrapper timeout')
+        inner_python, entry, _ = script_command(inner)
+        if str(entry) not in jobs['files']:
+            raise ValueError('wrapper job entrypoint absent from manifest files')
+        resolved.append(inner_python)
+        return dict(interpreters=resolved, python=inner_python, wrapper=True, script=script)
+    if str(script) not in jobs['files'] and not script.is_relative_to(Path(jobs['status_dir'])):
+        raise ValueError('job entrypoint absent from manifest files or status directory')
+    return dict(interpreters=resolved, python=outer, wrapper=False, script=script)
 
 
 class Syncthing:
@@ -243,7 +342,7 @@ def _read(manifest, supervisor, transport):
         archived = path(archived)
         if archived == source_parent or not archived.is_relative_to(source_parent):
             raise ValueError('archive must be under source memory root')
-        tree(archived)
+        tree(archived, archive_only=archive_allows_links(archived, config, runtime['app_root']))
     settings = path(config['settings_local'], directory=False, private=True)
     if settings != root / 'settings.local.json':
         raise ValueError('settings must be under destination root')
@@ -311,26 +410,32 @@ def copy_database(source, destination):
     return before
 
 
-def inventory(root):
+def inventory(root, *, archive_only=False):
     root = absolute(root)
-    return {str(entry.relative_to(root)): dict(mode=stat.S_IMODE(entry.stat().st_mode),
-            sha256=digest(entry) if entry.is_file() else None)
-            for entry in tree(root)}
+    return {str(entry.relative_to(root)):
+            ('link -> ' + os.readlink(entry) if entry.is_symlink() else
+             dict(mode=stat.S_IMODE(entry.stat().st_mode),
+                  sha256=digest(entry) if entry.is_file() else None))
+            for entry in tree(root, archive_only=archive_only)}
 
 
-def copy_tree(source, destination):
+def copy_tree(source, destination, *, archive_only=False):
     source, destination = absolute(source), absolute(destination)
-    before = inventory(source)
+    before = inventory(source, archive_only=archive_only)
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
         raise ValueError('copy destination must be absent or empty')
-    for entry in tree(source):
+    for entry in tree(source, archive_only=archive_only):
         target = destination / entry.relative_to(source)
-        if entry.is_dir():
+        if entry.is_symlink():
+            os.symlink(os.readlink(entry), target)
+            continue
+        elif entry.is_dir():
             target.mkdir(mode=0o700, exist_ok=True)
         else:
             shutil.copyfile(entry, target, follow_symlinks=False)
         target.chmod(stat.S_IMODE(entry.stat().st_mode))
-    if inventory(destination) != before or inventory(source) != before:
+    if (inventory(destination, archive_only=archive_only) != before or
+            inventory(source, archive_only=archive_only) != before):
         raise ValueError('copy verification failed')
 
 
@@ -352,11 +457,21 @@ def execute(argv, *, timeout, env=None):
 def make_venv(destination, requirements, *, timeout, python=None):
     interpreter = python or sys.executable
     execute([interpreter, '-m', 'venv', '--copies', str(destination)], timeout=timeout)
-    execute([str(destination / 'bin/python'), '-m', 'pip', 'install', '--no-index',
-             '--disable-pip-version-check', '--no-input', '--no-deps', '--only-binary=:all:', '--find-links',
-             str(requirements.parent / 'wheels'), '-r', str(requirements)], timeout=timeout)
+    if requirement_pins(requirements):
+        execute([str(destination / 'bin/python'), '-m', 'pip', 'install', '--no-index',
+                 '--disable-pip-version-check', '--no-input', '--no-deps', '--only-binary=:all:', '--find-links',
+                 str(requirements.parent / 'wheels'), '-r', str(requirements)], timeout=timeout)
     execute([str(destination / 'bin/python'), '-m', 'pip', 'check'], timeout=timeout)
     tree(destination)
+
+
+def requirement_pins(requirements):
+    lines = [s.strip() for s in Path(requirements).read_text(encoding='utf-8').splitlines()
+             if s.strip() and not s.lstrip().startswith('#')]
+    if any(not re.fullmatch(r'[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[A-Za-z0-9_.+!-]+', s)
+           for s in lines):
+        raise ValueError('requirements must contain exact package==version pins only')
+    return lines
 
 
 def rewrite(value, mapping):
@@ -442,6 +557,7 @@ def _prepare(manifest, supervisor, transport, release_source):
         raise ValueError('OTA-owned installation requires its existing consumer')
     jobs = config['jobs']
     roles = {}
+    commands = {}
     job_services = []
     for item in jobs['plists']:
         job = plistlib.loads(read_local(item['plist']))
@@ -449,13 +565,7 @@ def _prepare(manifest, supervisor, transport, release_source):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+', label) or 'Program' in job:
             raise ValueError('unsupported job service')
         argv = job.get('ProgramArguments')
-        if not isinstance(argv, list) or len(argv) < 2 or not all(isinstance(a, str) for a in argv):
-            raise ValueError('unsupported job command')
-        path(argv[0], directory=False)
-        if not os.access(argv[0], os.X_OK):
-            raise ValueError('job interpreter must be executable')
-        if argv[1] not in jobs['files']:
-            raise ValueError('job entrypoint absent from manifest files')
+        commands[label] = job_command(argv, jobs, app)
         live = supervisor.inspect(label)
         if live['loaded'] and live['arguments'] != argv:
             raise ValueError('live job command mismatch')
@@ -468,12 +578,11 @@ def _prepare(manifest, supervisor, transport, release_source):
     if set(roles) != {'ingest', 'summary'}:
         raise ValueError('ingest and summary job labels required')
     requirements = Path(jobs['venv_requirements'])
-    lines = requirements.read_text(encoding='utf-8').splitlines()
-    if not lines or any(not re.fullmatch(r'[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[A-Za-z0-9_.+!-]+', s.strip())
-                        for s in lines if s.strip() and not s.lstrip().startswith('#')):
-        raise ValueError('requirements must contain exact package==version pins only')
-    tree(path(str(requirements.parent / 'wheels'), directory=True))
+    if requirement_pins(requirements):
+        tree(path(str(requirements.parent / 'wheels'), directory=True))
     release, files = release_files(release_source)
+    if any(c['wrapper'] for c in commands.values()) and release / 'job_notify.py' not in files:
+        raise ValueError('release must include job_notify.py')
     bridge = render_bridge(config, runtime)
     recall = []
     for rule in config['rules']:
@@ -515,7 +624,7 @@ def _prepare(manifest, supervisor, transport, release_source):
     if any(p == app.parent or p.is_relative_to(root) or root.is_relative_to(p) for p in archives):
         raise ValueError('archive overlaps protected root')
     for item in archives:
-        tree(item)
+        tree(item, archive_only=archive_allows_links(item, config, app))
     # Every source-root child must be accounted for, avoiding accidental
     # retention of an active old binary or an unlisted historical tree.
     if any(not any(p == a or p.is_relative_to(a) for a in archives) for p in app.parent.iterdir()):
@@ -523,19 +632,22 @@ def _prepare(manifest, supervisor, transport, release_source):
     if len({p.name for p in archives}) != len(archives):
         raise ValueError('archive destination collision')
     report['changes'] = sorted(set(report['changes']) | set(external) |
-        {str(p) for p in files} | {str(p) for a in archives for p in tree(a)})
+        {str(p) for p in files} | {str(p) for a in archives
+                                 for p in tree(a, archive_only=archive_allows_links(a, config, app))})
     report['references'] = {old: new for old, new in mapping.items()}
     watched = set(external + [str(manifest), config['from']['runtime'], config['settings_local'],
                              jobs['venv_requirements'], str(root / 'settings.json')])
     watched |= {str(p) for p in files}
     watched |= {str(p) for p in tree(runtime['security_dir']) if p.is_file()}
     watched |= {runtime['security_state'], runtime['workflow_config'], config['from']['binary']}
-    watched |= {j['service']['ProgramArguments'][0] for j in job_services}
+    watched |= {str(p) for c in commands.values() for p in c['interpreters']}
+    watched |= {str(c['script']) for c in commands.values()}
     hashes = {p: digest(Path(p)) for p in watched if Path(p).is_file()}
     return dict(config=config, runtime=runtime, scope=scope, service=service, syncthing=syncthing,
                 report=report, jobs=job_services, roles=roles, mapping=mapping, targets=targets,
                 bridge=bridge, recall=recall[0], release=release, files=files,
-                archives=archives, hashes=hashes)
+                archives=archives, hashes=hashes,
+                venv_python=str(commands[roles['ingest']['Label']]['python']))
 
 
 def row_versions(database):
@@ -665,8 +777,14 @@ def _archive(prepared, journal):
     stamp = time.strftime('%Y%m%dT%H%M%S', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
     for source in prepared['archives']:
         target = root / (source.name + '.pre-relocate-' + stamp)
-        modes = {str(p.relative_to(source)): stat.S_IMODE(p.stat().st_mode) for p in tree(source)}
-        operation = dict(source=str(source), target=str(target), modes=modes)
+        archive_only = archive_allows_links(source, prepared['config'], prepared['runtime']['app_root'])
+        entries = tree(source, archive_only=archive_only)
+        modes = {str(p.relative_to(source)): stat.S_IMODE(p.stat().st_mode)
+                 for p in entries if not p.is_symlink()}
+        links = {str(p.relative_to(source)): 'link -> ' + os.readlink(p)
+                 for p in entries if p.is_symlink()}
+        operation = dict(source=str(source), target=str(target), modes=modes,
+                         archive_only=archive_only, links=links)
         journal.record['archives'].append(operation)
         journal.save()  # Intent precedes rename, so interrupted moves are recoverable.
         source.rename(target)
@@ -674,10 +792,19 @@ def _archive(prepared, journal):
         journal.write(old, ('# Moved to ' + str(Path(prepared['config']['to_root']) / 'jobs' / name) + '\n').encode('utf-8'))
 
 
+def _check_archive(operation):
+    target = Path(operation['target'])
+    entries = tree(target, archive_only=operation.get('archive_only', False))
+    links = {str(p.relative_to(target)): 'link -> ' + os.readlink(p)
+             for p in entries if p.is_symlink()}
+    if links != operation.get('links', {}):
+        raise ValueError('archive symlinks changed')
+
+
 def _readonly_archives(journal):
     for operation in journal.record['archives']:
         target = Path(operation['target'])
-        tree(target)
+        _check_archive(operation)
         for relative, mode in sorted(operation['modes'].items(), key=lambda item: len(Path(item[0]).parts), reverse=True):
             path(str(target / relative)).chmod(mode & ~0o222)
 
@@ -720,7 +847,7 @@ def _restore(journal, supervisor, syncthing, *, timeout, archived=False):
             if Path(relative).is_absolute() or '..' in Path(relative).parts:
                 raise ValueError('invalid archive recovery entry')
         if target.exists():
-            tree(target)
+            _check_archive(operation)
     record['rollback_archived'] = archived
     record['state'] = 'rolling_back'
     record.setdefault('restored', {})
@@ -973,7 +1100,7 @@ def relocate(manifest, *, dry_run=False, timeout=300, supervisor=None, transport
                 venv_builder(root / 'jobs/.venv', Path(cfg['jobs']['venv_requirements']), timeout=timeout)
             else:
                 make_venv(root / 'jobs/.venv', Path(cfg['jobs']['venv_requirements']), timeout=timeout,
-                          python=prepared['roles']['ingest']['ProgramArguments'][0])
+                          python=prepared['venv_python'])
         step('copy jobs', jobs_copy)
 
         def bind():

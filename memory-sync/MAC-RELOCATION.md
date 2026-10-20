@@ -15,7 +15,9 @@ copied into `versions/<sha>/agentmesh`; relocation does not upgrade the worker o
 change its signing identity.
 
 Create a user-owned 0600 JSON manifest with absolute paths (expand `~` yourself).
-All components must be user-owned, not group/world-writable, and have no symlinks.
+Live data, state, identity, exchange and job files must be user-owned, not
+group/world-writable, and have no symlinks. Job interpreters and archive-only
+trees have the narrow exceptions described below.
 The following is a template: replace every example path and list every actual
 job entrypoint, rule and historical source-root entry before use.
 
@@ -67,19 +69,48 @@ job entrypoint, rule and historical source-root entry before use.
 
 Unknown manifest fields are rejected. Job plist labels must match their contents;
 one ingest label and one summary/summarize label identify verification ticks.
-Each plist must use `ProgramArguments` with its interpreter and a script listed
-in `jobs.files`. Include export, metrics and watch entrypoints too when installed.
+Each plist must use `ProgramArguments` with its interpreter, optional `-u`, `-I`
+or `-B` flags, then a script listed in `jobs.files` or inside `jobs.status_dir`.
+Include export, metrics and watch entrypoints too when installed.
 One JSON rule must contain the actual `recall_argv`. The existing bridge must have
 enabled recall, dual-write and authority with accessible private agent keys and
 migration mapping. These credentials are not printed.
 
 Supply exact `package==version` pins for the complete dependency closure.
-Place already acquired wheels in `wheels/` beside the requirements file.
-Venv creation uses the original ingest interpreter, `venv --copies`, offline
+Place already acquired wheels in `wheels/` beside the requirements file when
+dependencies are needed. For standard-library-only jobs an empty requirements
+file is accepted; no wheelhouse or pip installation is needed.
+Venv creation uses the resolved real interpreter of the actual ingest job
+(the inner interpreter for a wrapper), `venv --copies`, offline
 wheel-only pip installation with no dependency downloads, and `pip check`.
-Symlinked source interpreters or generated venv entries are refused. Keep the
+Job interpreters may be symlink chains: their final real target must be a regular,
+executable file owned by the user or root and not group/world-writable. An old
+venv interpreter becomes `jobs/.venv/bin/python`; an external interpreter such
+as Homebrew stays at its existing argv path. Generated venv entries still must
+not contain symlinks. Keep the
 requirements and wheelhouse outside the old memory root, or explicitly account
 for their archive location.
+
+For the real Mac ingest/summary layout, the script immediately after the outer
+interpreter is `<app_root>/job_notify.py`. Its `--name`, `--state-dir`, optional
+`--webhook-file` and optional positive integer `--timeout` are validated, and
+`--` must separate the inner interpreter/script command. List the inner
+`omp_memory_ingest.py` and `omp_memory_summary_cron.py` scripts in `jobs.files`,
+not `job_notify.py`; the selected release must include that wrapper. Both
+interpreter positions and `--state-dir` are rewritten, while the webhook path
+stays unchanged. The inner script must be in `jobs.files`.
+
+Insight may use `python3 -u <status_dir>/insight-release-<hex>/server.py --sqlite
+<old db> --port 51877`. Its server script is copied with the status tree rather
+than listed in `jobs.files`. The status path and `--sqlite` value are rewritten;
+`-u`, the external interpreter and the port remain unchanged.
+
+Symlinks inside archive-only trees, including the old `.venv`, are preserved
+with their exact target text and recorded as `link -> target`. They are never
+followed, hashed as target content or chmodded. The normal archive operation
+renames these trees intact; archive-only copies create links with `os.symlink`.
+Live source trees retain strict symlink refusal. Rollback checks the recorded
+link inventory before changing archive permissions.
 
 The existing destination root may be populated. Its existing entries are
 preserved except for the requested settings-local update; normal broker/service

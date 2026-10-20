@@ -235,3 +235,55 @@ Every path must be absolute, contain no control characters and no symlinked comp
    key_id and peer acceptance (R-6).
 5. Start/verify, the journal and rollback at every step (R-5); archive (D4).
 6. CLI wiring, `MAC-RELOCATION.md` and the REPORT (gate → tests, deviations, owner steps for R-8).
+
+## Amendment (2026-10-20): support the real Mac job layout
+
+The first owner dry-run on the real Mac (read-only) refused, because the jobs there do not have the shape the
+command expects. **Owner decision: change the code to support the real shapes.** The facts, with the home
+directory written as `H`:
+
+- **Ingest and summary plists:**
+  `[H/.hermes/omp-memory/.venv/bin/python, H/.hermes/omp-memory/sqlite-sync/job_notify.py, --name, ingest|summary,
+  --state-dir, H/.hermes/omp-memory/production-status, --webhook-file, H/.config/agentmesh/discord-webhook, --,
+  H/.hermes/omp-memory/.venv/bin/python, H/.hermes/scripts/omp_memory_ingest.py|omp_memory_summary_cron.py]`.
+  - `job_notify.py` lives in the app root, which is already relocated as app files.
+  - The real entrypoint follows `--`, and must be in `jobs.files`.
+  - The `--state-dir` value is the status dir; `--webhook-file` stays unchanged.
+- **Insight plist:**
+  `[/opt/homebrew/bin/python3, -u, H/.hermes/omp-memory/production-status/insight-release-<hex>/server.py, --sqlite,
+  H/.hermes/omp-memory/sqlite-sync/data/mac.db, --port, 51877]`.
+  - It has interpreter flags before the script (`-u`).
+  - The script lives inside the status dir, which is copied as a tree to `status/`. It is not a `jobs.files` entry.
+  - Its `--sqlite` must point at the new DB.
+- **Interpreters are symlinks:**
+  - `.venv/bin/python` points to `/usr/local/bin/python3`, then to `/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10` (root-owned).
+  - `/opt/homebrew/bin/python3` points into the user-owned Homebrew Cellar.
+- **The old `.venv` contains symlinks** (`bin/python*`), and it is in the archive list.
+- `job_notify.py` and every script use only the standard library. The new jobs venv can be created from an empty
+  requirements file.
+
+Required behaviour (with tests whose fixture copies these exact argv shapes; replace `H` with the temp home):
+
+1. **Job command parsing:**
+   - An interpreter may be followed by flags (`-u`, `-I`, `-B`) before the script.
+   - A command whose script is `<app_root>/job_notify.py` is a wrapper: its own options are validated, and the
+     job entrypoint is the argv after `--` (interpreter plus script, which must be in `jobs.files`).
+   - Otherwise, the script must be in `jobs.files` or inside `jobs.status_dir`.
+   - Rewriting uses the path mapping for every argument, including `--state-dir`, `--sqlite` and both
+     interpreter positions (the old venv python becomes the new `jobs/.venv/bin/python`).
+2. **Interpreters:**
+   - A job interpreter may be a symlink. Resolve it with `realpath` and require the **final target** to be a
+     regular, executable file, not group- or world-writable, owned by the user **or by root**.
+   - Old venv interpreters are mapped to the new venv. Others (for example the Homebrew python) stay as they are.
+   - `make_venv` uses the resolved real interpreter of the ingest job's **inner** interpreter (after `--`),
+     with `--copies`.
+3. **Archive trees:** symlinks inside archive-only trees (never in the DB, state, identity, exchange or job files)
+   are allowed. They are archived as symlinks (`os.symlink` of the same target text), never followed,
+   never dereferenced during hashing, and recorded in the inventory as `link -> target`. Every other tree keeps
+   refusing symlinks.
+4. **A dry run on a fixture that mirrors this layout** passes. Each of 1–3 has a mutation-killable test: wrapper
+   detection, flags before the script, the root-owned real interpreter accepted while a group-writable one is
+   refused, and archive symlinks preserved without being followed.
+
+Ground rules as before: change only `memory-sync/mac_relocate.py`, its tests, `MAC-RELOCATION.md` and the REPORT.
+No commits, no network, synthetic installs only.

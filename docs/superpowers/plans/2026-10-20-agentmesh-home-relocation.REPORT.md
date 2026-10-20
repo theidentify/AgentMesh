@@ -127,6 +127,8 @@ and regenerating it for the archived DB after explicit rollback.
 - Recreated venv uses exact pins, a local `wheels/` sibling, offline wheel-only
   pip with no dependency downloads and `pip check`. Pins include the dependency
   closure. Source/generated symlinks are refused, including interpreter links.
+  The real-job-layout amendment below supersedes the source-interpreter rule
+  and permits empty requirements for standard-library-only jobs.
 - Unambiguous ingest and summary/summarize labels select verification ticks;
   one JSON rule supplies `recall_argv`. Unsupported layouts refuse before drain.
   OTA-owned installations refuse rather than bypassing the existing consumer.
@@ -239,3 +241,156 @@ contains socket tests, which retain their sandbox failures.
 8. If needed, run `mac-relocate-rollback --backup B`, type `ROLLBACK`, and review
    row-change counts. Keep newer data without merging/deleting it automatically.
    The old service uses the archived runtime.
+
+## Amendment: real job layout
+
+Implemented items 1–4 of the 2026-10-20 amendment on
+`claude/relocate-real-jobs`, following the owner's report that the first real
+read-only dry run refused the live job layout. No real installation was read,
+changed or exercised during this work.
+
+### Changes and evidence
+
+- Added script-command parsing for optional `-u`, `-I`, `-B` flags. The exact
+  `<app_root>/job_notify.py` wrapper validates its option pairs, required name
+  and matching status directory, private webhook path when supplied, optional
+  positive integer timeout, required `--` separator, and inner interpreter/
+  script. The inner script must be in `jobs.files`. Other commands accept a
+  script in `jobs.files` or inside `jobs.status_dir`. Unknown interpreter flags
+  and module commands remain refused.
+- Interpreter resolution is a narrow exception to path symlink refusal.
+  `realpath` resolves chains; the final target must be regular, executable,
+  owned by the user or root, and not group/world-writable. Resolved interpreter
+  targets enter the confirmation hash inventory. Old venv argv paths map to
+  `jobs/.venv`; external interpreter argv paths stay unchanged. Venv creation
+  uses the resolved **inner** ingest interpreter with `--copies`.
+- Empty/comment-only requirements now support standard-library-only jobs:
+  create the venv, skip pip install and the wheelhouse requirement, then run
+  pip check. Nonempty requirements retain exact pins and offline wheel-only
+  installation. The existing offline-command test now creates its synthetic
+  pinned requirements file explicitly.
+- Archive-only tree traversal never follows directory or file symlinks.
+  Inventories and the recovery journal store `link -> target`; links are
+  excluded from target hashing and permission changes. Archive copies use
+  `os.symlink` with unchanged target text. Before archival chmod or rollback,
+  the recorded link inventory is checked. Live app/data/state/identity/exchange/
+  status/job-file trees retain symlink refusal and hardlink protections.
+- Updated `MAC-RELOCATION.md` with the real wrapper and Insight layouts,
+  interpreter exception, empty requirements and archive-link behavior.
+
+The new `test_mac_relocate_real_jobs.py` fixture reproduces the specified
+ingest/summary argv, including both interpreter positions, `--name`,
+`--state-dir`, unchanged `--webhook-file`, separator and inner script. Its
+Insight argv has `-u`, `production-status/insight-release-a1b2c3/server.py`,
+`--sqlite`, and port `51877`. It creates both interpreter symlink chains and an
+explicitly archived old `.venv`, with an empty requirements file and no
+wheelhouse. All executable files are harmless synthetic stubs.
+
+| Requirement / gates | Tests |
+| --- | --- |
+| Exact real-layout read-only planning; R-3, R-7 | `test_exact_real_layout_dry_run_is_readonly` compares bytes, link text, modes and mtimes, and requires no drain |
+| Wrapper detection and full argv mapping; R-4 | `test_wrapper_flags_status_and_both_interpreters_rewritten` requires successful relocation, exact rewritten ingest/summary/Insight argv, executed verification ticks, and unchanged webhook |
+| Flags before script; R-4 | `test_interpreter_flags_before_script` covers `-u` and `-I -B` |
+| Root-owned real target and inner-interpreter selection | `test_resolved_root_interpreter_used_for_empty_venv` deliberately gives the wrapper a different outer interpreter, requires the root-owned inner target for `venv --copies`, and requires no pip install |
+| Unsafe executable refusal; R-3 | `test_group_writable_resolved_interpreter_refused` requires refusal before drain |
+| Wrapper validation; R-3 | Five cases of `test_wrapper_options_and_inner_command_validated`: missing separator, unknown option, wrong status directory, unlisted inner script, module flag |
+| Archive links; R-1, R-3, R-5 | `test_archive_links_preserved_without_hashing_or_chmod_target` exercises relocation and explicit rollback, directory/dangling links, journal inventory and untouched external targets; `test_archive_copy_inventory_preserves_links_without_dereferencing` directly checks file/directory/dangling copies and forbids target hashing |
+| Exception confinement; R-3 | Five `test_live_trees_still_refuse_symlinks` cases cover data, identity, exchange, status and job files |
+
+TDD: the initial 17-case fixture run produced **7 failures / 10 passes** before
+implementation. The seven positive/targeted cases exposed the old unconditional
+archive symlink refusal; negative cases already refused. After implementation,
+all 17 passed. An additional direct archive-copy case brings the amendment to
+18 cases. The strengthened inner-interpreter test distinguishes the wrapper's
+outer interpreter from the actual ingest interpreter.
+
+Mutation verification used fresh interpreter processes and in-memory source
+replacements only, asserting exactly one replacement each. **6/6 mutants were
+killed**: disabled wrapper detection, disabled flag skipping, removed root-owner
+acceptance, removed interpreter write-mode refusal, removed archive-link
+acceptance, and replaced link creation with file copying. The flag mutant
+failed both flag variants. No mutant or harness file was written. Jev's
+independent read-only review found no blocking finding in the amendment diff.
+
+### Deviations / interpretation
+
+- Literal `/opt/homebrew`, `/usr/local` and `/Library` paths are rooted under a
+  temporary synthetic `system/` directory. `H` is a temporary home; root
+  ownership is simulated only for the final framework interpreter's stat
+  result. This preserves the exact argv structure without reading real
+  interpreters, changing system files or requiring chown.
+- Existing same-filesystem archival still renames whole trees intact, which
+  preserves the original symlink inode and target text without following it.
+  The archive-only copy helper uses the amendment's explicit `os.symlink`
+  mechanism. No unnecessary copy/delete cycle replaces the established rename
+  and rollback protocol.
+- “Archive-only” excludes any tree overlapping live app, exchange, status,
+  production config, job files, rules or plists. The old `.venv` qualifies
+  because it is archived rather than copied into the new live venv. Its links
+  are never chmodded; making an archive read-only does not alter link targets.
+- The wrapper supports its existing optional `--webhook-file` and `--timeout`
+  options, rejects duplicate/unknown options, and requires the `--state-dir`
+  value to equal the declared status directory. The selected release must
+  include `job_notify.py` when a wrapper job uses it.
+- Empty and comment-only requirements both mean no dependencies. Generated
+  live venv trees keep strict no-symlink validation. Catch-up service handling
+  remains the previously documented owner unload/regenerate/load step.
+
+### Amendment commands and results
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 ~/.cache/agentmesh-testvenv/bin/python -m pytest -q -p no:cacheprovider memory-sync/test_mac_relocate*.py
+```
+
+Result: **128 passed, 1 skipped in 24.69s** (exit 0). The skip remains the
+optional `pyrage` broker contract case.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 ~/.cache/agentmesh-testvenv/bin/python -m pytest -q -p no:cacheprovider memory-sync
+```
+
+Full-suite result: **10 failed, 1691 passed, 21 skipped, 1 warning, 20 subtests
+passed in 307.81s** (exit 1). The 18 amendment cases all pass. The failures are
+exactly the same ten `test_digest_api.py` loopback socket-bind refusals listed
+above (`PermissionError: [Errno 1] Operation not permitted`); no new failure
+appeared. The warning remains the intentional duplicate `SYNC.md` ZIP member.
+
+`git diff --check` and UTF-8/AST/trailing-whitespace checks passed. The amendment
+scope audit found exactly five allowed changed/new files: `mac_relocate.py`,
+`test_mac_relocate_real_jobs.py`, the one-line pinned-fixture correction in
+`test_mac_relocate_safety.py`, `MAC-RELOCATION.md`, and this REPORT.
+`mac_replace.py` and its tests are unchanged. No commit, branch creation,
+network access, real service operation or real home-directory access occurred.
+
+R-8 remains owner-only. After review/merge, retry the real read-only dry run
+with the actual wrapper/Insight plists, inner scripts in `jobs.files`, old venv
+in the archive list, selected release containing `job_notify.py`, and an empty
+requirements file if all jobs use only the standard library. Then follow the
+existing confirmed-move, catch-up service and host verification steps.
+
+## Reviewer follow-up: real-host dry run (Claude, 2026-10-20)
+
+The owner-approved read-only dry run against the real Mac still refused after the job-layout amendment. The
+ingest interpreter's real target, `/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10`, is
+root-owned and admin-group writable (`rwxrwxr-x`, gid 80), which is the standard python.org installer layout.
+`safe_interpreter()` now accepts a group-writable interpreter only when all of these hold: the platform is
+macOS, the owner is root, the group is gid 80, and the path is under `/Library/Frameworks/Python.framework`.
+World-writable interpreters, other groups, other paths and other platforms are still refused. Test:
+`test_safe_interpreter_python_org_only` (7 cases). The new jobs venv is created with `--copies`, so its
+interpreter is user-owned.
+
+With that change, the real dry run plans successfully:
+
+- 6 new destinations;
+- 1.19 GB required, 10.6 GB free;
+- 12,990 files: the old venv (11,075, archived with its symlinks preserved), the exchange (1,454), and the
+  runtime, history and jobs;
+- 22 path references rewritten.
+
+Reviewer mutation tests killed all 5 mutants:
+
+- python.org path restriction;
+- group-writable acceptance;
+- world-writable refusal;
+- wrapper detection;
+- archive symlinks copied as links, not followed.

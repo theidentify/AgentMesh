@@ -191,6 +191,7 @@ def test_offline_venv_commands_use_pins_and_no_network(tmp_path, monkeypatch):
     calls = []
     target = tmp_path / 'venv'
     target.mkdir(mode=0o700)
+    (tmp_path / 'requirements.txt').write_text('synthetic-package==1.0\n', encoding='utf-8')
     monkeypatch.setattr(mac_relocate, 'execute', lambda argv, **kw: calls.append(argv))
     mac_relocate.make_venv(target, tmp_path / 'requirements.txt', timeout=1, python='/synthetic/python')
     assert calls[0] == ['/synthetic/python', '-m', 'venv', '--copies', str(target)]

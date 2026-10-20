@@ -126,6 +126,13 @@ def main(argv=None):
     rollback = subs.add_parser('mac-rollback', help='operator-confirmed code/service rollback; never restores SQLite')
     rollback.add_argument('--backup', required=True)
     rollback.add_argument('--timeout', type=float, default=300)
+    relocation = subs.add_parser('mac-relocate', help='move Mac runtime/jobs/exchange; requires RELOCATE and BIND')
+    relocation.add_argument('--manifest', required=True, help='private agentmesh-relocation-v1 manifest')
+    relocation.add_argument('--dry-run', action='store_true', help='read-only preflight; no prompts or writes')
+    relocation.add_argument('--timeout', type=float, default=300)
+    relocation_rollback = subs.add_parser('mac-relocate-rollback', help='restore archived service; retain new DB without merging')
+    relocation_rollback.add_argument('--backup', required=True)
+    relocation_rollback.add_argument('--timeout', type=float, default=300)
     for name in ('windows-install', 'windows-upgrade', 'windows-rollback', 'windows-uninstall', 'windows-autostart', 'windows-recover'):
         installer = subs.add_parser(name, help='Windows existing-install program lifecycle; explicit confirmation required')
         installer.add_argument('--runtime', required=True, help='absolute existing runtime; never creates or rewrites it')
@@ -290,6 +297,16 @@ def main(argv=None):
             report = diagnose(args.runtime, progress=progress)
             print(json.dumps(report, sort_keys=True) if args.json else render(report))
             return 0 if report['status'] == 'ok' else 1
+        if args.action in ('mac-relocate', 'mac-relocate-rollback'):
+            import mac_relocate
+            if args.action == 'mac-relocate-rollback':
+                report = mac_relocate.rollback(args.backup, timeout=args.timeout)
+            else:
+                report = mac_relocate.relocate(args.manifest, timeout=args.timeout, dry_run=args.dry_run)
+            print(json.dumps(report, sort_keys=True))
+            if report.get('error') or report['status'] == 'recovery_required':
+                return 1
+            return 2 if report['status'] == 'pending' else 0
         if args.action in ('mac-replace', 'mac-rollback'):
             import mac_replace
             if args.action == 'mac-rollback':

@@ -23,3 +23,10 @@ def taxonomy():
     personal.add(personal.root.scope_id, 'common', 'common')
     phone = (agents[1], work.keys[a.scope_id].write_key)
     return account, registry, [(first, first_cert), (second, second_cert)], agents, work, personal, phone
+
+
+@pytest.fixture(autouse=True)
+def isolated_agentmesh_home(tmp_path, monkeypatch):
+    home = tmp_path / 'agentmesh-settings-home'
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv('AGENTMESH_HOME', str(home))

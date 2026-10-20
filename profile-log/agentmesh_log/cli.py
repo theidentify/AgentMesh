@@ -79,11 +79,17 @@ def parser():
     for action in ('plan','run','rows','catch-up','report'):
         cmd=operations.add_parser(action)
         cmd.add_argument('--db',required=action!='report')
-        cmd.add_argument('--mapping',required=action in ('run','rows','catch-up'))
+        routing=cmd.add_mutually_exclusive_group(required=action in ('run','rows','catch-up'))
+        routing.add_argument('--mapping'); routing.add_argument('--settings',action='store_true')
+        cmd.add_argument('--project-dir',action='append',default=[])
         if action!='plan': cmd.add_argument('--agent-key',required=True)
         if action in ('run','rows','catch-up'): cmd.add_argument('--take-over',action='store_true')
         if action=='rows': cmd.add_argument('--ref',action='append',required=True)
         if action=='report': cmd.add_argument('--out',required=True)
+    terminal=commands.add_parser('admin'); terminal.add_argument('--menu',action='store_true'); terminal.add_argument('--filesystem')
+    project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
+    apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
+    settings_cmd=commands.add_parser('settings'); settings_cmd.add_argument('action',choices=['show','validate'])
     return p
 
 
@@ -100,7 +106,20 @@ def remote_storage(args):
 def execute(args,*,backend=None,console=None,input_fn=None):
     console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     input_fn=input if input_fn is None else input_fn
-    if args.command=='migrate': return execute_migration(args)
+    if args.command=='admin':
+        from .tui import run_admin
+        return run_admin(menu=args.menu,backend=backend,console=console,input_fn=input_fn,filesystem=args.filesystem)
+    if args.command=='project':
+        from .projects import trust
+        return trust(args.path,console=console,backend=backend,output=lambda text:print(text,file=sys.stderr))
+    if args.command=='apply':
+        from .apply import apply_settings
+        return apply_settings(dry_run=args.dry_run,allow_unsupported_report=args.allow_unsupported_report,console=console,backend=backend,project_dirs=args.project_dir,output=lambda text:print(text,file=sys.stderr))
+    if args.command=='settings':
+        from .settings import load
+        value=load()
+        return value if args.action=='show' else {'ok':True}
+    if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command not in ('broker','recall','remember'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
@@ -126,32 +145,16 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             return share_result(shares,args,home)
         state=store.load()
         if args.action=='scope':
-            state.add(args.scope,Label[args.label])
-            if state.control.get('phase4'):
-                from .keyring import initialize_keyring
-                from .storage.filesystem import FilesystemStorage
-                from .recovery import publish_history
-                storage=FilesystemStorage(home.root/'replica'); initialize_keyring(state,storage)
-                publish_history(state,storage,state.registry().current_recovery())
+            from .admin import create_scope
+            create_scope(home,state,args.scope,Label[args.label])
             store.save(state)
             return {'ok':True}
         if args.action=='grant':
             PresenceManager(home,store).require('agent','grant',console=console); state=store.load()
-            if not args.name: raise ValueError('invalid name')
-            reads=[resolve(state,n) for n in args.read]; writes=[resolve(state,n) for n in args.write]
-            # Equally narrow candidates use lexical local-name order, never common implicitly.
-            scope_names=names(state)
-            candidates=sorted((s for s in writes if not scope_names[s].endswith('/common')),
-                key=lambda s:(-scope_names[s].count('/'),scope_names[s]))
-            default=resolve(state,args.default_write) if args.default_write else (candidates[0] if candidates else None)
-            if default not in writes: raise ValueError('invalid default write')
-            profile=next(t.root.scope_id for t in state.trees if default in t.scopes)
-            agent=AgentIdentity(state.device,state.account.account_id)
-            grant=Grant(agent.agent_id,agent.public_bytes.hex(),reads,writes,default,profile,args.allow_secret,args.allow_cross_profile,args.allow_import)
-            path=home.root/'agents'/(agent.agent_id+'.key')
-            atomic_write(path,wire(dict(format='agentmesh-agent-key-v1',agent_cert=agent.certificate(),
-                agent_private_key=agent.private_bytes().hex(),device_public_key=state.device.public_bytes.hex(),address=home.address(state.device.device_id))))
-            state.grants[agent.agent_id]=grant; store.save(state)
+            from .admin import create_agent
+            path,grant=create_agent(home,state,args.name,args.read,args.write,args.default_write,
+                args.allow_secret,args.allow_cross_profile,args.allow_import)
+            store.save(state)
             return {'agent_key':str(path)}
         if args.action=='revoke':
             PresenceManager(home,store).require('agent','revoke',console=console); state=store.load()
@@ -164,7 +167,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
 
 
 
-def execute_migration(args):
+def execute_migration(args, *, backend=None):
     from .migrate.mapping import Mapping,plan
     from .migrate.run import run
     from .migrate.ledger import report,write_report
@@ -176,7 +179,13 @@ def execute_migration(args):
             if config.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError('invalid bridge config')
             if config.get('enabled') is False or config.get('authority') is False:
                 return dict(outcomes={},unmapped=[],skipped={},timestamp_fallback=0,busy_retries=0,errors=[],secret_labelled=0)
-    mapping=Mapping.load(args.mapping) if args.mapping else None
+    if getattr(args,'settings',False):
+        from .settings import load,root
+        from .apply import open_home
+        from .projects import effective_mapping
+        value=load(); _,store=open_home(root(),backend)
+        mapping=effective_mapping(value,store.load(),args.project_dir)
+    else: mapping=Mapping.load(args.mapping) if args.mapping else None
     if args.action=='plan': return plan(args.db,mapping)
     client=BrokerClient.from_file(args.agent_key)
     try:
@@ -297,7 +306,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
         return 1 if 'error' in result or result.get('errors',0) else 0
     except KeyboardInterrupt: return 0
     except Exception as exc:
-        code=str(exc) if str(exc) in ('presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        code=str(exc) if str(exc) in ('invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         emit(json.dumps({'error':code})); return 1
 
 

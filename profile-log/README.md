@@ -512,3 +512,202 @@ SQLite recall and stops notifications; disable the generated units too. Before a
 replica. After synchronization, use `profile delete` with its recovery/presence procedure
 and the documented old-share/offline-backup limitations. Disabling the bridge alone
 does not delete encrypted events or revoke already distributed keys.
+
+## Settings and admin UI
+
+Settings are per-device desired state. The broker authorizes requests only from its
+protected grants; editing a settings file never changes a running agent's access.
+`apply` prints the complete proposed change before requesting console presence for
+widening. The prompt is one-shot, even when an agent presence window is open.
+Widening means a new scope or agent, an added read/write scope or flag, any
+migration mapping change (it can move rows into a scope other agents read), and any
+bridge change other than switching `enabled`, `recall`, `dual_write` or `authority`
+off (a new `cli_argv`, database, profile, agent or timeout changes which program runs
+with which agent key). Narrowing and removal require no prompt. A mixed change is approved once and applied
+together. Initialization and recovery-kit handling still use the existing CLI.
+
+The root is `$AGENTMESH_HOME`, defaulting to `~/.agentmesh` (Windows:
+`%USERPROFILE%\.agentmesh`). Its layout is:
+
+```text
+settings.json                  user declarations
+settings.local.json            device overrides
+profile-log/                   initialized broker home
+agents/<name>.key              agent signing files created by apply
+migration-mapping.json         rendered migration routing
+apply.jsonl                    names, change kinds and outcomes only
+```
+
+Use a POSIX 0700 root and 0600 regular files owned by the current user. Symlinks,
+wrong owners, unsafe modes, unknown or duplicate JSON keys, and key material are
+refused with `invalid_settings`. Files are UTF-8. Windows owner-only ACL validation
+is outside this implementation; the owner must protect the directory with their
+account's ACL. Settings never contain signing keys, recovery shares or row content.
+No settings or agent keys are synced. This feature does not move SQLite, packet
+identities, services or any existing memory-sync runtime.
+
+### Settings schema v1
+
+Every top-level section is optional. Omitting a section leaves that area unchanged.
+Within a declared `agents` object, missing managed names mean removal; renaming is
+shown as removal plus creation. Explicit profile/scope omission is reported as an
+unsupported deletion. A profile's root is implicit in its `scopes` object. Scope
+paths there may be relative to the profile (`common`, `client-a/notes`) or fully
+qualified (`work/common`); agent and routing scope references are fully qualified.
+Scopes may also reference profile roots (`work`). Existing profiles must already
+have been initialized. Creating profiles, deleting profiles/scopes and changing a
+scope's label are unsupported by apply.
+
+```json
+{
+  "$schema": "agentmesh-settings-v1",
+  "profiles": {
+    "work": {"scopes": {"common": {"label": "general"}, "client-a": {"label": "internal"}}}
+  },
+  "agents": {
+    "recall": {"read": ["work/common"], "write": [], "default_write": null,
+               "allow_secret": false, "allow_cross_profile": false, "allow_import": false},
+    "importer": {"read": [], "write": ["work/common"], "default_write": null,
+                 "allow_secret": false, "allow_cross_profile": false, "allow_import": true}
+  },
+  "migration": {
+    "global": "work/common", "null_project": "work/common",
+    "projects": {"Example": "work/common"},
+    "prefixes": [{"prefix": "Example--worktrees-", "target": "work/common"}]
+  },
+  "routing": {"allowed_scopes": ["work/common", "work/client-a"]},
+  "bridge": {"enabled": false, "recall": true, "dual_write": true, "profile": "work",
+             "timeout_seconds": 10, "recall_agent": "recall", "import_agent": "importer"}
+}
+```
+
+Labels are `general`, `internal` or `secret`. Agent names match `[a-z0-9-]{1,32}`.
+Agent read/write lists default to empty, flags to false, and `default_write` to null.
+A non-null default must belong to the write set. Read-only agents are supported.
+With no default write, the default recall profile is the first profile represented
+by lexically sorted grant scope names, or the first initialized profile for an empty
+grant. Broadening the read/write sets or enabling any grant flag requires presence.
+Key files are exclusively created; an existing file is an error and is never replaced.
+Revocation retains historical import-agent provenance.
+
+Migration targets are existing scopes (including profile roots) or `skip`. The
+effective migration section needs `global`, `null_project`, `projects` and `prefixes`;
+no destination is inferred. Exact project routes take precedence over longest-prefix
+routes. Unmapped projects retain the existing migration refusal behavior.
+
+Only `settings.local.json` may add these bridge fields:
+
+```json
+{
+  "bridge": {
+    "database": "/absolute/path/to/database.db",
+    "authority": true,
+    "cli_argv": ["/absolute/venv/bin/python", "-m", "agentmesh_log.cli"]
+  }
+}
+```
+
+The database path is absolute. CLI argv accepts either an absolute interpreter plus
+`-m agentmesh_log.cli`, or an absolute interpreter plus an absolute CLI script.
+Timeouts are 1–30 seconds. A configured bridge needs database, CLI argv, profile and
+both named agents. Enabled bridges also need a migration mapping. Its default flags
+are enabled=false, recall=true, dual_write=true, authority=false, timeout=10.
+Apply renders the bridge's exact existing schema to `<database>.profile-log.json`,
+with key paths pointing to `agents/<name>.key`; it never opens the database to render
+this file. Disabling preserves the file and renders `enabled: false`. Partial bridge
+updates retain previously applied bridge fields. A bare initial `enabled: false`
+needs no database or output file.
+
+```sh
+python -m agentmesh_log.cli settings validate
+python -m agentmesh_log.cli settings show
+python -m agentmesh_log.cli apply --dry-run
+python -m agentmesh_log.cli apply
+```
+
+`settings show` prints the merged user and local configuration with `$schema`, never
+key contents. Objects merge per key; lists replace. Precedence is user local over
+user. Project layers can affect only project routing, as described below.
+
+Dry runs perform **zero writes**, including no audit or presence-log writes. Every
+non-dry-run apply with a safely writable audit destination appends exactly one
+0600 `apply.jsonl` record, including declines and no-ops. A declined widening leaves
+the protected state and all agent key files unchanged; presence itself also logs its
+outcome. A second unchanged apply prints `no changes`, does not prompt and leaves the
+protected state byte-identical. Unsafe audit paths are refused, never repaired.
+Unsupported changes stop the entire apply with exit 1 unless
+`--allow-unsupported-report` is supplied; that option reports them and applies only
+the supported remainder. Ordinary I/O failures roll back state, key files, local
+keyring publications and rendered outputs. This is not a cross-file, power-loss
+atomicity guarantee; after a crash, inspect files and rerun a dry run before retrying.
+
+### Trusted project routing
+
+A repository may contain `.agentmesh/settings.json` and
+`.agentmesh/settings.local.json`. Both accept only this routing shape:
+
+```json
+{"project": {"name": "Example", "scope": "work/client-a"}}
+```
+
+The project local file overrides the shared file per key. The resulting trusted
+project route overrides user-local and user migration mappings for that project
+name only. Neither project file can contain grants, agents, bridge options or
+profiles. Project files are checked out by git (usually 0755/0644), so they must be
+regular, non-symlink, owned by you and not group- or world-writable; trust pins their
+exact bytes instead of a 0600 mode. Review them, then explicitly trust the folder in a terminal:
+
+```sh
+python -m agentmesh_log.cli project trust /absolute/repository
+```
+
+Trust uses one-shot presence and pins the canonical folder path and a SHA-256 hash
+of both files, with length-delimited file boundaries. Changed bytes require trusting
+again. Only existing scopes in user-level `routing.allowed_scopes` are accepted.
+Untrusted, changed, invalid or disallowed routing is ignored with a stderr warning;
+it does not stop migration. Apply includes routes from remembered trusted folders;
+`--project-dir DIR` can additionally name folders to evaluate. Multiple folders
+are processed in canonical-path order, making duplicate project-name routing
+predictable; prefer a unique project name per trusted repository.
+
+All five migration operations accept `--settings` instead of `--mapping`, and reject
+using both. Settings mode loads this device's initialized broker state for trusted
+routes. The original `--mapping` form remains available, including plan without a
+broker. Repeat `--project-dir` as needed:
+
+```sh
+python -m agentmesh_log.cli migrate plan --db DB --settings --project-dir REPOSITORY
+python -m agentmesh_log.cli migrate run --db DB --settings --agent-key IMPORT_KEY
+python -m agentmesh_log.cli migrate rows --db DB --settings --agent-key IMPORT_KEY --ref memory_items:1
+python -m agentmesh_log.cli migrate catch-up --db DB --settings --agent-key IMPORT_KEY
+python -m agentmesh_log.cli migrate report --db DB --settings --agent-key IMPORT_KEY --out NEW_REPORT
+```
+
+### Terminal administration
+
+`python -m agentmesh_log.cli admin` uses curses when available and stdout is a TTY;
+otherwise it uses numbered menus. `--menu` always selects menus. Windows installs
+`windows-curses==2.4.2`; absence of curses does not prevent menu operation.
+
+The overview shows profiles/scopes, enforced agent grants (opaque IDs for older unmanaged grants), device revocation
+status and migration project counts. The grid edits read/write lists and creates
+scopes or named agents. Mapping shows current and proposed destinations, with a
+retired/re-created/newly-created row preview when the import agent and broker can
+provide the ledger. Otherwise it explicitly marks the preview unavailable. Only
+names, counts and source references enter the screen model; no content is displayed.
+The menu mapping editor also accepts `@global` and `@null` for those explicit routes.
+
+In curses, `1`–`4` select screens, arrows move, space toggles, left/right or `r`/`w`
+select a grid permission, `n` opens a new-scope dialog, `a` creates an agent, `s` saves
+and `q` exits. On mapping rows, Enter edits a target. On the pairing screen, `i`
+enters the request ID, space selects scopes and `p` approves. Pair approval displays
+the approver fingerprint and delegates the existing six-digit comparison and scoped
+grant flow; empty scope selections are refused. `admin --filesystem PATH` selects
+the shared filesystem used by pairing; otherwise pairing uses the local replica.
+
+Edits remain in memory until Save. Save writes only the **user** layer atomically,
+then invokes the same apply command in the terminal. Curses temporarily releases
+the terminal for presence and pairing prompts. Local overrides remain authoritative;
+use `settings show` and the apply diff to check their effect. Saving a mapping renders
+the desired routing; use the existing explicit migration/catch-up operations to move
+rows. No service is installed and no remote synchronization starts automatically.

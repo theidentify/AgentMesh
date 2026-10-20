@@ -8,7 +8,7 @@ from .registry_store import now
 from .storage.filesystem import _check
 
 CLASSES=frozenset(('device','agent','recovery','export','profile','cross_profile','secret_read','first_access'))
-ACTIONS=frozenset(('approve','remove','grant','revoke','create','test','use','export','archive','delete','migrate','open','access','recall','read','regrant','recipient'))
+ACTIONS=frozenset(('apply','trust','approve','remove','grant','revoke','create','test','use','export','archive','delete','migrate','open','access','recall','read','regrant','recipient'))
 
 
 class Presence(Protocol):

@@ -115,7 +115,7 @@ def config_path(home):
     return None
 
 
-def observe(home):
+def observe(home, exchange=None):
     result = {'available':False, 'status':'unknown', 'availability':'not configured',
               'observed_at':datetime.now(timezone.utc).isoformat(), 'rows':[],
               'local':{'state':'unknown', 'paused':None, 'pending_bytes':None, 'pending_items':None}, 'note':NOTE}
@@ -138,7 +138,10 @@ def observe(home):
         key = gui.findtext('apikey', '')
         if not key or len(key) > 1024 or any(ord(c) < 32 for c in key):
             raise ValueError('Key unavailable')
-        exchange = (Path(home)/'omp-memory/sync').resolve()
+        if exchange is None:
+            from adapters import layout
+            exchange = layout(home)['exchange']['path']
+        exchange = Path(exchange).resolve()
         folders = [f for f in root.findall('folder') if f.get('path') and
                    Path(f.get('path', '')).expanduser().is_absolute() and Path(f.get('path', '')).expanduser().resolve() == exchange]
         if len(folders) != 1:

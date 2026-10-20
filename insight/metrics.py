@@ -1,6 +1,7 @@
 """Read-only before/after accounting for the OMP digest."""
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -30,10 +31,10 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--audit',type=Path,default=home/'cron/usage_audit.jsonl')
     p.add_argument('--state',type=Path,default=home/'state.db')
-    p.add_argument('--metrics-log',type=Path,default=home/'omp-memory/summary-metrics.jsonl')
+    p.add_argument('--metrics-log',type=Path,action='append')
     p.add_argument('--json',action='store_true')
     args = p.parse_args(argv)
-    data = report(args.audit,args.state,args.metrics_log)
+    data = report(args.audit,args.state,args.metrics_log if args.metrics_log is not None else home/'omp-memory/summary-metrics.jsonl')
     print(json.dumps(data,ensure_ascii=False,indent=2) if args.json else render_table(data)+'\n\n'+'\n'.join(data['notes']))
 
 
@@ -41,6 +42,8 @@ FIELDS = ('llm_api_calls','input_total_tokens','input_uncached_tokens','cache_re
 
 
 def read_jsonl(path):
+    if isinstance(path, (list, tuple)):
+        return [row for item in path for row in read_jsonl(item)]
     if not Path(path).exists():
         return []
     rows = []
@@ -64,7 +67,7 @@ def report(audit_path, state_path, metrics_path, job_id='6fcf5646d34d'):
     audits = [r for r in read_jsonl(audit_path) if r.get('job_id') == job_id]
     # Retries may log a fire more than once: count distinct audit records explicitly.
     audits = list({r.get('fire_id') or str(n):r for n,r in enumerate(audits)}.values())
-    with sqlite3.connect(Path(state_path).resolve().as_uri() + '?mode=ro', uri=True) as c:
+    with closing(sqlite3.connect(Path(state_path).resolve().as_uri() + '?mode=ro', uri=True)) as c:
         c.row_factory = sqlite3.Row
         c.execute('PRAGMA query_only=ON')
         c.execute('BEGIN')

@@ -711,3 +711,30 @@ the terminal for presence and pairing prompts. Local overrides remain authoritat
 use `settings show` and the apply diff to check their effect. Saving a mapping renders
 the desired routing; use the existing explicit migration/catch-up operations to move
 rows. No service is installed and no remote synchronization starts automatically.
+
+
+### Read-only Insight status snapshot
+
+`agentmesh-log apply` (except `--dry-run`) and `agentmesh-log migrate catch-up`
+write `$AGENTMESH_HOME/profile-log-status.json` (default
+`~/.agentmesh/profile-log-status.json`), format `agentmesh-profile-log-status-v1`,
+with mode 0600 using atomic replacement. Unsafe roots and status paths are
+refused. Status failures never change apply/catch-up results or exit codes.
+
+The snapshot contains names, scope paths, labels, boolean grants, device IDs,
+counts, UTC timestamps and exception class names only. It never contains agent
+IDs, key material or key-file paths, public keys, recovery shares, database paths,
+row IDs/hashes/bodies, or error messages. Apply refreshes profiles/scopes, named
+agents' R/W/default/flags, devices, and its outcome/change counts. When a bridge
+database and mapping are configured, it also refreshes per-project migration
+counts and targets (`scope`, `skip`, `unmapped` or `mixed`). Catch-up refreshes
+migration and its own outcome (`ok`, `unmapped`, `error` or `disabled`), outcome
+and skipped counts, unmapped names, error classes and retry/fallback counts. It
+never writes the overview. Each writer preserves the other's sections; invalid
+existing documents are replaced. Each section carries its own timestamp.
+
+This file is telemetry, never an authorization source. Insight reads only this
+snapshot for its Profile log tab and displays shortened device IDs. It never
+opens the broker keystore, agent keys, settings or apply audit log. Edit desired
+settings in a terminal with `agentmesh-log admin` / `agentmesh-log apply`; the tab
+has no forms or write operations.

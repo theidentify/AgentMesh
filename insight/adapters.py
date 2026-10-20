@@ -8,6 +8,24 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def layout(home, agentmesh_home=None):
+    """Resolve each relocated item independently; paths stay inside the adapters."""
+    home = Path(home).expanduser()
+    base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+    result = {}
+    for key, new, old in (('status','exchange/status','omp-memory/sync/status'),
+                          ('exchange','exchange','omp-memory/sync'),
+                          ('coordinator','jobs/.bounded_digest_state.json','omp-memory/.bounded_digest_state.json'),
+                          ('summary','jobs/summary-metrics.jsonl','omp-memory/summary-metrics.jsonl'),
+                          ('smoke','jobs/summary-smoke-test-metrics.jsonl','omp-memory/summary-smoke-test-metrics.jsonl')):
+        fresh, legacy = base/new, home/old
+        path, source = (fresh, 'agentmesh') if fresh.exists() or fresh.is_symlink() else (legacy, 'legacy') if legacy.exists() or legacy.is_symlink() else (fresh, 'missing')
+        result[key] = dict(path=path, source=source, home=home if source=='legacy' else base)
+        if key in ('summary', 'smoke'):
+            result[key]['paths'] = sorted((base/'backups/archive').glob(fresh.name+'.pre-relocate-*')) + [p for p in (legacy, fresh) if p.exists()]
+    return result
+
+
 def redact(value):
     """Best-effort defense, not a guarantee that prose is secret-free."""
     if isinstance(value, dict):
@@ -185,14 +203,15 @@ def local_security(c):
     return result
 
 
-def peer_status(home, now=None):
+def peer_status(home, now=None, agentmesh_home=None):
     """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
-    root = Path(home)/'omp-memory/sync/status'
+    item = layout(home, agentmesh_home)['status']
+    root = item['path']
     rows = []
     for node, label in (('mac', 'Mac'), ('windows', 'Windows')):
-        row = {'peer':label, 'available':False, 'availability':'missing',
+        row = {'peer':label, 'source':item['source'], 'available':False, 'availability':'missing',
                'ack_at':None, 'age_seconds':None, 'freshness':'unknown', 'has_error':None, 'partial':False,
                'counts':dict.fromkeys(PEER_COUNTS), 'sync':dict.fromkeys(PEER_SYNC),
                'security':security_projection(None),
@@ -202,7 +221,7 @@ def peer_status(home, now=None):
         path = root/(node+'.json')
         try:
             # No symlinks or files outside the configured home; bound read before JSON parsing.
-            if path.is_symlink() or path.resolve().parent != root.resolve() or not path.resolve().is_relative_to(Path(home).resolve()):
+            if path.is_symlink() or path.resolve().parent != root.resolve() or not root.resolve().is_relative_to(item['home'].resolve()):
                 raise ValueError('Invalid status location')
             fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
             with os.fdopen(fd, 'rb') as source:
@@ -270,7 +289,7 @@ def peer_status(home, now=None):
             'note':'Completed-cycle ACKs only, not a live process, Syncthing connection or proof of full convergence. Fresh means age at most 5 minutes; stale does not mean offline. Missing or invalid values remain unknown.'}
 
 
-def operations(home, reader, sync_db, transport=None):
+def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     from datetime import datetime, timezone
     result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
     try:
@@ -300,11 +319,13 @@ def operations(home, reader, sync_db, transport=None):
                 row['observation_state'] = observed_state(job.get('last_run_at'))
             selected.append(row)
         pipeline = {'available':True,'jobs':selected,'note':'Exact known cron jobs, observed configuration and last execution. No prompts, commands or error payloads exposed.'}
-        state_path = home/'omp-memory/.bounded_digest_state.json'
+        item = layout(home, agentmesh_home)['coordinator']
+        state_path = item['path']
+        pipeline['coordinator'] = dict(available=False, source=item['source'], pending=None, phase=None, success_day=None)
         if state_path.exists():
             state = json.loads(state_path.read_text())
             pending = state.get('pending')
-            pipeline['coordinator'] = {'pending':pending is not None,'phase':pending.get('phase') if isinstance(pending, dict) else None,'success_day':(state.get('success') or {}).get('day')}
+            pipeline['coordinator'] = {'available':True,'source':item['source'],'pending':pending is not None,'phase':pending.get('phase') if isinstance(pending, dict) else None,'success_day':(state.get('success') or {}).get('day')}
         result['pipeline'] = pipeline
     except Exception:
         result['pipeline'] = unavailable('Pipeline cron metadata')
@@ -329,11 +350,11 @@ def operations(home, reader, sync_db, transport=None):
         result['sync']['security'] = security
     except Exception:
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
-    result['sync']['peers'] = peer_status(home)
+    result['sync']['peers'] = peer_status(home, agentmesh_home=agentmesh_home)
     if 'security' not in result['sync']: result['sync']['security'] = security_projection(None)
     if transport is None:
         from syncthing_transport import observe
-        transport = observe(home)
+        transport = observe(home, exchange=layout(home, agentmesh_home)['exchange']['path'])
     result['sync']['transport_status'] = transport
     result['sync']['transport'] = transport['status']
     result['sync']['peers']['transport'] = transport['status']
@@ -349,17 +370,18 @@ def safe_run(row):
 
 JOB='6fcf5646d34d'
 
-def metrics(home):
+def metrics(home, agentmesh_home=None, metrics_logs=None):
     from datetime import datetime, timezone
     from metrics import report, read_jsonl, aggregate
-    root=home/'omp-memory'
-    result=report(home/'cron/usage_audit.jsonl',home/'state.db',root/'summary-metrics.jsonl')
+    paths=layout(home, agentmesh_home)
+    logs=paths['summary']['paths'] if metrics_logs is None else metrics_logs
+    result=report(home/'cron/usage_audit.jsonl',home/'state.db',logs)
     for key in ('new_latest','new_latest_llm','baseline_latest'):
         result[key]=safe_run(result[key]) if result[key] else None
     def runs(path):
         return list({r['run_id']:safe_run(r) for r in read_jsonl(path) if r.get('record_type')=='run'}.values())
-    bounded=runs(root/'summary-metrics.jsonl')
-    isolated=runs(root/'summary-smoke-test-metrics.jsonl')
+    bounded=runs(logs)
+    isolated=runs(paths['smoke']['paths'])
     historical=[]
     audits=list({r.get('fire_id') or str(n):r for n,r in enumerate(read_jsonl(home/'cron/usage_audit.jsonl')) if r.get('job_id')==JOB}.values())
     for r in audits:
@@ -368,7 +390,8 @@ def metrics(home):
     job=next((j for j in jobs if j['id']==JOB),{})
     cron={k:job.get(k) for k in ('id','enabled','state','no_agent','last_run_at','last_status','next_run_at')}
     cron['has_error']=bool(job.get('last_error'))
-    state_path=root/'.bounded_digest_state.json'
+    state_path=paths['coordinator']['path']
+    cron['source']=paths['coordinator']['source']
     state=json.loads(state_path.read_text()) if state_path.exists() else {}
     pending=state.get('pending')
     cron['coordinator_available']=state_path.exists()
@@ -377,3 +400,60 @@ def metrics(home):
     cron['last_success_day']=(state.get('success') or {}).get('day')
     cron['idle_inferred']=bool(state_path.exists() and job.get('no_agent') and job.get('last_status')=='ok' and pending is None)
     return {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'report':result,'cron':cron,'runs':{'historical':historical,'bounded':bounded,'isolated':isolated},'isolated_aggregate':aggregate(isolated),'matched_workload_savings_percent':None,'notes':['No matched-workload savings or quality claim. Actual dollar cost unknown.','Backlog is last observed in run metrics, not a live database count.','Idle inferred from completed window + successful no-agent tick; no new LLM calls are made.','Isolated DB smoke is separate from production-source logs. Historical per-run uncached/cache/calls are unknown in chart; matched session totals remain in coverage table.']}
+
+
+def profile_log_status(agentmesh_home, now=None):
+    """One bounded, content-free snapshot; never inspect broker files or settings."""
+    from datetime import datetime, timezone
+    import unicodedata
+    now = now or datetime.now(timezone.utc)
+    result = dict(available=False, availability='missing', truncated=False)
+    def text(v):
+        return v if isinstance(v, str) and len(v)<=256 and not any(unicodedata.category(c)=='Cc' for c in v) else None
+    def count(v): return v if type(v) is int and 0<=v<=2**53-1 else None
+    def boolean(v): return v if type(v) is bool else None
+    def obj(v): return v if isinstance(v, dict) else {}
+    def strings(v): return sequence(v, text)
+    def sequence(v, project):
+        if not isinstance(v, list): return []
+        if len(v)>500: result['truncated'] = True
+        return [p for item in v[:500] if (p:=project(item)) is not None]
+    def fields(v, schema):
+        return {k:f(obj(v).get(k)) for k,f in schema.items()}
+    def counts(v, allowed): return {k:count(n) for k,n in obj(v).items() if k in allowed}
+    def age(v):
+        try:
+            when = datetime.fromisoformat(v.replace('Z','+00:00'))
+            return round((now-when).total_seconds(),1) if when.tzinfo else None
+        except (AttributeError, ValueError, OverflowError): return None
+    def event(v, schema):
+        out = fields(v, dict(at=text, outcome=text, **schema)); out['age_seconds'] = age(out['at']); return out
+    root = Path(agentmesh_home); path = root/'profile-log-status.json'
+    try:
+        if any(p.is_symlink() for p in (path, root, *root.parents)): raise ValueError('Invalid status location')
+        fd = os.open(path, os.O_RDONLY | getattr(os,'O_NOFOLLOW',0) | getattr(os,'O_NONBLOCK',0))
+        with os.fdopen(fd,'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise ValueError('Regular status required')
+            raw = stream.read(256*1024+1)
+        if len(raw)>256*1024: raise ValueError('Status too large')
+        value = json.loads(raw)
+        if not isinstance(value,dict) or value.get('format')!='agentmesh-profile-log-status-v1': raise ValueError('Invalid status format')
+        result.update(available=True, availability='available', format=value['format'], updated_at=text(value.get('updated_at')))
+        result['age_seconds'] = age(result['updated_at'])
+        if 'overview' in value:
+            result['overview'] = fields(value['overview'], dict(generated_at=text,
+                profiles=lambda v:sequence(v,lambda r:fields(r,dict(name=text,scopes=lambda v:sequence(v,lambda r:fields(r,dict(path=text,label=text)))))),
+                agents=lambda v:sequence(v,lambda r:fields(r,dict(name=text,read=strings,write=strings,default_write=text,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
+                devices=lambda v:sequence(v,lambda r:fields(r,dict(device_id=lambda v:(text(v) or '')[:12] or None,revoked=boolean)))))
+        if 'migration' in value:
+            result['migration'] = fields(value['migration'],dict(generated_at=text,unmapped=strings,
+                projects=lambda v:sequence(v,lambda r:fields(r,dict(project=text,items=count,summaries=count,target=text)))))
+        if 'last_apply' in value:
+            result['last_apply'] = event(value['last_apply'],dict(changes=lambda v:counts(v,('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update'))))
+        if 'last_catch_up' in value:
+            result['last_catch_up'] = event(value['last_catch_up'],dict(outcomes=lambda v:counts(v,('created','revised','retired','unchanged','other')),
+                skipped=lambda v:counts(v,('mapping_skip','not_recalled','superseded','resolved','deleted','other')),unmapped=strings,errors=strings,
+                busy_retries=count,timestamp_fallback=count,secret_labelled=count))
+    except FileNotFoundError: pass
+    except (OSError, ValueError, TypeError, RecursionError): result = dict(available=False, availability='unavailable or malformed', truncated=False)
+    return redact(result)

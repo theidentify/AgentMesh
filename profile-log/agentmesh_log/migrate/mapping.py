@@ -56,3 +56,14 @@ def plan(database, mapping=None):
                 if name is not None: unmapped.add(name)
         elif name is not None: unmapped.add(name)
     return dict(projects=[groups[k] for k in sorted(groups)], unmapped=sorted(unmapped))
+
+
+def project_targets(groups, sources, mapping):
+    """Shared per-project target labels for the terminal and public snapshot."""
+    targets = {}
+    for row in sources:
+        try: target = mapping.target(row) if mapping else 'unmapped'
+        except ValueError: target = 'unmapped'
+        targets.setdefault(row.get('project'), set()).add(target)
+    return [dict(group, target=next(iter(found)) if len(found)==1 else 'mixed')
+            for group in groups for found in (targets.get(group['project'], set()),)]

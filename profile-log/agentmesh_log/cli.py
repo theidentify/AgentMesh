@@ -171,32 +171,50 @@ def execute_migration(args, *, backend=None):
     from .migrate.mapping import Mapping,plan
     from .migrate.run import run
     from .migrate.ledger import report,write_report
-    if args.action=='catch-up':
-        import os
-        bridge=Path(os.environ.get('AGENTMESH_PROFILE_LOG_BRIDGE',str(args.db)+'.profile-log.json'))
-        if bridge.exists():
-            config=parse(bridge.read_text(encoding='utf-8').encode('utf-8'))
-            if config.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError('invalid bridge config')
-            if config.get('enabled') is False or config.get('authority') is False:
-                return dict(outcomes={},unmapped=[],skipped={},timestamp_fallback=0,busy_retries=0,errors=[],secret_labelled=0)
-    if getattr(args,'settings',False):
-        from .settings import load,root
-        from .apply import open_home
-        from .projects import effective_mapping
-        value=load(); _,store=open_home(root(),backend)
-        mapping=effective_mapping(value,store.load(),args.project_dir)
-    else: mapping=Mapping.load(args.mapping) if args.mapping else None
-    if args.action=='plan': return plan(args.db,mapping)
-    client=BrokerClient.from_file(args.agent_key)
+    from .status import caught_up
+    mapping=None
     try:
-        if args.action=='report':
-            result=report(client,args.db,mapping)
-            # Agent files are emitted under HOME/agents; reject replica destinations.
-            home=Path(args.agent_key).resolve().parent.parent
-            write_report(result,args.out,home/'replica')
-            return dict(rows=len(result))
-        return run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over)
-    finally: client.close()
+        if args.action=='catch-up':
+            import os
+            bridge=Path(os.environ.get('AGENTMESH_PROFILE_LOG_BRIDGE',str(args.db)+'.profile-log.json'))
+            if bridge.exists():
+                config=parse(bridge.read_text(encoding='utf-8').encode('utf-8'))
+                if config.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError('invalid bridge config')
+                if config.get('enabled') is False or config.get('authority') is False:
+                    result=dict(outcomes={},unmapped=[],skipped={},timestamp_fallback=0,busy_retries=0,errors=[],secret_labelled=0)
+                    # Refresh counts without opening broker state on the disabled path.
+                    try:
+                        if getattr(args,'settings',False):
+                            from .settings import load
+                            from .apply import mapping_value
+                            mapping=Mapping(mapping_value(load()))
+                        elif args.mapping: mapping=Mapping.load(args.mapping)
+                    except Exception: pass
+                    caught_up(args.db,mapping,result,outcome='disabled')
+                    return result
+        if getattr(args,'settings',False):
+            from .settings import load,root
+            from .apply import open_home
+            from .projects import effective_mapping
+            value=load(); _,store=open_home(root(),backend)
+            mapping=effective_mapping(value,store.load(),args.project_dir)
+        else: mapping=Mapping.load(args.mapping) if args.mapping else None
+        if args.action=='plan': return plan(args.db,mapping)
+        client=BrokerClient.from_file(args.agent_key)
+        try:
+            if args.action=='report':
+                result=report(client,args.db,mapping)
+                # Agent files are emitted under HOME/agents; reject replica destinations.
+                home=Path(args.agent_key).resolve().parent.parent
+                write_report(result,args.out,home/'replica')
+                return dict(rows=len(result))
+            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over)
+        finally: client.close()
+        if args.action=='catch-up': caught_up(args.db,mapping,result)
+        return result
+    except Exception as exc:
+        if args.action=='catch-up': caught_up(args.db,mapping,outcome='error',error=exc)
+        raise
 
 
 def share_result(shares,args,home):

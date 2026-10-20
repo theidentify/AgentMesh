@@ -163,7 +163,7 @@ def transaction(home, store, paths, agents_dir):
 
 
 def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=None, output=print, backend=None, project_dirs=()):
-    base = settings.root(); changes = []; outcome = 'error'
+    base = settings.root(); changes = []; outcome = 'error'; state = None; value = None; mapping = None
     try:
         value = settings.load(); home, store = open_home(base, backend)
         with nullcontext() if dry_run else home.lock():
@@ -238,3 +238,9 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
             try: audit(base, changes, outcome)
             except (OSError, ValueError):
                 if outcome in ('approved', 'no-op'): raise ValueError('apply_audit_failed') from None
+
+            try:
+                from .status import applied
+                if state is not None: state = store.load()
+                applied(base,outcome,changes,state,value,mapping)
+            except Exception: pass

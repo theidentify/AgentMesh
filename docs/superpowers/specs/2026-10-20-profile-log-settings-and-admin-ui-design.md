@@ -28,6 +28,14 @@ central config like Claude Code's `~/.claude/settings.json`.
 - **Presence:** confirmed in the terminal that runs the admin process, as the
   Phase 4 console presence already works. A UI click alone never authorizes.
 - **Central config:** `~/.agentmesh/settings.json`, in the style of Claude Code.
+- **One home for all memory files:** everything AgentMesh keeps about memory lives
+  under `~/.agentmesh/` (`%USERPROFILE%\.agentmesh\` on Windows). That covers the
+  new profile-log files now, and later the SQLite runtime that is in
+  `~/.hermes/omp-memory/sqlite-sync/` today.
+- **Project settings like Claude Code:** a repository may carry
+  `.agentmesh/settings.json` (shared) and `.agentmesh/settings.local.json`
+  (personal, git-ignored), with Claude-style precedence.
+- **Settings stay per device** for now; they are not synced.
 
 ## Design
 
@@ -52,16 +60,40 @@ and confirms; it can never grant access silently.
 ### File layout
 
 ```
-~/.agentmesh/                     0700
+~/.agentmesh/                     0700 (Windows: %USERPROFILE%\.agentmesh, owner-only ACL)
   settings.json                   0600, the central config (below)
-  settings.local.json             optional per-device overrides (not synced)
-  profile-log/                    the broker home (replaces ~/.agentmesh-profile-log/)
+  settings.local.json             0600, this device's values (database path, authority)
+  profile-log/                    the broker home: keystore.sealed, replica/, audit, index snapshots
   agents/<name>.key               agent key files, 0600
+  memory/                         phase 5 below: the SQLite authority DB (+ -wal/-shm) and backups
+  identity/                       phase 5 below: the signed-packet node identity
+  logs/                           worker and broker logs
 ```
 
 No key material, recovery share or row content ever goes into `settings*.json`.
-The files may be backed up or shared between the owner's devices. Device-specific
-values (database path, `authority`) go in `settings.local.json`.
+Settings are **per device** and are not synced: devices receive scope grants
+through pairing, so syncing the file would add little. They may still be backed
+up. `~/.agentmesh-profile-log/`, created during the Phase 5 rollout preparation,
+moves to `~/.agentmesh/` (nothing is deployed there yet).
+
+### Project settings (like Claude Code)
+
+| File | Shared? | Purpose |
+| --- | --- | --- |
+| `~/.agentmesh/settings.json` | no (per device) | profiles, scopes, agents, mapping, bridge |
+| `~/.agentmesh/settings.local.json` | no | device-only values |
+| `<repo>/.agentmesh/settings.json` | committed | this project's routing |
+| `<repo>/.agentmesh/settings.local.json` | git-ignored | personal routing override |
+
+Precedence, highest first, as in Claude Code: project local, project shared, user
+local, user. Merging is per key. A project file may set only **routing**:
+`{"project": {"name": "…", "scope": "work/common"}}`, which says which existing
+scope this repository's memories go to and which name it has in the mapping. That
+scope must be one the user-level file already allows. Grant, agent, bridge and
+profile keys in a project file are rejected, because a cloned repository is
+untrusted. The first time a project file is seen, `apply` or the TUI asks the
+owner to trust that folder in the terminal, like Claude Code's trust prompt. It
+records the trust by path and content hash, and asks again when the file changes.
 
 ### `settings.json` shape (v1)
 
@@ -96,8 +128,9 @@ parser and keeps its current fail-closed checks. The Phase 5 mapping becomes the
 
 ### Terminal UI (`agentmesh-log admin`)
 
-Standard library only (`curses` on macOS/Linux; on Windows, a numbered-menu
-fallback, because `curses` is not in the Windows standard library). It edits
+Full-screen `curses` UI (arrow keys, checkboxes) on macOS and Linux, where
+`curses` is part of Python's standard library. Windows Python has no `curses`;
+see open question 1 for the Windows choice. It edits
 `settings.json`, then runs the same `apply` step. Screens:
 
 1. **Overview:**
@@ -139,22 +172,37 @@ Editing from the web comes after. A click would only create a *pending change* i
 
 ## Phasing
 
-1. **Settings + `apply`:** schema, diff, presence, rendering the bridge config,
-   `migrate --settings`, plus moving the rollout directory to `~/.agentmesh/`
-   (nothing is deployed there yet).
+1. **Settings + `apply`:** schema, diff, presence, project settings with trust,
+   rendering the bridge config, `migrate --settings`, and the profile-log home at
+   `~/.agentmesh/profile-log/`.
 2. **TUI:** overview, grid, mapping preview, pair approve.
 3. **Insight tab:** a read-only overview.
 4. **Insight editing:** pending changes, confirmed by `apply` in a terminal.
+5. **Move the SQLite runtime into `~/.agentmesh/`** (database, identity, backups,
+   logs, then the app copy). **This touches the live sync path:** installers,
+   generated services, `sync_worker`, OTA, and Windows Task Scheduler. It needs
+   its own plan and explicit owner approval, with these steps:
+   1. stop the worker;
+   2. copy with SQLite's backup API;
+   3. verify counts and hashes;
+   4. switch the service paths;
+   5. restart;
+   6. keep the old directory read-only until verified on the Mac and Windows.
+
+   Symlinks are not an option, because the code refuses them.
 
 ## Open questions for the owner
 
-1. Should a project (repo) be able to have its own `.agentmesh/settings.json`, as
-   Claude Code has `.claude/settings.json`? Recommendation: yes, but **routing
-   only**. Such a file could only choose which existing scope this project's
-   memories go to, within what the user-level file allows. It could never grant
-   read access, because a cloned repo is untrusted.
-2. Should `settings.json` be synced between devices, or kept separate per device?
-   Recommendation: keep it per device for now. Devices already receive scope
-   grants through pairing, so syncing the file adds little.
-3. Is the Windows numbered-menu fallback acceptable, or should we add the
-   `windows-curses` dependency?
+1. **Windows terminal UI.** Python's `curses` module draws full-screen terminal
+   UIs (move with the arrow keys, tick boxes with the space bar). It ships with
+   Python on macOS and Linux, but not on Windows. The options are:
+   - (a) a plain numbered menu on Windows: type a number and press Enter, with no
+     new dependency;
+   - (b) add the pinned third-party package `windows-curses`, so Windows gets the
+     same full-screen UI;
+   - (c) a cross-platform library such as `prompt_toolkit` or `textual`, a bigger
+     dependency.
+
+   Recommendation: (b), for the same experience on both machines with a small,
+   pinned dependency. The menu in (a) stays as a fallback if the package is
+   missing.

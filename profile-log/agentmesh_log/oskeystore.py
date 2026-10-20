@@ -1,4 +1,5 @@
 """OS backends ported from memory-sync/os_unlock.py; no imports from that package."""
+from pathlib import Path
 import hashlib
 import os
 import re
@@ -216,12 +217,17 @@ def select_store(home,backend=None):
     return FileKeyStore(home)
 
 
-def initialize(home,profiles,*,backend=None):
+def initialize(home,profiles,*,backend=None,file_keystore=False):
     from .keyring import initialize_keyring
     from .recovery import create_recovery_material
     from .storage.filesystem import FilesystemStorage
     if (home.root/'keystore.json').exists() or (home.root/'keystore.sealed').exists(): raise ValueError('already initialized')
-    store=OsKeyStore(home,backend); state=BrokerState.create(profiles)
+    if file_keystore:
+        import tempfile
+        if not home.root.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()) and os.environ.get('AGENTMESH_ALLOW_FILE_KEYSTORE')!='1':
+            raise ValueError('file keystore requires disposable home')
+    store=FileKeyStore(home) if file_keystore else OsKeyStore(home,backend)
+    state=BrokerState.create(profiles)
     storage=FilesystemStorage(home.root/'replica')
     initialize_keyring(state,storage)
     shares=create_recovery_material(state,storage)

@@ -382,3 +382,133 @@ Use the equivalent prepared Python path on Windows. The script asks permission, 
 one disposable native key-store entry, checks a sealed round-trip, and removes the entry.
 Run the full suite outside the socket-restricted sandbox and on all three OSes; a denied
 socket bind is an explicit test failure. Leave live R2 mode disabled for offline tests.
+
+## Migration from SQLite
+
+Migration is opt-in and offline. SQLite remains the authority; raw observation events
+and transcript evidence stay there. Only active durable items and every non-session
+summary row migrate (summary versions are range-allocated IDs, not an order). Item metadata is discarded; provenance contains integer observation
+IDs only. Detectors redact secrets and raise labels before signing. Migration, hooks,
+catch-up and parity never synchronize remote storage.
+
+Start with `python -m agentmesh_log.cli migrate plan --db DB` using the profile-log
+interpreter. It prints project names and counts, never row content. Write an owner-reviewed
+UTF-8 mapping, for example (replace these synthetic names):
+
+```json
+{
+  "format": "agentmesh-migration-mapping-v1",
+  "global": "work/common",
+  "null_project": "personal/common",
+  "projects": {"Example": "work/common", "Excluded": "skip"},
+  "prefixes": [{"prefix": "Example--worktrees-", "target": "work/common"}]
+}
+```
+
+Exact projects win over the longest matching prefix. Unmapped projects stop the run
+before writes. Task summaries without a project use `null_project`. Prefer `project`
+as a filter within `common`; create a separate scope only for a distinct reader set.
+Every non-skip target must already exist and be in the import agent's write grant.
+
+On the authority Mac, initialize a dedicated broker home with the normal OS key store,
+save its recovery kit, add any mapped scopes, and grant a dedicated importer
+`--allow-import` with all mapped write scopes. Grant a separate recall agent only the
+necessary read access and ordinary minimum write scope required by the grant CLI;
+never give it `--allow-import`. Open the `first_access` presence window before each
+agent's first request. Start `broker run --home HOME` without `--sync-interval`.
+Use the CLI's existing presence, scope and grant commands described above.
+
+```sh
+python -m agentmesh_log.cli migrate plan --db DB --mapping MAPPING
+python -m agentmesh_log.cli migrate run --db DB --mapping MAPPING --agent-key IMPORT_KEY
+python -m agentmesh_log.cli migrate report --db DB --mapping MAPPING --agent-key IMPORT_KEY --out NEW_REPORT
+python -m agentmesh_log.cli migrate catch-up --db DB --mapping MAPPING --agent-key IMPORT_KEY
+```
+
+A second run is unchanged; changed rows revise, resolved/deleted/skipped rows retire,
+and remaps retire the old scope's chain before creating the new root. Runs resume from
+the encrypted replica after interruption, including interruption between the two remap
+signatures. Reports contain source IDs, chain IDs, scope names, status and reasons, never
+content or hashes. Report output is exclusive-create, mode 0600, outside the replica.
+`migrate rows` accepts up to 500 repeated `--ref memory_items:ID` or
+`--ref memory_summaries:ID` arguments.
+
+Use exactly one authority device. Two authorities can duplicate roots before seeing
+each other's events. The migrator refuses a broker that already holds foreign-device
+migration events unless the owner explicitly supplies `--take-over`. Peer provenance
+uses **device-level trust**: a paired same-account device with a valid, non-revoked
+chain at event time is trusted. Local provenance requires an agent that currently has
+or previously held `allow_import`; the private state retains those agent IDs even after
+revocation. This permits historical recall after restart without distributing local
+grants. **A compromised paired device can forge or retire migrated rows in scopes whose
+keys it holds**, just as it can forge ordinary events there. No replicated import-grant
+record is introduced; event time uses the signed ULID, not the source row timestamp,
+and has the existing historical timestamp limitations described above.
+
+Create `<DB>.profile-log.json` (or set `AGENTMESH_PROFILE_LOG_BRIDGE`) as an owner-only,
+non-symlink regular file, mode 0600 on POSIX. All paths must be absolute:
+
+```json
+{
+  "format": "agentmesh-profile-log-bridge-v1",
+  "enabled": true,
+  "recall": true,
+  "dual_write": true,
+  "authority": true,
+  "cli_argv": ["/absolute/venv/bin/python", "-m", "agentmesh_log.cli"],
+  "agent_key": "/absolute/home/agents/recall.key",
+  "import_agent_key": "/absolute/home/agents/import.key",
+  "mapping": "/absolute/mapping.json",
+  "profile": "work",
+  "timeout_seconds": 5
+}
+```
+
+The prepared interpreter must resolve `agentmesh_log`; an absolute Python plus an
+absolute CLI script is also accepted. Invalid config disables the bridge and emits one
+sanitized warning. Digest and summary commits spawn a detached `migrate rows` after
+commit; missed hooks are repaired by catch-up. Hybrid recall merges broker durable and
+summary candidates with local observations and evidence, preserving the SQLite row
+shape and adding `backend: "broker"`. Failure returns the full SQLite answer with
+`backend: "sqlite-fallback"` and one warning. `recall_memory.py --backend sqlite` forces
+the original path. No config means unchanged SQL and output.
+
+Generate services with the memory-sync interpreter; generation never registers them:
+
+```sh
+python memory-sync/platform_service.py generate --unit broker --platform macos --database DB --home HOME --output NEW_BROKER_DIR
+python memory-sync/platform_service.py generate --unit catch-up --platform macos --database DB --home HOME --output NEW_CATCHUP_DIR --interval 300
+```
+
+Use absolute paths. The new output directories must not exist. Outputs are 0600
+launchd plists, systemd service/timer files (`--platform linux`), or Task Scheduler XML
+(`--platform windows`). Review the argv, then load/register them yourself. Broker units
+have no automatic remote sync. Existing sync service generation is unchanged.
+
+Before rollout, the reviewer runs parity on an owner-approved snapshot using the
+profile-log interpreter:
+
+```sh
+python memory-sync/profile_log_parity.py --db SNAPSHOT --mapping MAPPING --sample 200 --out NEW_PARITY_REPORT
+```
+
+Optional `--queries FILE` reads UTF-8 queries, one per line. The tool makes a backup-API
+snapshot in a disposable 0700 directory, with 0600 files, then creates a disposable
+file-keystore broker. The snapshot and its SQLite sidecars are the sole plaintext
+exception approved by the owner on **2026-10-20**. Everything is removed on success or
+error. The report contains metrics, integer IDs and per-run HMACs, never query/content
+or project names. Required thresholds: overlap at 12 ≥ 0.95 and top-five hit ≥ 0.98.
+`broker init --file-keystore` is for disposable homes only: system temporary directories,
+or an explicitly set `AGENTMESH_ALLOW_FILE_KEYSTORE=1`; use the OS key store for rollout.
+
+After the Windows native key-store smoke and pairing, configure Windows for recall
+with `authority: false` and `dual_write: false`. It reads paired events; hooks and
+catch-up do nothing there. Existing packet sync brings other devices' SQLite rows to
+the Mac authority for catch-up. Raw transcript ingest remains unchanged everywhere.
+
+Rollback: set `enabled: false` or delete the bridge config. This immediately restores
+SQLite recall and stops notifications; disable the generated units too. Before any
+`broker sync`, remove the dedicated migration home when ready to discard its local
+replica. After synchronization, use `profile delete` with its recovery/presence procedure
+and the documented old-share/offline-backup limitations. Disabling the bridge alone
+does not delete encrypted events or revoke already distributed keys.

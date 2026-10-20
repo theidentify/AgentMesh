@@ -93,6 +93,7 @@ def apply(db, task, payload, *, provider=None, model=None):
         after = max(ids)
         provenance = dict(generator='agentmesh-bounded-v1', consumer=task['consumer'], batch_id=task['batch_id'],
                           batch_event_ids=ids, provider=provider, model=model)
+        touched = []
         for item in payload['items']:
             old = c.execute('SELECT * FROM memory_items WHERE memory_key=?', (item['memory_key'],)).fetchone()
             if old and item['memory_key'] not in {r['memory_key'] for r in task['related']}:
@@ -112,6 +113,7 @@ def apply(db, task, payload, *, provider=None, model=None):
                 content=excluded.content,status=excluded.status,confidence=excluded.confidence,
                 metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP''',
                 (ident, *(item[f] for f in ('memory_key','kind','scope','scope_key','project','content','status','confidence')), canonical(md)))
+            touched.append(('memory_items', ident))
             c.executemany('INSERT OR IGNORE INTO memory_sources(memory_id,event_id) VALUES(?,?)',
                           [(ident, eid) for eid in item['source_event_ids']])
         project = task['events'][0]['project']
@@ -131,11 +133,18 @@ def apply(db, task, payload, *, provider=None, model=None):
             c.execute('''INSERT INTO memory_summaries(id,scope,scope_key,version,content,metadata) VALUES(?,'project',?,1,?,?)
                 ON CONFLICT(scope,scope_key,version) DO UPDATE SET content=excluded.content,metadata=excluded.metadata''',
                       (ident, scope_key, content, canonical(md)))
+            touched.append(('memory_summaries', ident))
         c.executemany('INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?)',
                       [(task['consumer'] + ':event:' + str(eid), eid) for eid in ids])
         c.execute('''INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?) ON CONFLICT(consumer) DO UPDATE SET
             last_event_id=max(last_event_id,excluded.last_event_id),updated_at=CURRENT_TIMESTAMP''', (task['consumer'], after))
         c.commit()
+        try:
+            from profile_log_bridge import notify_rows
+            notify_rows(db, touched)
+        except Exception as exc:
+            # The optional bridge never changes a committed result, even when missing.
+            print('profile-log bridge: ' + type(exc).__name__, file=__import__('sys').stderr)
         return dict(status='committed', events=len(ids), items=len(payload['items']), batch_id=task['batch_id'])
 
 

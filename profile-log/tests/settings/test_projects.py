@@ -18,7 +18,7 @@ def test_s9_trust_changes(env, tmp_path, capsys):
     root, home, store=env; save_user(config()); folder=tmp_path/'repo'
     put(folder/'.agentmesh/settings.json', {'project':{'name':'demo','scope':'work/common'}})
     assert projects.effective_mapping(load(),store.load(),[folder]).value['projects']['demo']=='skip'
-    assert str(folder) in capsys.readouterr().err
+    assert repr(str(folder)) in capsys.readouterr().err
     before=store.path.read_bytes()
     with pytest.raises(ValueError,match='presence_required'): projects.trust(folder,console=console('trust',False))
     assert store.path.read_bytes()==before

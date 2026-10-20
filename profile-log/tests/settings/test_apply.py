@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import pytest
 from agentmesh_log.apply import apply_settings
 from agentmesh_log.broker.keystore import BrokerHome, BrokerState, FileKeyStore
@@ -12,6 +13,8 @@ from agentmesh_log.settings import save_user
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     root = tmp_path / 'am'; root.mkdir(mode=0o700); monkeypatch.setenv('AGENTMESH_HOME', str(root))
+    # CI uses --basetemp outside the system temp directory; these homes are still disposable.
+    monkeypatch.setenv('AGENTMESH_ALLOW_FILE_KEYSTORE', '1')
     home = BrokerHome(root / 'profile-log'); store = FileKeyStore(home)
     state = BrokerState.create(['work']); state.control['windows'] = {'agent': now()+900000, 'first_access': now()+900000}
     store.save(state)
@@ -99,7 +102,7 @@ def test_s8_bridge(env):
     value=desired(); value['bridge']={'enabled':True,'profile':'work','recall_agent':'reader','import_agent':'reader'}
     value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
     save_user(value)
-    local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':['/usr/bin/python3','-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
+    local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
     assert run(console=console())['ok']
     path=root/'db.profile-log.json'; config=json.loads(path.read_text(encoding='utf-8'))
     assert set(config)=={'format','enabled','recall','dual_write','authority','cli_argv','agent_key','import_agent_key','mapping','profile','timeout_seconds'}
@@ -119,7 +122,7 @@ def test_s2_widening(env, change):
     elif change == 'mapping': value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
     else:
         state=store.load()
-        old=dict(enabled=True,recall=False,dual_write=False,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=['/usr/bin/python3','-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
+        old=dict(enabled=True,recall=False,dual_write=False,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=[sys.executable,'-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
         if change=='bridge_enable': old['enabled']=False
         state.control['applied_bridge']=old
         state.control['applied_mapping']={'format':'agentmesh-migration-mapping-v1','global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
@@ -128,7 +131,7 @@ def test_s2_widening(env, change):
         if change=='timeout': value['bridge']={'timeout_seconds':20}
         if change=='cli_argv':
             # Redirecting the program that receives the agent key is widening.
-            value['bridge']={}; local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'cli_argv':['/usr/bin/python3','/tmp/other-cli']}}),encoding='utf-8'); local.chmod(0o600)
+            value['bridge']={}; local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'cli_argv':[sys.executable,str(root/'other-cli')]}}),encoding='utf-8'); local.chmod(0o600)
         if change=='authority':
             value['bridge']={}; local=root/'settings.local.json'; local.write_text('{"bridge":{"authority":true}}',encoding='utf-8'); local.chmod(0o600)
     save_user(value); before=store.path.read_bytes()
@@ -251,7 +254,7 @@ def test_s2_bridge_flags_off_narrow(env):
     root, home, store=env
     value={'agents':{'a':{'read':[],'write':[]}}}; save_user(value); assert run(console=console())['ok']
     state=store.load()
-    state.control['applied_bridge']=dict(enabled=True,recall=True,dual_write=True,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=['/usr/bin/python3','-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
+    state.control['applied_bridge']=dict(enabled=True,recall=True,dual_write=True,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=[sys.executable,'-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
     state.control['applied_mapping']={'format':'agentmesh-migration-mapping-v1','global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
     store.save(state)
     value['bridge']={'recall':False,'dual_write':False}; save_user(value); calls=[]

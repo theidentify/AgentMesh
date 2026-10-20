@@ -175,7 +175,7 @@ replayed approval all fail.
   master_secret=secret, passphrase=b'', extendable=True, iteration_exponent=1)`. Use the library's documented
   signature; if it differs, record it. The shares are printed once to the console, never written to disk unless
   `--out DIR` is given (each share to its own 0600 file, refused inside the broker home or replica).
-- `recovery test` (presence) accepts 2 shares and reconstructs the secret in memory. It checks that the derived
+- `recovery test` (one-shot presence, no window) accepts 2 shares and reconstructs the secret in memory. It checks that the derived
   public keys equal the current recovery record and reports ok or mismatch. It never touches state, storage or
   keys.
 - `recovery use` (presence) runs on a fresh or existing device with 2 shares:
@@ -280,8 +280,10 @@ pytest, for the owner to run on the Mac and on Windows.
 - **P4-6 Recovery:** with all devices "lost" (homes deleted), `recovery use` with any 2 of the 3 shares on a
   fresh home restores readability of every profile's events, writes an alert seen by a surviving device on
   sync, rotates every epoch and issues new shares. Afterwards the old shares fail `recovery test` against the
-  new record. One share alone fails. `recovery test` changes no file (checked by a full tree hash before and
-  after).
+  new record. One share alone fails. `recovery test` changes no file except one appended line in `presence.jsonl`: the key store, replica,
+  indexes, audit log and storage are byte-identical before and after (full tree hash excluding
+  `presence.jsonl`, which must grow by exactly one line). Its presence check is one-shot: it neither opens
+  nor uses a window.
 - **P4-7 Presence:** every listed CLI action is refused when the console confirmation fails or stdin is not a
   TTY. The broker returns `presence_required` for first access, cross-profile and secret reads without a valid
   window, and succeeds within one. An expired window is refused. A window written by hand into a file outside

@@ -145,3 +145,84 @@ its parts: drain, backup, plist rewrite, bootstrap, health wait and rollback.
 - Windows relocation to `%USERPROFILE%\.agentmesh` (today `C:\Users\krisb\.omp_memory`), with a
   `windows-relocate` command, once the PC is available.
 - Update the Windows RC delivery notes for the new exchange path.
+
+## Implementation (for agentic workers)
+
+> Execute in order. Read this whole plan, `memory-sync/mac_replace.py`, `install_adopt.py`, `signed_packets.py`
+> (private file helpers), `bounded_digest.run_lock`, `digest_scheduler.py`, `test_mac_replace.py`,
+> `MAC-REPLACEMENT.md`, and `profile-log/README.md` ("Settings and admin UI": the bridge `database` lives in
+> `settings.local.json`). Stop and report instead of guessing on anything that affects a gate; record other
+> choices as Deviations in the REPORT.
+
+### Relocation manifest (`agentmesh-relocation-v1`, private 0600 JSON, strict fields)
+
+- `from`: the current `runtime`, `plist`, `binary`, `exchange`. All must match the live plist and runtime, as
+  `mac-replace` checks `expected_args`.
+- `to_root`: the absolute `~/.agentmesh`.
+- `syncthing`:
+  - `config` (absolute path to `config.xml`, read for the API address and key);
+  - `folder_id`.
+- `jobs`, all absolute:
+  - `plists`: a list of `{plist, label}` (ingest, summary, insight);
+  - `files`: source file → `jobs/` relative name;
+  - `production_config`;
+  - `status_dir`;
+  - `venv_requirements`: a pinned requirements file, so the venv is recreated rather than copied.
+- `rules`: absolute rule files whose recall argv is rewritten.
+- `archive`: absolute paths under `~/.hermes/omp-memory` that move into `backups/archive/`.
+- `settings_local`: absolute path of `~/.agentmesh/settings.local.json`.
+
+Every path must be absolute, contain no control characters and no symlinked component, and be user-owned.
+
+### Code layout
+
+- `memory-sync/mac_relocate.py`: `plan`, `relocate`, `rollback`. Reuse `mac_replace`'s `Launchd`
+  supervisor, drain/health, `sqlite_backup`, `install_binary` and `blob` helpers; refactor shared pieces only
+  where both callers keep their tests green.
+- A `Syncthing` class wraps the REST calls it needs:
+  - pause/resume the folder;
+  - get/set the folder `path`;
+  - wait for `idle`.
+
+  It uses `urllib`, the API key comes from the `X-API-Key` header, and the base URL is loopback only. It is
+  injected in tests.
+- `agentmesh.py`: subcommands `mac-relocate --manifest M [--dry-run] [--timeout S]` and
+  `mac-relocate-rollback --backup B`. The operator must type `RELOCATE`, like `REPLACE`.
+- Step order is fixed and journalled in a private `relocation.json` next to the backup:
+  `preflight`, `drain`, `lock jobs`, `pause syncthing`, `copy db`, `copy state/identity`, `copy exchange`,
+  `copy app files`, `copy jobs`, `rebind runtime (adopt)`, `rewrite plists/configs/rules/settings.local`,
+  `syncthing path + resume`, `start`, `verify`, `archive`. Each step records what it changed, so `rollback`
+  undoes completed steps in reverse.
+- Settings: rewrite `bridge.database` in `settings.local.json`, then render the bridge config **directly**
+  next to the new DB, using the same field set that `apply` produces. The owner runs `agentmesh-log apply`
+  afterwards; that apply must report `no changes` apart from the database path. If that is not achievable,
+  stop and report.
+
+### Ground rules
+
+- Work only in this worktree (branch `claude/agentmesh-home-relocation`). Change only:
+  - `memory-sync/mac_relocate.py`, `memory-sync/agentmesh.py`;
+  - shared helpers in `memory-sync/mac_replace.py`, only if needed;
+  - new tests `memory-sync/test_mac_relocate*.py`;
+  - `memory-sync/MAC-RELOCATION.md` (operator guide);
+  - the `build_package.py` / `standalone_build.py` lists (add `mac_relocate`);
+  - this plan's REPORT.
+- **Do not commit, push or create branches.** No network. Never touch the real `~/.hermes`, `~/.agentmesh`,
+  `~/Library/LaunchAgents`, Syncthing or keychain. Every test uses a synthetic install in a temporary
+  directory, a fake supervisor and a fake Syncthing API server object (no sockets needed; inject a transport).
+- Interpreter: `~/.cache/agentmesh-testvenv/bin/python -m pytest -q -p no:cacheprovider memory-sync`. The known
+  sandbox failures are the socket-bind cases in `test_digest_api.py`, plus one that also fails on main; list
+  them.
+- TDD. Use explicit `encoding='utf-8'` for text I/O. Never print the Syncthing API key, keys or DB content.
+- Keep `mac-replace` behaviour and tests unchanged.
+
+### Tasks
+
+1. Manifest parsing and preflight refusals (R-3), plus the dry run (R-7).
+2. Drain and job locks (R-2); DB copy with integrity check and row counts; identity/state copy with hashes
+   (R-1).
+3. Exchange copy and the Syncthing API steps (R-9).
+4. Rebinding with `adopt`, rewriting plists/configs/rules/settings.local, and the reference scan (R-4); same
+   key_id and peer acceptance (R-6).
+5. Start/verify, the journal and rollback at every step (R-5); archive (D4).
+6. CLI wiring, `MAC-RELOCATION.md` and the REPORT (gate → tests, deviations, owner steps for R-8).

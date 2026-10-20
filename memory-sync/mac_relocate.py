@@ -462,7 +462,20 @@ def make_venv(destination, requirements, *, timeout, python=None):
                  '--disable-pip-version-check', '--no-input', '--no-deps', '--only-binary=:all:', '--find-links',
                  str(requirements.parent / 'wheels'), '-r', str(requirements)], timeout=timeout)
     execute([str(destination / 'bin/python'), '-m', 'pip', 'check'], timeout=timeout)
+    harden(destination)
     tree(destination)
+
+
+def harden(root):
+    """python.org venv templates (activate scripts) arrive group-writable; strip group/other
+    write from the freshly created venv before validating it. Links are never followed."""
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in [*dirs, *files]:
+            entry = Path(directory) / name
+            if not entry.is_symlink():
+                entry.chmod(stat.S_IMODE(entry.lstat().st_mode) & ~0o022)
+    root = Path(root)
+    root.chmod(stat.S_IMODE(root.lstat().st_mode) & ~0o022)
 
 
 def requirement_pins(requirements):
@@ -764,7 +777,9 @@ def verify(prepared, *, runner, timeout):
                        '--mapping', bridge['mapping'], '--agent-key', bridge['import_agent_key']], timeout=timeout)
     if (not isinstance(caught_up, dict) or caught_up.get('errors') or caught_up.get('unmapped') or
             not isinstance(caught_up.get('outcomes'), dict) or
-            any(k != 'unchanged' and v for k, v in caught_up['outcomes'].items()) or
+            # The summary tick may legitimately add rows that catch-up then imports.
+            any(k not in ('unchanged', 'created', 'revised', 'retired') and v
+                for k, v in caught_up['outcomes'].items()) or
             not caught_up['outcomes'].get('unchanged')):
         raise ValueError('migration catch-up was not unchanged')
     # Return only bounded operational metadata, never recall or migration rows.

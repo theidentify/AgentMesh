@@ -94,8 +94,17 @@ its parts: drain, backup, plist rewrite, bootstrap, health wait and rollback.
   file hashes are identical before and after. Each copy step is checked separately, by mutation.
 - **R-2 Nothing writes during the copy:** a writer that tries to commit while the copy runs is blocked by the
   locks, or the copy aborts and restarts the service unchanged.
-- **R-3 Refusals:** a target that is not empty, contains a symlink, is group-writable, sits inside the
-  exchange, has an exchange inside it, or lacks the disk space makes the command refuse before draining.
+- **R-3 Refusals (amended 2026-10-20):**
+  - The root `~/.agentmesh` may already exist and be populated (settings, profile-log, agents, venv, app,
+    services, logs). Its existing entries are never modified, except `settings.local.json`.
+  - The **new** destinations must each be absent or an empty, user-owned 0700 directory: `memory-sync/`,
+    `exchange/`, `versions/`, `jobs/`, `status/` and `backups/archive/`.
+  - Separation is checked between those destinations: the exchange must not be inside `memory-sync/` or any
+    state/identity path, and none of those may be inside the exchange. This is the same rule as
+    `install_adopt.validate`, applied to the new paths.
+  - The command refuses before draining if any destination is non-empty, contains a symlink, is group- or
+    world-writable or owned by someone else, breaks the separation rule, or there is not enough free disk
+    space.
 - **R-4 Every reference changes:** after relocation, a scan of every config, plist and rule file listed above
   finds no remaining `~/.hermes/omp-memory/sqlite-sync` path. Unrelated Hermes content is untouched.
 - **R-5 Rollback:** an injected failure at each step restores the old service with the old binary and old

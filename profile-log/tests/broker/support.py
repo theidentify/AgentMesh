@@ -1,0 +1,29 @@
+from agentmesh_log.broker.keystore import BrokerHome, BrokerState, FileKeyStore
+from agentmesh_log.broker.grants import Grant, resolve
+from agentmesh_log.identity import AgentIdentity
+from agentmesh_log.events import EVENT_DOMAIN
+from agentmesh_log.encoding import typed
+
+
+def setup_home(tmp_path):
+    home = BrokerHome(tmp_path/'home'); state = BrokerState.create(['work','personal'])
+    for name in ('a','b'): state.trees[0].add(state.trees[0].root.scope_id,'project',name)
+    state.trees[1].add(state.trees[1].root.scope_id,'project','notes')
+    agents = []
+    for name in ('work/a','work/b'):
+        agent = AgentIdentity(state.device,state.account.account_id); sid = resolve(state,name)
+        state.grants[agent.agent_id] = Grant(agent.agent_id,agent.public_bytes.hex(),[sid],[sid],sid,state.trees[0].root.scope_id)
+        agents.append(agent)
+    store = FileKeyStore(home); store.save(state)
+    return home,state,store,agents
+
+
+def remember(broker, session, agent, body='migrate database', **kwargs):
+    response = broker.request(session,dict(op='remember',body=body,scope=None,tags=[],task=None,label=None,**kwargs))
+    if response.get('stage') != 'sign': return response
+    signature = agent._private.sign(EVENT_DOMAIN+typed(response['unsigned'])).hex()
+    return broker.request(session,dict(op='sign',signature=signature))
+
+
+def recall(broker, session, **kwargs):
+    return broker.request(session,dict(op='recall',query='migrate database',**kwargs))

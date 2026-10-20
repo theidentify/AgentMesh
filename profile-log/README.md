@@ -1,6 +1,6 @@
 # Encrypted profile log
 
-Standalone Python 3.11 library for phases 1–2 of the encrypted profile log design.
+Standalone Python 3.11 library and Phase 3 local memory broker for the encrypted profile log design.
 It models local accounts, profiles, scope trees and sensitivity labels; certifies devices
 and agents; seals, verifies and opens signed HPKE events; and stores opaque objects in
 filesystem or S3-compatible storage. It imports nothing from `memory-sync` or `profile-memory`.
@@ -86,12 +86,11 @@ No conditional writes, deletes, locks or server events are used.
 
 ## Boundaries
 
-This is a library, not a broker or sync service. It does not implement enrollment,
-revocation, grants, keyring persistence, age, OS secure storage, recovery, Shamir,
-credential redaction, PII detection, search, migration, compaction or conflict resolution.
-Signatures establish authorship, not scope-write authorization. A later broker must apply
-access policy, redaction and user-presence rules. There is no automatic promotion to
-`common` and no implicit cross-profile operation.
+The core event/storage APIs establish authorship, not scope-write authorization.
+Use the Phase 3 broker below for grants, revocation, detection, search and revision
+head tracking. Enrollment, age, OS secure storage, recovery, Shamir, migration,
+compaction, explicit conflict resolution and user-presence checks remain deferred.
+There is no automatic promotion to `common` and no implicit cross-profile operation.
 
 See [FORMAT.md](FORMAT.md) for normative wire rules and the implementation REPORT under
 `docs/superpowers/plans/2026-10-19-encrypted-profile-log-phase1-2.REPORT.md` for gate evidence.
@@ -144,3 +143,103 @@ bucket. The library's Storage interface still has no delete operation; cleanup i
 `S3Storage.list(prefix, page_size=None)` accepts an optional keyword page size. With a
 value such as `2`, it configures boto's paginator while still returning all matching keys
 sorted; leaving it unset preserves the backend's default page size.
+
+## Broker
+
+Phase 3 adds a local memory broker, per-agent RAM-only SQLite FTS5 indexes,
+mutual device/agent authentication, secret/PII detection, encrypted index snapshots,
+a local encrypted replica and explicit synchronization. The earlier library APIs
+remain usable independently. Caller rewiring, enrollment, auto-start, keychain
+storage, biometric presence and migration are not implemented.
+
+Run these commands with the prepared interpreter from `profile-log/` (replace
+`H` with a new disposable, private directory):
+
+```sh
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker init --home H --profile work --profile personal
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker scope add --home H work/client-a
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker grant --home H --name assistant --read work/client-a --write work/client-a
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker run --home H
+```
+
+The grant command returns `{"agent_key":"..."}`. Give that file only to the
+intended agent. In another process:
+
+```sh
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli remember --agent-key AGENT_KEY --scope work/client-a 'A synthetic memory'
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli recall 'synthetic memory' --agent-key AGENT_KEY --scope work/client-a
+```
+
+Agents receive no scope keys. Reads cover descendants of granted scopes; writes
+cover only explicitly granted scopes. Recall defaults to the grant's default
+profile. Repeat `--profile` and `--scope` to select profiles/scopes; any unreadable
+scope denies the entire request. `--project` filters body metadata and grants no
+access. Cross-profile recall requires `--allow-cross-profile` on the grant;
+secret results require `--allow-secret`. `common` always requires an explicit
+write scope. Revisions are available through `BrokerClient.write(revises=...)`.
+Concurrent revision heads remain visible as a conflict with alternative ULIDs.
+
+`broker revoke --home H AGENT_ID` applies on the next request, including existing
+connections. Administrative commands take an exclusive PID lock at `H/.lock`.
+A crashed administrator may leave that lock behind; verify that no administrator
+is running before manually removing it. The broker rechecks state contents and
+mtime on each request and rebuilds indexes when grants change. Each new event is
+decrypted once and added only to authorized per-agent indexes. Recall selects
+candidates in SQL before decoding/scoring. Replica object hashes are read once at
+startup and maintained in memory as writes and sync downloads arrive. Existing
+objects are immutable; out-of-band replica edits require restarting the broker.
+Revision components update incrementally, including when children arrive before
+their parent. Snapshots retain authorized revision rows and are flushed on clean
+broker close (or explicit `flush_indexes()`), rather than after each write. A
+missing, invalid or stale snapshot rebuilds from the encrypted replica. A crash
+may lose index work, but not an already-persisted event.
+
+Local profile names must be unique, as must sibling scope names. Both CLI and
+state/tree APIs reject duplicates; loading ambiguous state is also refused.
+
+For the offline performance benchmark, run from the repository root:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 ~/.cache/agentmesh-logvenv/bin/python profile-log/tests/broker/bench_broker.py
+```
+
+It creates disposable data using two agent grants, populates 1,000 then 5,000
+events, and reports 20-sample write and broad-recall median/max latencies. Writes
+include remember+sign, encryption, replica persistence and audit fsync. The query
+matches every event; timing excludes population and shutdown snapshot flushing.
+
+Writes and recall do not need a remote. To synchronize explicitly:
+
+```sh
+~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker sync --home H --filesystem REPLICA_DIRECTORY
+```
+
+The optional S3 form uses `--s3-bucket`, `--s3-prefix` and `--s3-endpoint`.
+`broker run --sync-interval S` requires the same explicit remote flags; automatic
+synchronization is off by default. No service or daemon is installed. Only invoke
+remote synchronization when you intend to access that remote. `Replica.outbox()`
+counts local event/wrap objects absent from the last successful remote listing.
+Downloaded events must pass certificate/signature and object-path verification.
+
+Secrets are replaced by `[REDACTED:<kind>]` and raise the event label to `secret`;
+PII remains intact and raises it to `internal`. Audit JSONL records request outcomes,
+IDs and detector kinds/counts, with a keyed HMAC of query text. It never stores
+query, body, tags or task text. An audit append/fsync failure returns `unavailable`.
+Audit append-only behavior is conventional; tamper evidence is deferred.
+
+**Phase 3 security limitation:** the 0600 `keystore.json` contains account/device
+private keys, all scope epochs, the index master key and audit key. Malicious code
+running as the same OS user can read this file or another agent's key file directly.
+This phase does not protect against that attacker. A separate broker OS account
+or OS keychain ACLs are future work. Account-root storage on a daily device is
+also temporary. Phase 4 moves key storage to the OS keychain and adds user-presence
+checks for first access, secret reads and cross-profile recall.
+
+POSIX broker directories are 0700, files and the Unix socket are 0600, unsafe roots
+and symlinks are refused, and peer UID must match. Windows uses named pipes with
+byte-only messages and the default pipe DACL; local administrators can still
+connect, and certificate authentication remains required. Windows file access
+follows host ACLs rather than POSIX mode bits. Socket tests use short temporary
+paths and fail explicitly if the sandbox denies binding; they are never skipped
+for that reason. The reviewer must run those tests outside the sandbox and on
+Windows/Linux CI.

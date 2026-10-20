@@ -19,9 +19,9 @@ from .query import analyze_query
 from .handshake import Challenge
 from .transport import UnixServer, PipeServer
 
-SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes'.split()),
+SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat'.split()),
     'remember':set('body scope tags task label'.split()), 'revise':set('body scope tags task label revises'.split()),
-    'sign': {'signature'}}
+    'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
 
 
 @dataclass
@@ -53,6 +53,8 @@ class Broker:
         self.replica=Replica(home,self.state); self.audit=Audit(home.root/'audit.jsonl',self.state.audit_key)
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
         self._payload_cache={}
+        from .imports import Imports
+        self.imports=Imports(self)
         for grant in self.state.grants.values(): self.index(grant)
 
     def refresh(self):
@@ -102,11 +104,15 @@ class Broker:
         scope_names=names(self.state); body=payload['body']
         if type(body) is str: body=dict(kind='fact',content=body)
         elif not body_valid(body): body=dict(kind='fact',content=wire(body).decode())
+        from .imports import admitted
+        migration=admitted(self,envelope,payload)
+        meta=body.get('metadata',{}) if migration else {}
         instant=datetime.fromtimestamp(payload['created_at']/1000,timezone.utc).isoformat().replace('+00:00','Z')
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
-            tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'])
+            tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'],
+            _migration=meta)
 
     def index(self, grant):
         aid=grant.agent_id; digest=grant.digest()
@@ -125,6 +131,7 @@ class Broker:
     def ingest(self, envelope, data):
         try: _,payload=self._open(envelope,data)
         except (ValueError,KeyError,StopIteration): return
+        self.imports.add(envelope,payload)
         for grant in self.state.grants.values():
             row=self.row(envelope,payload,grant)
             if row is not None: self.indexes[grant.agent_id].add(row)
@@ -141,6 +148,7 @@ class Broker:
         with self.lock:
             audit=dict(agent_id=session.agent_id,op='invalid',outcome='invalid')
             pending=session.pending; session.pending=None
+            if not isinstance(request,dict) or request.get('op')!='sign': self.imports.release(session)
             try:
                 self.refresh()
                 if type(request) is not dict: raise ValueError('invalid_request')
@@ -163,16 +171,25 @@ class Broker:
             except LabelLoweringRequiresConfirmation:
                 response={'error':'label_lowering_requires_confirmation'}; audit['outcome']='denied'
             except ValueError as exc:
-                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable','presence_required') else 'invalid_request'
+                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable','presence_required','busy') else 'invalid_request'
                 response={'error':code}; audit['outcome']='denied' if code in ('denied','presence_required') else ('error' if code=='unavailable' else 'invalid')
             except Exception:
                 response={'error':'internal'}; audit['outcome']='error'
+            if session.pending is None: self.imports.release(session)
             try: self.audit.append(**audit)
-            except Exception: session.pending=None; return {'error':'unavailable'}
+            except Exception:
+                session.pending=None; self.imports.release(session); return {'error':'unavailable'}
             return response
 
     def dispatch(self, session, grant, req, pending, audit):
         op=req['op']; scope_names=names(self.state); allowed=readable(self.state,grant)
+        if op=='import': return self.imports.prepare(session,grant,req,audit)
+        if op=='import_ledger':
+            if not grant.allow_import: raise ValueError('denied')
+            return {'entries':self.imports.ledger(grant), 'foreign_authority':any(
+                e['device']!=self.state.device.device_id and type(p['body']) is dict and
+                type(p['body'].get('metadata')) is dict and 'source' in p['body']['metadata']
+                for e,p in self.payloads())}
         if op=='whoami':
             result=dict(agent_id=session.agent_id,read=sorted(scope_names[s] for s in allowed),
                 write=sorted(scope_names[s] for s in grant.write),default_profile=scope_names[grant.default_profile],allow_secret=grant.allow_secret)
@@ -180,6 +197,7 @@ class Broker:
             return result
         if op=='recall':
             query=req.get('query'); limit=req.get('limit',12)
+            if type(req.get('compat',False)) is not bool: raise ValueError('invalid_request')
             if type(query) is not str or not 1<=len(query)<=2048 or not query.strip(): raise ValueError('invalid_request')
             if type(limit) is not int or not 1<=limit<=100: raise ValueError('invalid_request')
             for field in ('project','task'):
@@ -201,12 +219,14 @@ class Broker:
                 scopes &= descendants(self.state,roots)
             audit.update(profiles=sorted(profiles),scopes=sorted(scopes))
             result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
-                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles})
+                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False))
             if any(r['label']=='secret' for r in result['results']): self.presence.require('secret_read','read')
             audit['result_ids']=[r['id'] for r in result['results']]
             return result
         if op in ('remember','revise'):
             if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
+            from .imports import RESERVED
+            if type(req['body']) is dict and RESERVED & set(req['body'].get('metadata',{})): raise ValueError('invalid_request')
             tags=req.get('tags',[]); task=req.get('task'); agent_label=req.get('label'); name=req.get('scope')
             if type(tags) is not list or any(type(t) is not str for t in tags): raise ValueError('invalid_request')
             if task is not None and type(task) is not str: raise ValueError('invalid_request')
@@ -221,6 +241,7 @@ class Broker:
                 parse_ulid(revises)
                 old=self.index(grant).event(revises)
                 if old is None or old['scope']!=scope_names[sid] or sid not in allowed: raise ValueError('denied')
+                if old.get('_migration'): raise ValueError('denied')
                 if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
                 previous=Label[old['label']]
             body,tags,task,detected,redactions=sanitize(req['body'],tags,task)
@@ -234,7 +255,8 @@ class Broker:
             return dict(stage='sign',unsigned=unsigned)
         if op=='sign':
             if pending is None or set(req)!={'op','signature'}: raise ValueError('invalid_request')
-            unsigned,label,redactions,digest=pending
+            unsigned,label,redactions,digest=pending[:4]
+            migration=pending[4] if len(pending)>4 else None
             if digest!=grant.digest() or unsigned['scope'] not in grant.write: raise ValueError('denied')
             self.check_write_epoch(unsigned['scope'],unsigned['scope_key_id'])
             data=attach_signature(unsigned,req['signature']); verify_event(data,self.state.registry())
@@ -242,7 +264,12 @@ class Broker:
             envelope=self.replica.put_event(data)
             self.ingest(envelope,data)
             audit.update(scopes=[unsigned['scope']],profiles=[unsigned['profile']],redactions=redactions,label=label,result_ids=[unsigned['id']])
-            return dict(id=unsigned['id'],label=label,redactions=sorted(redactions))
+            result=dict(id=unsigned['id'],label=label,redactions=sorted(redactions))
+            if migration:
+                audit['op']='import'
+                result['outcome']=migration['outcome']
+                if migration['next'] is not None: return self.imports.prepare(session,grant,migration['next'],audit)
+            return result
         raise ValueError('invalid_request')
 
     def check_write_epoch(self,sid,key_id=None):
@@ -293,7 +320,10 @@ class Broker:
                     return
                 conn.send(self.request(session,req))
         except (OSError,ValueError,EOFError): pass
-        finally: conn.close()
+        finally:
+            with self.lock:
+                if session is not None: self.imports.release(session)
+            conn.close()
 
     def serve(self, *, server=None, remote=None, sync_interval=None):
         self.server=server or (PipeServer if os.name=='nt' else UnixServer)(self.home.address(self.state.device.device_id))

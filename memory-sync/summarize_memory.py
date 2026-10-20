@@ -279,6 +279,7 @@ def commit_response(db, task, response):
             return {'status': 'stale', 'items': 0, 'summaries': 0, 'events': 0}
         if not task['events']:
             return {'status': 'idle', 'items': 0, 'summaries': 0, 'events': 0}
+        touched = []
         item_count = 0
 
         def insert_item(value, metadata, token):
@@ -292,6 +293,7 @@ def commit_response(db, task, response):
                  value['content'], value['confidence'], canonical(metadata)))
             c.executemany('INSERT INTO memory_sources(memory_id,event_id) VALUES(?,?)',
                           [(ident, ref) for ref in value['source_event_ids']])
+            touched.append(('memory_items', ident))
             item_count += 1
 
         for index, item in enumerate(response['items']):
@@ -305,6 +307,7 @@ def commit_response(db, task, response):
             c.execute('''INSERT INTO memory_summaries(id,scope,scope_key,version,content,metadata)
                 VALUES(?,?,?,?,?,?)''', (ident, summary['scope'], summary['scope_key'], version,
                                        summary['content'], canonical(metadata)))
+            touched.append(('memory_summaries', ident))
             # memory_summaries has no link table: mirror the SAME provider text
             # as a summary-kind memory_item to preserve normal memory_sources.
             projects = {event['project'] for event in task['events']
@@ -323,6 +326,12 @@ def commit_response(db, task, response):
         c.executemany('INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?)',
                       [(consumer + ':event:' + str(event['id']), event['id']) for event in task['events']])
         c.commit()  # deferred FK failures are raised before reporting success
+        try:
+            from profile_log_bridge import notify_rows
+            notify_rows(db, touched)
+        except Exception as exc:
+            # The optional bridge never changes a committed result, even when missing.
+            print('profile-log bridge: ' + type(exc).__name__, file=__import__('sys').stderr)
         return {'status': 'committed', 'batch_id': task['batch_id'], 'items': item_count,
                 'summaries': len(response['summaries']), 'events': len(task['events'])}
 

@@ -41,6 +41,10 @@ def render_launchagent(python, app_dir, database, exchange, interval=60, postgre
 
 
 def main(argv=None):
+    import sys
+    actual = sys.argv[1:] if argv is None else argv
+    if any(v == '--unit' or v.startswith('--unit=') for v in actual):
+        return generate_profile_units(actual)
     import argparse
     import os
     parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
@@ -66,6 +70,77 @@ def main(argv=None):
             stream.write(data)
     except (ValueError, OSError):
         parser.error('cannot generate service: invalid arguments or output already exists/unwritable')
+    return 0
+
+
+
+
+def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=None,agent_key=None,interval=300,authority=True):
+    """Render opt-in broker/catch-up units; no registration or remote sync."""
+    import subprocess
+    import xml.etree.ElementTree as ET
+    if platform not in ('macos','linux','windows') or unit not in ('broker','catch-up'): raise ValueError('invalid unit')
+    if not isinstance(cli_argv,list) or not cli_argv or any(type(a) is not str or not a or any(unicodedata.category(c)=='Cc' for c in a) for a in cli_argv): raise ValueError('invalid argv')
+    _validate(cli_argv[0],home,home,home,interval)
+    if len(cli_argv)==3 and cli_argv[1:]==['-m','agentmesh_log.cli']: pass
+    elif len(cli_argv)==2 and Path(cli_argv[1]).is_absolute(): pass
+    else: raise ValueError('invalid argv')
+    stem='org.agentmesh.profile-log.'+unit
+    if unit=='broker': argv=[*cli_argv,'broker','run','--home',home]
+    else:
+        if not authority: return {}
+        _validate(cli_argv[0],database,mapping,agent_key,interval)
+        argv=[*cli_argv,'migrate','catch-up','--db',database,'--mapping',mapping,'--agent-key',agent_key]
+    if platform=='macos':
+        value=dict(Label=stem,ProgramArguments=argv,RunAtLoad=True,Umask=0o077)
+        if unit=='broker': value['KeepAlive']=True
+        else: value['StartInterval']=int(interval)
+        return {stem+'.plist':plistlib.dumps(value)}
+    if platform=='linux':
+        command=' '.join(json.dumps(a,ensure_ascii=False).replace('%','%%') for a in argv)
+        value='[Unit]\nDescription=AgentMesh profile log '+unit+'\n\n[Service]\nType='+('simple' if unit=='broker' else 'oneshot')+'\nExecStart=:'+command+'\nUMask=0077\n'
+        if unit=='broker': value+='Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n'
+        result={stem+'.service':value.encode('utf-8')}
+        if unit=='catch-up': result[stem+'.timer']=('[Unit]\nDescription=AgentMesh migration catch-up\n\n[Timer]\nOnBootSec=30\nOnUnitActiveSec='+str(interval)+'\nUnit='+stem+'.service\n\n[Install]\nWantedBy=timers.target\n').encode('utf-8')
+        return result
+    task=ET.Element('Task',version='1.4',xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task')
+    triggers=ET.SubElement(task,'Triggers')
+    trigger=ET.SubElement(triggers,'LogonTrigger' if unit=='broker' else 'TimeTrigger')
+    if unit=='catch-up':
+        ET.SubElement(trigger,'StartBoundary').text='2020-01-01T00:00:00'
+        repeat=ET.SubElement(trigger,'Repetition'); ET.SubElement(repeat,'Interval').text='PT'+str(int(interval))+'S'
+    ET.SubElement(trigger,'Enabled').text='true'
+    settings=ET.SubElement(task,'Settings'); restart=ET.SubElement(settings,'RestartOnFailure')
+    ET.SubElement(restart,'Interval').text='PT1M'; ET.SubElement(restart,'Count').text='3'
+    ET.SubElement(settings,'MultipleInstancesPolicy').text='IgnoreNew'
+    ET.SubElement(settings,'ExecutionTimeLimit').text='PT0S'
+    action=ET.SubElement(ET.SubElement(task,'Actions'),'Exec')
+    ET.SubElement(action,'Command').text=argv[0]; ET.SubElement(action,'Arguments').text=subprocess.list2cmdline(argv[1:])
+    return {stem+'.xml':ET.tostring(task,encoding='utf-8',xml_declaration=True)}
+
+
+def generate_profile_units(argv):
+    import argparse
+    import os
+    from profile_log_bridge import load_config
+    p=argparse.ArgumentParser(description='Render profile-log service files only')
+    p.add_argument('command',choices=['generate']); p.add_argument('--unit',choices=['broker','catch-up'],required=True)
+    p.add_argument('--platform',choices=['macos','linux','windows'],required=True)
+    p.add_argument('--database',required=True); p.add_argument('--home',required=True)
+    p.add_argument('--output',required=True,help='new directory for generated files')
+    p.add_argument('--interval',type=float,default=300)
+    args=p.parse_args(argv)
+    config=load_config(args.database)
+    if not config or not config['enabled']: raise ValueError('bridge not enabled')
+    files=render_profile_units(args.platform,args.unit,config['cli_argv'],home=args.home,database=args.database,
+        mapping=config['mapping'],agent_key=config['import_agent_key'],interval=args.interval,authority=config['authority'])
+    if not files: return 0
+    root=Path(args.output)
+    if not root.is_absolute() or any(unicodedata.category(c)=='Cc' for c in str(root)) or any(p.is_symlink() for p in (root,*root.parents)): raise ValueError('invalid output')
+    root.mkdir(mode=0o700)
+    for name,data in files.items():
+        fd=os.open(root/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'wb') as stream: stream.write(data)
     return 0
 
 

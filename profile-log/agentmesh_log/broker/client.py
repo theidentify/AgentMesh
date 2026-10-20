@@ -46,4 +46,18 @@ class BrokerClient:
         if expected_scope is not None and unsigned['scope']!=expected_scope: raise ValueError('invalid scope binding')
         return self.request(dict(op='sign',signature=self.agent._private.sign(EVENT_DOMAIN+typed(unsigned)).hex()))
 
+    def import_row(self, **fields):
+        response=self.request(dict(op='import',**fields))
+        steps=0
+        while response.get('stage')=='sign':
+            steps+=1
+            if steps>2 or set(response)!={'stage','unsigned'}: raise ValueError('invalid response')
+            unsigned=response['unsigned']
+            from ..encoding import fields as check_fields
+            check_fields(unsigned,EVENT_FIELDS-{'signature'},'agentmesh-event-v1')
+            if unsigned['agent_cert']!=self.agent.certificate() or (unsigned['account'],unsigned['device'],unsigned['agent'])!=(self.agent.account_id,self.agent.device_id,self.agent.agent_id):
+                raise ValueError('invalid author binding')
+            response=self.request(dict(op='sign',signature=self.agent._private.sign(EVENT_DOMAIN+typed(unsigned)).hex()))
+        return response
+
     def close(self): self.channel.close()

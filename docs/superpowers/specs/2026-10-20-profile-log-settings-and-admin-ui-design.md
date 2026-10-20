@@ -36,6 +36,8 @@ central config like Claude Code's `~/.claude/settings.json`.
   `.agentmesh/settings.json` (shared) and `.agentmesh/settings.local.json`
   (personal, git-ignored), with Claude-style precedence.
 - **Settings stay per device** for now; they are not synced.
+- **Windows TUI:** `windows-curses==2.4.2` (pinned), so Windows gets the same
+  full-screen UI as the Mac; the numbered menu is the fallback.
 
 ## Design
 
@@ -129,8 +131,14 @@ parser and keeps its current fail-closed checks. The Phase 5 mapping becomes the
 ### Terminal UI (`agentmesh-log admin`)
 
 Full-screen `curses` UI (arrow keys, checkboxes) on macOS and Linux, where
-`curses` is part of Python's standard library. Windows Python has no `curses`;
-see open question 1 for the Windows choice. It edits
+`curses` is part of Python's standard library. Windows Python has no `curses`, so profile-log adds a
+Windows-only dependency `windows-curses==2.4.2; sys_platform == "win32"` (released
+2026-03-31; wheels for CPython 3.10–3.14, win32 and win_amd64). The import is
+guarded: if `curses` cannot be imported (no wheel, for example on Windows ARM64,
+or the package is missing), the same screens run as a numbered menu (type a number,
+press Enter). Both front ends share one screen model, so behaviour and presence
+prompts are identical. CI runs the numbered menu on all three OSes and the curses
+screens on macOS, Linux and Windows. It edits
 `settings.json`, then runs the same `apply` step. Screens:
 
 1. **Overview:**
@@ -193,16 +201,4 @@ Editing from the web comes after. A click would only create a *pending change* i
 
 ## Open questions for the owner
 
-1. **Windows terminal UI.** Python's `curses` module draws full-screen terminal
-   UIs (move with the arrow keys, tick boxes with the space bar). It ships with
-   Python on macOS and Linux, but not on Windows. The options are:
-   - (a) a plain numbered menu on Windows: type a number and press Enter, with no
-     new dependency;
-   - (b) add the pinned third-party package `windows-curses`, so Windows gets the
-     same full-screen UI;
-   - (c) a cross-platform library such as `prompt_toolkit` or `textual`, a bigger
-     dependency.
-
-   Recommendation: (b), for the same experience on both machines with a small,
-   pinned dependency. The menu in (a) stays as a fallback if the package is
-   missing.
+None. All questions were answered on 2026-10-20.

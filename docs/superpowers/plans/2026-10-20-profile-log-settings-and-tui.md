@@ -112,7 +112,7 @@ presence.py   add action "apply" and "trust"
    `recall_agent` and `import_agent`. `mapping` points at a rendered `$AGENTMESH_HOME/migration-mapping.json`
    (0600) built from the effective migration plus trusted project routes. Disabling renders `enabled: false`. The
    file is never deleted.
-8. Every apply, including a declined one, appends one line to `apply.jsonl` with the diff kinds, names and
+8. Every non-dry-run apply, including a declined one and a no-op, appends one line to `apply.jsonl` with the diff kinds, names and
    outcome, and no key paths or content. A second apply with no changes prints `no changes` and asks nothing.
 
 ### Project trust (`projects.py`)
@@ -224,7 +224,7 @@ error.
   scopes refuses to approve.
 - **S-13 Fallback:** when `curses` fails to import, or stdout is not a TTY, `admin` uses the menu. `--menu` forces
   the menu. A scripted menu session creates a scope, grants it and saves, and the apply prompt appears.
-- **S-14 Audit:** every apply (approved, declined, no-op) writes exactly one `apply.jsonl` line with no key paths,
+- **S-14 Audit:** every non-dry-run apply (approved, declined, no-op) writes exactly one `apply.jsonl` line; `--dry-run` writes nothing at all, including no audit line, with no key paths,
   key material or content.
 
 ### Whole change

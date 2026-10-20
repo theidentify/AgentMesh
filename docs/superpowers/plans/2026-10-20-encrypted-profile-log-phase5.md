@@ -364,3 +364,26 @@ agent's broker already holds migration events written by **another device**, unl
   `migrate plan`; real-data parity (reviewer); the Mac rollout (broker home, scopes, grants, presence window for
   the recall agent's first access, `migrate run`, bridge config, generate and load the units); and the Windows
   rollout after the Windows key-store smoke (bridge with `authority: false`, recall only, once paired).
+
+## Amendment (2026-10-20): import provenance trust across devices
+
+Codex found that a paired device cannot verify another device's local `allow_import` grant (regression
+`test_p5_7_peer_import`). **Owner decision: device-level trust.** The ledger and compat selection admit an event
+carrying migration provenance (`metadata.source`, `row_hash`, `evidence_event_ids`, `retired`) when:
+
+- it was written by **this device**, and its agent holds `allow_import` or has held it. The broker state keeps a
+  persistent set of import agent IDs that is never pruned by `broker revoke`, so history survives revocation and
+  restart; or
+- it was written by **another device** of the same account whose device chain is valid and not revoked at the
+  event time (the same rule as ordinary event verification).
+
+Rationale: a paired device already holds the scope keys and could seal arbitrary events, so a replicated import
+grant adds no protection against it. Ordinary agents still cannot forge provenance, because `remember`/`revise`
+reject reserved keys at their own broker. No new replicated record. Document this in README and FORMAT as a
+limitation: a compromised paired device can forge or retire migrated rows, as it can already forge any event in
+the scopes it holds.
+
+P5-7 becomes: on this device, a provenance event from a local agent that never held `allow_import` is not
+admitted; on a peer, an event imported on the source device is admitted (ledger 1 entry, compat source IDs
+present); an event from a revoked device written after its revocation is not admitted; a revoked local import
+agent's earlier events stay admitted after restart. Each case has its own test.

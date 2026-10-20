@@ -318,7 +318,9 @@ agent's broker already holds migration events written by **another device**, unl
   file and its `-wal`/`-shm`/`-journal` sidecars are a plaintext copy of the source DB by design and are excluded
   from the scan. Instead the test asserts that they live only in the 0700 temporary directory as 0600 files, that
   the snapshot is the only file there holding markers, and that the whole directory is gone after the tool exits,
-  on success **and** on an injected error. A generated secret in row content is redacted and labelled
+  on success **and** on an injected error. The owner approved this exception on 2026-10-20 under exactly these
+  conditions, and each one has its own test: the directory is 0700; the files are 0600; the snapshot and its
+  sidecars are the only plaintext files; the directory is removed on success; the directory is removed on error. A generated secret in row content is redacted and labelled
   `secret`. The migrator, hook and parity create no remote storage and never call `sync_once` (spy); the replica
   outbox afterwards equals the number of migrated objects. The parity report contains none of the query, content
   or project-name markers.

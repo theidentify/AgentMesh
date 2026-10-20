@@ -402,9 +402,24 @@ def table_counts(database):
                 for name in tables}
 
 
+def journal_mode(database):
+    with closing(sqlite3.connect(absolute(database).as_uri() + '?mode=ro', uri=True)) as db:
+        return db.execute('PRAGMA journal_mode').fetchone()[0].lower()
+
+
 def copy_database(source, destination):
     before = table_counts(source)
+    mode = journal_mode(source)
     sqlite_backup(source, destination)
+    # sqlite_backup leaves a DELETE-mode snapshot. The relocated copy becomes the live
+    # database, so restore the source's WAL mode: health checks read it immutably while
+    # the worker writes, which is only consistent in WAL mode.
+    if mode == 'wal':
+        with closing(sqlite3.connect(absolute(destination))) as db:
+            if db.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() != 'wal':
+                raise ValueError('relocated database WAL mode not restored')
+    if journal_mode(destination) != mode:
+        raise ValueError('relocated database journal mode differs from source')
     if table_counts(destination) != before or table_counts(source) != before:
         raise ValueError('database row counts changed during copy')
     return before

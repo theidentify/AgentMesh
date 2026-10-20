@@ -330,3 +330,19 @@ def test_make_venv_strips_group_write_from_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(mac_relocate, 'execute', fake_execute)
     mac_relocate.make_venv(destination, requirements, timeout=5, python='/usr/bin/python3')
     assert all(not p.stat().st_mode & 0o022 for p in destination.rglob('*'))
+
+
+
+@pytest.mark.parametrize('mode', ['wal', 'delete'])
+def test_copy_database_keeps_source_journal_mode(tmp_path, mode):
+    # The relocated copy is the live DB: a WAL source must stay WAL (immutable health reads).
+    import sqlite3
+    import mac_relocate
+    source = tmp_path / 'source.db'
+    with sqlite3.connect(source) as db:
+        db.execute('PRAGMA journal_mode=' + mode)
+        db.execute('CREATE TABLE t(x)')
+        db.execute('INSERT INTO t VALUES (1)')
+    destination = tmp_path / 'copy.db'
+    assert mac_relocate.copy_database(source, destination) == {'t': 1}
+    assert mac_relocate.journal_mode(destination) == mode

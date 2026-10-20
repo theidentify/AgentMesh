@@ -7,9 +7,28 @@ import sys
 PACKAGE = str(Path(__file__).resolve().parents[2])
 
 
+# Native keychains must never be touched by automated tests. Admin CLI runs use
+# its explicit backend/input seams; transport process tests remain unchanged.
+class FakeBackend:
+    def __init__(self): self.items={}
+    def load(self,account): return self.items.get(account)
+    def store(self,account,key): self.items[account]=key
+    def delete(self,account): self.items.pop(account,None)
+
+_backend=FakeBackend()
+
 def cli(*args):
-    return subprocess.run([sys.executable,'-m','agentmesh_log.cli',*map(str,args)],
-        env={**os.environ,'PYTHONPATH':PACKAGE,'PYTHONDONTWRITEBYTECODE':'1'},capture_output=True,text=True, encoding='utf-8',timeout=15)
+    import io
+    from contextlib import redirect_stdout,redirect_stderr
+    from agentmesh_log.cli import main
+    from agentmesh_log.presence import ConsolePresence
+    out,err=io.BytesIO(),io.StringIO(); stream=io.TextIOWrapper(out,encoding='utf-8')
+    console=ConsolePresence(input_fn=lambda prompt:prompt.split()[1].rstrip(':'),isatty=lambda:True,output=lambda _:None)
+    with redirect_stdout(stream),redirect_stderr(err):
+        try: code=main(list(map(str,args)),backend=_backend,console=console)
+        except SystemExit as exc: code=exc.code
+    stream.flush(); text=out.getvalue().decode('utf-8')
+    return subprocess.CompletedProcess(args,code,text,err.getvalue())
 
 
 def test_admin(tmp_path):

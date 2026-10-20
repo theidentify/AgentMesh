@@ -98,27 +98,95 @@ class Registry:
         self.account_id = account_public_record['account_id']
         self._root_public = hex_bytes(account_public_record['root_public_key'], 32)
         self._devices = {}
+        self.certificates = {}
+        self.device_records = {}
+        self.revocations = {}
+        self.recoveries = {}
 
     def add_device(self, cert):
         fields(cert, DEVICE_FIELDS, 'agentmesh-device-cert-v1')
         for name in ('account_id', 'device_id'): hex_bytes(cert[name], 16)
         public = hex_bytes(cert['device_public_key'], 32)
         hex_bytes(cert['signature'], 64); milliseconds(cert['issued_at'])
-        if cert['issuer'] != 'account': hex_bytes(cert['issuer'], 16)
+        if cert['issuer'] not in ('account','recovery'): hex_bytes(cert['issuer'], 16)
         if cert['account_id'] != self.account_id: raise IdentityError('wrong account')
         if cert['issuer'] == cert['device_id']: raise IdentityError('self-issued device certificate')
-        issuer = self._root_public if cert['issuer'] == 'account' else self._devices.get(cert['issuer'])
+        if cert['issuer'] == 'recovery':
+            issuers = [bytes.fromhex(r['recovery_signing_public']) for r in self.recoveries.values() if r['issued_at'] <= cert['issued_at']]
+            for issuer in issuers:
+                try: verify_signature(cert,issuer,DEVICE_DOMAIN); break
+                except IdentityError: continue
+            else: raise IdentityError('unknown recovery issuer')
+        else:
+            issuer = self._root_public if cert['issuer'] == 'account' else self.device_public(cert['issuer'],at=cert['issued_at'])
         if issuer is None: raise IdentityError('unknown device issuer')
         verify_signature(cert, issuer, DEVICE_DOMAIN)
         old = self._devices.get(cert['device_id'])
         if old is not None and old != public: raise IdentityError('device identifier already registered')
         self._devices[cert['device_id']] = public
+        self.certificates[cert['device_id']] = dict(cert)
 
     def verify_agent(self, cert):
         validate_agent_certificate(cert)
         if cert['account_id'] != self.account_id: raise IdentityError('wrong account')
-        # TODO(phase4): check device/agent revocation before accepting the chain.
-        device = self._devices.get(cert['device_id'])
+        device = self.device_public(cert['device_id'])
         if device is None: raise IdentityError('unknown device')
         verify_signature(cert, device, AGENT_DOMAIN)
         return hex_bytes(cert['agent_public_key'], 32)
+
+    def device_public(self, device_id, *, at=None, seen=None):
+        seen = set() if seen is None else seen
+        if device_id in seen: raise IdentityError('device chain cycle')
+        seen.add(device_id)
+        cert = self.certificates.get(device_id)
+        if cert is None: raise IdentityError('unknown device')
+        revoked = self.revocations.get(device_id)
+        if revoked is not None and (at is None or at >= revoked['revoked_at']):
+            raise IdentityError('revoked device')
+        if at is not None and at < cert['issued_at']: raise IdentityError('device not yet issued')
+        if cert['issuer'] not in ('account','recovery'):
+            self.device_public(cert['issuer'],at=cert['issued_at'],seen=seen)
+        return self._devices[device_id]
+
+    def add_recovery(self, record):
+        from .registry_store import shape, domain, recovery_id
+        from .agekeys import validate_recipient
+        shape(record,'recovery-record')
+        if record['account_id'] != self.account_id: raise IdentityError('wrong account')
+        hex_bytes(record['recovery_signing_public'],32)
+        validate_recipient(record['recovery_age_recipient'])
+        previous = record['previous']
+        if previous is None: public = self._root_public
+        else:
+            parent = self.recoveries.get(previous)
+            if parent is None or record['issued_at'] < parent['issued_at']: raise IdentityError('unknown recovery parent')
+            public = bytes.fromhex(parent['recovery_signing_public'])
+        verify_signature(record,public,domain('recovery-record'))
+        self.recoveries[recovery_id(record)] = record
+
+    def current_recovery(self):
+        parents = {r['previous'] for r in self.recoveries.values()}
+        leaves = [(r['issued_at'],k,r) for k,r in self.recoveries.items() if k not in parents]
+        if not leaves: raise IdentityError('missing recovery record')
+        return max(leaves,key=lambda item:item[:2])[2]
+
+    def add_revocation(self, record):
+        from .registry_store import shape, domain
+        shape(record,'device-revocation')
+        subject, signer = record['device_id'],record['revoked_by']
+        if subject not in self._devices or subject == signer or record['reason_code'] not in ('removed','recovery','compromised'):
+            raise IdentityError('invalid revocation')
+        if signer == 'recovery':
+            public = bytes.fromhex(self.current_recovery()['recovery_signing_public'])
+        else: public = self.device_public(signer)
+        verify_signature(record,public,domain('device-revocation'))
+        self.revocations[subject] = record
+
+    def verify_historical_agent(self, cert, event_time):
+        """Historical event verification; live handshakes still reject revoked devices."""
+        validate_agent_certificate(cert)
+        if cert['account_id'] != self.account_id or cert['issued_at'] > event_time:
+            raise IdentityError('invalid historical certificate')
+        public=self.device_public(cert['device_id'],at=event_time)
+        verify_signature(cert,public,AGENT_DOMAIN)
+        return hex_bytes(cert['agent_public_key'],32)

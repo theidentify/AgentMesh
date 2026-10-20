@@ -1,6 +1,6 @@
 """Owner-only Phase 3 state. Same-user hostile code is outside this boundary."""
 from contextlib import contextmanager
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import hashlib
 import os
 from pathlib import Path
@@ -72,6 +72,7 @@ class BrokerState:
     grants: dict
     index_master_key: bytes
     audit_key: bytes
+    control: dict = field(default_factory=dict)
 
     @classmethod
     def create(cls, profiles):
@@ -92,6 +93,13 @@ class BrokerState:
 
     def registry(self):
         registry = Registry(self.account.public_record())
+        if self.control.get('registry_records'):
+            from ..registry_store import RegistryStore
+            records=self.control['registry_records']
+            class Cached:
+                def list(self,prefix): return sorted(k for k in records if k.startswith(prefix))
+                def get(self,key): return wire(records[key])
+            return RegistryStore(Cached(),self.account.public_record()).load()
         for cert in self.certificates: registry.add_device(cert)
         return registry
 
@@ -105,17 +113,23 @@ class BrokerState:
                 'scopes': [{**asdict(s), 'default_label': s.default_label.name} for s in tree.scopes.values()],
                 'epochs': {sid: [k.private_bytes().hex() for k in epochs] for sid, epochs in tree.epochs.items()},
                 'wraps': tree.wraps})
-        return {'format': 'agentmesh-broker-state-v1', 'account': self.account.public_record(),
-            'account_private_key': self.account.private_bytes().hex(), 'device_id': self.device.device_id,
+        result = {'format': 'agentmesh-broker-state-v1', 'account': self.account.public_record(),
+            'account_private_key': self.account.private_bytes().hex() if self.account._root is not None else None, 'device_id': self.device.device_id,
             'device_private_key': self.device.private_bytes().hex(), 'certificates': self.certificates,
             'trees': trees, 'grants': {aid: asdict(g) for aid, g in self.grants.items()},
             'index_master_key': self.index_master_key.hex(), 'audit_key': self.audit_key.hex()}
+        if self.control:
+            result['format']='agentmesh-broker-state-v2'; result['control']=self.control
+        return result
 
     @classmethod
     def from_record(cls, record):
+        control = {}
+        if record.get('format') == 'agentmesh-broker-state-v2':
+            record=dict(record); control=record.pop('control'); record['format']='agentmesh-broker-state-v1'
         fields(record, {'format', 'account', 'account_private_key', 'device_id', 'device_private_key',
             'certificates', 'trees', 'grants', 'index_master_key', 'audit_key'}, 'agentmesh-broker-state-v1')
-        account = Account.from_private(record['account']['account_id'], hex_bytes(record['account_private_key'], 32))
+        account = Account.from_public(record['account']) if record['account_private_key'] is None else Account.from_private(record['account']['account_id'], hex_bytes(record['account_private_key'], 32))
         if account.public_record() != record['account']: raise ValueError('invalid account binding')
         device = DeviceIdentity.from_private(record['device_id'], hex_bytes(record['device_private_key'], 32))
         trees = []
@@ -128,11 +142,12 @@ class BrokerState:
             tree = ScopeTree.__new__(ScopeTree); tree.root, tree.scopes = profile, scopes
             tree.epochs = {sid: [ScopeReadKey.from_private(root.profile_id, sid, hex_bytes(k, 32)) for k in epochs]
                 for sid, epochs in value['epochs'].items()}
-            tree.keys = {sid: epochs[-1] for sid, epochs in tree.epochs.items()}; tree.wraps = value['wraps']
+            tree.keys = {sid: epochs[-1] for sid, epochs in tree.epochs.items() if epochs}; tree.wraps = value['wraps']
             trees.append(tree)
         state = cls(account, device, record['certificates'], trees,
             {aid: Grant(**g) for aid, g in record['grants'].items()},
             hex_bytes(record['index_master_key'], 32), hex_bytes(record['audit_key'], 32))
+        state.control=control
         from .grants import names
         names(state)  # Reject ambiguous imported local names before use.
         registry = state.registry()

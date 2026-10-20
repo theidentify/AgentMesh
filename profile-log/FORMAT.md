@@ -294,3 +294,178 @@ Audit lines contain `ts` (integer milliseconds), `agent_id` (or null), `op`,
 text with `audit_key`; absent queries use the empty string. Invalid operation
 names are recorded as `invalid`, preventing arbitrary input text in the log.
 `redactions` maps secret kinds to counts. Each response waits for audit flush/fsync.
+
+## Phase 4 records
+
+Phase 1–3 event, wrap and IPC frame encodings are unchanged. These additions use the
+same strict JSON/typed encoding. Every signed record below has exactly `format`,
+`signature` and the listed fields. For kind `K`, format is `agentmesh-K-v1` and the
+signature input is `b'AgentMesh/K/Ed25519/v1\x00' + typed(record without signature)`.
+`K` is the literal kind in the table. All timestamps are nonnegative integer milliseconds;
+IDs retain the earlier hex/ULID rules. `age` is canonical unpadded base64url of a real
+age file (pyrage 1.4.0), with exactly one X25519 recipient. Age supplies confidentiality;
+the outer Ed25519 signature authenticates the complete object before decryption.
+
+| Kind | Exact fields besides format/signature | Path |
+| --- | --- | --- |
+| device-record | certificate, age_recipient, issued_at | registry/devices/{device_id}.json |
+| profile-recipient | device_id, profile_id, age_recipient, issued_at | registry/profile-recipients/{profile_id}/{device_id}.json |
+| device-revocation | device_id, revoked_by, revoked_at, reason_code | registry/revocations/{device_id}.json |
+| recovery-record | account_id, recovery_signing_public, recovery_age_recipient, previous, issued_at | registry/recovery/{recovery_key_id}.json |
+| profile-recovery | profile_id, recovery_key_id, age_recipient, issued_at, age | registry/profile-recovery/{profile_id}/{recovery_key_id}.json |
+| keyring-grant | profile, scope, key_id, recipient_device, issuer_device, issued_at, age | keyring/{profile}/{scope}/{key_id}/{recipient_device}.json |
+| epoch | profile, scope, key_id, previous_key_id, created_at, reason, issuer_device | keyring/{profile}/{scope}/epochs/{key_id}.json |
+| scope-meta | profile, recipient_device, issuer_device, issued_at, age | keyring/{profile}/metadata/{recipient_device}.json |
+| recovery-history | id, profile, recovery_key_id, issuer_device, issued_at, age | keyring/{profile}/recovery/{recovery_key_id}/{id}.json |
+| recovery-alert | account_id, id, recovery_key_id, device_id, issued_at | alerts/recovery/{id}.json |
+| profile-state | profile, id, state, issuer_device | profiles/{profile}/state/{id}.json |
+
+`registry/account.json` contains the earlier account public record. The local account
+pin, not this relay copy, is authoritative. Registry reconstruction verifies records,
+checks their paths, resolves certificate/recovery dependencies and rejects invalid
+objects. Devices cache public signed registry records with their protected local state.
+
+### Device and profile bindings
+
+`device-record` is signed by the embedded certificate's device key; its certificate
+must chain to the pinned account. Its generic age recipient is not used for profile
+grants. `profile-recipient` is signed by its named, currently non-revoked device. Its
+age identity is random, independent for each profile, and retained only in that
+device's protected state. Profile recipient objects are immutable.
+
+Device certificates additionally accept `issuer="recovery"`, verified against a signed
+recovery record issued no later than the certificate. Revocations reject a subject's
+own signature, unknown signers and signers revoked at the revocation time. Reasons are
+`removed`, `recovery`, `compromised`; `revoked_by` is a device ID or `"recovery"`.
+Live agents of revoked devices are always refused. Certificates issued by a device at
+or after its revocation are refused; earlier chains and historical events remain
+verifiable at their issue/event timestamps. This preserves pre-removal readability.
+
+### Grants, metadata and epochs
+
+Grant opening checks the issuer signature and chain at `issued_at`, scope topology,
+recipient device, signed profile-recipient binding matching the supplied age identity,
+and recomputed scope key ID after decrypting exactly 32 private-key bytes. The issuer
+must have a valid grant for that scope or an ancestor, recursively rooted in an
+account- or recovery-certified device's self-grant. Ordinary device certificates do
+not bootstrap self-grant authority. Recovery grants are limited to profile roots and
+use `recipient_device="recovery"` with the signed per-profile recovery recipient.
+
+Metadata plaintext has exactly `root` and `scopes`; scopes contain the existing local
+model fields with label names. Names stay inside age ciphertext. The recipient checks
+the outer binding/signature, decrypts with its profile identity, validates the root,
+then imports only keys from independently authorized grants. Pairing pins metadata to
+the confirmed approver. Later profile imports additionally require the issuer to hold
+a scope in that profile. Metadata contains no private keys.
+
+Epoch reasons are `create`, `rotate`, `revoke`, `recovery`. `previous_key_id=null` is
+allowed exactly for `create`. A successor must reference a valid predecessor whose
+time is no later; unrooted chains are ignored. Current epoch is the valid leaf with
+maximum `(created_at,key_id)`. Concurrent losing epochs stay readable. Brokers check
+the current epoch when preparing and committing a write; stale pending writes are
+refused and must be prepared again. Rotations publish wraps for the new epochs.
+
+### Pairing transcript
+
+All pairing kinds below have `format`, `signature` and these exact fields, and reside
+under `pairing/{request_id}/`:
+
+| Kind / filename | Fields |
+| --- | --- |
+| pair-commit / commit.json | request_id, joiner_signing_public, joiner_age_recipient, slot_recipients, commitment, issued_at |
+| pair-approver / approver.json | request_id, approver_device_id, Na, commit_hash |
+| pair-reveal / reveal.json | request_id, Nj |
+| pair-result / result.json | request_id, approver_device_id, commit_hash, approver_hash, certificate_path, metadata_paths, grant_paths, slot_assignments |
+
+The joiner self-signs commit and reveal; the approver signs approval and result.
+`request_id` also identifies the new device. `Nj` and `Na` are 32 random bytes in hex.
+`slot_recipients` is exactly eight distinct fresh age recipients. `slot_assignments`
+maps granted profile IDs to distinct integer indices 0–7; only those local identities
+survive successful join. The joiner publishes its signed profile-recipient records
+before opening grants. The approver can stage grants to committed slots before these
+records exist; opening still requires the published binding.
+
+`commitment` is hex SHA256 of `b'AgentMesh/pairing-commitment/v1\x00'` plus typed encoding
+of `{request_id,joiner_signing_public,joiner_age_recipient,slot_recipients,Nj}`.
+Transcript hashes are SHA256 of canonical JSON wire bytes including signatures.
+SAS is the first four hash bytes interpreted big-endian, modulo 1,000,000, zero-padded
+to six decimal digits. Its hash input is `b'AgentMesh/pairing-sas/v1\x00'` plus typed
+`{commit_hash,approver_hash,Nj,Na}`. QR payload is
+`agentmesh-pair:v1:{request_id}:{commit_hash}`. Full QR fingerprints compare the commit
+hash. The first-join approver fingerprint is SHA256 of typed
+`{account:account_id,device:device_id,public:device_public_key_hex}`.
+
+Requests expire 600,000 ms after commit; future timestamps, premature reveals,
+commitment mismatch, replay and reuse abort. The approver persists transcript use
+before approval and consumes it before comparing SAS. `certificate_path` points to
+`pairing/{request_id}/certificate.json`, containing the existing device certificate
+signed by the approver. The joiner itself publishes its self-signed device record.
+
+### Recovery and deletion
+
+A 32-byte random master secret is split using SLIP-39, group threshold 1, groups
+`[(2,3)]`, empty passphrase, extendable=true, iteration exponent 1. HKDF-SHA256 with
+no salt and 32-byte output derives separate Ed25519 and X25519 seeds using respectively
+`b'AgentMesh/recovery_signing/v1\x00'` and `b'AgentMesh/recovery_age/v1\x00'`.
+X25519 secrets use uppercase BIP-173 `AGE-SECRET-KEY-1…` encoding. The master secret
+and shares are never part of broker state.
+
+`recovery_key_id = SHA256(b'AgentMesh/recovery-key-id/v1\x00' + raw_signing_public)`
+in hex. The first recovery record has `previous=null` and an account-root signature;
+a replacement references the predecessor ID and is signed by its recovery signing key.
+The current recovery record is the leaf with maximum `(issued_at,recovery_key_id)`.
+
+Each profile recovery identity is independently random. `profile-recovery` is signed
+by the named master recovery signing key; `age` encrypts the 32 raw profile recovery
+age private-key bytes to that master's age recipient. Decryption must reproduce the
+signed `age_recipient`. Root keyring grants target this profile identity.
+`recovery-history` preserves root epochs and encrypted scope metadata across recovery
+rotations: its plaintext has exactly `root`, `scopes`, `roots`, where roots is a list
+of `{key_id,private}` with 32-byte private-key hex. It is encrypted to the profile
+recovery identity and signed by a root-authorized device or by the named master
+(`issuer_device="recovery"`). The latest valid ULID history per profile/master is used;
+additional valid root grants supply later epochs. Descendants come through wraps.
+
+Recovery use certifies a replacement device, publishes its profile recipients, imports
+history, emits a signed recovery alert, rotates every accessible scope and creates
+fresh master/profile recovery identities. It stages new recovery objects/history and
+publishes the predecessor-signed replacement record last. Other devices retain their
+certificates but need regrant for new epochs. Alerts are verified against their named
+recovery record; forged alerts are ignored.
+
+Profile states are `active`, `archived`, `deleted`, signed by a root-authorized device.
+Latest valid ULID wins except that deletion is locally irreversible once seen. Archive
+refuses writes while retaining reads. Delete requires two current shares to authorize
+a new master, stages surviving-profile recovery objects, publishes the tombstone,
+destroys the local profile age identity/epochs/snapshots, and publishes the replacement
+recovery record. Peers destroy the same local capabilities on sync before importing
+grants. No new recovery object is created for a deleted profile. Stored objects are
+retained. Two old shares can still open the old profile recovery object and old grants;
+this explicit exception requires destroying old shares or manually removing objects.
+
+### Protected local state and presence
+
+`agentmesh-broker-state-v2` adds `control` to the Phase 3 private state format and permits
+`account_private_key=null`. Normal initialization/migration drops that private key.
+Control contains generic `age_identity`, per-profile `profile_ages`, verified registry
+cache, pairing-use pins, profile states/deleted IDs, alerts, presence windows and seen
+agents. All private identities are sealed with the rest of the state; no derived
+per-profile identities or plaintext recipient private keys are stored in the replica.
+
+`keystore.sealed` has exactly `format="agentmesh-os-keystore-v1"`, `device_id`, `nonce`
+(12-byte hex), `ciphertext` (hex). ChaCha20-Poly1305 uses a random 32-byte OS-stored K;
+AAD is typed `{format,device_id}`. macOS uses service `agentmesh.profile-log`, account
+=device ID; Windows uses target `agentmesh.profile-log/{device_id}`. Wrong K, altered
+bytes or wrong device binding fails closed. Migration retains `keystore.json` until a
+sealed read-back exactly matches the root-free state.
+
+Presence classes: `device`, `agent`, `recovery`, `export`, `profile`, `cross_profile`,
+`secret_read`, `first_access`. Protected windows default to 900,000 ms. Explicit window opening accepts integer
+minutes from 1 through 15 and expires after `minutes * 60,000` ms. Console
+confirmation requires TTY input of the fixed action word. Every trigger appends one
+0600 JSONL record with exactly `ts`, `action_class`, `action`, `outcome`, `window_used`;
+outcome is `approved` or `denied`. Recovery test/use and delete use one-shot approval,
+which neither reads nor writes a presence window. Recovery test performs no other
+writes. The daemon uses windows only and returns `presence_required` when missing.
+Phase 4 `whoami` and CLI broker sync additionally expose `alerts`; existing Phase 3
+responses retain their previous fields. No IPC framing or event format changes.

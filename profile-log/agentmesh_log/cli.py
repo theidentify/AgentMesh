@@ -72,7 +72,18 @@ def parser():
         cmd.add_argument('--minutes',type=int,default=15)
     keystore=commands.add_parser('keystore'); key_sub=keystore.add_subparsers(dest='action',required=True)
     cmd=key_sub.add_parser('migrate'); home(cmd); cmd.add_argument('--to',choices=['os'],required=True); cmd.add_argument('--out')
-    init.add_argument('--out')
+    init.add_argument('--out'); init.add_argument('--file-keystore',action='store_true')
+    grant.add_argument('--allow-import',action='store_true')
+    recall.add_argument('--compat',action='store_true')
+    migration=commands.add_parser('migrate'); operations=migration.add_subparsers(dest='action',required=True)
+    for action in ('plan','run','rows','catch-up','report'):
+        cmd=operations.add_parser(action)
+        cmd.add_argument('--db',required=action!='report')
+        cmd.add_argument('--mapping',required=action in ('run','rows','catch-up'))
+        if action!='plan': cmd.add_argument('--agent-key',required=True)
+        if action in ('run','rows','catch-up'): cmd.add_argument('--take-over',action='store_true')
+        if action=='rows': cmd.add_argument('--ref',action='append',required=True)
+        if action=='report': cmd.add_argument('--out',required=True)
     return p
 
 
@@ -89,6 +100,7 @@ def remote_storage(args):
 def execute(args,*,backend=None,console=None,input_fn=None):
     console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     input_fn=input if input_fn is None else input_fn
+    if args.command=='migrate': return execute_migration(args)
     if args.command not in ('broker','recall','remember'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
@@ -96,7 +108,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         try:
             if args.command=='recall':
                 return client.request(dict(op='recall',query=args.query,project=args.project,task=args.task,
-                    limit=args.limit,profiles=args.profile,scopes=args.scope))
+                    limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat))
             return client.write(dict(kind=args.kind,content=args.content),scope=args.scope,tags=args.tag,task=args.task)
         finally: client.close()
     home=BrokerHome(args.home); store=select_store(home,backend)
@@ -110,7 +122,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     with home.lock():
         if args.action=='init':
             if store.path.exists(): raise ValueError('already initialized')
-            shares=initialize(home,args.profile,backend=backend)
+            shares=initialize(home,args.profile,backend=backend,file_keystore=args.file_keystore)
             return share_result(shares,args,home)
         state=store.load()
         if args.action=='scope':
@@ -135,7 +147,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             if default not in writes: raise ValueError('invalid default write')
             profile=next(t.root.scope_id for t in state.trees if default in t.scopes)
             agent=AgentIdentity(state.device,state.account.account_id)
-            grant=Grant(agent.agent_id,agent.public_bytes.hex(),reads,writes,default,profile,args.allow_secret,args.allow_cross_profile)
+            grant=Grant(agent.agent_id,agent.public_bytes.hex(),reads,writes,default,profile,args.allow_secret,args.allow_cross_profile,args.allow_import)
             path=home.root/'agents'/(agent.agent_id+'.key')
             atomic_write(path,wire(dict(format='agentmesh-agent-key-v1',agent_cert=agent.certificate(),
                 agent_private_key=agent.private_bytes().hex(),device_public_key=state.device.public_bytes.hex(),address=home.address(state.device.device_id))))
@@ -150,6 +162,32 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             finally: broker.close()
     raise ValueError('invalid_request')
 
+
+
+def execute_migration(args):
+    from .migrate.mapping import Mapping,plan
+    from .migrate.run import run
+    from .migrate.ledger import report,write_report
+    if args.action=='catch-up':
+        import os
+        bridge=Path(os.environ.get('AGENTMESH_PROFILE_LOG_BRIDGE',str(args.db)+'.profile-log.json'))
+        if bridge.exists():
+            config=parse(bridge.read_text(encoding='utf-8').encode('utf-8'))
+            if config.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError('invalid bridge config')
+            if config.get('enabled') is False or config.get('authority') is False:
+                return dict(outcomes={},unmapped=[],skipped={},timestamp_fallback=0,busy_retries=0,errors=[],secret_labelled=0)
+    mapping=Mapping.load(args.mapping) if args.mapping else None
+    if args.action=='plan': return plan(args.db,mapping)
+    client=BrokerClient.from_file(args.agent_key)
+    try:
+        if args.action=='report':
+            result=report(client,args.db,mapping)
+            # Agent files are emitted under HOME/agents; reject replica destinations.
+            home=Path(args.agent_key).resolve().parent.parent
+            write_report(result,args.out,home/'replica')
+            return dict(rows=len(result))
+        return run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over)
+    finally: client.close()
 
 
 def share_result(shares,args,home):

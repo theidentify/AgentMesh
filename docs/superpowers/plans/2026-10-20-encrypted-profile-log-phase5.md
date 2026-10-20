@@ -387,3 +387,12 @@ P5-7 becomes: on this device, a provenance event from a local agent that never h
 admitted; on a peer, an event imported on the source device is admitted (ledger 1 entry, compat source IDs
 present); an event from a revoked device written after its revocation is not admitted; a revoked local import
 agent's earlier events stay admitted after restart. Each case has its own test.
+
+## Amendment (2026-10-20): every non-session summary row migrates
+
+Reviewer real-data parity (read-only snapshot) failed `top5_hit` (0.958 < 0.98). In the live database,
+`memory_summaries.version` holds range-allocated IDs (for example 1 and 2199023255554 for the same project), not an
+order, so "latest version" picked the wrong row, while `recall_memory` returns every matching summary row anyway.
+**Owner decision: migrate every non-session summary row as its own source** (the `older_version` skip reason is
+removed; session summaries are still skipped as `not_recalled`). On the same snapshot this gives
+`overlap_at_12 = 1.0`, `top5_hit = 1.0`, `exact_order = 1.0`. Regression: `test_source.py::test_every_summary_row`.

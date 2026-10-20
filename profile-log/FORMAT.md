@@ -469,3 +469,92 @@ which neither reads nor writes a presence window. Recovery test performs no othe
 writes. The daemon uses windows only and returns `presence_required` when missing.
 Phase 4 `whoami` and CLI broker sync additionally expose `alerts`; existing Phase 3
 responses retain their previous fields. No IPC framing or event format changes.
+
+## Phase 5 migration bodies
+
+Event envelope v1, signing domains, ciphertext and framing remain unchanged. Migrated
+plaintext bodies use this exact convention (angle-bracket values describe types):
+
+```text
+{"kind": <item kind | "summary">, "content": <text>, "project": <str|null>,
+ "task_ref": <str|null>, "confidence": <0..1>,
+ "metadata": {
+   "source": {"table": "memory_items"|"memory_summaries", "id": <int>,
+              "scope": <source scope>, "scope_key": <str|null>,
+              "memory_key": <str|null>, "version": <int|null>,
+              "created_at": <source text|null>, "updated_at": <source text|null>},
+   "row_hash": <64 lowercase hex>, "evidence_event_ids": [<int>, ...],
+   "retired": false}}
+```
+
+Items preserve kind, content, project and confidence; task_ref is scope_key for task
+scope, otherwise null. Evidence IDs are sorted memory_sources.event_id integers.
+Summaries use kind summary, confidence 1.0, project=scope_key only for project scope,
+and task_ref=scope_key only for task scope. Their integer IDs come from event_ids,
+batch_event_ids and source_event_ids metadata lists; string native IDs and all other
+metadata are dropped. Session summaries are skipped as not_recalled.
+
+row_hash is SHA-256 over typed() of exactly `{table,id,kind,scope,scope_key,project,
+content,status,confidence,memory_key,version,updated_at,evidence_event_ids,target_scope}`.
+It exists only inside ciphertext. Payload created_at is the item's updated_at or
+summary's created_at parsed as UTC (naive timestamps are UTC). Unparseable values use
+import time and increment timestamp_fallback. More than five minutes in the future is
+rejected. Source chronology is distinct from the event ULID used for historical
+certificate validation and import ordering.
+
+A retirement revises the current head, retaining source, setting retired=true and
+content="". All recall modes hide retired heads. A scope move retires the old chain,
+then creates a new root; there are no cross-scope revisions. The source ledger is
+reconstructed from readable encrypted replica events, keyed by (table,id), with the
+largest event ULID as head. No separate ledger file is authoritative.
+
+### Import trust
+
+Local grants add allow_import (bool, default false), included in the grant digest.
+Private broker state control.import_agents is a sorted persistent set of agent IDs
+that have held allow_import; saving grants and revoking agents preserves this set,
+and broker revoke never prunes it. Local provenance requires current or historical
+membership. Foreign provenance requires the same-account agent/device chain accepted
+by ordinary historical event verification, including revocation at the event ULID time.
+There is no replicated import authorization record. A compromised paired device can
+forge or retire migrated rows in scopes whose keys it holds. This device-level trust
+was approved on 2026-10-20; local broker remember/revise still reject reserved metadata
+keys source, row_hash, evidence_event_ids and retired with invalid_request.
+
+### Broker wire additions
+
+`{"op":"import","source":{"table":TABLE,"id":INT},"row_hash":HEX,
+"created_at":MILLISECONDS,"scope":NAME,"body":BODY_OR_NULL}` has exactly these fields.
+It requires current allow_import and a write grant for the destination and any old
+scope being retired. Same hash/live scope returns `{"outcome":"unchanged","id":ULID}`.
+Null body for an unknown source returns unchanged with id=null. Otherwise it returns
+`{"stage":"sign","unsigned":ENVELOPE}`; the existing sign request returns
+`{"id":ULID,"label":LABEL,"redactions":COUNT,"outcome":"created"|"revised"|"retired"}`.
+For a scope move, sign of the retirement returns another stage=sign response for the
+new root; signing that completes the operation. Interrupted moves resume from the
+persisted retirement. Secret detection and audit policy are unchanged; audit op is
+import and contains no source IDs, hashes or body text.
+
+A pending import reserves (table,id) for its session. A concurrent import returns
+`{"error":"busy"}`. Busy is a new fixed error code; clients retry with bounded delay.
+Disconnect or any non-sign operation releases the reservation. Existing error codes
+and two-step signature checks remain in force.
+
+`{"op":"import_ledger"}` also requires allow_import. Response:
+`{"entries":[{"source":{"table":TABLE,"id":INT},"event":ULID,"chain":[ULID,...],
+"scope":NAME,"status":"created"|"revised"|"retired","reason":null}],
+"foreign_authority":BOOL}`. Entries are filtered to caller write scopes and contain
+no bodies or hashes. foreign_authority reports observed foreign-device migration
+provenance, allowing the migrator to require an explicit --take-over.
+
+Recall accepts optional `"compat":true` (bool, default false). Compat durable selection
+includes globals; all rows when neither project nor task is selected; project/scope_key
+matches; and task scope_key matches, with ordinary text matching. Summaries require a
+matching project or task source scope and are included without a text-match requirement.
+Results retain broker fields and add source_type (durable|summary), source_ref
+({table,id} or null), source (original source fields or null), scope_key and
+evidence_event_ids. These support the local bridge's existing SQLite row shape and
+local evidence expansion. candidate_counts.summaries counts selected summaries.
+Non-migrated events have source_ref=null and remain durable. Without compat the old
+result field set is unchanged. Index schema version 5 adds source_table, source_scope,
+scope_key and retired; older snapshots rebuild.

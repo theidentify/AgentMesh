@@ -14,6 +14,10 @@ class Grant:
     default_profile: str
     allow_secret: bool = False
     allow_cross_profile: bool = False
+    allow_import: bool = False
+
+    def __post_init__(self):
+        if type(self.allow_import) is not bool: raise ValueError('invalid import grant')
 
     def digest(self):
         return hashlib.sha256(wire(asdict(self))).hexdigest()

@@ -103,10 +103,17 @@ class BrokerState:
         for cert in self.certificates: registry.add_device(cert)
         return registry
 
+    def remember_import_agents(self):
+        agents = set(self.control.get("import_agents", []))
+        agents.update(aid for aid, grant in self.grants.items() if grant.allow_import)
+        if agents: self.control["import_agents"] = sorted(agents)
+
     def revoke(self, agent_id):
+        self.remember_import_agents()
         self.grants.pop(agent_id, None)
 
     def record(self):
+        self.remember_import_agents()
         trees = []
         for tree in self.trees:
             trees.append({'root': tree.root.scope_id,

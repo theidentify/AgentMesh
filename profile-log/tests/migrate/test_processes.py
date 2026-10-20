@@ -1,4 +1,5 @@
 """Real IPC concurrency gate; denied socket bind is an explicit failure."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -27,7 +28,8 @@ def test_p5_4_concurrent_processes():
         except PermissionError: pytest.fail('P5-4 blocked: sandbox denies socket binding',pytrace=False)
         thread=threading.Thread(target=broker.serve,kwargs={'server':server},daemon=True); thread.start()
         key=keyfile(home,state,agent); db=root/'synthetic.db'
-        with sqlite3.connect(db) as c:
+        # closing(): sqlite3's own context manager commits but keeps the file open (Windows locks it).
+        with closing(sqlite3.connect(db)) as c, c:
             c.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text(encoding='utf-8'))
             c.executemany("INSERT INTO memory_items(id,kind,scope,content) VALUES(?,'fact','global','synthetic memory')",[(i,) for i in range(1,31)])
         mapping=root/'mapping.json'

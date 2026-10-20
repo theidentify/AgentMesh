@@ -1,5 +1,6 @@
 """Status gates use only generated keys and synthetic rows in disposable homes."""
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -42,7 +43,7 @@ class Client:
     def close(self): self.closed=True
 
 
-def test_g8_apply_and_real_catch_up_content(configured,monkeypatch):
+def test_g8_apply_catch_up_content(configured,monkeypatch):
     root,home,store,db=configured
     assert run(console=console())['ok']
     before=read(root); assert before['last_apply']['outcome']=='approved'
@@ -54,7 +55,7 @@ def test_g8_apply_and_real_catch_up_content(configured,monkeypatch):
     value=read(root); assert value['overview']==before['overview'] and value['last_apply']==before['last_apply']
     assert value['last_catch_up']['outcome']=='ok' and value['format']==status.FORMAT
     assert status.valid(value)
-    assert (root/'profile-log-status.json').stat().st_mode & 0o777==0o600
+    if os.name!='nt': assert (root/'profile-log-status.json').stat().st_mode & 0o777==0o600
     # These are generated fixture secrets only, never application keys or memory.
     key_path=root/'agents/reader.key'; raw_key=key_path.read_bytes(); key=parse(raw_key)
     grant=next(iter(store.load().grants.values()))
@@ -65,7 +66,7 @@ def test_g8_apply_and_real_catch_up_content(configured,monkeypatch):
     assert run()['ok']; assert read(root)['last_catch_up']==value['last_catch_up']
 
 
-def test_g9_dry_run_unchanged_and_rollback_snapshot(configured,monkeypatch):
+def test_g9_dry_run_and_rollback(configured,monkeypatch):
     root,home,store,db=configured; path=root/'profile-log-status.json'
     assert run(dry_run=True)['ok'] and not path.exists()
     assert run(console=console())['ok']; before=path.read_bytes()
@@ -80,8 +81,8 @@ def test_g9_dry_run_unchanged_and_rollback_snapshot(configured,monkeypatch):
     assert 'PRIVATE_MESSAGE' not in json.dumps(value)
 
 
-@pytest.mark.parametrize('unsafe',['symlink','unwritable'])
-def test_g9_writer_failure_return_and_exit_isolation(configured,monkeypatch,unsafe):
+@pytest.mark.parametrize('unsafe',['symlink','unwritable'],ids=['link','ro'])
+def test_g9_writer_failure(configured,monkeypatch,unsafe):
     root,home,store,db=configured; assert run(console=console())['ok']
     monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client())
     with monkeypatch.context() as m:
@@ -108,7 +109,7 @@ def test_g9_writer_failure_return_and_exit_isolation(configured,monkeypatch,unsa
     else: assert not path.exists()
 
 
-def test_g9_catch_up_error_disabled_unmapped_and_section_preservation(configured,monkeypatch):
+def test_g9_catch_up_outcomes(configured,monkeypatch):
     root,home,store,db=configured; assert run(console=console())['ok']; overview=read(root)['overview']
     monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client()); args=arguments(root,db)
     def fail(*_,**kw): raise ValueError('PRIVATE_ERROR_MESSAGE')
@@ -127,11 +128,12 @@ def test_g9_catch_up_error_disabled_unmapped_and_section_preservation(configured
     assert value['migration']['unmapped']==['Unmapped']
 
 
-def test_g8_invalid_existing_replaced_and_unsafe_root(configured):
+def test_g8_invalid_and_unsafe(configured):
     root,home,store,db=configured; path=root/'profile-log-status.json'
     for raw in (b'{bad',wire({'format':status.FORMAT,'updated_at':'now','key':'FORBIDDEN'})):
         atomic_write(path,raw); status.caught_up(db,None,outcome='disabled')
         assert status.valid(read(root)) and 'FORBIDDEN' not in path.read_text()
+    if os.name=='nt': return  # POSIX mode checks only; Windows ACLs are out of scope.
     before=path.read_bytes(); root.chmod(0o755)
     try: status.caught_up(db,None,outcome='ok'); assert path.read_bytes()==before
     finally: root.chmod(0o700)

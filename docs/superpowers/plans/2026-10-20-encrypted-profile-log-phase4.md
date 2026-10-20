@@ -305,3 +305,41 @@ pytest, for the owner to run on the Mac and on Windows.
 - The REPORT maps every gate to tests, lists deviations, and lists the manual steps left for the owner: the OS
   key store smoke on the Mac and on Windows, and printing and storing the recovery shares.
 - `git status` shows changes only under `profile-log/` and the REPORT file.
+
+## Amendment (2026-10-20): per-profile age identities for crypto-shredding
+
+Codex found a gap during implementation (regression `test_p4_8_retained_age`). Keyring grants stay in storage
+forever, and a device keeps its age identity for its other profiles, so a deleted profile's grants can still
+be decrypted. **Owner decision: each device holds a separate random age identity per profile.** This
+supersedes the single per-device `age_recipient` wherever it is used for keyring grants.
+
+- **Profile recipient record** `agentmesh-profile-recipient-v1` at
+  `registry/profile-recipients/{profile_id}/{device_id}.json`. Fields: `device_id`, `profile_id`,
+  `age_recipient`, `issued_at`, and a signature by that device's key, valid only for a non-revoked device. The
+  matching identity exists only in that device's key store and is never written to storage, derived from
+  another key, or exported.
+- Every keyring grant (scope epochs and `agentmesh-scope-meta-v1`) for profile P is encrypted to the
+  recipient's **P-specific** recipient. Grant opening also checks that the recipient record exists, is signed
+  by `recipient_device` and matches the age recipient used.
+- **Pairing:** the joiner's `commit.json` carries `slot_recipients`, a list of 8 fresh age recipients whose
+  identities are kept locally. The approver assigns one unused slot per granted profile in `result.json`, and
+  the joiner then publishes a signed profile-recipient record for each assigned slot and discards unassigned
+  slot identities. A device that later gains a profile publishes a new record first; the granting device waits
+  for it (`pair regrant` reads it).
+- **Recovery:** each profile has its own random recovery age identity. Its private key is age-encrypted to the
+  master recovery identity (derived from the recovery secret) and stored as a signed
+  `agentmesh-profile-recovery-v1` object. Profile-root recovery grants go to that per-profile recovery recipient.
+- **Profile delete:** on the deleting device and on every device that later syncs the `deleted` state record,
+  destroy the profile's age identity, every epoch key and the index/snapshot. Then **rotate the recovery key**:
+  issue a new recovery secret and shares, write a new recovery record, and re-create per-profile recovery
+  objects only for the surviving profiles under the new master recovery identity.
+- **Documented exception (README, REPORT):** anyone holding two of the **old** recovery shares can still decrypt
+  the deleted profile's old per-profile recovery object in storage, and so the profile, until those paper
+  shares are destroyed or the storage objects are removed by hand. Deletion offers this prompt to the user.
+
+**P4-8 is replaced by:** an archived profile refuses writes and still serves recall. After `profile delete` on A
+and a sync on B, try **every** identity and key remaining in A's and B's key stores (all age identities,
+including other profiles' identities, plus all epoch keys) against **every** grant, recovery object and event
+of the deleted profile in storage: none decrypts. The deleted profile's key bytes appear nowhere in either home.
+The **new** recovery shares cannot restore it. The **old** shares can, which the test asserts explicitly as the
+documented exception. Other profiles stay fully readable on A, on B and through the new shares.

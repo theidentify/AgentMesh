@@ -47,10 +47,20 @@ class Account:
         obj._root = Ed25519PrivateKey.from_private_bytes(raw)
         return obj
 
+    @classmethod
+    def from_public(cls, record):
+        from .identity import Registry
+        Registry(record)
+        obj=cls.__new__(cls); obj.account_id=record['account_id']; obj.email=None
+        obj._root=None; obj._public=dict(record)
+        return obj
+
     def private_bytes(self):
+        if self._root is None: raise ValueError('account root unavailable')
         return self._root.private_bytes_raw()
 
     def public_record(self):
+        if self._root is None: return dict(self._public)
         return {'format': 'agentmesh-account-v1', 'account_id': self.account_id,
                 'root_public_key': self._root.public_key().public_bytes_raw().hex()}
 

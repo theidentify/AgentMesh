@@ -2,13 +2,17 @@
 import argparse
 import json
 import sys
-from .encoding import wire
+import time
+from pathlib import Path
+from .encoding import wire, parse
 from .identity import AgentIdentity
 from .model import Label
 from .broker.keystore import BrokerHome, BrokerState, FileKeyStore, atomic_write
 from .broker.grants import Grant, resolve, names
 from .broker.service import Broker
 from .broker.client import BrokerClient
+from .oskeystore import select_store, OsKeyStore, initialize, migrate
+from .presence import PresenceManager, ConsolePresence
 
 
 def emit(text):
@@ -46,6 +50,29 @@ def parser():
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
     remember.add_argument('--task')
+    join=commands.add_parser('join'); home(join); remote(join,True); join.add_argument('--approver-fingerprint')
+    pair=commands.add_parser('pair'); pair_sub=pair.add_subparsers(dest='action',required=True)
+    for action in ('approve','regrant','recipient'):
+        cmd=pair_sub.add_parser(action); home(cmd); remote(cmd,True); cmd.add_argument('identifier')
+        cmd.add_argument('--scope',action='append',default=[]); cmd.add_argument('--fingerprint')
+    device=commands.add_parser('device'); device_sub=device.add_subparsers(dest='action',required=True)
+    listing=device_sub.add_parser('list'); home(listing)
+    remove=device_sub.add_parser('remove'); home(remove); remote(remove); remove.add_argument('identifier')
+    recovery=commands.add_parser('recovery'); recovery_sub=recovery.add_subparsers(dest='action',required=True)
+    for action in ('create','test','use'):
+        cmd=recovery_sub.add_parser(action); home(cmd); remote(cmd)
+        cmd.add_argument('--share-file',action='append',default=[]); cmd.add_argument('--out'); cmd.add_argument('--account-file')
+    profile=commands.add_parser('profile'); profile_sub=profile.add_subparsers(dest='action',required=True)
+    for action in ('archive','delete'):
+        cmd=profile_sub.add_parser(action); home(cmd); remote(cmd); cmd.add_argument('name'); cmd.add_argument('--confirm-name')
+        cmd.add_argument('--share-file',action='append',default=[]); cmd.add_argument('--out')
+    presence=commands.add_parser('presence'); presence_sub=presence.add_subparsers(dest='action',required=True)
+    for action in ('open','status'):
+        cmd=presence_sub.add_parser(action); home(cmd); cmd.add_argument('--class',dest='action_class',default='first_access')
+        cmd.add_argument('--minutes',type=int,default=15)
+    keystore=commands.add_parser('keystore'); key_sub=keystore.add_subparsers(dest='action',required=True)
+    cmd=key_sub.add_parser('migrate'); home(cmd); cmd.add_argument('--to',choices=['os'],required=True); cmd.add_argument('--out')
+    init.add_argument('--out')
     return p
 
 
@@ -59,7 +86,11 @@ def remote_storage(args):
     return None
 
 
-def execute(args):
+def execute(args,*,backend=None,console=None,input_fn=None):
+    console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
+    input_fn=input if input_fn is None else input_fn
+    if args.command not in ('broker','recall','remember'):
+        return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
         try:
@@ -68,24 +99,32 @@ def execute(args):
                     limit=args.limit,profiles=args.profile,scopes=args.scope))
             return client.write(dict(kind=args.kind,content=args.content),scope=args.scope,tags=args.tag,task=args.task)
         finally: client.close()
-    home=BrokerHome(args.home); store=FileKeyStore(home)
+    home=BrokerHome(args.home); store=select_store(home,backend)
     if args.action=='run':
         remote=remote_storage(args)
         if args.sync_interval is not None and (remote is None or args.sync_interval<=0): raise ValueError('invalid_request')
-        broker=Broker(home)
+        broker=Broker(home,store=store)
         try: broker.serve(remote=remote,sync_interval=args.sync_interval)
         finally: broker.close()
         return {'ok':True}
     with home.lock():
         if args.action=='init':
             if store.path.exists(): raise ValueError('already initialized')
-            state=BrokerState.create(args.profile); store.save(state)
-            return {'ok':True}
+            shares=initialize(home,args.profile,backend=backend)
+            return share_result(shares,args,home)
         state=store.load()
         if args.action=='scope':
-            state.add(args.scope,Label[args.label]); store.save(state)
+            state.add(args.scope,Label[args.label])
+            if state.control.get('phase4'):
+                from .keyring import initialize_keyring
+                from .storage.filesystem import FilesystemStorage
+                from .recovery import publish_history
+                storage=FilesystemStorage(home.root/'replica'); initialize_keyring(state,storage)
+                publish_history(state,storage,state.registry().current_recovery())
+            store.save(state)
             return {'ok':True}
         if args.action=='grant':
+            PresenceManager(home,store).require('agent','grant',console=console); state=store.load()
             if not args.name: raise ValueError('invalid name')
             reads=[resolve(state,n) for n in args.read]; writes=[resolve(state,n) for n in args.write]
             # Equally narrow candidates use lexical local-name order, never common implicitly.
@@ -103,23 +142,125 @@ def execute(args):
             state.grants[agent.agent_id]=grant; store.save(state)
             return {'agent_key':str(path)}
         if args.action=='revoke':
+            PresenceManager(home,store).require('agent','revoke',console=console); state=store.load()
             state.revoke(args.agent_id); store.save(state); return {'ok':True}
         if args.action=='sync':
-            broker=Broker(home)
+            broker=Broker(home,store=store)
             try: return broker.sync_once(remote_storage(args))
             finally: broker.close()
     raise ValueError('invalid_request')
 
 
-def main(argv=None):
+
+def share_result(shares,args,home):
+    from .recovery import write_shares
+    if getattr(args,'out',None):
+        write_shares(shares,args.out,home.root,getattr(args,'filesystem',None) or home.root/'replica')
+        return {'ok':True,'shares_written':3}
+    return {'ok':True,'recovery_shares':shares}
+
+
+class LazyStorage:
+    def __init__(self,args,home): self.args,self.home,self.instance=args,home,None
+    def __getattr__(self,name):
+        if self.instance is None:
+            from .storage.filesystem import FilesystemStorage
+            self.instance=remote_storage(self.args) or FilesystemStorage(self.home.root/'replica')
+        return getattr(self.instance,name)
+
+
+def read_shares(args,input_fn):
+    if args.share_file: return [Path(p).read_text(encoding='utf-8').strip() for p in args.share_file]
+    import getpass
+    return [getpass.getpass('Recovery share 1: '),getpass.getpass('Recovery share 2: ')]
+
+
+def wait_object(storage,path,deadline):
+    from .storage import ObjectNotFound
+    while time.monotonic()<deadline:
+        try: return parse(storage.get(path))
+        except ObjectNotFound: time.sleep(.2)
+    raise ValueError('pairing_expired')
+
+
+def execute_phase4(args,backend,console,input_fn):
+    from .encoding import parse
+    from .storage.filesystem import FilesystemStorage
+    from .keyring import sync_control,AgeKeyring,initialize_keyring
+    from .registry_store import RegistryStore
+    from .pairing import JoinRequest,Approver,approver_fingerprint,sas
+    from .lifecycle import remove_device,profile_state,scopes_of
+    from .recovery import create_recovery,test_recovery,use_recovery
+    home=BrokerHome(args.home); store=select_store(home,backend); presence=PresenceManager(home,store)
+    if args.command=='presence':
+        if args.action=='open': presence.open(args.action_class,minutes=args.minutes,console=console)
+        return {'active':presence.active(args.action_class),'action_class':args.action_class}
+    if args.command=='keystore':
+        return share_result(migrate(home,backend=backend,console=console),args,home)
+    storage=LazyStorage(args,home) if hasattr(args,'filesystem') else FilesystemStorage(home.root/'replica')
+    if args.command=='device':
+        if args.action=='remove': remove_device(home,store,storage,args.identifier,console=console); return {'ok':True}
+        registry=store.load().registry()
+        return {'devices':[{'device_id':d,'revoked':d in registry.revocations} for d in sorted(registry.device_records)]}
+    if args.command=='profile':
+        state=store.load(); profile=resolve(state,args.name)
+        confirmation=args.confirm_name
+        if args.action=='delete' and confirmation is None and sys.stdin.isatty(): confirmation=input_fn('Type profile name: ')
+        shares=profile_state(home,store,storage,profile,'deleted' if args.action=='delete' else 'archived',console=console,confirmation=confirmation,shares=lambda:read_shares(args,input_fn))
+        return share_result(shares,args,home) if args.action=='delete' else {'ok':True}
+    if args.command=='recovery':
+        if args.action=='create': return share_result(create_recovery(home,store,storage,console=console),args,home)
+        shares=lambda:read_shares(args,input_fn)
+        if args.action=='test': return {'ok':test_recovery(home,store,storage,shares,console=console)}
+        account=lambda:parse(Path(args.account_file).read_bytes()) if args.account_file else store.load().account.public_record()
+        new=use_recovery(home,OsKeyStore(home,backend),storage,shares,account=account,console=console)
+        return share_result(new,args,home)
+    if args.command=='join':
+        if store.path.exists() or (home.root/'keystore.sealed').exists(): raise ValueError('already initialized')
+        join=JoinRequest(storage)
+        print('Request: '+join.request_id,file=sys.stderr); join.render_qr(sys.stderr)
+        deadline=time.monotonic()+600
+        approval=wait_object(storage,join.prefix+'approver.json',deadline)
+        account=parse(storage.get('registry/account.json')); registry=RegistryStore(storage,account).load()
+        expected=args.approver_fingerprint or input_fn('Approver fingerprint from its screen: ')
+        if expected!=approver_fingerprint(registry,approval['approver_device_id']): raise ValueError('pairing_mismatch')
+        reveal=join.reveal(approval,registry); print('Pairing code: '+sas(join.commit,approval,reveal),file=sys.stderr)
+        wait_object(storage,join.prefix+'result.json',deadline)
+        join.finish(registry,home,OsKeyStore(home,backend))
+        return {'ok':True}
+    if args.command=='pair':
+        presence.require('device',args.action,console=console)
+        state=sync_control(home,store,storage); registry=state.registry()
+        if args.action=='recipient':
+            from .keyring import publish_recipient
+            publish_recipient(home,store,storage,args.identifier)
+            return {'ok':True}
+        if args.action=='regrant':
+            from .keyring import regrant
+            regrant(state,storage,args.identifier,[resolve(state,name) for name in args.scope])
+            return {'ok':True}
+        print('Approver fingerprint: '+approver_fingerprint(registry,state.device.device_id),file=sys.stderr)
+        approver=Approver(storage,state.device,registry,state.control.setdefault('pairing_used',{}),persist=lambda:store.save(state))
+        approval=approver.begin(args.identifier)
+        reveal=wait_object(storage,'pairing/'+args.identifier+'/reveal.json',time.monotonic()+600)
+        approver.confirm(reveal,lambda code:input_fn('Code '+code+' matches joiner? Type yes: ')=='yes',fingerprint=args.fingerprint)
+        presence.require('device','approve',console=console)
+        scopes=[resolve(state,n) for n in args.scope]
+        if not scopes: raise ValueError('pairing_empty')
+        approver.grant(state,scopes)
+        return {'ok':True}
+    raise ValueError('invalid_request')
+
+def main(argv=None,*,backend=None,console=None,input_fn=None):
     p=parser(); args=p.parse_args(argv)
     try:
-        result=execute(args)
+        result=execute(args,backend=backend,console=console,input_fn=input_fn)
         emit(json.dumps(result,ensure_ascii=False,sort_keys=True))
         return 1 if 'error' in result or result.get('errors',0) else 0
     except KeyboardInterrupt: return 0
-    except Exception:
-        emit('{"error":"unavailable"}'); return 1
+    except Exception as exc:
+        code=str(exc) if str(exc) in ('presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        emit(json.dumps({'error':code})); return 1
 
 
 if __name__=='__main__': sys.exit(main())

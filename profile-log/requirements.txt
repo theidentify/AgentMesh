@@ -1,1 +1,5 @@
 cryptography==50.0.2
+
+pyrage==1.4.0
+shamir-mnemonic==0.3.0
+segno==1.6.6

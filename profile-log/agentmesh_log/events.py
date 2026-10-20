@@ -71,7 +71,7 @@ def verify_event(data: bytes, registry) -> dict:
     cert = envelope['agent_cert']
     validate_agent_certificate(cert)
     if envelope['account'] != registry.account_id: raise IdentityError('wrong account')
-    public = registry.verify_agent(cert)
+    public = registry.verify_historical_agent(cert,ulid.timestamp(envelope['id']))
     if (cert['account_id'], cert['device_id'], cert['agent_id']) != (envelope['account'], envelope['device'], envelope['agent']):
         raise IdentityError('event certificate binding mismatch')
     verify_signature(envelope, public, EVENT_DOMAIN)

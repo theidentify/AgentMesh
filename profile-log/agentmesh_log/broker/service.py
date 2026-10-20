@@ -9,6 +9,7 @@ from ..events import prepare_event, attach_signature, verify_event, open_event, 
 from ..model import Label
 from ..errors import LabelLoweringRequiresConfirmation
 from .keystore import FileKeyStore
+from ..presence import PresenceManager
 from .grants import names, resolve, readable, descendants
 from .replica import Replica
 from .audit import Audit
@@ -44,8 +45,10 @@ def body_valid(body):
 
 
 class Broker:
-    def __init__(self, home):
-        self.home,self.store,self.lock = home,FileKeyStore(home),threading.RLock()
+    def __init__(self, home, *, store=None):
+        from ..oskeystore import select_store
+        self.home,self.store,self.lock = home,store or select_store(home),threading.RLock()
+        self.presence=PresenceManager(home,self.store)
         self.state=self.store.load(); self.fingerprint=self.store.fingerprint()
         self.replica=Replica(home,self.state); self.audit=Audit(home.root/'audit.jsonl',self.state.audit_key)
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
@@ -55,7 +58,12 @@ class Broker:
     def refresh(self):
         fingerprint=self.store.fingerprint()
         if fingerprint!=self.fingerprint:
-            state=self.store.load(); self.replica.update_state(state)
+            state=self.store.load()
+            if state.control.get('deleted')!=self.state.control.get('deleted'):
+                self._payload_cache.clear()
+                for index in self.indexes.values(): index.close()
+                self.indexes.clear(); self.index_versions.clear()
+            self.replica.update_state(state)
             self.state=state; self.fingerprint=fingerprint; self.audit.key=state.audit_key
             for aid in list(self.indexes):
                 grant=state.grants.get(aid)
@@ -90,7 +98,6 @@ class Broker:
 
     def row(self, envelope, payload, grant):
         if envelope['scope'] not in readable(self.state,grant): return None
-        # TODO(phase4-presence): require presence for secret reads.
         if payload['label']=='secret' and not grant.allow_secret: return None
         scope_names=names(self.state); body=payload['body']
         if type(body) is str: body=dict(kind='fact',content=body)
@@ -144,14 +151,20 @@ class Broker:
                 if set(request)-({'op'}|SCHEMAS[op]): raise ValueError('invalid_request')
                 grant=self.state.grants.get(session.agent_id)
                 if grant is None or grant.agent_public_key!=session.certificate['agent_public_key']: raise ValueError('denied')
+                self.state.registry().verify_agent(session.certificate)
+                first=session.agent_id not in self.state.control.get('seen_agents',[])
+                if first: self.presence.require('first_access','access')
                 response=self.dispatch(session,grant,request,pending,audit)
+                if first:
+                    self.state.control.setdefault('seen_agents',[]).append(session.agent_id)
+                    self.store.save(self.state); self.fingerprint=self.store.fingerprint()
                 wire(response)
                 audit['outcome']='ok'
             except LabelLoweringRequiresConfirmation:
                 response={'error':'label_lowering_requires_confirmation'}; audit['outcome']='denied'
             except ValueError as exc:
-                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable') else 'invalid_request'
-                response={'error':code}; audit['outcome']='denied' if code=='denied' else ('error' if code=='unavailable' else 'invalid')
+                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable','presence_required') else 'invalid_request'
+                response={'error':code}; audit['outcome']='denied' if code in ('denied','presence_required') else ('error' if code=='unavailable' else 'invalid')
             except Exception:
                 response={'error':'internal'}; audit['outcome']='error'
             try: self.audit.append(**audit)
@@ -161,8 +174,10 @@ class Broker:
     def dispatch(self, session, grant, req, pending, audit):
         op=req['op']; scope_names=names(self.state); allowed=readable(self.state,grant)
         if op=='whoami':
-            return dict(agent_id=session.agent_id,read=sorted(scope_names[s] for s in allowed),
+            result=dict(agent_id=session.agent_id,read=sorted(scope_names[s] for s in allowed),
                 write=sorted(scope_names[s] for s in grant.write),default_profile=scope_names[grant.default_profile],allow_secret=grant.allow_secret)
+            if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
+            return result
         if op=='recall':
             query=req.get('query'); limit=req.get('limit',12)
             if type(query) is not str or not 1<=len(query)<=2048 or not query.strip(): raise ValueError('invalid_request')
@@ -177,8 +192,8 @@ class Broker:
             profiles={resolve(self.state,n) for n in selected}
             if any(self.scope(p).kind!='profile' or not any(self.scope(s).profile_id==p for s in allowed) for p in profiles): raise ValueError('denied')
             audit['cross_profile']=len(profiles)>1
-            # TODO(phase4-presence): cross-profile access requires presence.
             if len(profiles)>1 and not grant.allow_cross_profile: raise ValueError('denied')
+            if len(profiles)>1: self.presence.require('cross_profile','recall')
             scopes={s for s in allowed if self.scope(s).profile_id in profiles}
             if requested is not None:
                 roots={resolve(self.state,n) for n in requested}
@@ -187,6 +202,7 @@ class Broker:
             audit.update(profiles=sorted(profiles),scopes=sorted(scopes))
             result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
                 limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles})
+            if any(r['label']=='secret' for r in result['results']): self.presence.require('secret_read','read')
             audit['result_ids']=[r['id'] for r in result['results']]
             return result
         if op in ('remember','revise'):
@@ -198,6 +214,7 @@ class Broker:
             if agent_label is not None and (type(agent_label) is not str or agent_label not in Label.__members__): raise ValueError('invalid_request')
             sid=grant.default_write if name is None else resolve(self.state,name)
             if sid not in grant.write or (name is None and self.scope(sid).kind=='common'): raise ValueError('denied')
+            self.check_write_epoch(sid)
             previous=None; revises=req.get('revises')
             if op=='revise':
                 from ..ulid import parse as parse_ulid
@@ -219,6 +236,7 @@ class Broker:
             if pending is None or set(req)!={'op','signature'}: raise ValueError('invalid_request')
             unsigned,label,redactions,digest=pending
             if digest!=grant.digest() or unsigned['scope'] not in grant.write: raise ValueError('denied')
+            self.check_write_epoch(unsigned['scope'],unsigned['scope_key_id'])
             data=attach_signature(unsigned,req['signature']); verify_event(data,self.state.registry())
             for current in self.state.grants.values(): self.index(current)
             envelope=self.replica.put_event(data)
@@ -227,11 +245,27 @@ class Broker:
             return dict(id=unsigned['id'],label=label,redactions=sorted(redactions))
         raise ValueError('invalid_request')
 
+    def check_write_epoch(self,sid,key_id=None):
+        profile=self.scope(sid).profile_id
+        if profile in self.state.control.get('deleted',[]) or self.state.control.get('profile_states',{}).get(profile,'active')!='active':
+            raise ValueError('denied')
+        if self.state.control.get('phase4'):
+            from ..keyring import AgeKeyring
+            ring=AgeKeyring(self.replica.storage,self.state.registry(),[s for t in self.state.trees for s in t.scopes.values()])
+            current=ring.current(profile,sid)['key_id']
+            local=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
+            if current!=local.key_id or (key_id is not None and key_id!=current): raise ValueError('denied')
+
     def sync_once(self, remote):
         with self.lock:
             self.refresh()
+            if self.state.control.get('phase4'):
+                from ..keyring import sync_control
+                sync_control(self.home,self.store,remote); self.refresh()
             for grant in self.state.grants.values(): self.index(grant)
-            return self.replica.sync_once(remote,on_event=self.ingest)
+            result=self.replica.sync_once(remote,on_event=self.ingest)
+            if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
+            return result
 
     def connection(self, conn):
         session=None
@@ -247,7 +281,6 @@ class Broker:
                 try: self.audit.append(agent_id=None,op='handshake',outcome='unauthenticated')
                 except Exception: conn.send({'error':'unavailable'}); return
                 conn.send({'error':'unauthenticated'}); return
-            # TODO(phase4-presence): first access by an agent requires presence.
             try: self.audit.append(agent_id=aid,op='handshake',outcome='ok')
             except Exception: conn.send({'error':'unavailable'}); return
             conn.send({'format':'agentmesh-broker-ready-v1','agent_id':aid})

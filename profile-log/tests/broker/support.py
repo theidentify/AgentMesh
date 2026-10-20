@@ -14,6 +14,10 @@ def setup_home(tmp_path):
         agent = AgentIdentity(state.device,state.account.account_id); sid = resolve(state,name)
         state.grants[agent.agent_id] = Grant(agent.agent_id,agent.public_bytes.hex(),[sid],[sid],sid,state.trees[0].root.scope_id)
         agents.append(agent)
+    # Phase 3 policy tests run inside explicit test-only presence windows.
+    from agentmesh_log.registry_store import now
+    from agentmesh_log.presence import CLASSES
+    state.control['windows']={kind:now()+900000 for kind in CLASSES}
     store = FileKeyStore(home); store.save(state)
     return home,state,store,agents
 

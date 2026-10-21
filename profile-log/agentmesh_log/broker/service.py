@@ -2,6 +2,9 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
+import math
+import sys
+import time
 import threading
 from types import SimpleNamespace
 from ..encoding import wire, parse, typed
@@ -9,6 +12,7 @@ from ..events import prepare_event, attach_signature, verify_event, open_event, 
 from ..model import Label
 from ..errors import LabelLoweringRequiresConfirmation
 from .keystore import FileKeyStore
+from ..storage import StorageError
 from ..presence import PresenceManager
 from .grants import names, resolve, readable, descendants
 from .replica import Replica
@@ -22,6 +26,45 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat'.split()),
     'remember':set('body scope tags task label'.split()), 'revise':set('body scope tags task label revises'.split()),
     'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
+
+
+COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
+PREFIXES=('events/','keys/','registry/','keyring/','profiles/','alerts/')
+
+
+def sync_status_valid(row):
+    if type(row) is not dict or set(row)!=set(COUNTS)|{'at','outcome','interval_s','backend'}: return False
+    if any(type(row[k]) is not int or row[k]<0 for k in COUNTS): return False
+    if row['outcome'] not in ('ok','credentials_missing','credentials_refused','remote_error','error'): return False
+    if row['backend'] not in ('s3','filesystem'): return False
+    if type(row['interval_s']) not in (int,float) or not math.isfinite(row['interval_s']) or row['interval_s']<=0: return False
+    try:
+        at=row['at']
+        return type(at) is str and at.endswith('Z') and datetime.fromisoformat(at[:-1]+'+00:00').tzinfo is not None
+    except (ValueError,TypeError): return False
+
+
+class SyncRemote:
+    def __init__(self,remote):
+        self.remote=remote; self.keys=set(); self.uploaded=0; self.errors=0
+
+    def call(self,name,*args):
+        try: return getattr(self.remote,name)(*args)
+        except Exception: self.errors+=1
+        raise StorageError('remote operation failed') from None
+
+    def list(self,prefix):
+        try: keys=set(self.remote.list(prefix))
+        except Exception: self.errors+=1
+        else:
+            self.keys={k for k in self.keys if not k.startswith(prefix)}|keys
+            return iter(sorted(keys))
+        raise StorageError('remote operation failed') from None
+
+    def put(self,key,data):
+        self.call('put',key,data); self.keys.add(key); self.uploaded+=1
+
+    def get(self,key): return self.call('get',key)
 
 
 @dataclass
@@ -45,7 +88,7 @@ def body_valid(body):
 
 
 class Broker:
-    def __init__(self, home, *, store=None):
+    def __init__(self, home, *, store=None, on_sync=None):
         from ..oskeystore import select_store
         self.home,self.store,self.lock = home,store or select_store(home),threading.RLock()
         self.presence=PresenceManager(home,self.store)
@@ -53,6 +96,8 @@ class Broker:
         self.replica=Replica(home,self.state); self.audit=Audit(home.root/'audit.jsonl',self.state.audit_key)
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
         self._payload_cache={}
+        self.on_sync=on_sync; self._last_sync=None; self._sync_written=None; self._sync_outcome=None
+        self._remote_keys=set(); self._sync_remote=None; self.sync_thread=None
         from .imports import Imports
         self.imports=Imports(self)
         for grant in self.state.grants.values(): self.index(grant)
@@ -283,16 +328,61 @@ class Broker:
             local=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
             if current!=local.key_id or (key_id is not None and key_id!=current): raise ValueError('denied')
 
+    def local_keys(self):
+        return {key for prefix in PREFIXES for key in self.replica.storage.list(prefix)}
+
     def sync_once(self, remote):
         with self.lock:
             self.refresh()
+            remote=SyncRemote(remote); self._sync_remote=remote
+            before=self.local_keys()
             if self.state.control.get('phase4'):
                 from ..keyring import sync_control
                 sync_control(self.home,self.store,remote); self.refresh()
+            controls=self.local_keys()-before
             for grant in self.state.grants.values(): self.index(grant)
             result=self.replica.sync_once(remote,on_event=self.ingest)
+            result['uploaded']=remote.uploaded; result['downloaded']+=len(controls)
+            if not remote.errors: self._remote_keys=remote.keys
             if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
             return result
+
+    def sync_attempt(self,remote,interval):
+        row=dict.fromkeys(COUNTS,0); row.update(outcome='ok',interval_s=interval,backend=getattr(remote,'backend','filesystem'))
+        self._sync_remote=None
+        try:
+            target=remote() if callable(remote) else remote
+            result=self.sync_once(target)
+            for k in ('uploaded','downloaded','invalid','errors'): row[k]=result[k]
+            if row['errors']: row['outcome']='remote_error'
+        except StorageError as exc:
+            row['outcome']={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused'}.get(str(exc),'remote_error')
+            row['errors']=1
+        except Exception:
+            row['outcome']='error'; row['errors']=1
+        try:
+            with self.lock:
+                local=self.local_keys()
+                if self._sync_remote is not None:
+                    row['uploaded']=self._sync_remote.uploaded
+                    row['errors']=max(row['errors'],self._sync_remote.errors)
+                row.update(outbox=len(local-self._remote_keys),local_objects=len(local),remote_objects=len(self._remote_keys))
+        except Exception: row['outcome']='error'; row['errors']+=1
+        row['at']=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+        if not sync_status_valid(row):
+            row=dict.fromkeys(COUNTS,0); row.update(at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),
+                outcome='error',errors=1,interval_s=interval,backend='s3')
+        if row['outcome']!=self._sync_outcome:
+            try: print('profile-log sync: '+row['outcome']+' uploaded='+str(row['uploaded'])+' outbox='+str(row['outbox']),file=sys.stderr)
+            except Exception: pass
+            else: self._sync_outcome=row['outcome']
+        now=time.monotonic(); counts={k:v for k,v in row.items() if k!='at'}
+        if counts!=self._last_sync or self._sync_written is None or now-self._sync_written>=600:
+            try:
+                if self.on_sync is not None: self.on_sync(dict(row))
+            except Exception: pass
+            else: self._last_sync=counts; self._sync_written=now
+
 
     def connection(self, conn):
         session=None
@@ -325,13 +415,18 @@ class Broker:
                 if session is not None: self.imports.release(session)
             conn.close()
 
-    def serve(self, *, server=None, remote=None, sync_interval=None):
+    def serve(self, *, server=None, remote=None, sync_interval=None, on_sync=None):
+        if sync_interval is not None and (remote is None or type(sync_interval) not in (int,float) or not math.isfinite(sync_interval) or sync_interval<=0):
+            raise ValueError('invalid sync configuration')
+        if on_sync is not None: self.on_sync=on_sync
         self.server=server or (PipeServer if os.name=='nt' else UnixServer)(self.home.address(self.state.device.device_id))
         if sync_interval is not None:
-            if remote is None or sync_interval<=0: raise ValueError('invalid sync configuration')
             def sync_loop():
-                while not self.stopped.wait(sync_interval): self.sync_once(remote)
-            threading.Thread(target=sync_loop,daemon=True).start()
+                while not self.stopped.is_set():
+                    try: self.sync_attempt(remote,sync_interval)
+                    except Exception: pass
+                    if self.stopped.wait(sync_interval): break
+            self.sync_thread=threading.Thread(target=sync_loop,daemon=True); self.sync_thread.start()
         while not self.stopped.is_set():
             try: conn=self.server.accept()
             except ValueError:

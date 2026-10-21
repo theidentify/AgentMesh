@@ -11,6 +11,7 @@ from recall_memory import open_readonly, _decode
 from bounded_digest import run_lock
 
 EXPORT_LOCK_WAIT = 120
+VAULT = 'agentmesh/'
 
 
 def name(value):
@@ -26,7 +27,7 @@ def text(value):
 
 
 def link(path, label=None, event=None):
-    return '[[OMP Memory/' + path + (f'#^event-{event}' if event is not None else '') + '|' + text(label or path).replace('|', '-') + ']]'
+    return '[[' + VAULT + path + (f'#^event-{event}' if event is not None else '') + '|' + text(label or path).replace('|', '-') + ']]'
 
 
 def check_links(root):
@@ -35,9 +36,9 @@ def check_links(root):
     checked = sources = 0
     for contents in notes.values():
         for target in re.findall(r'(?<!\\)\[\[([^\]|]+)(?:\|[^\]]*)?\]\]', contents):
-            if not target.startswith('OMP Memory/'):
+            if not target.startswith(VAULT):
                 continue
-            path, _, anchor = target[len('OMP Memory/'):].partition('#')
+            path, _, anchor = target[len(VAULT):].partition('#')
             checked += 1
             if path not in notes or (anchor and anchor.lstrip('^') not in anchors[path]):
                 raise ValueError('broken generated source/navigation link')

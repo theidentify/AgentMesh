@@ -42,7 +42,7 @@ class ConsumerTests(unittest.TestCase):
             self.assertNotIn('Keep deployment manual.', current.read_text())
             self.assertNotIn('## constraint', current.read_text())
             self.assertIn('demo Durable Memory', current.read_text())
-            self.assertIn('OMP Memory/Memory/' + name('demo'), (root / '_Index.md').read_text())
+            self.assertIn('agentmesh/Memory/' + name('demo'), (root / '_Index.md').read_text())
             self.assertEqual(manual.read_text(), '# Manual note\nPreserve me.')
             self.assertEqual(check_links(root)['broken_links'], 0)
         current.write_text('# Manual collision\nDo not overwrite.')

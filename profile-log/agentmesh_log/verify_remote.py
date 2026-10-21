@@ -106,9 +106,11 @@ def verify(args):
     remote = cli.remote_storage(args, filesystem_factory=ReadOnlyFilesystem)
     probes = probes_for(args, state)
     registry = state.registry()
-    local_keys, remote_keys = inventory(local), inventory(remote)
+    local_keys, remote_keys = inventory(local), set(remote.list(''))
+    replica_keys = {key for key in remote_keys if key.startswith(PREFIXES)}
     result = dict(ok=False, local_objects=len(local_keys), remote_objects=len(remote_keys),
-                  missing_remote=len(local_keys - remote_keys), missing_local=len(remote_keys - local_keys),
+                  missing_remote=len(local_keys - replica_keys), missing_local=len(replica_keys - local_keys),
+                  unknown_remote=len(remote_keys - replica_keys),
                   hash_mismatch=0, unparsable=0, probes=len(probes), marker_hits=0,
                   restored_events=0, opened_events=0)
     read_keys = {(k.profile_id, k.scope_id, k.key_id): k
@@ -119,10 +121,12 @@ def verify(args):
         events = []
         for key in sorted(remote_keys):
             data = remote.get(key)
-            if key in local_keys and hashlib.sha256(data).digest() != hashlib.sha256(local.get(key)).digest():
-                result['hash_mismatch'] += 1
             if any(probe in data for probe in probes):
                 result['marker_hits'] += 1
+            if key not in replica_keys:
+                continue
+            if key in local_keys and hashlib.sha256(data).digest() != hashlib.sha256(local.get(key)).digest():
+                result['hash_mismatch'] += 1
             if key.startswith(('events/', 'keys/')):
                 restored.put(key, data)
             try:

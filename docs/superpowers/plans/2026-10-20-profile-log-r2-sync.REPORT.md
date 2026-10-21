@@ -777,3 +777,20 @@ The first full run caught missing explicit parametrization IDs; those were fixed
   would hit random base64 ciphertext by chance (~0.7 expected hits over 459 objects). New tests
   `test_markers_not_folded[case|profile-case|short]`.
 - Outside the sandbox with a basetemp outside `tempfile.gettempdir()`: `profile-log/tests` → **533 passed, 5 skipped**.
+
+## Review follow-ups (owner-approved via the design session, 2026-10-21)
+
+1. **Backups need consent and must be encrypted.** D-4 is now an optional step with owner consent. The new
+   `agentmesh_log.backup` (I-6, Codex-implemented and reviewed) builds the tar in memory and writes one age
+   file to the device and recovery recipients (rationale in the plan, I-6). It is POSIX-only; on Windows it
+   returns `unsupported_platform` and its tests are skipped there. R-1 no longer needs any backup: the
+   no-remote plist regenerates **byte-identically** (checked against the live plist, read-only), D-3 rolls
+   back by `git archive <old REVISION>`, and the first sync downloads nothing. The plan names no old
+   backup locations.
+2. **LIST sizing** corrected. One LIST pass per sync since 06b681a, with pages of 1,000 keys. Growth table
+   in the plan. Incremental listing must land before a second device or 5k events.
+3. **verify_remote** compares only replica prefixes. Remote-only prefixes count as `unknown_remote`, do not
+   fail `ok`, and are still marker-scanned (`test_unknown_*`).
+
+Verification outside the sandbox, basetemp outside `tempfile.gettempdir()`: `profile-log/tests` →
+**565 passed, 5 skipped** (including `test_collection.py` id/length rules).

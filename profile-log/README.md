@@ -154,6 +154,11 @@ Run `python -m agentmesh_log.verify_remote --home H --filesystem DIR --markers F
 (or use the broker’s `--s3-*` flags with Keychain credentials). It emits one JSON line of counts, checks
 remote hashes and plaintext probes, and rehearses restore in a disposable directory without a broker lock.
 Add `--sample-db DB --sample 25` to scan in-memory snippets from a read-only SQLite source.
+Remote-only prefixes outside the replica (for example `outbox/`) are counted as `unknown_remote` and still scanned.
+
+`python -m agentmesh_log.backup create --home H --out FILE --include PATH…` (POSIX) asks for consent, then writes
+one age file encrypted to this device and the account recovery key; no plaintext archive touches disk.
+`restore --in FILE --to NEW_DIR` decrypts with the device identity.
 
 Phase 3 adds a local memory broker, per-agent RAM-only SQLite FTS5 indexes,
 mutual device/agent authentication, secret/PII detection, encrypted index snapshots,

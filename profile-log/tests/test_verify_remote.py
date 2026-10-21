@@ -70,9 +70,40 @@ def test_good(synced, capsys):
     count = sum(len(list(remote.list(prefix))) for prefix in PREFIXES)
     assert code == 0
     assert result == dict(ok=True, local_objects=count, remote_objects=count,
-        missing_remote=0, missing_local=0, hash_mismatch=0, unparsable=0,
+        missing_remote=0, missing_local=0, unknown_remote=0, hash_mismatch=0, unparsable=0,
         probes=8, marker_hits=0, restored_events=1, opened_events=1)
     assert (snapshot(home.root), snapshot(remote.root)) == before
+
+
+def test_unknown_remote(synced, capsys, monkeypatch):
+    remote = synced[2]
+    count = len(list(remote.list('')))
+    for prefix in ('connectors/', 'outbox/', 'archive/'):
+        remote.put(prefix + 'extra', b'not JSON')
+    calls = []
+    original = remote.list
+    def listing(prefix):
+        calls.append(prefix)
+        return original(prefix)
+    monkeypatch.setattr(remote, 'list', listing)
+    monkeypatch.setattr(verify_remote.cli, 'remote_storage', lambda *args, **kwargs: remote)
+    code, result = run(args_for(synced), capsys)
+    assert code == 0
+    assert result == dict(ok=True, local_objects=count, remote_objects=count + 3,
+        missing_remote=0, missing_local=0, unknown_remote=3, hash_mismatch=0, unparsable=0,
+        probes=8, marker_hits=0, restored_events=1, opened_events=1)
+    assert calls == ['']
+
+
+@pytest.mark.parametrize('prefix', ['outbox/', 'future-tier/'], ids=['outbox', 'future'])
+def test_unknown_remote_marker(synced, capsys, prefix):
+    synced[2].put(prefix + 'extra', b'SECRET plaintext probe')
+    code, result = run(args_for(synced), capsys)
+    assert code == 1 and not result['ok']
+    assert result['marker_hits'] == result['unknown_remote'] == 1
+    assert result['missing_remote'] == result['missing_local'] == result['hash_mismatch'] == 0
+    assert result['unparsable'] == 0
+    assert result['restored_events'] == result['opened_events'] == 1
 
 
 def test_missing(synced, capsys):

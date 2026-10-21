@@ -25,7 +25,7 @@ class Controller:
 
 
 def load_model(backend=None):
-    from ..migrate.mapping import plan
+    from ..migrate.mapping import plan, project_targets
     from ..migrate.source import rows
     from ..projects import effective_mapping
     from ..pairing import approver_fingerprint
@@ -37,14 +37,12 @@ def load_model(backend=None):
     if database:
         mapping=effective_mapping(value,state) if 'migration' in value else None
         groups=plan(database,mapping)['projects']
-        targets={}
-        for row in rows(database):
+        values=rows(database)
+        groups=project_targets(groups,values,mapping)
+        for row in values:
             try: target=mapping.target(row) if mapping else None
             except ValueError: target=None
-            targets.setdefault(row['project'],set()).add(target)
             sources.append({k:row[k] for k in ('table','id','scope','project','reason')} | {'target':target})
-        for group in groups:
-            found=targets.get(group['project'],set()); group['target']=next(iter(found)) if len(found)==1 else 'mixed'
         importer=value.get('bridge',{}).get('import_agent')
         if importer in state.control.get('agent_names',{}):
             client=None

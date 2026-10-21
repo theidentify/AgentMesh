@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from test_isolation import setUpModule, tearDownModule
 from pathlib import Path
 import adapters
 

@@ -28,8 +28,9 @@ class Cache:
             return self.value
 
 
-def make_server(home, port, sqlite=None, dsn=None, primary=None):
+def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None):
     home = Path(home).expanduser()
+    agentmesh_home = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
     readers = {'sqlite':adapters.MemoryReader(sqlite=sqlite), 'postgres':adapters.MemoryReader(dsn=dsn, backend='postgres')}
     primary = primary or os.environ.get('INSIGHT_PRIMARY_BACKEND', 'postgres')
     primary = 'postgres' if primary == 'pg' else primary
@@ -38,10 +39,10 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None):
     default = primary if (dsn if primary == 'postgres' else sqlite) else ('postgres' if dsn else 'sqlite')
     readers['postgres'].label = 'PostgreSQL authority' if primary == 'postgres' else 'PostgreSQL read-only comparison'
     readers['sqlite'].label = 'SQLite authority' if primary == 'sqlite' else 'SQLite staging'
-    metrics_cache = Cache(lambda: adapters.metrics(home))
+    metrics_cache = Cache(lambda: adapters.metrics(home, agentmesh_home, metrics_logs))
     from syncthing_transport import observe
-    transport_cache = Cache(lambda: observe(home))
-    ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite, transport_cache.get())) for key in readers}
+    transport_cache = Cache(lambda: observe(home, exchange=adapters.layout(home, agentmesh_home)['exchange']['path']))
+    ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite, transport_cache.get(), agentmesh_home)) for key in readers}
 
     def connections():
         rows = []
@@ -60,6 +61,7 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None):
         return {'default':default,'primary':primary,'rows':rows,'readonly':True}
 
     connection_cache = Cache(connections)
+    profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -100,6 +102,10 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None):
                     return self.send(200, Path(__file__).with_name('index.html' if path=='/' else 'metrics.html').read_bytes(), 'text/html; charset=utf-8')
                 if path == '/health':
                     return self.send(200, {'status':'ok','pid':os.getpid(),'readonly':True})
+                if path == '/api/profile-log':
+                    if args:
+                        raise ValueError('Unknown parameter')
+                    return self.send(200, profile_cache.get())
                 if path == '/api/metrics':
                     if args:
                         raise ValueError('Unknown parameter')
@@ -153,10 +159,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=0)
     parser.add_argument('--home', type=Path, default=Path(os.environ.get('HERMES_HOME', str(Path.home()/'.hermes'))))
+    parser.add_argument('--agentmesh-home', type=Path, default=Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))))
+    parser.add_argument('--metrics-log', type=Path, action='append')
     parser.add_argument('--sqlite', type=Path, help='Existing AgentMesh staging database, never created')
     # DSN only via environment, not CLI/process list or a web form.
     args = parser.parse_args()
-    server = make_server(args.home, args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'))
+    server = make_server(args.home, args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log)
     print(json.dumps({'url':'http://127.0.0.1:'+str(server.server_port),'pid':os.getpid(),'readonly':True}), flush=True)
     try:
         server.serve_forever()

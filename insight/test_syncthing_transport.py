@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from test_isolation import setUpModule, tearDownModule
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ class TransportTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)/'hermes'
+        (self.home/'omp-memory/sync').mkdir(parents=True)
         self.config = Path(self.tmp.name)/'config.xml'
         self.responses = {
             '/rest/system/status': {'myID':'LOCAL'},
@@ -214,6 +216,17 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(value['sync']['transport'],'connected')
         self.assertEqual(value['sync']['peers']['transport'],'connected')
         self.assertEqual(value['sync']['transport_status']['status'],'connected')
+
+    def test_g7_resolved_exchange_and_legacy_mismatch(self):
+        import adapters
+        am=Path(self.tmp.name)/'am'; (am/'exchange').mkdir(parents=True)
+        exchange=adapters.layout(self.home,am)['exchange']['path']
+        self.assertEqual(transport.observe(self.home,exchange)['availability'],'exchange folder not configured')
+        self.assertEqual(self.paths,[])
+        self.write_config(folder=exchange)
+        self.assertEqual(transport.observe(self.home,exchange)['status'],'connected')
+        value=adapters.operations(self.home,adapters.MemoryReader(),None,agentmesh_home=am)
+        self.assertEqual(value['sync']['transport'],'connected')
 
     def test_partial_local_failure(self):
         self.failure = ('/rest/db/status',403)

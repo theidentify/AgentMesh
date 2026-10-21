@@ -54,12 +54,37 @@ database supplies sync metadata independently of the memory browser selection.
 | Memory Browser | Paginated `memory_items` and `memory_summaries` from the selected backend. Search content, exact project/scope key, kind, status and scope filters. |
 | Agents | Aggregated `source_sessions` and `observation_events` metadata, plus content-free Hermes session metadata. Zero source-session rows do not hide agents with recorded events. |
 | Pipeline | Exact known OMP ingest and summary cron job IDs, last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
+| Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up outcomes. |
 | Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata, plus fixed Mac/Windows completed-cycle ACK projections. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
 
-Metrics reads `cron/usage_audit.jsonl`, `state.db`, and
-`omp-memory/summary-metrics.jsonl`. Isolated smoke is read separately from
-`omp-memory/summary-smoke-test-metrics.jsonl`. Jobs and coordinator state come from
-`cron/jobs.json` and `omp-memory/.bounded_digest_state.json` beneath `--home`.
+`--agentmesh-home` defaults to `$AGENTMESH_HOME`, otherwise `~/.agentmesh`.
+Each relocated item independently prefers its new path when present, falls back
+to the legacy path beneath `--home`, and otherwise reports `missing`. API source
+labels are `agentmesh`, `legacy`, or `missing`; filesystem paths are not exposed.
+
+| Item | Under `--agentmesh-home` | Legacy under `--home` |
+| --- | --- | --- |
+| Peer ACKs | `exchange/status/{mac,windows}.json` | `omp-memory/sync/status/{mac,windows}.json` |
+| Syncthing exchange | `exchange` | `omp-memory/sync` |
+| Coordinator | `jobs/.bounded_digest_state.json` | `omp-memory/.bounded_digest_state.json` |
+
+Hermes `cron/jobs.json`, `cron/usage_audit.jsonl` and `state.db` always stay under
+`--home`, even if similarly named files exist under `--agentmesh-home`.
+
+Metrics reads in place: sorted `backups/archive/summary-metrics.jsonl.pre-relocate-*`
+history under `--agentmesh-home`, then legacy `omp-memory/summary-metrics.jsonl`
+under `--home`, then new `jobs/summary-metrics.jsonl` under `--agentmesh-home`.
+Every existing live file participates. Records are de-duplicated by `run_id`,
+with the later file winning. The same merge applies separately to
+`summary-smoke-test-metrics.jsonl`. Archives are only read; nothing is copied,
+moved or chmodded. Corrupt JSON lines fail explicitly.
+
+Repeatable `--metrics-log PATH` replaces the automatic summary-run input list;
+isolated smoke remains a separate source. The standalone `metrics.py` CLI also
+accepts repeated `--metrics-log` options. Existing legacy live logs remain inputs
+because a writer configuration may still point there. Changing that production
+configuration is outside Insight. Confirm this read-in-place default before
+deployment.
 Known integration jobs are ingest `eabd6e41c22d` and summary `6fcf5646d34d`.
 A different runtime without those IDs is explicitly reported as unavailable.
 
@@ -75,6 +100,19 @@ with shared theme and refresh controls; its accounting filters remain independen
 of memory-backend selection. This preserves the existing working chart and
 accounting UI without mixing production logs with isolated smoke samples.
 
+### Profile log snapshot
+
+The Profile log tab reads only `profile-log-status.json`, written by
+`agentmesh-log apply` and `agentmesh-log migrate catch-up`. Edit in a terminal
+with `agentmesh-log admin` / `agentmesh-log apply`. This is an observed snapshot,
+not current broker authority; timestamps and age distinguish stale sections.
+The reader never opens broker state, agent keys, settings or apply audit logs.
+It refuses symlinks, non-regular files, malformed/wrong-format JSON and files over
+256 KiB. It projects allowed fields, caps each list at 500 entries with a visible
+truncation notice, and shortens device IDs to 12 characters. Missing values stay
+unknown. `GET /api/profile-log` accepts no parameters and uses a 15-second cache;
+write methods remain rejected. There are no web editing controls.
+
 ### Activity is observation, not liveness
 
 - Recent observation means a recorded timestamp is less than one hour old.
@@ -84,7 +122,7 @@ accounting UI without mixing production logs with isolated smoke samples.
 - Cron results are observed last executions, not guaranteed future success.
 - Receipts prove local packet imports, not two-way convergence or remote ACKs.
 - Sync **Peer Status** independently reads fixed `mac.json` and `windows.json`
-  completed-cycle ACKs under `--home/omp-memory/sync/status`. It remains visible
+  completed-cycle ACKs under the resolved status directory above. It remains visible
   even when the SQLite sync source is unavailable. No arbitrary peer/path input
   is accepted. Status JSON is bounded to 64 KiB and projected through an allowlist.
 - ACK timestamps require timezone offsets and display in the browser's local
@@ -137,7 +175,7 @@ Linux state or legacy configuration locations. An optional absolute
 No key is supplied through the CLI or browser: Insight reads the existing API key
 server-side and never projects it. No pairing, folders, settings or services are changed.
 
-Only the folder whose canonical path equals `--home/omp-memory/sync` is observed,
+Only the folder whose canonical path equals the resolved exchange directory is observed,
 and only its paired remote devices are included. Numeric loopback GUI addresses
 are required; DNS names, external origins, credentials in addresses, redirects
 and proxies are not used. TLS uses normal certificate verification. Missing or
@@ -192,6 +230,7 @@ instances can remain running until a user deliberately switches to this workspac
 
 ```sh
 python3 -m unittest discover -s insight -v
+node insight/profile_log_qa.mjs
 python3 -m pytest -q memory-sync
 git diff --check
 ```
@@ -215,7 +254,7 @@ node insight/security_qa.mjs http://127.0.0.1:PORT CHROMIUM_DEBUG_PORT \
 
 Use a disposable browser profile outside the repository. The test expects configured,
 nonempty PostgreSQL and SQLite memory sources and existing summary metrics; it
-checks all six navigation views, filtering/clearing, paging, explicit details,
+checks all seven navigation views, filtering/clearing, paging, explicit details,
 connection switching, metrics charts/source tabs, desktop/mobile light/dark,
 20-second auto-refresh, overflow and runtime exceptions. Screenshots and the QA
 report are written only to the specified external directory. They contain local

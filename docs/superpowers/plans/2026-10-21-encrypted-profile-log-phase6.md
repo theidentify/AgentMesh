@@ -1,0 +1,322 @@
+# Encrypted Profile Log, Phase 6 (Mobile Capture) Implementation Plan
+
+> **For agentic workers:** execute in order. The spec is
+> `docs/superpowers/specs/2026-10-18-encrypted-profile-log-design.md` ("Mobile", amended 2026-10-21; "Cloudflare
+> Worker"; "Device enrollment"). Read it fully first, then `profile-log/README.md`, `profile-log/FORMAT.md`
+> (including Phase 4 records and Phase 5 import trust) and the Phase 4 plan and REPORT. The spec wins on
+> conflict, except where this plan records an owner decision. Stop and report instead of guessing on anything
+> that affects a security gate; record other choices under Deviations in the REPORT.
+
+**Goal:** a phone can capture memories into the encrypted profile log without ever holding a read key, and
+without the Worker or Cloudflare ever seeing plaintext. The phone runs a PWA that the Worker serves. The PWA
+pairs as a write-only device using the 6-digit flow, keeps drafts encrypted on the phone while offline, and
+seals each event in the browser to the scope's current epoch when it sends. The Worker checks the event and
+publishes it create-only to R2, where the Mac broker picks it up through normal sync.
+
+**Out of scope:** mobile recall (a separate owner decision; see the spec), Telegram, a native app, Bluetooth or
+LAN pairing, Worker change notification, and moving desktop devices behind the Worker gatekeeper.
+
+**Depends on:** PR #62 (R2 remote sync on the Mac) being live, so that the Mac sees phone events.
+
+## Owner decisions
+
+Recorded 2026-10-21:
+
+- Capture is encrypted on the phone in a PWA. The Worker stores ciphertext only. Telegram is not used for
+  capture.
+
+**Proposed defaults. Confirm these before execution starts:**
+
+- **D1 Target scope:** each granted profile gets a dedicated `inbox` project scope, and the phone receives write
+  grants for `inbox` only. Moving items out of the inbox is later work on a reading device.
+- **D2 Label:** the phone offers `general`, `internal` and `secret`, with `internal` as the default. The phone
+  never lowers a label.
+- **D3 JS crypto:** use hpke-js (`@hpke/core` with the X25519 KEM and ChaCha20-Poly1305 packages) for RFC 9180
+  base-mode seal. Use WebCrypto Ed25519 with non-extractable keys for signing, and WebCrypto AES-GCM for the
+  local queue. Do not write a hand-rolled HPKE. Pin exact versions released at least two weeks ago, commit
+  `package-lock.json`, and vendor the built browser bundle with a SHA-256 manifest.
+- **D4 Hosting:** start on the `workers.dev` subdomain. A custom domain and Cloudflare Access in front are
+  optional later owner choices, and nothing in the code depends on them.
+
+## Threat model additions
+
+The Worker, Cloudflare and R2 are **untrusted for confidentiality**. A Worker that is compromised at runtime
+sees only ciphertext, signatures and metadata (the same view as storage). It cannot make a reading device
+accept any of these:
+
+- an event that no certified, unrevoked write grant authorizes;
+- an event from a revoked phone;
+- a forged write grant.
+
+A Worker that does not enforce its checks does not change what readers accept: brokers re-verify everything
+(gate P6-4).
+
+**Accepted limit (documented in the README):** whoever controls the deployed Worker assets can serve a
+modified PWA that reads plaintext as it is typed. The PWA shows its build hash. `agentmesh-log capture
+build-hash` computes the same hash from the reviewed source so they can be compared. A lost or stolen phone
+exposes queued drafts only if its local storage is unlocked. It never exposes anything already sent or anything
+in the log.
+
+**Accepted limit (backdating):** readers apply revocation at the event's ULID time, as in Phase 5. A removed
+phone could backdate a ULID, so after revocation the Worker is the only thing that stops it: the phone has no
+storage token, and the Worker refuses revoked devices on every request.
+
+## Design to implement
+
+### Layout (all new code under `profile-log/`)
+
+```
+agentmesh_log/writeonly.py     write-only device record, write grants, verification helpers
+agentmesh_log/pairing.py       write-only pairing variant + pairing tickets (additive)
+agentmesh_log/lifecycle.py     rotation re-issues write grants; device remove revokes them
+agentmesh_log/broker/…         ingest rule for events from write-only devices
+agentmesh_log/cli.py           pair phone / capture build-hash / device list shows write-only devices
+capture/package.json, package-lock.json   pinned dev and runtime deps (no install by Codex)
+capture/shared/                typed encoding, canonical wire, ULID, base64url/hex, seal, verify (ES modules)
+capture/worker/                Worker entry, routes, checks, R2 adapter
+capture/pwa/                   static assets: index.html, app modules, service worker, manifest, vendor/
+capture/tests/                 node:test suites (logic separated from DOM; fake bucket; vectors)
+tests/vectors/phase6/          cross-implementation vectors generated by Python
+tests/test_phase6_*.py         Python tests, including the node-driven end-to-end
+```
+
+### Records (normative; add to FORMAT.md as "Phase 6 records")
+
+They use the same canonical JSON, typed signing and domain rules as Phase 4. Object paths contain only opaque
+IDs.
+
+- **Write-only device record** `agentmesh-device-record-wo-v1` at `registry/devices/{device_id}.json`.
+  - Fields: the device certificate (issued by the approver), `capabilities` (exactly `["write"]`),
+    `issued_at`, and a signature by the device's own key.
+  - It has no age recipient. Approvers refuse to create keyring grants or scope metadata for it, and the
+    registry exposes `is_write_only(device_id)`.
+- **Write grant** `agentmesh-write-grant-v1` at
+  `registry/write-grants/{device_id}/{profile_id}/{scope_id}/{key_id}.json`.
+  - Fields: `device_id`, `profile`, `scope`, `key_id`, `write_public_key` (32-byte hex), `issuer_device`,
+    `issued_at`, `signature` (by the issuer).
+  - It is valid only if all of the following hold:
+    1. The issuer chain verifies and the issuer was not revoked at `issued_at`.
+    2. The issuer is not write-only.
+    3. `key_id` equals `hex(SHA256(b'AgentMesh/scope-key-id/v1\x00' + write_public_key))`.
+    4. A valid epoch record for `key_id` exists in that profile and scope.
+    5. The subject device is a write-only device that is not revoked.
+- **Pairing ticket** `agentmesh-pair-ticket-v1` at `pairing-tickets/{ticket_hash}.json`.
+  - Fields: `ticket_hash` (hex SHA-256 of the 32-byte ticket), `approver_device_id`, `expires_at` (issued plus
+    600,000 ms), `signature`.
+  - The raw ticket appears only in the approver's QR or code and never in storage.
+- **Write-only pairing kinds** under `pairing/{request_id}/`. These are the Phase 4 transcript with these
+  changes:
+  - `pair-commit-wo` fields: `request_id`, `joiner_signing_public`, `ticket_hash`, `commitment`, `issued_at`.
+    Commitment input is `{request_id, joiner_signing_public, ticket_hash, Nj}`.
+  - `pair-result-wo` fields: `request_id`, `approver_device_id`, `commit_hash`, `approver_hash`,
+    `certificate_path`, `write_grant_paths`.
+  - Approver and reveal are unchanged. The SAS and expiry rules are Phase 4's, with distinct `-wo` domains.
+
+### Pairing flow (approver starts, phone scans)
+
+1. **Mac:** `agentmesh-log pair phone --profile P [--scope inbox]` (presence required).
+   - It creates the inbox scope if D1 applies and it is missing.
+   - It writes a pairing ticket.
+   - It shows a QR and a typed fallback code. Both carry
+     `agentmesh-capture:v1:{worker_origin}:{ticket}:{account_fingerprint}`, where `account_fingerprint` is the
+     SHA-256 of the account record.
+2. **PWA:** scans the QR with `BarcodeDetector`, or takes the pasted code, and pins the account fingerprint.
+   - It generates non-extractable WebCrypto Ed25519 keys for the device and the agent.
+   - It posts `commit.json` through the Worker. The Worker accepts it only with a matching, unexpired, unused
+     ticket and then consumes the ticket create-only.
+3. **Mac:** writes `approver.json`. The PWA reveals. Both screens show the 6-digit SAS, and the user confirms on
+   the Mac.
+4. **Mac:** certifies the phone device and writes `pair-result-wo` plus one write grant per granted scope's
+   current epoch. The PWA:
+   - fetches the result, certificate and grants through the Worker and verifies the chain from the pinned
+     account;
+   - self-certifies its agent;
+   - publishes its write-only device record through the Worker.
+
+### Worker (`capture/worker/`)
+
+Only these routes exist; everything else returns 404.
+
+| Route | Rule |
+| --- | --- |
+| `GET /` and PWA assets | static, with the CSP below |
+| `POST /v1/pair/{request_id}/commit` | ticket check, shape, self-signature, create-only |
+| `POST /v1/pair/{request_id}/reveal` | shape, self-signature, request exists and not expired, create-only |
+| `POST /v1/devices/{device_id}` | write-only device record only; certificate must verify; create-only |
+| `GET /v1/pair/{request_id}/{approver,result,certificate}.json` | read only these pairing objects |
+| `GET /v1/registry/…` | read-only access to account, device records, revocations, write grants and epoch records |
+| `POST /v1/events/{profile}/{scope}/{ulid}` | event checks below, then create-only put at the event path |
+
+**Event checks**, in this order:
+
+1. Body at most 64 KiB, with strict parsing.
+2. Exact envelope shape. The path segments equal the envelope's `profile`, `scope` and `id`.
+3. The registry chain for `agent_cert`:
+   - The device is write-only.
+   - Revocation is read fresh on every request, with no cache.
+4. The event signature, verified with WebCrypto Ed25519.
+5. A valid write grant exists for (device, profile, scope, `scope_key_id`).
+6. That epoch has no valid successor. If it has one, the response is `409 epoch_superseded`.
+
+Errors are fixed codes and never echo input.
+
+**Create-only:** use the R2 binding's conditional put so that an existing key is never overwritten (verify the
+exact option against current Cloudflare docs). Identical bytes return 200, and different bytes return 409. If
+the binding cannot do create-only, stop and report. The Worker never deletes, and it never lists or reads event
+objects.
+
+**Rate limit:** use the Workers rate-limiting binding keyed by `device_id` for events, and by client IP for
+pairing. Its configuration lives in `wrangler.toml`. Tests inject a fake limiter.
+
+**CSP:** `default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none';
+base-uri 'none'; frame-ancestors 'none'; form-action 'none'`. Responses also send `X-Content-Type-Options:
+nosniff` and `Referrer-Policy: no-referrer`.
+
+### PWA (`capture/pwa/`)
+
+- **UI:** two screens, *Pair* and *Capture*. Capture has text, a profile/scope picker (from grants), a label
+  (D2), optional tags and task, a queue count, and a build hash in the footer.
+- **IndexedDB:** holds only the non-extractable device, agent and queue `CryptoKey` objects, the pinned
+  account fingerprint, certificates, grants, and the queue.
+  - Each queue item is AES-GCM-256 ciphertext of the draft payload, with a fresh 96-bit IV and
+    AAD = `item_id`.
+- **Send:**
+  1. Fetch the current write grant for the scope through the Worker and verify it (chain, epoch has no
+     successor).
+  2. Decrypt the draft and seal with hpke-js, using the exact `agentmesh-event-v1` info and signature rules.
+  3. POST the event. Delete the queue item only after a 200.
+  4. On `409 epoch_superseded`, re-fetch and re-seal once.
+- **Service worker:** precaches the assets for offline capture. It never caches `/v1/` responses.
+- **Unsupported browsers:** if the browser lacks Ed25519 or non-extractable key storage, the PWA refuses to
+  pair and says why.
+- **Build hash:** SHA-256 over the sorted `(path, SHA-256(bytes))` list of the served assets. The Python
+  `capture build-hash` command computes the same value from `capture/pwa/`.
+
+### Python changes
+
+- `writeonly.py`: the write-only device record, write grants and pairing tickets: creation, verification and
+  listing from storage.
+- **Broker ingest rule:** an event whose agent chains to a write-only device is accepted only if a valid write
+  grant covers its (profile, scope, `scope_key_id`). Otherwise it is rejected with an audited fixed code, like
+  any other invalid event.
+- **Lifecycle:**
+  - `rotate` re-issues write grants to every non-revoked write-only device that held a grant for the rotated
+    scope.
+  - `device remove` on a phone writes the revocation, and new grants are never issued to it. Rotation is not
+    required, because the phone held no read keys, but it is allowed.
+- **CLI:** `pair phone`, `capture build-hash`, and `device list`, which marks write-only devices.
+
+## Ground rules
+
+- Work in the worktree and branch this session creates for Phase 6. Change only `profile-log/**`,
+  `.github/workflows/profile-log.yml` (to add a Node 22 job running `npm ci` and `node --test` in
+  `profile-log/capture`, and Node in the Python matrix for the cross-implementation tests) and
+  `docs/superpowers/plans/2026-10-21-encrypted-profile-log-phase6.REPORT.md`.
+- Do not touch `memory-sync/`, installers, services or the live `~/.agentmesh`. Do not deploy, and do not use
+  Cloudflare credentials. Do not commit, push or create branches.
+- No network:
+  - The reviewer runs `npm ci` in `profile-log/capture` before starting Codex.
+  - Codex must not run `npm install`, add packages or fetch anything.
+  - Python uses the prepared interpreter (`~/.cache/agentmesh-logvenv/bin/python`).
+- TDD: write each failing test first.
+- Open text files with `encoding='utf-8'`, as in every phase.
+- Never log, print or put in errors any key, ticket, draft or plaintext.
+- Keep every existing test passing and the Phase 1–5 wire formats unchanged. New formats are additive.
+- No GATES.md or other working files left behind.
+
+## Tasks
+
+1. **Write-only records:** the write-only device record, write grants and pairing tickets in `writeonly.py`.
+   Add registry support and the FORMAT.md Phase 6 records.
+2. **Write-only pairing:** the pairing variant (Python approver and joiner, where the joiner is a test double
+   for the PWA), `pair phone`, and the lifecycle re-issue and revoke.
+3. **Broker ingest rule** for write-only devices.
+4. **Vectors:** Python writes `tests/vectors/phase6/` covering:
+   - typed encoding;
+   - canonical wire;
+   - ULID parsing;
+   - commitment, SAS and transcript hashes;
+   - a sealed event with fixed HPKE ephemeral randomness, through a test-only hook that is never exported to
+     production code paths.
+5. **JS shared core:** `capture/shared/`, passing every vector. JS-sealed events must open in Python (task 8).
+6. **Worker:** routes, checks, create-only R2 adapter, rate limiter, CSP and assets. Tests use a fake R2 bucket
+   with conditional-put semantics.
+7. **PWA:** logic modules for pairing, grants, queue and send, tested in Node with WebCrypto and an in-memory
+   IndexedDB substitute that is injected, not added as a dependency. Then a thin DOM layer, the service worker,
+   the manifest and the build hash.
+8. **End to end, CI and docs:**
+   - The end-to-end test, driven from Python:
+     - Python inits account A and runs `pair phone` against a filesystem store.
+     - A Node script acts as the phone and calls the Worker handler in-process, with a fake bucket backed by
+       that directory.
+     - The phone pairs and sends three events (one queued offline across a rotation).
+     - The Python broker syncs and recalls them.
+   - The CI workflow change, a README "Mobile capture" section with the accepted limit, an owner deploy
+     runbook (D-steps below) and the REPORT.
+
+## Acceptance gates
+
+### Security (each needs a dedicated test the reviewer can mutation-test)
+
+- **P6-1 Ciphertext only:** in the end-to-end test, record every byte the Worker handler receives and every
+  object the fake bucket stores. A unique plaintext marker in the body, tags and task appears in none of them.
+  The `capture/worker/` sources import no decrypt function and handle no private key type (static check).
+- **P6-2 Cross-implementation:** every vector matches in JS. A JS-sealed event opens with Python `open_event`.
+  If one byte of the envelope, ciphertext or signature is flipped, the event is rejected by both the Worker and
+  Python.
+- **P6-3 Worker refusals:** each of the following is refused with its fixed code, and nothing is stored:
+  - a bad signature;
+  - an unknown device;
+  - a revoked phone (effective on the very next request);
+  - an agent certificate from a non-write-only device;
+  - no write grant, or a grant for another scope or epoch;
+  - a superseded epoch (`409`);
+  - a path and envelope mismatch;
+  - an oversize body;
+  - an overwrite with different bytes;
+  - any method or path not in the route table, including any delete, list or event read.
+- **P6-4 Readers re-verify:** with Worker checks disabled (a test-only handler that stores anything), the broker
+  still rejects every P6-3 case and accepts only valid events. A forged write grant, one from a revoked or
+  write-only issuer, or one whose `key_id` does not match is rejected by both Python and JS.
+- **P6-5 Pairing:**
+  - A commit without a valid ticket, with an expired ticket or with a reused ticket is refused.
+  - A storage or Worker attacker who swaps the commit produces a SAS mismatch, and the approval is refused.
+  - The reveal and replay rules from Phase 4 hold for the `-wo` kinds.
+  - The approver refuses keyring grants and scope metadata for a write-only device.
+  - The phone rejects a result whose chain does not lead to the pinned account fingerprint.
+- **P6-6 No read capability on the phone:** after pairing and sending, the PWA's stored state contains no scope
+  private key, age identity, read key or exported private key bytes. The keys are non-extractable, and
+  `exportKey` fails.
+- **P6-7 Offline queue:** queue items at rest contain no plaintext marker. A draft queued before a rotation is
+  sealed to the new epoch at send time. An item is deleted only after a 200. A failed send keeps it, with no
+  duplicate event on retry (same ULID, and identical bytes are idempotent).
+- **P6-8 Rotation and removal:** after `rotate`, the remaining phones get new write grants and their next send
+  succeeds. A removed phone's next send fails at the Worker, and the broker rejects its events written after
+  the revocation.
+- **P6-9 Served code:** every PWA response carries the exact CSP and headers. A static scan finds no external
+  origin in any asset. The build hash is reproducible across two builds, and Python and JS compute the same
+  value.
+
+### Whole change
+
+- The full Python suite passes from the repository root and from `profile-log/`. `node --test` passes in
+  `profile-log/capture`. The three-OS CI passes, including the Node job. The reviewer reruns socket tests outside
+  the sandbox.
+- The REPORT maps every gate to tests, records pinned JS dependency versions and hashes, lists deviations, and
+  lists the owner steps below.
+- `git status` shows changes only in the allowed paths.
+
+## Owner deploy steps (after merge; not run by Codex)
+
+- **D-1** Confirm D1–D4 and that PR #62 is live (the Mac broker syncs R2).
+- **D-2** `wrangler deploy` from `profile-log/capture`, with the R2 binding to the existing bucket and the
+  rate-limit bindings.
+- **D-3** Compare the build hash with `agentmesh-log capture build-hash`.
+- **D-4** On the Mac, run `agentmesh-log pair phone --profile personal`. Scan the QR on the phone and add the PWA
+  to the home screen. Confirm the SAS.
+- **D-5** Send a marked test capture. Check that it appears in Mac recall, and spot-check the R2 object to
+  confirm it is ciphertext.
+- **D-6** Rehearse revoking the phone (`device remove`) and confirm that its next send fails.
+
+**Rollback:** delete the Worker deployment. Phones stop sending, and nothing else changes. Events already
+stored remain valid log events.

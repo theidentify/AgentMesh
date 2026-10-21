@@ -120,3 +120,62 @@ test('P6-8 policy counter uses bounded expiring KV and zero R2 writes',async()=>
  assert.equal(counters.length,1);assert.equal(counters[0][1].value,'4');
  assert.ok(counters[0][1].expires<=Date.now()+120000);
 });
+
+test('deploy approval CSP allows only self and the validated redirect origin',async()=>{
+ const h=await harness(),c=await register(h),s=await start(h,c.client_id);
+ assert.equal(s.response.headers.get('Content-Security-Policy'),"default-src 'none'; form-action 'self' https://client.example; frame-ancestors 'none'");
+ assert.equal(s.response.headers.get('Access-Control-Allow-Origin'),null);
+ for(const redirectUri of ['https://claude.ai/api/mcp/auth_callback?ignored=yes','http://localhost:8765/callback','data:text/plain,invalid','javascript:void(0)','invalid']){
+  h.worker=createGateway({authorizationServer:()=>({getOAuthApi:()=>({
+   parseAuthRequest:async()=>({clientId:c.client_id,redirectUri,codeChallengeMethod:'S256',codeChallenge:'synthetic'}),
+   lookupClient:async()=>({clientName:'Claude'}),
+  })})});
+  const response=await h.worker.fetch(new Request(h.env.ORIGIN+'/authorize'),h.env);
+  const allowed=redirectUri.startsWith('http');assert.equal(response.status,allowed?200:403);
+  if(allowed)assert.equal(response.headers.get('Content-Security-Policy'),`default-src 'none'; form-action 'self' ${new URL(redirectUri).origin}; frame-ancestors 'none'`);
+ }
+});
+const corsHeaders={
+ 'Access-Control-Allow-Origin':'*',
+ 'Access-Control-Allow-Methods':'GET, POST, OPTIONS, DELETE',
+ 'Access-Control-Allow-Headers':'Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID',
+ 'Access-Control-Expose-Headers':'WWW-Authenticate, Mcp-Session-Id',
+ 'Access-Control-Max-Age':'86400',
+};
+function assertCors(response){
+ for(const [name,value]of Object.entries(corsHeaders))assert.equal(response.headers.get(name),value);
+ assert.equal(response.headers.get('Access-Control-Allow-Credentials'),null);
+}
+test('deploy MCP CORS covers preflight, metadata, success and error responses only',async()=>{
+ const h=await harness();
+ for(const path of ['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp']){
+  const preflight=await h.worker.fetch(new Request(h.env.ORIGIN+path,{method:'OPTIONS'}),h.env);
+  assert.equal(preflight.status,204);assertCors(preflight);
+  const response=await h.worker.fetch(new Request(h.env.ORIGIN+path),h.env);
+  assert.equal(response.status,path==='/mcp'?401:200);assertCors(response);
+  if(path==='/mcp')assert.ok(response.headers.has('WWW-Authenticate'));
+ }
+ const a=await approved(h);
+ const good=await rpc(h,a.token.access_token,'tools/list');assert.equal(good.status,200);assertCors(good);
+ const oversized=await h.worker.fetch(new Request(h.env.ORIGIN+'/mcp',{headers:{'Content-Length':'65537'}}),h.env);
+ assert.equal(oversized.status,400);assertCors(oversized);
+ const bad=await h.worker.fetch(new Request(h.env.ORIGIN+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+a.token.access_token},body:'invalid'}),h.env);
+ assert.equal(bad.status,403);assertCors(bad);
+ for(const path of ['/admin/pending','/admin/approve','/admin/revoke','/authorize','/authorize/complete'])for(const method of ['POST','OPTIONS']){
+  const response=await h.worker.fetch(new Request(h.env.ORIGIN+path,{method}),h.env);
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'),null);
+ }
+});
+
+
+test('deploy approval CSP refuses URL hosts with CSP delimiters or wildcards',async()=>{
+ const h=await harness();
+ for(const redirectUri of ['https://client.example;frame-ancestors/callback','https://*.example/callback']){
+  h.worker=createGateway({authorizationServer:()=>({getOAuthApi:()=>({
+   parseAuthRequest:async()=>({clientId:'client',redirectUri,codeChallengeMethod:'S256',codeChallenge:'synthetic'}),
+   lookupClient:async()=>({clientName:'Claude'}),
+  })})});
+  const response=await h.worker.fetch(new Request(h.env.ORIGIN+'/authorize'),h.env);
+  assert.equal(response.status,403);
+ }
+});

@@ -318,3 +318,28 @@ After merging main (#62, #64): connector and bridge commands build R2 storage th
 chain, as remote sync does. `bridge render-service` writes only that Keychain reference into the
 service. The S3 `list` merge keeps main's error handling plus `start_after`. Python 612 passed,
 5 skipped; node 16 passed.
+
+## Deploy fixes (2026-10-21)
+
+Uncommitted fixes on `claude/phase6-deploy-fixes` from main `62ed30a`:
+
+- Approval CSP allows only `'self'` and the parsed HTTP(S) redirect origin;
+  rejects CSP delimiters/wildcards and retains the default-src/frame-ancestors restrictions.
+- `/mcp` and both protected-resource metadata paths carry the requested wildcard
+  CORS headers on all responses, with unauthenticated 204 OPTIONS. Approval and
+  admin routes receive no added CORS; Allow-Credentials is not set.
+- Connector admin requests use `User-Agent: agentmesh-log/1` (no package version
+  is defined), retaining the redirect refusal and fixed errors.
+- macOS bridge plists use `<home parent>/logs/bridge.out.log` and `bridge.err.log`,
+  matching the broker's AgentMesh-root log convention. Windows XML is unchanged.
+
+Regression tests failed before implementation and passed afterward. No logging
+of approval codes, tokens, or request/response bodies was added.
+
+Validation: the requested full Python command finished with **650 passed,
+8 skipped, 5 failed**; all five failures explicitly report sandbox-denied socket
+binding (`test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+`test_p5_4_concurrent_processes`, `test_s3_custom_http_endpoint`). The targeted
+Python regression run passed both tests. Gateway `node --test`: **19 passed,
+0 failed**. `git diff --check` passed. Live Cloudflare/Claude validation remains
+an owner deploy step; no commit or deployment was performed.

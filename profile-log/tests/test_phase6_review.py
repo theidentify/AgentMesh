@@ -97,7 +97,9 @@ def test_p6_service_remote(tmp_path):
         from pathlib import Path
         data=Path(result['rendered']).read_bytes()
         if platform=='macos':
-            argv=plistlib.loads(data)['ProgramArguments']
+            value=plistlib.loads(data); argv=value['ProgramArguments']
+            assert value['StandardOutPath']==str(tmp_path/'logs'/'bridge.out.log')
+            assert value['StandardErrorPath']==str(tmp_path/'logs'/'bridge.err.log')
             assert argv[-8:]==['--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example','--s3-credentials','keychain:agentmesh-r2']
         else:
             assert b'--s3-bucket bucket --s3-prefix v1/ --s3-endpoint https://s3.example --s3-credentials keychain:agentmesh-r2' in data

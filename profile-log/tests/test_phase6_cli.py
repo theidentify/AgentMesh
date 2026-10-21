@@ -77,3 +77,18 @@ def test_p6_approve_creates_inbox(tmp_path,monkeypatch):
     assert policy['remember']['scope']==resolve(state,'personal/inbox')
     assert len(policy['read'])==2 and policy['max_label']=='internal'
     assert list(storage.list('connectors/inboxes/'))
+
+
+def test_admin_request_user_agent(monkeypatch):
+    from io import BytesIO
+    from agentmesh_log.connector_cli import admin_request
+    import urllib.request
+    state=BrokerState.create(['personal']); state.control['connector_origin']='https://gateway.example'
+    seen=[]
+    class Opener:
+        def open(self,request,timeout):
+            seen.append(request.get_header('User-agent'))
+            return BytesIO(b'{"ok":true}')
+    monkeypatch.setattr(urllib.request,'build_opener',lambda *args:Opener())
+    assert admin_request(state,'revoke',{})=={'ok':True}
+    assert seen==['agentmesh-log/1']

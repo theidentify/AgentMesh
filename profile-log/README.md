@@ -837,10 +837,10 @@ Codes, tokens and private signing keys must not be captured in ordinary logs.
 
 The commands above use the local replica. To operate against shared storage,
 append `--filesystem SHARED`, or the existing S3 backend options
-`--s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint HTTPS_ENDPOINT`. S3 credentials
-use the existing backend's credential configuration on this branch; this change
-does not import PR #62's credential loader. Configure the bridge's runtime
-credentials explicitly when integrating that rollout. Never put credentials in
+`--s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint HTTPS_ENDPOINT --s3-credentials keychain:SERVICE`.
+Connector and bridge commands load R2 credentials exactly like remote sync: from the
+login Keychain item named by `--s3-credentials`, never the boto credential chain.
+Rendered services carry only that Keychain reference. Never put credentials in
 rendered service files or pass them as CLI arguments. Match the Worker's
 `R2_PREFIX` to the device S3 prefix. A local-only approval cannot complete at
 the Worker until its policy has reached shared storage; use shared storage for
@@ -900,7 +900,7 @@ behavior require owner verification.
 Services are render-only; review the output before registering it yourself:
 
 ```sh
-python -m agentmesh_log.cli bridge render-service --home /absolute/H --python /absolute/python --platform macos --output /new/service-directory --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
+python -m agentmesh_log.cli bridge render-service --home /absolute/H --python /absolute/python --platform macos --output /new/service-directory --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
 python -m agentmesh_log.cli bridge render-service --home C:/absolute/H --python C:/absolute/python.exe --platform windows --output C:/new/service-directory
 ```
 
@@ -961,14 +961,14 @@ come from the device's existing configuration, never service arguments):
 
 ```sh
 # D-2: use these flags in render-service too; both platforms preserve them.
-python -m agentmesh_log.cli bridge serve --home H --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
+python -m agentmesh_log.cli bridge serve --home H --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
 # D-3
-python -m agentmesh_log.cli connector gateway-init --home H --origin https://GATEWAY.workers.dev --public-key-file PUBLIC_KEY_FILE --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
+python -m agentmesh_log.cli connector gateway-init --home H --origin https://GATEWAY.workers.dev --public-key-file PUBLIC_KEY_FILE --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
 # D-4
-python -m agentmesh_log.cli connector approve CODE --home H --profiles personal,work --remember personal/inbox --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
+python -m agentmesh_log.cli connector approve CODE --home H --profiles personal,work --remember personal/inbox --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
 # D-6
-python -m agentmesh_log.cli connector allow-secret --home H --app claude --minutes 15 --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
-python -m agentmesh_log.cli connector revoke --home H --app claude --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com
+python -m agentmesh_log.cli connector allow-secret --home H --app claude --minutes 15 --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
+python -m agentmesh_log.cli connector revoke --home H --app claude --s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:SERVICE
 ```
 
 Bridge control refresh defaults to `Bridge(sync_interval=15)` seconds, configurable

@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from ..broker.keystore import atomic_write
 
 
-def render(output,home,python,platform,port=8766,*,filesystem=None,s3_bucket=None,s3_prefix='',s3_endpoint=None):
+def render(output,home,python,platform,port=8766,*,filesystem=None,s3_bucket=None,s3_prefix='',s3_endpoint=None,s3_credentials=None):
     if platform not in ('macos','windows') or not 1<=port<=65535: raise ValueError('invalid_request')
     if not Path(home).is_absolute() or not Path(python).is_absolute(): raise ValueError('invalid_request')
     output=Path(output)
@@ -15,8 +15,10 @@ def render(output,home,python,platform,port=8766,*,filesystem=None,s3_bucket=Non
     if filesystem and s3_bucket: raise ValueError('invalid_request')
     if filesystem: argv+=['--filesystem',str(filesystem)]
     if s3_bucket:
-        if not s3_endpoint or not s3_endpoint.startswith('https://'): raise ValueError('invalid_request')
-        argv+=['--s3-bucket',s3_bucket,'--s3-prefix',s3_prefix,'--s3-endpoint',s3_endpoint]
+        from ..storage.r2creds import validate_remote
+        validate_remote(s3_credentials,s3_endpoint)
+        # A Keychain reference only; the secret itself never enters the rendered file.
+        argv+=['--s3-bucket',s3_bucket,'--s3-prefix',s3_prefix,'--s3-endpoint',s3_endpoint,'--s3-credentials',s3_credentials]
     if platform=='macos':
         data=plistlib.dumps({'Label':'org.agentmesh.profile-log.bridge','ProgramArguments':argv,'RunAtLoad':True,'KeepAlive':True})
         filename='org.agentmesh.profile-log.bridge.plist'

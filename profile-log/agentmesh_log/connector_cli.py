@@ -83,16 +83,13 @@ def allow_secret(home,store,storage,app,minutes,console):
 def remote_flags(cmd):
     group=cmd.add_mutually_exclusive_group()
     group.add_argument('--filesystem'); group.add_argument('--s3-bucket')
-    cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint')
+    cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint'); cmd.add_argument('--s3-credentials')
 
 
 def storage_for(args,home):
-    if args.filesystem: return FilesystemStorage(args.filesystem)
-    if args.s3_bucket:
-        from .storage.s3 import S3Storage
-        if not args.s3_endpoint or not args.s3_endpoint.startswith('https://'): raise ValueError('invalid_request')
-        return S3Storage(args.s3_bucket,prefix=args.s3_prefix,endpoint_url=args.s3_endpoint)
-    return FilesystemStorage(home.root/'replica')
+    # Same explicit Keychain credentials as the broker's remote sync; never the boto credential chain.
+    from .cli import remote_storage
+    return remote_storage(args) or FilesystemStorage(home.root/'replica')
 
 
 def add_parsers(commands):
@@ -112,7 +109,7 @@ def add_parsers(commands):
 def execute(args,*,backend,console):
     if args.command=='bridge' and args.action=='render-service':
         from .bridge.services import render
-        return render(args.output,args.home,args.python,args.platform,args.port,filesystem=args.filesystem,s3_bucket=args.s3_bucket,s3_prefix=args.s3_prefix,s3_endpoint=args.s3_endpoint)
+        return render(args.output,args.home,args.python,args.platform,args.port,filesystem=args.filesystem,s3_bucket=args.s3_bucket,s3_prefix=args.s3_prefix,s3_endpoint=args.s3_endpoint,s3_credentials=args.s3_credentials)
     home=BrokerHome(args.home); store=select_store(home,backend); storage=storage_for(args,home)
     if args.command=='bridge':
         from .bridge import Bridge

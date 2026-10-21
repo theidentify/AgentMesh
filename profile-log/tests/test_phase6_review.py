@@ -92,12 +92,12 @@ def test_p6_service_remote(tmp_path):
     from agentmesh_log.cli import parser
     from agentmesh_log.connector_cli import execute
     for platform in ('macos','windows'):
-        args=parser().parse_args(['bridge','render-service','--home',str(tmp_path/'home'),'--output',str(tmp_path/platform),'--python',str(tmp_path/'python'),'--platform',platform,'--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example'])
+        args=parser().parse_args(['bridge','render-service','--home',str(tmp_path/'home'),'--output',str(tmp_path/platform),'--python',str(tmp_path/'python'),'--platform',platform,'--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example','--s3-credentials','keychain:agentmesh-r2'])
         result=execute(args,backend=None,console=None)
         from pathlib import Path
         data=Path(result['rendered']).read_bytes()
         if platform=='macos':
             argv=plistlib.loads(data)['ProgramArguments']
-            assert argv[-6:]==['--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example']
+            assert argv[-8:]==['--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example','--s3-credentials','keychain:agentmesh-r2']
         else:
-            assert b'--s3-bucket bucket --s3-prefix v1/ --s3-endpoint https://s3.example' in data
+            assert b'--s3-bucket bucket --s3-prefix v1/ --s3-endpoint https://s3.example --s3-credentials keychain:agentmesh-r2' in data

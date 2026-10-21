@@ -312,3 +312,9 @@ The storage `list(prefix, *, page_size=None, start_after=None)` change is byte-i
 Not verified here: a real Cloudflare deployment (Worker, KV, rate-limit binding, R2 conditional
 puts), a real named Tunnel with an Access service token and two connectors, and the real Claude
 connector UI (web, desktop, iOS, Android). These remain owner steps D-1..D-7.
+
+After merging main (#62, #64): connector and bridge commands build R2 storage through the CLI's
+`remote_storage`, so they take `--s3-credentials keychain:SERVICE` and never the boto credential
+chain, as remote sync does. `bridge render-service` writes only that Keychain reference into the
+service. The S3 `list` merge keeps main's error handling plus `start_after`. Python 612 passed,
+5 skipped; node 16 passed.

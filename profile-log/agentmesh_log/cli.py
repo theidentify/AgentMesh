@@ -1,6 +1,7 @@
 """JSON command-line interface for explicit broker administration and agent IPC."""
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ def parser():
     def remote(cmd,required=False):
         group=cmd.add_mutually_exclusive_group(required=required)
         group.add_argument('--filesystem'); group.add_argument('--s3-bucket')
-        cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint')
+        cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint'); cmd.add_argument('--s3-credentials')
     init=admin.add_parser('init'); home(init); init.add_argument('--profile',action='append',required=True)
     scope=admin.add_parser('scope'); scope_sub=scope.add_subparsers(dest='scope_action',required=True)
     add=scope_sub.add_parser('add'); home(add); add.add_argument('scope'); add.add_argument('--label',choices=list(Label.__members__),default='general')
@@ -93,13 +94,23 @@ def parser():
     return p
 
 
-def remote_storage(args):
+def remote_storage(args, *, filesystem_factory=None):
+    """Build a remote; an alternate filesystem factory can require an existing root."""
     if args.filesystem:
         from .storage.filesystem import FilesystemStorage
-        return FilesystemStorage(args.filesystem)
+        return (filesystem_factory or FilesystemStorage)(args.filesystem)
     if args.s3_bucket:
         from .storage.s3 import S3Storage
-        return S3Storage(args.s3_bucket,prefix=args.s3_prefix,endpoint_url=args.s3_endpoint)
+        from .storage.r2creds import validate_remote, load_keychain_credentials
+        validate_remote(args.s3_credentials,args.s3_endpoint)
+        access,secret=load_keychain_credentials(args.s3_credentials.removeprefix('keychain:'))
+        def factory(service,**kwargs):
+            import boto3
+            from botocore.config import Config
+            # Bounded network time: sync holds the broker lock, and recall must not wait minutes on a stalled R2.
+            config=Config(connect_timeout=5,read_timeout=20,retries=dict(max_attempts=3,mode='standard'))
+            return boto3.client(service,**kwargs,config=config,aws_access_key_id=access,aws_secret_access_key=secret)
+        return S3Storage(args.s3_bucket,prefix=args.s3_prefix,endpoint_url=args.s3_endpoint,client_factory=factory)
     return None
 
 
@@ -132,10 +143,21 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         finally: client.close()
     home=BrokerHome(args.home); store=select_store(home,backend)
     if args.action=='run':
-        remote=remote_storage(args)
-        if args.sync_interval is not None and (remote is None or args.sync_interval<=0): raise ValueError('invalid_request')
+        if args.s3_bucket:
+            from .storage.r2creds import validate_remote
+            from .storage import validate_key
+            validate_remote(args.s3_credentials,args.s3_endpoint); validate_key(args.s3_prefix,prefix=True)
+            def remote(): return remote_storage(args)
+            remote.backend='s3'
+        else: remote=remote_storage(args)
+        if args.sync_interval is not None and (remote is None or not math.isfinite(args.sync_interval) or args.sync_interval<=0):
+            raise ValueError('invalid_request')
+        def on_sync(row):
+            from .broker.service import sync_status_valid
+            if not sync_status_valid(row): raise ValueError('invalid sync status')
+            atomic_write(home.root/'sync-status.json',wire(row))
         broker=Broker(home,store=store)
-        try: broker.serve(remote=remote,sync_interval=args.sync_interval)
+        try: broker.serve(remote=remote,sync_interval=args.sync_interval,on_sync=on_sync)
         finally: broker.close()
         return {'ok':True}
     with home.lock():
@@ -324,7 +346,8 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
         return 1 if 'error' in result or result.get('errors',0) else 0
     except KeyboardInterrupt: return 0
     except Exception as exc:
-        code=str(exc) if str(exc) in ('invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        code={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused'}.get(str(exc))
+        if code is None: code=str(exc) if str(exc) in ('invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         emit(json.dumps({'error':code})); return 1
 
 

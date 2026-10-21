@@ -168,7 +168,7 @@ I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner cr
   ~/.agentmesh/venv/bin/python -m agentmesh_log.verify_remote --home ~/.agentmesh/profile-log --s3-bucket B --s3-prefix v1/ --s3-endpoint E --s3-credentials keychain:org.agentmesh.profile-log.r2 --markers MARKERS_FILE --sample-db MAC_DB --sample 25
   ```
   If any gate fails, stop: go to rollback R-1 and leave the remote data for analysis.
-- **D-6 New plist.** `platform_service.py generate --unit broker … --s3-* … --sync-interval 60 --logs
+- **D-6 New plist.** `platform_service.py generate --unit broker … --s3-* … --sync-interval 120 --logs
   ~/.agentmesh/logs --output <new dir>`. `diff` against the live plist shows only the added flags. Then
   install it and `launchctl bootstrap gui/$UID …`.
 - **D-7 Watch.** G-8 and G-9, then G-10 in Insight.
@@ -193,7 +193,7 @@ I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner cr
 ## What should show afterwards
 
 - `~/.agentmesh/profile-log-status.json` → `last_sync: {outcome:"ok", outbox:0, local_objects==remote_objects,
-  interval_s:60, at: < 3 min old}`; the other sections are unchanged.
+  interval_s:120, at: < 6 min old}`; the other sections are unchanged.
 - Insight Profile log tab → "Remote sync: ok · last <1m ago · outbox 0 · local 459+ / remote 459+".
   Before deploy it shows "Off — not configured".
 - `~/.agentmesh/logs/broker.err.log` → one `profile-log sync: ok …` line after start, then only lines on
@@ -234,3 +234,7 @@ I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner cr
   pages per cycle (0.52 M/month; about 0.52 M with the daily reconciliation amortized). The cost now
   grows with the number of scopes, not with history, so 2 devices at 60 s are about 1.04 M/month, near
   the free tier. See `docs/superpowers/reports/2026-10-21-replica-incremental-sync.md`.
+
+  **Update 2026-10-21 (owner decision):** the default `--sync-interval` is now 120 s (21,600 cycles per
+  month). At 30k objects with #65 that is about 0.26 M Class A per device per month, so two devices stay
+  under the free tier. The live Mac broker was switched to 120 s the same day.

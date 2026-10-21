@@ -23,13 +23,14 @@ def load_keychain_credentials(service, runner=subprocess.run, keychain=None):
     try:
         from ..oskeystore import login_keychain, home
         if keychain is None: keychain=login_keychain()
+        user_home=home() if os.name=='posix' else os.path.expanduser('~')
         keychain=str(keychain)
         if not os.path.isabs(keychain) or any(ord(c)<32 or ord(c)==127 for c in keychain):
             raise ValueError()
         values=[]
         for account,size in (('access-key-id',32),('secret-access-key',64)):
             result=runner(['/usr/bin/security','find-generic-password','-s',service,'-a',account,'-w',keychain],
-                capture_output=True,text=True,encoding='utf-8',timeout=15,env={'PATH':'/usr/bin:/bin','HOME':home(),'LANG':'C'})
+                capture_output=True,text=True,encoding='utf-8',timeout=15,env={'PATH':'/usr/bin:/bin','HOME':user_home,'LANG':'C'})
             if result.returncode==44:
                 reason='S3 credentials missing'; break
             value=result.stdout.rstrip('\r\n') if result.returncode==0 else ''

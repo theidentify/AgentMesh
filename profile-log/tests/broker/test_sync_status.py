@@ -18,6 +18,12 @@ class Server:
     def close(self): self.closed.set()
 
 
+@pytest.fixture(autouse=True)
+def _file_keystore(monkeypatch):
+    # CI temp roots may sit outside tempfile.gettempdir(); these homes are disposable.
+    monkeypatch.setenv('AGENTMESH_ALLOW_FILE_KEYSTORE','1')
+
+
 def test_immediate_retry_and_recovery(tmp_path,monkeypatch,capsys):
     home,*_=setup_home(tmp_path); rows=[]; ready=threading.Event(); server=Server()
     b=Broker(home,on_sync=lambda row:(rows.append(row),ready.set()))

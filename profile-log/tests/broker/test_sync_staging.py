@@ -18,6 +18,12 @@ class Channel:
     def close(self): self.outbox.put(None)
 
 
+@pytest.fixture(autouse=True)
+def _file_keystore(monkeypatch):
+    # CI temp roots may sit outside tempfile.gettempdir(); these homes are disposable.
+    monkeypatch.setenv('AGENTMESH_ALLOW_FILE_KEYSTORE','1')
+
+
 @pytest.mark.parametrize('operation',['list','put'])
 def test_recall_during_network(tmp_path,operation):
     home,state,store,agents=setup_home(tmp_path); rows=[]; b=Broker(home,on_sync=rows.append)

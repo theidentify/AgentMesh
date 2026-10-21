@@ -45,12 +45,14 @@ class S3Storage:
         if missing: raise ObjectNotFound('object not found') from None
         raise StorageError('S3 get failed') from None
 
-    def list(self, prefix, *, page_size=None):
+    def list(self, prefix, *, page_size=None, start_after=None):
         validate_key(prefix, prefix=True)
+        if start_after is not None: validate_key(start_after)
         keys = []
         try:
             paginator = self.client.get_paginator('list_objects_v2')
             options = {} if page_size is None else {'PaginationConfig': {'PageSize': page_size}}
+            if start_after is not None: options['StartAfter'] = self.prefix + start_after
             for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix, **options):
                 for item in page.get('Contents', []):
                     full = item['Key']
@@ -58,7 +60,7 @@ class S3Storage:
                     key = full[len(self.prefix):]
                     try: validate_key(key)
                     except InvalidKey: continue
-                    keys.append(key)
+                    if start_after is None or key > start_after: keys.append(key)
         except Exception: pass
         else: return iter(sorted(keys))
         raise StorageError('S3 list failed') from None

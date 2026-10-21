@@ -53,11 +53,11 @@ class SyncRemote:
         except Exception: self.errors+=1
         raise StorageError('remote operation failed') from None
 
-    def list(self,prefix):
-        try: keys=set(self.remote.list(prefix))
+    def list(self,prefix,*,start_after=None):
+        try: keys=set(self.remote.list(prefix) if start_after is None else self.remote.list(prefix,start_after=start_after))
         except Exception: self.errors+=1
         else:
-            self.keys={k for k in self.keys if not k.startswith(prefix)}|keys
+            self.keys=(self.keys if start_after is not None else {k for k in self.keys if not k.startswith(prefix)})|keys
             return iter(sorted(keys))
         raise StorageError('remote operation failed') from None
 
@@ -68,15 +68,18 @@ class SyncRemote:
 
 
 class StagedRemote:
-    """One immutable listing and prefetched objects; writes wait for the flush."""
-    def __init__(self,remote,local):
-        self.keys={key for prefix in PREFIXES for key in remote.list(prefix)}
+    """One immutable listing and prefetched objects; writes wait for the flush.
+
+    events/ and keys/ come from the replica's (usually incremental) plan; control prefixes stay small and are listed whole."""
+    def __init__(self,remote,local,plan):
+        self.keys=set(plan['keys'])|{key for prefix in PREFIXES[2:] for key in remote.list(prefix)}
         self.data={}; self.uploads=[]
-        for key in sorted(self.keys-local):
+        for key in sorted(self.keys-local-plan['skip']):
             try: self.data[key]=remote.get(key)
             except StorageError: pass
 
-    def list(self,prefix): return iter(sorted(k for k in self.keys if k.startswith(prefix)))
+    def list(self,prefix,*,start_after=None):
+        return iter(sorted(k for k in self.keys if k.startswith(prefix) and (start_after is None or k>start_after)))
 
     def get(self,key):
         if key not in self.data: raise StorageError('remote operation failed')
@@ -355,8 +358,9 @@ class Broker:
         with self._sync_lock:
             remote=remote if isinstance(remote,SyncRemote) else SyncRemote(remote)
             # Filesystem listings are safe alongside immutable local writes.
+            with self.lock: self.refresh(); prepared=self.replica.prepare()
             local=self.local_keys()
-            try: staged=StagedRemote(remote,local)
+            try: plan=self.replica.plan(remote,prepared=prepared); staged=StagedRemote(remote,local,plan)
             except StorageError: return dict(uploaded=0,downloaded=0,invalid=0,errors=remote.errors)
             failed=set()
             try:
@@ -366,8 +370,9 @@ class Broker:
                         from ..keyring import sync_control
                         sync_control(self.home,self.store,staged); self.refresh()
                     controls=self.local_keys()-before
+                    plan['keys']=plan['keys']|{k for k in staged.keys if k.startswith(PREFIXES[:2])}
                     for grant in self.state.grants.values(): self.index(grant)
-                    result=self.replica.sync_once(staged,on_event=self.ingest)
+                    result=self.replica.sync_once(staged,on_event=self.ingest,plan=plan)
                     result['downloaded']+=len(controls)
                     if not remote.errors: self._remote_keys=set(staged.keys)
                     if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])

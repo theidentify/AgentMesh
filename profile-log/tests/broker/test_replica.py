@@ -11,9 +11,9 @@ def test_sync(tmp_path):
     assert r.outbox()>0
     remote=FilesystemStorage(tmp_path/'remote'); result=r.sync_once(remote)
     assert result['errors']==0 and r.outbox()==0
-    remote.put('events/bad.json',b'{}')
+    remote.put(f"events/{state.trees[0].root.scope_id}/{key.scope_id}/bad.json",b'{}')
     assert r.sync_once(remote)['invalid']==1
-    assert 'events/bad.json' not in list(r.storage.list('events/'))
+    assert f"events/{state.trees[0].root.scope_id}/{key.scope_id}/bad.json" not in list(r.storage.list('events/'))
 
 
 def test_object_failures(tmp_path):

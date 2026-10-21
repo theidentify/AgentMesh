@@ -23,6 +23,6 @@ def test_p3_9_offline(tmp_path):
     second=BrokerHome(tmp_path/'second'); FileKeyStore(second).save(state); c=Broker(second)
     assert c.sync_once(remote)['downloaded']==2
     assert recall(c,s)['results'][0]['content']=='migrate database revised'
-    remote.put('events/tampered.json',b'{}')
+    remote.put(f"events/{state.trees[0].root.scope_id}/{state.grants[agents[0].agent_id].default_write}/tampered.json",b'{}')
     assert c.sync_once(remote)['invalid']==1
-    assert 'events/tampered.json' not in list(c.replica.storage.list('events/'))
+    assert f"events/{state.trees[0].root.scope_id}/{state.grants[agents[0].agent_id].default_write}/tampered.json" not in list(c.replica.storage.list('events/'))

@@ -94,8 +94,9 @@ class FilesystemStorage:
                 else: (parent / temp).unlink()
             if isinstance(parent, int): os.fsync(parent)
 
-    def list(self, prefix):
+    def list(self, prefix, *, start_after=None):
         validate_key(prefix, prefix=True)
+        if start_after is not None: validate_key(start_after)
         _check(self.root)
         keys = []
         def onerror(_): raise StorageError('filesystem listing failed')
@@ -121,6 +122,6 @@ class FilesystemStorage:
                     key = path.relative_to(self.root).as_posix()
                     try: validate_key(key)
                     except InvalidKey: continue
-                    if key.startswith(prefix): keys.append(key)
+                    if key.startswith(prefix) and (start_after is None or key > start_after): keys.append(key)
         except OSError: raise StorageError('filesystem listing failed') from None
         return iter(sorted(keys))

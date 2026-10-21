@@ -194,7 +194,9 @@ def test_list_abort(tmp_path):
         b.sync_attempt(storage,60); before=set(b._remote_keys)
         result=b.sync_once(Remote())
         assert result==dict(uploaded=0,downloaded=0,invalid=0,errors=1)
-        assert b._remote_keys==before and calls==list(PREFIXES)
+        # Incremental: keys/, then each scope prefix, then the whole control prefixes; the last one fails.
+        assert b._remote_keys==before and calls[0]=='keys/' and calls[-len(PREFIXES[2:]):]==list(PREFIXES[2:])
+        assert 'events/' not in calls and all(c.startswith('events/') for c in calls[1:-len(PREFIXES[2:])])
         b.sync_attempt(Remote(),60)
         assert rows[-1]['outcome']=='remote_error' and rows[-1]['remote_objects']==len(before)
     finally: b.close()

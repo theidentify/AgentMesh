@@ -28,7 +28,8 @@ Status: approved by the owner on 2026-10-19 (discussed 2026-10-18). Phases 1–2
 ## Non-goals (for this design)
 
 - MLS group key agreement (see "Deferred").
-- A native mobile app. Phones get write-only capture first.
+- A native mobile app. Phones use AgentMesh through AI apps' remote MCP connectors (see "Mobile and external
+  AI apps").
 - Server-side search. Recall always runs where keys live.
 
 ## Model
@@ -202,38 +203,45 @@ Syncthing and lose only these features.
 1. **Gatekeeper:** verifies device signatures against the registry; per-device write paths; no deletes;
    instant per-device revocation. Devices hold no bucket-wide token.
 2. **Change notification** instead of polling.
-3. **Write-only capture endpoint:** accepts events that the phone has **already encrypted and signed**,
-   checks them, and stores them. It never sees plaintext and never encrypts on anyone's behalf.
+3. **MCP gateway for external AI apps** (see "Mobile and external AI apps"): OAuth for each app, recall
+   forwarded to whichever trusted device is online, and remember queued in an encrypted outbox when none is.
 
 The Worker must never hold profile or scope keys and must never perform recall.
 
-## Mobile
+## Mobile and external AI apps
 
-Amended 2026-10-21 (owner decision): capture is encrypted **on the phone**. The Worker stores ciphertext only.
-Telegram is not used for capture.
+Amended 2026-10-21 (owner decisions). This replaces the earlier phone-PWA capture idea. The goal is to use
+AgentMesh memory from AI apps on any device, including the mobile apps: Claude (claude.ai, Desktop, iOS,
+Android), ChatGPT, Gemini, Codex and others. They connect through one standard **remote MCP server**
+(Streamable HTTP over HTTPS, OAuth 2.1 per the MCP authorization spec). Nothing is vendor-specific. An app
+works as soon as its vendor supports remote MCP connectors.
 
-- **Capture app:** a PWA that the Worker serves from its own origin. It has a strict CSP, no third-party
-  scripts, and pinned, vendored crypto code.
-  - **Keys:** the phone is a write-only device with its own Ed25519 device and agent keys, generated in the
-    browser. It holds only scope **public** keys, so losing it leaks nothing already sent.
-  - **Encryption:** the phone seals each event (HPKE plus its agent signature) to the scope public key in the
-    browser. The format is the same as every other writer's.
-- **Offline queue:** drafts wait on the phone, encrypted at rest under a non-extractable local key. They are
-  sealed to the scope's current epoch only when sent, so a key rotation that happens while offline never leaves
-  queued items sealed to a superseded epoch.
-- **What the Worker checks:** shape and size; the agent and device certificate chain against the registry,
-  including revocation; the event signature; a signed public **write grant** for that device, profile, scope and
-  epoch; and that the epoch is current. Then it publishes the event create-only, at the normal event path. It
-  holds no keys and cannot read, alter or delete events.
-- **Enrollment:** the phone joins with the existing commit-reveal 6-digit flow, in a write-only variant. The
-  transcript is relayed through the Worker, and the approver grants write access to selected scopes, by default
-  a dedicated inbox scope.
-- **Trust limit:** the Worker serves the app's code, so anyone who controls the Cloudflare account or the deploy
-  can serve a modified app and capture plaintext as it is typed. This is the inherent limit of a web app. The
-  app shows its build hash so it can be compared with the reviewed release.
-- **Recall: deferred.** It stays on a trusted device's broker. A Telegram bot or another third-party relay
-  would expose questions and answers in plaintext to that service. That is a separate owner decision, not part
-  of Phase 6. Running recall on a VPS would place keys there, which this design forbids.
+- **Gateway:** the Cloudflare Worker is the MCP endpoint and the OAuth server. It holds **no data keys**.
+- **Recall is answered by any online trusted device**, Mac or Windows. Each device runs a loopback-only bridge
+  that reaches the Worker through one Cloudflare Tunnel with a connector on every device. When no device is
+  online, recall returns a fixed `agentmesh_offline` answer. Keys never move to the cloud.
+- **Remember works at any time:**
+  - With a device online, the bridge writes through the broker. The normal detectors, labels and grants apply.
+  - Otherwise the Worker seals the request to every bridge device's published outbox key, signs it, and
+    stores it in an outbox. The first device online drains it through its broker.
+  - The outbox ID makes a drain that runs twice harmless.
+- **One identity and grant set per app:**
+  - Each app is approved separately. The owner approves with presence on a trusted device after a 6-digit code
+    shown during the app's OAuth flow; no passwords.
+  - The approval is a signed connector policy record that every device applies. It holds the readable
+    profiles, the remember scope (default: each profile's `inbox`) and the limits.
+  - Revoking one app never affects the others. Audit entries name the app.
+- **`secret` is off by default** for every app. Results labelled `secret` are never returned, and neither is
+  their existence or count. The owner can open `secret` for **one app for a limited time** with presence; it
+  closes automatically.
+- **Cross-profile recall stays off** unless the policy explicitly allows it.
+- **Accepted exposure:** whatever an app recalls or remembers is visible to that app's vendor (Anthropic, OpenAI,
+  Google), and to Cloudflare in transit through the Worker and the Tunnel. Storage still holds only ciphertext,
+  so this exposure is limited to what was actually used through the connector. Prompt injection inside an app
+  is the main risk, so default limits stay narrow.
+- **Not chosen:** keys held in the Worker or on a VPS, because a cloud compromise would expose all history.
+  An always-on home device enrolled as another trusted device remains an option later, and it uses the same
+  bridge.
 
 ## Local-first variants
 
@@ -268,8 +276,8 @@ Telegram is not used for capture.
 3. Broker with per-agent local indexes; recall and ingest unchanged for callers.
 4. Enrollment (QR, 6-digit code, LAN), keyring, recovery with Shamir.
 5. Migration from the current SQLite databases into events (building on `sqlite_export.py`).
-6. Mobile capture: a PWA that encrypts on the phone, plus the Worker capture endpoint (ciphertext only).
-   Mobile recall is a later, separate decision.
+6. External AI apps (including mobile): the MCP gateway Worker with per-app OAuth and policy, device bridges
+   behind one Tunnel, and the encrypted remember outbox.
 7. Retire `RANGES` and packet conflict machinery; optional hybrid and dual-write.
 
 ## Open questions

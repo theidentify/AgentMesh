@@ -1,322 +1,337 @@
-# Encrypted Profile Log, Phase 6 (Mobile Capture) Implementation Plan
+# Encrypted Profile Log, Phase 6 (MCP Gateway for External AI Apps) Implementation Plan
 
 > **For agentic workers:** execute in order. The spec is
-> `docs/superpowers/specs/2026-10-18-encrypted-profile-log-design.md` ("Mobile", amended 2026-10-21; "Cloudflare
-> Worker"; "Device enrollment"). Read it fully first, then `profile-log/README.md`, `profile-log/FORMAT.md`
-> (including Phase 4 records and Phase 5 import trust) and the Phase 4 plan and REPORT. The spec wins on
-> conflict, except where this plan records an owner decision. Stop and report instead of guessing on anything
-> that affects a security gate; record other choices under Deviations in the REPORT.
+> `docs/superpowers/specs/2026-10-18-encrypted-profile-log-design.md` ("Mobile and external AI apps", amended
+> 2026-10-21; "Cloudflare Worker"; "Memory broker"). Read it fully first, then `profile-log/README.md`,
+> `profile-log/FORMAT.md` (broker appendix, Phase 4 records, Phase 5 additions), the Phase 3 and Phase 4 plans
+> and REPORTs, and `docs/superpowers/plans/2026-10-20-profile-log-r2-sync.md`. The spec wins on conflict, except
+> where this plan records an owner decision. Stop and report instead of guessing on anything that affects a
+> security gate; record other choices under Deviations in the REPORT.
 
-**Goal:** a phone can capture memories into the encrypted profile log without ever holding a read key, and
-without the Worker or Cloudflare ever seeing plaintext. The phone runs a PWA that the Worker serves. The PWA
-pairs as a write-only device using the 6-digit flow, keeps drafts encrypted on the phone while offline, and
-seals each event in the browser to the scope's current epoch when it sends. The Worker checks the event and
-publishes it create-only to R2, where the Mac broker picks it up through normal sync.
+**Goal:** AI apps on any device can recall from and remember into AgentMesh through one standard remote MCP
+server: Claude on claude.ai, Desktop, iOS and Android, plus ChatGPT, Gemini, Codex and others once their vendors
+support remote connectors.
 
-**Out of scope:** mobile recall (a separate owner decision; see the spec), Telegram, a native app, Bluetooth or
-LAN pairing, Worker change notification, and moving desktop devices behind the Worker gatekeeper.
+- **Gateway:** a Cloudflare Worker. It is the MCP endpoint and the OAuth server, and it holds no data keys.
+- **Recall:** answered by whichever trusted device (Mac or Windows) is online, through a loopback bridge behind
+  one Cloudflare Tunnel.
+- **Remember:** works at any time. When no device is online it goes to an encrypted outbox.
+- **Per-app control:** each app has its own identity and grants. `secret` is off by default, and the owner can
+  open it for one app for a limited time.
 
-**Depends on:** PR #62 (R2 remote sync on the Mac) being live, so that the Mac sees phone events.
+**Out of scope:**
+- an always-on home device (later; same bridge);
+- keys in the cloud;
+- the PWA capture app (dropped);
+- Telegram;
+- Worker gatekeeping of desktop sync;
+- change notification.
 
-## Owner decisions
+**Depends on:**
+- PR #62 (R2 sync on the Mac) being live.
+- Windows profile-log rollout for the Windows bridge. The Mac bridge works alone until then.
 
-Recorded 2026-10-21:
+## Owner decisions (2026-10-21)
 
-- Capture is encrypted on the phone in a PWA. The Worker stores ciphertext only. Telegram is not used for
-  capture.
+- **Standard remote MCP for every app:** Streamable HTTP over HTTPS, OAuth 2.1 per the MCP authorization spec
+  (authorization code with PKCE S256, dynamic client registration, protected resource metadata). There is no
+  vendor-specific code.
+- **Recall needs a trusted device online:** recall is answered by any online trusted device, Mac or Windows.
+  With none online it returns `agentmesh_offline`. Keys never go to the Worker or a VPS.
+- **Remember always works:** the Worker queues remember requests in an encrypted outbox when no device is
+  online.
+- **One identity and policy per app:** each app gets its own identity and policy. Revoking one app never
+  affects the others.
+- **`secret` handling:**
+  - Off by default for every app. Secret-labelled results are never returned, not even as a count.
+  - The owner can open `secret` for one app for a limited time with presence. It closes by itself.
+- **Accepted exposure:**
+  - What an app recalls or remembers is visible to that app's vendor, and to Cloudflare in transit.
+  - Storage still holds only ciphertext.
 
 **Proposed defaults. Confirm these before execution starts:**
 
-- **D1 Target scope:** each granted profile gets a dedicated `inbox` project scope, and the phone receives write
-  grants for `inbox` only. Moving items out of the inbox is later work on a reading device.
-- **D2 Label:** the phone offers `general`, `internal` and `secret`, with `internal` as the default. The phone
-  never lowers a label.
-- **D3 JS crypto:** use hpke-js (`@hpke/core` with the X25519 KEM and ChaCha20-Poly1305 packages) for RFC 9180
-  base-mode seal. Use WebCrypto Ed25519 with non-extractable keys for signing, and WebCrypto AES-GCM for the
-  local queue. Do not write a hand-rolled HPKE. Pin exact versions released at least two weeks ago, commit
-  `package-lock.json`, and vendor the built browser bundle with a SHA-256 manifest.
-- **D4 Hosting:** start on the `workers.dev` subdomain. A custom domain and Cloudflare Access in front are
-  optional later owner choices, and nothing in the code depends on them.
+- **D1 Remember target:** each profile's `inbox` scope, created if missing. The app's policy names which
+  profiles it may write.
+- **D2 First app policy:** Claude reads `personal` and `work` (`general` and `internal`) and remembers into
+  `personal/inbox`. Other apps are added later with their own approval.
+- **D3 Libraries:** pin exact versions released at least two weeks ago, and commit `package-lock.json`.
+  - `@cloudflare/workers-oauth-provider` for the OAuth server.
+  - `@modelcontextprotocol/sdk` for the MCP Streamable HTTP server.
+  - hpke-js for outbox sealing (RFC 9180 base mode, the same suite as FORMAT v1).
+  - WebCrypto Ed25519 for gateway signatures.
+  - No hand-rolled crypto.
+- **D4 Hosting:** a `workers.dev` subdomain, plus one named Cloudflare Tunnel with a connector on each trusted
+  device and a Cloudflare Access service token in front of it.
 
 ## Threat model additions
 
-The Worker, Cloudflare and R2 are **untrusted for confidentiality**. A Worker that is compromised at runtime
-sees only ciphertext, signatures and metadata (the same view as storage). It cannot make a reading device
-accept any of these:
-
-- an event that no certified, unrevoked write grant authorizes;
-- an event from a revoked phone;
-- a forged write grant.
-
-A Worker that does not enforce its checks does not change what readers accept: brokers re-verify everything
-(gate P6-4).
-
-**Accepted limit (documented in the README):** whoever controls the deployed Worker assets can serve a
-modified PWA that reads plaintext as it is typed. The PWA shows its build hash. `agentmesh-log capture
-build-hash` computes the same hash from the reviewed source so they can be compared. A lost or stolen phone
-exposes queued drafts only if its local storage is unlocked. It never exposes anything already sent or anything
-in the log.
-
-**Accepted limit (backdating):** readers apply revocation at the event's ULID time, as in Phase 5. A removed
-phone could backdate a ULID, so after revocation the Worker is the only thing that stops it: the phone has no
-storage token, and the Worker refuses revoked devices on every request.
+- **Worker:**
+  - Holds the OAuth state, the gateway Ed25519 signing key and the Access service-token credentials. It holds no
+    scope keys, age identities or broker keys.
+  - A compromised Worker sees what passes through it (accepted exposure) and can forge requests to bridges.
+  - It cannot exceed any app's policy, because bridges enforce the signed policy and brokers enforce grants.
+  - It cannot read history it is not asked for.
+- **Storage attacker:** can drop or replay outbox items, but cannot forge or read them:
+  - items are signed by the gateway and sealed to device outbox keys;
+  - replays deduplicate by `outbox_id`.
+- **Prompt injection inside an app:** the main residual risk. Mitigations:
+  - narrow default policies;
+  - `secret` off;
+  - result and rate limits;
+  - recalled text is returned wrapped as data;
+  - every call is audited with the app ID.
+- **Tunnel:** the bridge listens on loopback only. A request needs both the Access service token (checked at the
+  edge) and a valid gateway signature (checked by the bridge).
 
 ## Design to implement
 
-### Layout (all new code under `profile-log/`)
+### Layout
 
 ```
-agentmesh_log/writeonly.py     write-only device record, write grants, verification helpers
-agentmesh_log/pairing.py       write-only pairing variant + pairing tickets (additive)
-agentmesh_log/lifecycle.py     rotation re-issues write grants; device remove revokes them
-agentmesh_log/broker/…         ingest rule for events from write-only devices
-agentmesh_log/cli.py           pair phone / capture build-hash / device list shows write-only devices
-capture/package.json, package-lock.json   pinned dev and runtime deps (no install by Codex)
-capture/shared/                typed encoding, canonical wire, ULID, base64url/hex, seal, verify (ES modules)
-capture/worker/                Worker entry, routes, checks, R2 adapter
-capture/pwa/                   static assets: index.html, app modules, service worker, manifest, vendor/
-capture/tests/                 node:test suites (logic separated from DOM; fake bucket; vectors)
-tests/vectors/phase6/          cross-implementation vectors generated by Python
-tests/test_phase6_*.py         Python tests, including the node-driven end-to-end
+profile-log/agentmesh_log/connector.py   connector policy records, approvals, secret windows, outbox keys
+profile-log/agentmesh_log/bridge/        loopback HTTP bridge: verify gateway, map app -> local agent, call broker,
+                                         drain outbox
+profile-log/agentmesh_log/cli.py         connector gateway-init|approve|list|revoke|allow-secret, bridge serve|render-service
+profile-log/gateway/                     Worker: OAuth, MCP endpoint, tool handlers, tunnel client, outbox writer
+  package.json, package-lock.json, wrangler.toml.example, src/, tests/
+profile-log/tests/vectors/phase6/        cross-implementation vectors (typed encoding, signatures, outbox seal)
+profile-log/tests/test_phase6_*.py       Python tests, including a Node-driven end-to-end test
 ```
 
 ### Records (normative; add to FORMAT.md as "Phase 6 records")
 
-They use the same canonical JSON, typed signing and domain rules as Phase 4. Object paths contain only opaque
+Phase 4's canonical JSON, typed signing and per-record domain rules apply. Object paths contain only opaque
 IDs.
 
-- **Write-only device record** `agentmesh-device-record-wo-v1` at `registry/devices/{device_id}.json`.
-  - Fields: the device certificate (issued by the approver), `capabilities` (exactly `["write"]`),
-    `issued_at`, and a signature by the device's own key.
-  - It has no age recipient. Approvers refuse to create keyring grants or scope metadata for it, and the
-    registry exposes `is_write_only(device_id)`.
-- **Write grant** `agentmesh-write-grant-v1` at
-  `registry/write-grants/{device_id}/{profile_id}/{scope_id}/{key_id}.json`.
-  - Fields: `device_id`, `profile`, `scope`, `key_id`, `write_public_key` (32-byte hex), `issuer_device`,
-    `issued_at`, `signature` (by the issuer).
-  - It is valid only if all of the following hold:
-    1. The issuer chain verifies and the issuer was not revoked at `issued_at`.
-    2. The issuer is not write-only.
-    3. `key_id` equals `hex(SHA256(b'AgentMesh/scope-key-id/v1\x00' + write_public_key))`.
-    4. A valid epoch record for `key_id` exists in that profile and scope.
-    5. The subject device is a write-only device that is not revoked.
-- **Pairing ticket** `agentmesh-pair-ticket-v1` at `pairing-tickets/{ticket_hash}.json`.
-  - Fields: `ticket_hash` (hex SHA-256 of the 32-byte ticket), `approver_device_id`, `expires_at` (issued plus
-    600,000 ms), `signature`.
-  - The raw ticket appears only in the approver's QR or code and never in storage.
-- **Write-only pairing kinds** under `pairing/{request_id}/`. These are the Phase 4 transcript with these
-  changes:
-  - `pair-commit-wo` fields: `request_id`, `joiner_signing_public`, `ticket_hash`, `commitment`, `issued_at`.
-    Commitment input is `{request_id, joiner_signing_public, ticket_hash, Nj}`.
-  - `pair-result-wo` fields: `request_id`, `approver_device_id`, `commit_hash`, `approver_hash`,
-    `certificate_path`, `write_grant_paths`.
-  - Approver and reveal are unchanged. The SAS and expiry rules are Phase 4's, with distinct `-wo` domains.
+- **Gateway record** `agentmesh-gateway-v1` at `registry/gateway/{gateway_key_id}.json`.
+  - Fields: `gateway_public_key` (Ed25519 hex), `origin` (the Worker HTTPS origin), `issued_at`, `issuer_device`,
+    and a signature by the issuer.
+  - It pins the Worker's signing key, and a device-signed successor rotates it.
+- **Outbox key record** `agentmesh-outbox-key-v1` at `registry/outbox-keys/{device_id}.json`.
+  - Fields: `device_id`, `outbox_public_key` (X25519 hex), `issued_at`, and a signature by that device.
+  - The private key lives only in that device's key store.
+- **Connector policy** `agentmesh-connector-policy-v1` at `connectors/{app_id}/policy/{ulid}.json`.
+  - Fields:
+    - `app_id` (32 hex characters, random);
+    - `display_name_hash` (SHA-256 of the client name, so no plaintext name is stored);
+    - `oauth_client_id_hash`;
+    - `read` (a list of `{profile, scopes|null}`);
+    - `remember` (`{profile, scope}` or null);
+    - `max_label` (`general` or `internal`; never `secret` here);
+    - `allow_cross_profile` (always false in this phase);
+    - `limits` (`{recall_limit_max, requests_per_minute}`);
+    - `state` (`active` or `revoked`);
+    - `issuer_device`, `issued_at`, and a signature.
+  - The latest valid record wins. A record from a revoked device, or a record that widens access without a
+    valid presence-backed issuer, is rejected. The issuer must be a non-write-only, non-revoked device.
+- **Secret window** `agentmesh-connector-secret-window-v1` at `connectors/{app_id}/secret/{ulid}.json`.
+  - Fields: `app_id`, `not_before`, `not_after` (at most 60 minutes later; default 15), `issuer_device`,
+    and a signature.
+  - It applies only while valid. It raises the effective `max_label` to `secret` for that app.
+- **Outbox item** `agentmesh-outbox-item-v1` at `outbox/{ulid}.json`.
+  - Fields: `outbox_id` (= the ULID), `app_id`, `created_at`, `recipients` (a list of
+    `{device_id, ciphertext}`, HPKE-sealed to each outbox key with info bound to
+    `{outbox_id, app_id, device_id}`), `gateway_key_id`, and a gateway signature over everything else.
+  - The plaintext is the remember request: `{body, tags, task, label}`.
 
-### Pairing flow (approver starts, phone scans)
+### OAuth and app approval (Worker + any trusted device)
 
-1. **Mac:** `agentmesh-log pair phone --profile P [--scope inbox]` (presence required).
-   - It creates the inbox scope if D1 applies and it is missing.
-   - It writes a pairing ticket.
-   - It shows a QR and a typed fallback code. Both carry
-     `agentmesh-capture:v1:{worker_origin}:{ticket}:{account_fingerprint}`, where `account_fingerprint` is the
-     SHA-256 of the account record.
-2. **PWA:** scans the QR with `BarcodeDetector`, or takes the pasted code, and pins the account fingerprint.
-   - It generates non-extractable WebCrypto Ed25519 keys for the device and the agent.
-   - It posts `commit.json` through the Worker. The Worker accepts it only with a matching, unexpired, unused
-     ticket and then consumes the ticket create-only.
-3. **Mac:** writes `approver.json`. The PWA reveals. Both screens show the 6-digit SAS, and the user confirms on
-   the Mac.
-4. **Mac:** certifies the phone device and writes `pair-result-wo` plus one write grant per granted scope's
-   current epoch. The PWA:
-   - fetches the result, certificate and grants through the Worker and verifies the chain from the pinned
-     account;
-   - self-certifies its agent;
-   - publishes its write-only device record through the Worker.
+1. The app performs dynamic client registration and then starts authorization code with PKCE.
+2. `/authorize` shows the client name and a 6-digit code. It stores a pending approval with the hashed code,
+   which expires after 10 minutes and is single-use.
+3. On any trusted device, the owner runs
+   `agentmesh-log connector approve CODE --profiles personal,work --remember personal/inbox` (presence required):
+   - The device writes a connector policy record to storage.
+   - It calls `POST {origin}/admin/approve`, signed by its device key, with `{code_hash, app_id, policy_ref}`.
+   - The Worker verifies the device chain and revocations from R2 and binds the OAuth grant to `app_id`.
+4. The authorize page completes the redirect. Access tokens are short-lived, refresh tokens rotate, and both
+   are stored only hashed. Every MCP call resolves to exactly one `app_id`.
+5. Revocation:
+   - `connector revoke --app APP` (presence) writes a `revoked` policy and calls `/admin/revoke`.
+   - The Worker drops that app's grants and tokens immediately.
+   - Bridges independently refuse that `app_id` as soon as they see the policy.
 
-### Worker (`capture/worker/`)
+### MCP surface (Worker)
 
-Only these routes exist; everything else returns 404.
+The Worker exposes only these tools, each with strict input schemas:
 
-| Route | Rule |
-| --- | --- |
-| `GET /` and PWA assets | static, with the CSP below |
-| `POST /v1/pair/{request_id}/commit` | ticket check, shape, self-signature, create-only |
-| `POST /v1/pair/{request_id}/reveal` | shape, self-signature, request exists and not expired, create-only |
-| `POST /v1/devices/{device_id}` | write-only device record only; certificate must verify; create-only |
-| `GET /v1/pair/{request_id}/{approver,result,certificate}.json` | read only these pairing objects |
-| `GET /v1/registry/…` | read-only access to account, device records, revocations, write grants and epoch records |
-| `POST /v1/events/{profile}/{scope}/{ulid}` | event checks below, then create-only put at the event path |
+| Tool | Input | Behaviour |
+| --- | --- | --- |
+| `whoami` | none | the app's display name, readable profiles, remember target, `max_label`, whether a secret window is open |
+| `recall` | `query` (1–2048 characters), `profile?`, `project?`, `task?`, `limit?` (1–20, capped by policy) | forwarded to a bridge; `agentmesh_offline` if none answers within 10 s |
+| `remember` | `body` (at most 32 KiB), `tags?`, `task?`, `label?` | forwarded to a bridge; if none is online, written to the outbox; returns `stored` or `queued` |
 
-**Event checks**, in this order:
+Rules for the surface:
+- The Worker has no other tools or resources, and no prompts or sampling.
+- Recall results are returned as structured data, with a fixed preamble stating that the content is stored
+  memory and is not instructions.
+- Errors are fixed codes and never echo input.
+- Requests are rate-limited per `app_id` (the Workers rate-limiting binding), and the limit is also capped by
+  policy.
 
-1. Body at most 64 KiB, with strict parsing.
-2. Exact envelope shape. The path segments equal the envelope's `profile`, `scope` and `id`.
-3. The registry chain for `agent_cert`:
-   - The device is write-only.
-   - Revocation is read fresh on every request, with no cache.
-4. The event signature, verified with WebCrypto Ed25519.
-5. A valid write grant exists for (device, profile, scope, `scope_key_id`).
-6. That epoch has no valid successor. If it has one, the response is `409 epoch_superseded`.
+### Worker → bridge transport
 
-Errors are fixed codes and never echo input.
+- **Route:** one named Tunnel, reached through its hostname, which the Access service token protects. A connector runs on every trusted device, and Cloudflare routes to any healthy
+  one. No connected connector (a 502 or 530) means offline.
+- **Signature:** each request carries the gateway signature over the domain plus typed
+  `{method, path, body_sha256, ts, nonce, app_id}`.
+  - Bridges accept `ts` within ±60 s and reject a nonce seen in the last 10 minutes.
+  - The gateway key must be pinned by a valid gateway record.
+- **Policy enforcement in the bridge:**
+  1. Resolve the latest valid policy and any secret window for `app_id`.
+  2. Refuse a revoked or unknown app, and any profile or scope outside the policy.
+  3. Connect to the local broker as that app's **local agent** (one agent per app per device, certified by the
+     device and created when a policy is first seen), whose broker grant mirrors the policy:
+     - `allow_secret` is true only during a secret window;
+     - when that window is open, the bridge also opens a `secret_read` presence window for that agent only,
+       bounded by the window's `not_after`, through a broker op added for this purpose that only the bridge's
+       own key store can authorize.
+  4. Filter results above the effective `max_label` **in the broker query**, not after it, so that counts and
+     ranks do not leak.
 
-**Create-only:** use the R2 binding's conditional put so that an existing key is never overwritten (verify the
-exact option against current Cloudflare docs). Identical bytes return 200, and different bytes return 409. If
-the binding cannot do create-only, stop and report. The Worker never deletes, and it never lists or reads event
-objects.
+### Outbox and drain
 
-**Rate limit:** use the Workers rate-limiting binding keyed by `device_id` for events, and by client IP for
-pairing. Its configuration lives in `wrangler.toml`. Tests inject a fake limiter.
+- **Sealing:** with no bridge online, the Worker reads all current outbox key records and keeps only those of
+  devices that are not revoked. It seals one ciphertext per device, signs the item and writes it create-only
+  (if the R2 binding supports it; otherwise the unique ULID name, recorded as a deviation).
+- **Draining:** each bridge drains `outbox/` on start and every 60 s.
+  1. Verify the gateway signature and the pinned key.
+  2. Open its own recipient entry.
+  3. Re-check the app policy as of `created_at`.
+  4. Remember through the broker with metadata `outbox_id`.
+- **Deduplication:** brokers treat events that share an `outbox_id` as one remember (keep the lowest ULID).
+  Drained items stay in storage; the Worker has no delete. A local `drained` set avoids reprocessing.
 
-**CSP:** `default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none';
-base-uri 'none'; frame-ancestors 'none'; form-action 'none'`. Responses also send `X-Content-Type-Options:
-nosniff` and `Referrer-Policy: no-referrer`.
+### Services
 
-### PWA (`capture/pwa/`)
-
-- **UI:** two screens, *Pair* and *Capture*. Capture has text, a profile/scope picker (from grants), a label
-  (D2), optional tags and task, a queue count, and a build hash in the footer.
-- **IndexedDB:** holds only the non-extractable device, agent and queue `CryptoKey` objects, the pinned
-  account fingerprint, certificates, grants, and the queue.
-  - Each queue item is AES-GCM-256 ciphertext of the draft payload, with a fresh 96-bit IV and
-    AAD = `item_id`.
-- **Send:**
-  1. Fetch the current write grant for the scope through the Worker and verify it (chain, epoch has no
-     successor).
-  2. Decrypt the draft and seal with hpke-js, using the exact `agentmesh-event-v1` info and signature rules.
-  3. POST the event. Delete the queue item only after a 200.
-  4. On `409 epoch_superseded`, re-fetch and re-seal once.
-- **Service worker:** precaches the assets for offline capture. It never caches `/v1/` responses.
-- **Unsupported browsers:** if the browser lacks Ed25519 or non-extractable key storage, the PWA refuses to
-  pair and says why.
-- **Build hash:** SHA-256 over the sorted `(path, SHA-256(bytes))` list of the served assets. The Python
-  `capture build-hash` command computes the same value from `capture/pwa/`.
-
-### Python changes
-
-- `writeonly.py`: the write-only device record, write grants and pairing tickets: creation, verification and
-  listing from storage.
-- **Broker ingest rule:** an event whose agent chains to a write-only device is accepted only if a valid write
-  grant covers its (profile, scope, `scope_key_id`). Otherwise it is rejected with an audited fixed code, like
-  any other invalid event.
-- **Lifecycle:**
-  - `rotate` re-issues write grants to every non-revoked write-only device that held a grant for the rotated
-    scope.
-  - `device remove` on a phone writes the revocation, and new grants are never issued to it. Rotation is not
-    required, because the phone held no read keys, but it is allowed.
-- **CLI:** `pair phone`, `capture build-hash`, and `device list`, which marks write-only devices.
+- `bridge render-service` renders a launchd plist (Mac) and a Task Scheduler XML (Windows) for the bridge, and
+  documents the `cloudflared` connector command. It only renders files, like #62, and installs nothing.
+- The bridge binds `127.0.0.1` only, refuses to start on any other address, and logs no bodies.
 
 ## Ground rules
 
-- Work in the worktree and branch this session creates for Phase 6. Change only `profile-log/**`,
-  `.github/workflows/profile-log.yml` (to add a Node 22 job running `npm ci` and `node --test` in
-  `profile-log/capture`, and Node in the Python matrix for the cross-implementation tests) and
-  `docs/superpowers/plans/2026-10-21-encrypted-profile-log-phase6.REPORT.md`.
-- Do not touch `memory-sync/`, installers, services or the live `~/.agentmesh`. Do not deploy, and do not use
-  Cloudflare credentials. Do not commit, push or create branches.
-- No network:
-  - The reviewer runs `npm ci` in `profile-log/capture` before starting Codex.
-  - Codex must not run `npm install`, add packages or fetch anything.
-  - Python uses the prepared interpreter (`~/.cache/agentmesh-logvenv/bin/python`).
-- TDD: write each failing test first.
-- Open text files with `encoding='utf-8'`, as in every phase.
-- Never log, print or put in errors any key, ticket, draft or plaintext.
-- Keep every existing test passing and the Phase 1–5 wire formats unchanged. New formats are additive.
-- No GATES.md or other working files left behind.
+- **Files:** work in the worktree and branch this session creates for Phase 6. Change only:
+  - `profile-log/**`;
+  - `.github/workflows/profile-log.yml`, to add a Node 22 job (`npm ci`, `node --test` in
+    `profile-log/gateway`) and Node in the Python matrix for cross-implementation tests;
+  - `docs/superpowers/plans/2026-10-21-encrypted-profile-log-phase6.REPORT.md`.
+- **Off-limits:**
+  - Do not touch `memory-sync/`, installers, services or the live `~/.agentmesh`.
+  - Do not deploy or use Cloudflare credentials.
+  - Do not commit, push or create branches.
+- **No network:**
+  - The reviewer runs `npm ci` in `profile-log/gateway` before starting Codex. Codex never installs packages.
+  - Python uses `~/.cache/agentmesh-logvenv/bin/python`.
+- **Method:** TDD.
+- **Encoding:** open text files with `encoding='utf-8'`.
+- **Secrets:** never log, print or put in errors any token, code, key, body or query.
+- **Compatibility:** keep every existing test passing and the Phase 1–5 wire formats unchanged. New formats are
+  additive.
+- **Clean tree:** leave no GATES.md or other working files behind.
 
 ## Tasks
 
-1. **Write-only records:** the write-only device record, write grants and pairing tickets in `writeonly.py`.
-   Add registry support and the FORMAT.md Phase 6 records.
-2. **Write-only pairing:** the pairing variant (Python approver and joiner, where the joiner is a test double
-   for the PWA), `pair phone`, and the lifecycle re-issue and revoke.
-3. **Broker ingest rule** for write-only devices.
-4. **Vectors:** Python writes `tests/vectors/phase6/` covering:
-   - typed encoding;
-   - canonical wire;
-   - ULID parsing;
-   - commitment, SAS and transcript hashes;
-   - a sealed event with fixed HPKE ephemeral randomness, through a test-only hook that is never exported to
-     production code paths.
-5. **JS shared core:** `capture/shared/`, passing every vector. JS-sealed events must open in Python (task 8).
-6. **Worker:** routes, checks, create-only R2 adapter, rate limiter, CSP and assets. Tests use a fake R2 bucket
-   with conditional-put semantics.
-7. **PWA:** logic modules for pairing, grants, queue and send, tested in Node with WebCrypto and an in-memory
-   IndexedDB substitute that is injected, not added as a dependency. Then a thin DOM layer, the service worker,
-   the manifest and the build hash.
-8. **End to end, CI and docs:**
-   - The end-to-end test, driven from Python:
-     - Python inits account A and runs `pair phone` against a filesystem store.
-     - A Node script acts as the phone and calls the Worker handler in-process, with a fake bucket backed by
-       that directory.
-     - The phone pairs and sends three events (one queued offline across a rotation).
-     - The Python broker syncs and recalls them.
-   - The CI workflow change, a README "Mobile capture" section with the accepted limit, an owner deploy
-     runbook (D-steps below) and the REPORT.
+1. **Records:** `connector.py` with the gateway record, outbox key, connector policy and secret window, plus
+   registry loading. Add the FORMAT.md Phase 6 records.
+2. **Broker support:** the per-app local agents, the `max_label` filter inside the query, the bridge-only
+   `secret_read` window op, and `outbox_id` deduplication.
+3. **Bridge:** loopback server, gateway signature verification with replay protection, policy enforcement,
+   recall and remember calls, outbox drain, and `render-service`.
+4. **CLI:** `connector gateway-init|approve|list|revoke|allow-secret` (presence) and
+   `bridge serve|render-service`.
+5. **Vectors:** Python writes `tests/vectors/phase6/` for typed encoding, gateway request signatures, record
+   signatures and an outbox seal, using fixed HPKE randomness through a test-only hook.
+6. **Worker:**
+   - OAuth wiring (DCR, PKCE, pending 6-digit approvals, admin approve and revoke verified against the R2
+     registry);
+   - the MCP server with the three tools;
+   - the bridge client, the outbox writer and the rate limits.
+   - Tests use a fake R2, a fake KV and a fake bridge.
+7. **End to end:** Python starts a device (account, profiles, broker, bridge) on filesystem storage. A Node
+   script runs the Worker handler in-process against a fake R2 backed by the same directory and a loopback route
+   to the bridge. Then:
+   1. Approve a Claude app.
+   2. Recall and remember.
+   3. Take the bridge offline, remember (queued), bring it back, and drain.
+   4. Open and expire a secret window.
+   5. Revoke.
+8. **CI and documentation:** the CI change, a README section "Using AgentMesh from AI apps" (with the accepted
+   exposure and how to add the connector in each app), the owner deploy runbook, and the REPORT.
 
 ## Acceptance gates
 
 ### Security (each needs a dedicated test the reviewer can mutation-test)
 
-- **P6-1 Ciphertext only:** in the end-to-end test, record every byte the Worker handler receives and every
-  object the fake bucket stores. A unique plaintext marker in the body, tags and task appears in none of them.
-  The `capture/worker/` sources import no decrypt function and handle no private key type (static check).
-- **P6-2 Cross-implementation:** every vector matches in JS. A JS-sealed event opens with Python `open_event`.
-  If one byte of the envelope, ciphertext or signature is flipped, the event is rejected by both the Worker and
-  Python.
-- **P6-3 Worker refusals:** each of the following is refused with its fixed code, and nothing is stored:
-  - a bad signature;
-  - an unknown device;
-  - a revoked phone (effective on the very next request);
-  - an agent certificate from a non-write-only device;
-  - no write grant, or a grant for another scope or epoch;
-  - a superseded epoch (`409`);
-  - a path and envelope mismatch;
-  - an oversize body;
-  - an overwrite with different bytes;
-  - any method or path not in the route table, including any delete, list or event read.
-- **P6-4 Readers re-verify:** with Worker checks disabled (a test-only handler that stores anything), the broker
-  still rejects every P6-3 case and accepts only valid events. A forged write grant, one from a revoked or
-  write-only issuer, or one whose `key_id` does not match is rejected by both Python and JS.
-- **P6-5 Pairing:**
-  - A commit without a valid ticket, with an expired ticket or with a reused ticket is refused.
-  - A storage or Worker attacker who swaps the commit produces a SAS mismatch, and the approval is refused.
-  - The reveal and replay rules from Phase 4 hold for the `-wo` kinds.
-  - The approver refuses keyring grants and scope metadata for a write-only device.
-  - The phone rejects a result whose chain does not lead to the pinned account fingerprint.
-- **P6-6 No read capability on the phone:** after pairing and sending, the PWA's stored state contains no scope
-  private key, age identity, read key or exported private key bytes. The keys are non-extractable, and
-  `exportKey` fails.
-- **P6-7 Offline queue:** queue items at rest contain no plaintext marker. A draft queued before a rotation is
-  sealed to the new epoch at send time. An item is deleted only after a 200. A failed send keeps it, with no
-  duplicate event on retry (same ULID, and identical bytes are idempotent).
-- **P6-8 Rotation and removal:** after `rotate`, the remaining phones get new write grants and their next send
-  succeeds. A removed phone's next send fails at the Worker, and the broker rejects its events written after
-  the revocation.
-- **P6-9 Served code:** every PWA response carries the exact CSP and headers. A static scan finds no external
-  origin in any asset. The build hash is reproducible across two builds, and Python and JS compute the same
-  value.
+- **P6-1 No keys in the Worker:** a static check shows that `profile-log/gateway/src` imports no decrypt or open
+  function and defines no scope or age key type. The Worker's configuration lists only the gateway signing key,
+  the Access credentials, OAuth state and bindings. The end-to-end test shows that storage contains no
+  plaintext marker from any remember (live or queued).
+- **P6-2 OAuth:**
+  - Registration alone grants nothing.
+  - A token is unusable until a device approves the code.
+  - A wrong, expired or reused code fails.
+  - PKCE is required (plain or missing is refused).
+  - Tokens are stored only hashed.
+  - After revoke, the next call fails at the Worker. With the Worker check disabled (a test-only handler), the
+    bridge still refuses the app.
+- **P6-3 App isolation:** app A's token always maps to app A's local agent. Requests for a profile or scope
+  outside A's policy are refused by the bridge, and by the broker when the bridge check is disabled. The audit
+  log names the right agent for every call.
+- **P6-4 Secret:**
+  - Without a window, no `secret` result, count, rank gap or error reveals that secret items exist (compare
+    with the same store with the secret items removed).
+  - Within a window, they are returned for that app only. After `not_after`, they are hidden again on the next
+    call.
+  - A window record that is forged, from a revoked device, or longer than 60 minutes is ignored.
+  - `allow-secret` without presence is refused.
+- **P6-5 Bridge transport:**
+  - Refused requests: unsigned requests; requests signed by an unpinned key; requests with a wrong
+    `body_sha256` or `app_id`; requests whose `ts` is outside ±60 s; replayed nonces.
+  - The bridge refuses to bind to anything except loopback.
+  - Bodies never appear in logs.
+- **P6-6 Outbox:**
+  - Queued items contain no plaintext and are unreadable with any key except the listed devices' outbox keys.
+  - Forged, tampered or unpinned-gateway items are rejected on drain.
+  - An item for a revoked app, or for a scope outside the policy at `created_at`, is rejected and reported.
+  - Draining on two devices yields one logical remember (`outbox_id` deduplication).
+  - A revoked device's outbox key is not used for new items.
+- **P6-7 Offline and failover:** with no bridge, recall returns exactly `agentmesh_offline` within 10 s, and
+  remember returns `queued`. With two bridges (Mac-like and Windows-like test homes), stopping either one still
+  serves recall.
+- **P6-8 Tool surface:**
+  - Only the three tools exist.
+  - Oversized or extra inputs are rejected.
+  - `limit` is capped by policy.
+  - Cross-profile recall is refused.
+  - Recall output carries the fixed preamble.
+  - Errors are fixed codes.
 
 ### Whole change
 
-- The full Python suite passes from the repository root and from `profile-log/`. `node --test` passes in
-  `profile-log/capture`. The three-OS CI passes, including the Node job. The reviewer reruns socket tests outside
-  the sandbox.
-- The REPORT maps every gate to tests, records pinned JS dependency versions and hashes, lists deviations, and
-  lists the owner steps below.
+- The Python suite passes from the repository root and from `profile-log/`, and `node --test` passes in
+  `profile-log/gateway`. The three-OS CI passes, including the Node job, and the reviewer reruns socket tests
+  outside the sandbox.
+- The REPORT maps every gate to tests, records the pinned JS versions, lists deviations and lists the owner
+  steps.
 - `git status` shows changes only in the allowed paths.
 
 ## Owner deploy steps (after merge; not run by Codex)
 
-- **D-1** Confirm D1–D4 and that PR #62 is live (the Mac broker syncs R2).
-- **D-2** `wrangler deploy` from `profile-log/capture`, with the R2 binding to the existing bucket and the
-  rate-limit bindings.
-- **D-3** Compare the build hash with `agentmesh-log capture build-hash`.
-- **D-4** On the Mac, run `agentmesh-log pair phone --profile personal`. Scan the QR on the phone and add the PWA
-  to the home screen. Confirm the SAS.
-- **D-5** Send a marked test capture. Check that it appears in Mac recall, and spot-check the R2 object to
-  confirm it is ciphertext.
-- **D-6** Rehearse revoking the phone (`device remove`) and confirm that its next send fails.
+- **D-1** Confirm D1–D4 and that #62 is live.
+- **D-2** Create the named Tunnel and the Access service token. Run the `cloudflared` connector and
+  `bridge serve` on the Mac (using the rendered services). Do the same on Windows after its profile-log rollout.
+- **D-3** Generate the gateway key and run `connector gateway-init` on the Mac to write the gateway record. Run
+  `wrangler secret put` for the gateway key and the Access credentials, then `wrangler deploy` from
+  `profile-log/gateway`.
+- **D-4** In claude.ai, open Settings → Connectors → Add custom connector and enter `{origin}/mcp`. When the
+  6-digit code appears, run `connector approve` on the Mac.
+- **D-5** From the Claude mobile app, run `whoami`, recall a known memory, and remember a marked note.
+  - Check that the note appears in Mac recall and that the R2 object is ciphertext.
+  - Put the Mac to sleep and remember again (expect `queued`). Wake it and check the drain.
+- **D-6** Rehearse `connector allow-secret --app claude --minutes 15` and `connector revoke`.
+- **D-7** Add other apps (ChatGPT developer mode, Gemini, Codex) the same way when needed, each with its own
+  approval and policy.
 
-**Rollback:** delete the Worker deployment. Phones stop sending, and nothing else changes. Events already
-stored remain valid log events.
+**Rollback:** delete the Worker deployment and stop the bridges and Tunnel connectors. Apps lose access and
+nothing else changes. Queued outbox items remain and are drained if the bridge is started again.

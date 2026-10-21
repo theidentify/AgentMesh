@@ -558,3 +558,107 @@ local evidence expansion. candidate_counts.summaries counts selected summaries.
 Non-migrated events have source_ref=null and remain durable. Without compat the old
 result field set is unchanged. Index schema version 5 adds source_table, source_scope,
 scope_key and retired; older snapshots rebuild.
+
+## Phase 6 records
+
+Phase 1–5 encodings are unchanged. These records use the Phase 4 per-kind signing
+rule `AgentMesh/<kind>/Ed25519/v1\x00` plus typed unsigned fields, strict exact JSON
+field sets, hex IDs, integer millisecond times, and canonical base64url ciphertext.
+Every row below also has `format="agentmesh-<kind>-v1"` and `signature`.
+
+| Kind | Fields | Path |
+| --- | --- | --- |
+| gateway | gateway_public_key, origin, issued_at, issuer_device | registry/gateway/{gateway_key_id}.json |
+| outbox-key | device_id, outbox_public_key, issued_at | registry/outbox-keys/{device_id}.json |
+| connector-policy | app_id, display_name_hash, oauth_client_id_hash, read, remember, max_label, allow_cross_profile, limits, state, issuer_device, issued_at | connectors/{app_id}/policy/{ulid}.json |
+| connector-secret-window | app_id, not_before, not_after, issuer_device | connectors/{app_id}/secret/{ulid}.json |
+| outbox-item | outbox_id, app_id, created_at, recipients, gateway_key_id | outbox/{outbox_id}.json |
+
+`gateway_key_id` is hex SHA256 of `b'AgentMesh/gateway-key-id/v1\x00'` followed
+by the raw Ed25519 public key. Origin is an HTTPS origin without path, credentials,
+query or fragment. Gateway records are device-signed; outbox key records are
+self-signed by the device. Outbox private X25519 keys remain in protected device
+state. Outbox items use the gateway signing key.
+
+Policy `read` lists `{profile,scopes}` with opaque IDs; null scopes denotes the
+profile root and its descendants. `remember` is `{profile,scope}` or null.
+`max_label` is general/internal; cross-profile is false. Limits are exact integers:
+recall_limit_max 1–20, requests_per_minute 1–1000. State is active/revoked. Display
+and OAuth client names are UTF-8 SHA256 hashes. Policy selection orders valid
+records by signed issued_at then path; future records are ignored. This prevents
+an old policy copied under a newer path from superseding a later signed policy.
+
+Issuer authority follows the reviewer's scope-bounded decision of 2026-10-21.
+A granting/widening issuer must be non-revoked at issued_at, have a valid read
+grant, and hold every delegated scope or an ancestor (profile root for null
+scopes). This includes the remember target. Narrowing/revocation may be signed
+by any non-revoked reading device. Reactivating a revoked policy is widening.
+Invalid records are ignored. Secret windows require scope authority over all
+read entries of the policy current at not_before, a currently non-revoked issuer,
+and a duration greater than zero and no longer than 3,600,000 ms. Expiry is
+exclusive. Local record creation requires console presence; the signature is the
+trusted device's attestation to that local check, as in Phase 4.
+
+Outbox recipients are distinct `{device_id,ciphertext}` objects. HPKE uses the
+v1 suite in base mode, empty AAD, and info
+`b'AgentMesh/outbox/v1\x00' + typed({outbox_id,app_id,device_id})`. Ciphertext is
+32-byte encapsulated key followed by AEAD ciphertext/tag. Plaintext is exactly
+`{body,tags,task,label}`. Recipient keys are public X25519 keys, not scope keys.
+
+### Bridge and broker additions
+
+Gateway HTTP requests use POST `/bridge` and exactly `{tool,arguments}` as the JSON
+body. Headers `X-Agentmesh-Key`, `X-Agentmesh-App`, `X-Agentmesh-Ts`,
+`X-Agentmesh-Nonce`, and `X-Agentmesh-Signature` carry the public key ID, app ID,
+integer decimal milliseconds, 16 random bytes in lowercase hex and signature.
+The signed input is `b'AgentMesh/gateway-request/Ed25519/v1\x00'` plus typed
+`{method,path,body_sha256,ts,nonce,app_id}`. SHA256 hashes the exact body bytes.
+Clock tolerance is ±60,000 ms; nonce retention is 600,000 ms. The current gateway
+record is the valid maximum `(issued_at,gateway_key_id)`. Transport requires the
+current key; historical queued items validate against the key current at their
+signed `created_at`. Historical signer timestamps retain Phase 4's stated limits.
+
+Signed device administration requests have format `agentmesh-connector-admin-v1`,
+exact fields `device_id,ts,nonce,action,payload,signature`, and the corresponding
+Phase 4 domain. Actions are pending (`{code_hash}`), approve
+(`{code_hash,app_id,policy_ref}`), and revoke (`{app_id,policy_ref}`). Nonces, clocks
+and device chains are checked. Approval state in OAuth KV retains the signed
+approval, bound to the pending request's creation and expiration times. Only the
+hash of the six-digit code is persisted. A random browser cookie is likewise
+stored only by its hash. R2 conditional creates serialize approval completion,
+admin replay claims and per-app minute-rate slots. OAuth token/code storage and
+refresh rotation are implemented by the pinned provider, not a custom protocol.
+
+Local grants add `max_label` (default secret for pre-existing agents),
+`connector_app_id` (default null) and `secret_until` (default zero). Connector
+secret access additionally requires an active expiry and allow_secret; ordinary
+agents retain their Phase 4 presence behavior. Per-app identities and the bridge
+control agent ID are pinned in protected local state. `connector_window` accepts
+only `{op,app_id}` from that bridge control identity; it validates the signed
+window and active policy before setting the app grant's expiry. No ordinary app
+agent can open a window. Per-app indexes filter labels before head selection,
+counts or ranks. Changing effective access invalidates the index digest.
+
+Remember accepts optional `outbox_id` only for connector agents. It must be a
+canonical ULID; the broker reserves encrypted body metadata `outbox_id` and
+`connector_app_id`, refusing caller-supplied values. Existing local outbox writes
+return the prior ID. Independently drained events retain their ordinary v1
+signatures and ciphertext; indexes collapse their shared outbox ID to the lowest
+ULID after sync. Those private index fields never appear in recall results.
+
+### Inbox metadata for already paired devices
+
+An additive `agentmesh-connector-inbox-v1` record has exactly `format,signature,
+profile,scope,recipient_device,issuer_device,issued_at,age` at
+`connectors/inboxes/{profile}/{scope}/{recipient_device}.json`. It uses the
+`connector-inbox` signing domain. The age payload contains the existing Scope
+fields, with label name, for exactly the direct profile child named `inbox`.
+It contains no keys. This is necessary because Phase 4's initial profile metadata
+is immutable and does not update an already paired device's scope tree.
+
+Publishing requires a profile-root-authorized issuer and an authorized recipient
+with a signed per-profile age binding. Import verifies the root grant, signature,
+recipient and path before decrypting, then accepts only the bound profile/scope,
+direct root parent, project kind and inbox name. It never replaces existing scope
+metadata or creates a duplicate local name. Normal authenticated root wraps and
+epoch records supply keys; the metadata alone grants no decryption capability.

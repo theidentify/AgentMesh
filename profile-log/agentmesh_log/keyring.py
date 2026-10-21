@@ -195,9 +195,10 @@ def sync_control(home,store,remote):
     from .keys import unwrap_key
     from .events import wrap_path
     state=store.load(); local=FilesystemStorage(home.root/'replica')
-    prefixes=('registry/','keyring/','keys/','profiles/','alerts/')
+    prefixes=('registry/','keyring/','keys/','profiles/','alerts/','connectors/')
     for prefix in prefixes:
-        local_paths=set(local.list(prefix)); remote_paths=set(remote.list(prefix))
+        local_paths={p for p in local.list(prefix) if not p.startswith('connectors/gateway-state/')}
+        remote_paths={p for p in remote.list(prefix) if not p.startswith('connectors/gateway-state/')}
         for path in sorted(local_paths-remote_paths): remote.put(path,local.get(path))
         for path in sorted(remote_paths-local_paths):
             data=remote.get(path)
@@ -208,6 +209,8 @@ def sync_control(home,store,remote):
     state.control['registry_records']=registry_cache(rs)
     state.certificates=list(registry.certificates.values())
     import_metadata(state,local,registry)
+    from .bridge.inboxes import import_inboxes
+    import_inboxes(state,local,registry)
     ring=AgeKeyring(local,registry,[s for t in state.trees for s in t.scopes.values()])
     from .lifecycle import apply_profile_states
     apply_profile_states(home,state,local,ring)

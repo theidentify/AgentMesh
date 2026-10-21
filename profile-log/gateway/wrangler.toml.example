@@ -1,0 +1,32 @@
+name = "agentmesh-gateway"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Public configuration only. Replace placeholders in your local wrangler.toml.
+[vars]
+R2_PREFIX = "v1/"
+ORIGIN = "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"
+BRIDGE_ORIGIN = "https://YOUR-TUNNEL-HOSTNAME"
+GATEWAY_KEY_ID = "REPLACE_WITH_PUBLIC_GATEWAY_KEY_ID"
+# Trusted account pin, copied from the owner's protected backup, never trusted from R2.
+ACCOUNT_PUBLIC_RECORD = '{"format":"agentmesh-account-v1","account_id":"REPLACE_WITH_ACCOUNT_ID","root_public_key":"REPLACE_WITH_PUBLIC_ACCOUNT_ROOT"}'
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "REPLACE_WITH_PRIVATE_BUCKET"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "REPLACE_WITH_RATE_LIMIT_NAMESPACE_ID"
+simple = { limit = 60, period = 60 }
+
+# Set through `wrangler secret put`, never here:
+# GATEWAY_SIGNING_KEY: base64 DER PKCS8 Ed25519 private key
+# ACCESS_CLIENT_ID: Cloudflare Access service token client ID
+# ACCESS_CLIENT_SECRET: Cloudflare Access service token secret

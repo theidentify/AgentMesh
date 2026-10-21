@@ -50,6 +50,11 @@ class AgentIndex:
 
     def add(self, row):
         identifier=row['id']
+        if row.get('_outbox'):
+            duplicates=[r for r in self._events.values() if r.get('_outbox')==row['_outbox']]
+            if duplicates:
+                if min(r['id'] for r in duplicates)<=identifier: return
+                self.replace([r for r in self._events.values() if r.get('_outbox')!=row['_outbox']]+[row]); return
         if identifier in self._events: return
         row={**row,'revises':row.get('revises')}
         self._link(row)
@@ -137,6 +142,7 @@ class AgentIndex:
         # Decode only SQL-selected candidates; do not re-run wire validation per query.
         candidates=[_decode_row(r[0]) for r in self.connection.execute(sql,args)]
         for row in candidates:
+            row.pop('_outbox',None)
             row.pop('_migration',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
@@ -178,6 +184,7 @@ class AgentIndex:
             return (source.get('updated_at') or row['updated_at'],source.get('id',0),row['id'])
         candidates=sorted(durable,key=chronology,reverse=True)[:limit]+sorted(summaries,key=chronology,reverse=True)[:limit]
         for row in candidates:
+            row.pop('_outbox',None)
             meta=row.pop('_migration',{})
             source=meta.get('source')
             row['source_ref']={k:source[k] for k in ('table','id')} if source else None

@@ -16,7 +16,16 @@ class Grant:
     allow_cross_profile: bool = False
     allow_import: bool = False
 
+    max_label: str = "secret"
+    connector_app_id: str | None = None
+    secret_until: int = 0
+
     def __post_init__(self):
+        if self.max_label not in ("general","internal","secret"): raise ValueError("invalid label grant")
+        if type(self.secret_until) is not int or self.secret_until<0: raise ValueError("invalid presence expiry")
+        if self.connector_app_id is not None:
+            from ..encoding import hex_bytes
+            hex_bytes(self.connector_app_id,16)
         if type(self.allow_import) is not bool: raise ValueError('invalid import grant')
 
     def digest(self):

@@ -99,9 +99,10 @@ def test_r2_generate(tmp_path,monkeypatch):
     monkeypatch.setattr(subprocess,'run',lambda *a,**kw:pytest.fail('renderer executed a command'))
     argv=['generate','--unit','broker','--platform','macos','--database',str(db),'--home',str(tmp_path/'home'),
         '--output',str(out),'--s3-bucket','profile-r2','--s3-prefix','v1/','--s3-endpoint','https://example.test',
-        '--s3-credentials','keychain:org.agentmesh.profile-log.r2','--sync-interval','60','--logs',str(tmp_path/'logs')]
+        '--s3-credentials','keychain:org.agentmesh.profile-log.r2','--logs',str(tmp_path/'logs')]
     assert service.main(argv)==0
     data=next(out.iterdir()).read_bytes(); assert b'--s3-credentials' in data
+    args=plistlib.loads(data)['ProgramArguments']; assert args[args.index('--sync-interval')+1]=='120'
     with pytest.raises(FileExistsError): service.main(argv)
     assert next(out.iterdir()).read_bytes()==data
     assert not (tmp_path/'logs').exists()

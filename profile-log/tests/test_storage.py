@@ -285,3 +285,47 @@ def test_s3_page_size():
         client.meta.events.register('before-parameter-build.s3.ListObjectsV2', record)
         assert list(store.list('events/', page_size=2)) == [f'events/{i}' for i in range(5)]
         assert requests == [2, 2, 2]
+
+
+@pytest.mark.parametrize('after', [None, 'a', 'events/a', 'events/b', 'events/bb', 'events/z', 'z'],
+    ids=['none','before','equal','middle','missing','after','outside'])
+def test_start_after(backend, after):
+    keys = ['events/c','events/a','events/b','keys/a']
+    for key in keys: backend.put(key,b'data')
+    assert list(backend.list('events/',start_after=after)) == sorted(
+        k for k in keys if k.startswith('events/') and (after is None or k>after))
+
+
+@pytest.mark.parametrize('after', ['', '../a', 'events/', 'a//b', 1],
+    ids=['empty','traverse','trailing','double','type'])
+def test_invalid_start_after(backend, monkeypatch, after):
+    def forbidden(*args, **kwargs): pytest.fail('I/O attempted for invalid cursor')
+    if isinstance(backend,S3Storage): monkeypatch.setattr(backend.client,'get_paginator',forbidden)
+    else: monkeypatch.setattr(Path,'lstat',forbidden)
+    with pytest.raises(InvalidKey): list(backend.list('events/',start_after=after))
+
+
+def test_s3_start_after_pagination(backend):
+    if not isinstance(backend,S3Storage): return
+    backend.prefix = 'tenant/'
+    for i in range(7): backend.put(f'events/{i}',b'data')
+    original = backend.client.get_paginator; calls = []; pages = []
+    class SmallPages:
+        def paginate(self, **kwargs):
+            calls.append(kwargs)
+            for page in original('list_objects_v2').paginate(**kwargs,PaginationConfig={'PageSize':2}):
+                pages.append(page); yield page
+    backend.client.get_paginator = lambda name: SmallPages()
+    assert list(backend.list('events/',start_after='events/2')) == [f'events/{i}' for i in range(3,7)]
+    assert calls == [dict(Bucket=backend.bucket,Prefix='tenant/events/',StartAfter='tenant/events/2')]
+    assert len(pages)==2
+    list(backend.list('events/')); assert 'StartAfter' not in calls[-1]
+
+
+def test_s3_start_after_client_filter(backend):
+    if not isinstance(backend,S3Storage): return
+    class Unfiltered:
+        def paginate(self, **kwargs):
+            return [{'Contents':[{'Key':k} for k in ('events/a','events/c','keys/z')]}]
+    backend.client.get_paginator = lambda name: Unfiltered()
+    assert list(backend.list('events/',start_after='events/b'))==['events/c']

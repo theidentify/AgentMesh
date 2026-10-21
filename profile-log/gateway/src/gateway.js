@@ -23,14 +23,14 @@ export async function tunnel(env,app,tool,args,fetcher=fetch) {
   const operation=(async()=>{
   // Workers fetch accepts only 'follow' or 'manual' ('error' throws); never follow a redirect away from the bridge.
   const response=await fetcher(`${env.BRIDGE_ORIGIN}/bridge`,{method:'POST',headers,body,signal:controller.signal,redirect:'manual'});
-  if(response.status!==200)console.log(JSON.stringify({bridge_status:response.status}));
+  if(response.status!==200)console.warn(JSON.stringify({bridge_status:response.status}));
   if([502,530].includes(response.status))return {error:'agentmesh_offline'};
   if(response.status>=300&&response.status<400)return {error:'unavailable'};
   if(!response.ok)return {error:response.status===403?'denied':'unavailable'};
   const result=await response.json();if(result.error)return {error:fixed.has(result.error)?result.error:'unavailable'};return result;
   })();
   return await Promise.race([operation,new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('agentmesh_offline'));},9000);})]);
- }catch(e){console.log(JSON.stringify({bridge_error:e?.name??'Error'}));return {error:'agentmesh_offline'};}finally{clearTimeout(timer);}
+ }catch(e){console.warn(JSON.stringify({bridge_error:e?.name??'Error'}));return {error:'agentmesh_offline'};}finally{clearTimeout(timer);}
 }
 export function ulid() {
  let n=BigInt(Date.now());for(const b of crypto.getRandomValues(new Uint8Array(10)))n=(n<<8n)|BigInt(b);

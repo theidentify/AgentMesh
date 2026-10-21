@@ -92,3 +92,75 @@ def test_admin_request_user_agent(monkeypatch):
     monkeypatch.setattr(urllib.request,'build_opener',lambda *args:Opener())
     assert admin_request(state,'revoke',{})=={'ok':True}
     assert seen==['agentmesh-log/1']
+
+
+@pytest.mark.parametrize('action,states,expected',[(action,states,expected)
+    for action in ('revoke','allow-secret') for states,expected in [
+    ([], 'unknown_app'), (['active'], 'ok'), (['active','active'], 'ambiguous_app'),
+    (['revoked','active'], 'ok'), (['revoked'], 'unknown_app'),
+]]+[('allow-secret',[None],'unknown_app'),('allow-secret',[None,'active'],'ok')],ids=['r0','r1','r2','ra','rr','s0','s1','s2','sa','sr','sm','sma'])
+def test_connector_name_resolution(tmp_path,monkeypatch,action,states,expected):
+    from agentmesh_log import connector_cli as cli
+    from agentmesh_log.connector import policy_record
+    home,store,storage=home_fixture(tmp_path);state=store.load();cr=cli.controls(state,storage)
+    apps=[f'{i+1:032x}' for i in range(len(states))]
+    state.control['connector_names']=dict.fromkeys(apps,'Claude');store.save(state)
+    for app,status in zip(apps,states):
+        if status is not None:
+            cr.publish(policy_record(state.device,app,'Claude','client',read=[{'profile':state.trees[0].root.scope_id,'scopes':None}],remember=None,state=status))
+    monkeypatch.setattr(cli,'select_store',lambda *args:store)
+    prompts=[];writes=[]
+    monkeypatch.setattr(cli.PresenceManager,'require',lambda *args,**kwargs:prompts.append(1))
+    monkeypatch.setattr(cli,'admin_request',lambda *args:{'ok':True})
+    original=storage.put
+    def put(*args,**kwargs):writes.append(1);return original(*args,**kwargs)
+    monkeypatch.setattr(storage,'put',put)
+    monkeypatch.setattr(cli,'storage_for',lambda *args:storage)
+    monkeypatch.setattr(store,'save',lambda *args:writes.append(1))
+    args=parser().parse_args(['connector',action,'--home',str(home.root),'--app','cLaUdE'])
+    if expected=='ok':
+        assert cli.execute(args,backend=None,console=None)['app_id']==apps[states.index('active')]
+        assert prompts==[1] and writes
+    else:
+        with pytest.raises(ValueError,match='^'+expected+'$'):cli.execute(args,backend=None,console=None)
+        assert prompts==[] and writes==[]
+
+
+def test_connector_list_names(tmp_path,monkeypatch):
+    from agentmesh_log import connector_cli as cli
+    from agentmesh_log.connector import policy_record
+    home,store,storage=home_fixture(tmp_path);state=store.load();cr=cli.controls(state,storage)
+    state.control['connector_names']={'ab'*16:'Claude'};store.save(state)
+    for app,status in [('ab'*16,'revoked'),('cd'*16,'active')]:
+        cr.publish(policy_record(state.device,app,'Claude','client',read=[{'profile':state.trees[0].root.scope_id,'scopes':None}],remember=None,state=status))
+    monkeypatch.setattr(cli,'select_store',lambda *args:store)
+    args=parser().parse_args(['connector','list','--home',str(home.root)])
+    assert cli.execute(args,backend=None,console=None)=={'apps':[
+        {'app_id':'ab'*16,'display_name':'Claude','state':'revoked'},
+        {'app_id':'cd'*16,'display_name':None,'state':'active'}]}
+
+
+@pytest.mark.parametrize('code',['unknown_app','ambiguous_app'],ids=['unknown','ambiguous'])
+def test_connector_cli_error_codes(monkeypatch,capsys,code):
+    from agentmesh_log import cli
+    def fail(*args,**kwargs):raise ValueError(code)
+    monkeypatch.setattr(cli,'execute',fail)
+    assert cli.main(['connector','revoke','--home','unused','--app','Claude'])==1
+    import json
+    assert json.loads(capsys.readouterr().out)=={'error':code}
+
+
+@pytest.mark.parametrize('action',['revoke','allow-secret'],ids=['revoke','secret'])
+def test_connector_exact_id(tmp_path,monkeypatch,action):
+    from agentmesh_log import connector_cli as cli
+    from agentmesh_log.connector import policy_record
+    home,store,storage=home_fixture(tmp_path);state=store.load();cr=cli.controls(state,storage)
+    app='ab'*16;other='cd'*16
+    state.control['connector_names']={app:'Claude',other:app};store.save(state)
+    for identifier in (app,other):
+        cr.publish(policy_record(state.device,identifier,'Claude','client',read=[{'profile':state.trees[0].root.scope_id,'scopes':None}],remember=None))
+    monkeypatch.setattr(cli,'select_store',lambda *args:store)
+    monkeypatch.setattr(cli.PresenceManager,'require',lambda *args,**kwargs:None)
+    monkeypatch.setattr(cli,'admin_request',lambda *args:{'ok':True})
+    args=parser().parse_args(['connector',action,'--home',str(home.root),'--app',app])
+    assert cli.execute(args,backend=None,console=None)['app_id']==app

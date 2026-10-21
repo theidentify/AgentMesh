@@ -189,3 +189,12 @@ test('deploy bridge fetch uses a Workers-supported redirect mode and refuses red
  await callTool(h.env,auth,'recall',{query:'x'},redirecting);
  assert.equal(options.headers['CF-Access-Client-Id'],'id-with-space');
 });
+test('P6-3 recall forwards names but refuses out-of-policy IDs before the bridge',async()=>{
+ const h=await harness(),a=await approved(h),auth={props:{app_id:a.p.app_id},clientId:a.client};let seen=[];
+ const fetcher=async(url,options)=>{seen.push(JSON.parse(new TextDecoder().decode(options.body)).arguments.profile);return Response.json({data:{results:[]}});};
+ assert.deepEqual(await callTool(h.env,auth,'recall',{query:'x',profile:'ff'.repeat(16)},fetcher),{error:'denied'});assert.equal(seen.length,0);
+ for(const profile of ['personal','FF'.repeat(16),'f'.repeat(31),'f'.repeat(33),'f'.repeat(32)+'\n']){
+  assert.ok((await callTool(h.env,auth,'recall',{query:'x',profile},fetcher)).data);assert.equal(seen.at(-1),profile);
+ }
+ assert.deepEqual(await callTool(h.env,auth,'recall',{query:'x',profile:'p'.repeat(2049)},fetcher),{error:'invalid_request'});assert.equal(seen.length,5);
+});

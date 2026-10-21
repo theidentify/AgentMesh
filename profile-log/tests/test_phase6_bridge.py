@@ -36,3 +36,20 @@ def test_p6_5_loopback_logs(tmp_path,capsys):
     raw=b'private-body-marker'
     assert b.handle(raw,{})=={'error':'denied'}
     assert 'private-body-marker' not in ''.join(capsys.readouterr())
+
+
+@pytest.mark.parametrize('profile,allowed',[('personal',True),('work',False),('unknown',False)],ids=['allowed','denied','unknown'])
+def test_p6_3_profile_names(tmp_path,profile,allowed):
+    from phase6_support import device
+    h,s,storage,cr,p,k,pin,broker,b=device(tmp_path)
+    calls=[]; factory=b.client_factory
+    def client(path):
+        calls.append(1)
+        if not allowed: raise AssertionError('broker contacted')
+        return factory(path)
+    b.client_factory=client
+    try:
+        result=b.invoke(p['app_id'],{'tool':'recall','arguments':{'query':'marker','profile':profile}})
+        if allowed: assert 'data' in result and calls==[1]
+        else: assert result=={'error':'denied'} and calls==[]
+    finally: broker.close()

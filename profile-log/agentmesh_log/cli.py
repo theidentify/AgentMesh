@@ -360,7 +360,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
     except KeyboardInterrupt: return 0
     except Exception as exc:
         code={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused'}.get(str(exc))
-        if code is None: code=str(exc) if str(exc) in ('invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         emit(json.dumps({'error':code})); return 1
 
 

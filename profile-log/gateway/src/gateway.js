@@ -64,7 +64,7 @@ export async function callTool(env,auth,tool,args,fetcher=fetch) {
  await env.OAUTH_KV.put(counter,String(count+1),{expirationTtl:120});
  if(tool==='whoami'){const w=await secretWindow(env,app);return {app_id:app,display_name:auth.props.display_name,read:p.read,remember:p.remember,max_label:w?'secret':p.max_label,secret_window:!!w};}
  if(tool==='recall'){
-  if(args.profile&&!p.read.some(e=>e.profile===args.profile))return {error:'denied'};
+  if(/^[0-9a-f]{32}$/.test(args.profile)&&!p.read.some(e=>e.profile===args.profile))return {error:'denied'};
   args={...args,limit:Math.min(args.limit??12,p.limits.recall_limit_max)};
  }else if(!p.remember)return {error:'denied'};
  const result=await tunnel(env,app,tool,args,fetcher);

@@ -179,3 +179,13 @@ test('deploy approval CSP refuses URL hosts with CSP delimiters or wildcards',as
   assert.equal(response.status,403);
  }
 });
+test('deploy bridge fetch uses a Workers-supported redirect mode and refuses redirects',async()=>{
+ const h=await harness(),a=await approved(h),auth={props:{app_id:a.p.app_id},clientId:a.client};let options;
+ // workerd throws on redirect:'error'; only 'follow' and 'manual' exist there.
+ const redirecting=async(url,init)=>{options=init;return new Response(null,{status:302,headers:{Location:'https://elsewhere.example/'}});};
+ assert.deepEqual(await callTool(h.env,auth,'recall',{query:'x'},redirecting),{error:'unavailable'});
+ assert.equal(options.redirect,'manual');
+ h.env.ACCESS_CLIENT_ID=' id-with-space\n';
+ await callTool(h.env,auth,'recall',{query:'x'},redirecting);
+ assert.equal(options.headers['CF-Access-Client-Id'],'id-with-space');
+});

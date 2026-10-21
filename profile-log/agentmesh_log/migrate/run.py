@@ -1,7 +1,13 @@
 """Offline, preflighted and resumable broker imports."""
 from collections import Counter
+import hashlib
+import json
 import time
+from pathlib import Path
+from ..encoding import wire
 from .source import rows, body_for
+
+CACHE_FORMAT='agentmesh-profile-log-catch-up-cache-v1'
 
 
 def checked(response):
@@ -15,7 +21,30 @@ def reference(value):
     return table,int(ident)
 
 
-def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep):
+def fingerprint(intent):
+    # created_at is advisory to the broker; it never changes an unchanged outcome.
+    value=dict(source=intent['source'],scope=intent['scope'],row_hash=intent['row_hash'],retire=intent['body'] is None)
+    return hashlib.sha256(wire(value)).hexdigest()
+
+
+def load_cache(path):
+    # Accelerator only: anything unreadable is ignored and rows are re-sent.
+    try:
+        from ..storage.filesystem import _check
+        path=Path(path); _check(path)
+        value=json.loads(path.read_bytes().decode('utf-8'))
+        if value.get('format')!=CACHE_FORMAT or type(value.get('entries')) is not dict: return {}
+        return {k:v for k,v in value['entries'].items() if type(v) is list and len(v)==2 and type(v[0]) is str and (v[1] is None or type(v[1]) is str)}
+    except Exception: return {}
+
+
+def save_cache(path,entries):
+    from ..broker.keystore import atomic_write
+    # Plain JSON: the cache grows with the source table, beyond the wire packet limit.
+    atomic_write(path,json.dumps(dict(format=CACHE_FORMAT,entries=entries),sort_keys=True,separators=(',',':')).encode('utf-8'))
+
+
+def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cache=None):
     values=rows(database)
     if refs is not None:
         if len(refs)>500: raise ValueError('too many references')
@@ -48,7 +77,14 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep):
         if key not in seen and (refs is None or key in refs):
             intents.append(dict(source=entry['source'],scope=entry['scope'],created_at=int(time.time()*1000),row_hash='0'*64,body=None))
     outcomes=Counter(); retries=0; secret=0; errors=[]
+    # A row whose intent and ledger head both match the last confirmed import is
+    # answered unchanged locally, so idle catch-up cycles send no import requests.
+    known=load_cache(cache) if cache is not None else {}; confirmed={}
+    heads={(e['source']['table'],e['source']['id']):e['event'] for e in ledger['entries']}
     for intent in intents:
+        key=intent['source']['table'],intent['source']['id']; name=f'{key[0]}:{key[1]}'; digest=fingerprint(intent)
+        if known.get(name)==[digest,heads.get(key)]:
+            outcomes['unchanged']+=1; confirmed[name]=known[name]; continue
         try:
             for attempt in range(100):
                 response=client.import_row(**intent)
@@ -56,8 +92,14 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep):
                 retries+=1; sleep(min(.01*(attempt+1),.2))
             checked(response)
             outcomes[response['outcome']]+=1
+            if type(response.get('id')) is str or (response.get('outcome')=='unchanged' and response.get('id') is None):
+                confirmed[name]=[digest,response.get('id')]
             secret+=response.get('label')=='secret'
         except Exception as exc:
             errors.append(type(exc).__name__); break
+    if cache is not None:
+        if refs is not None: confirmed={**known,**confirmed}
+        try: save_cache(cache,confirmed)
+        except Exception: pass
     return dict(outcomes=dict(outcomes),unmapped=[],skipped=dict(skipped),timestamp_fallback=fallbacks,
                 busy_retries=retries,errors=errors,secret_labelled=secret)

@@ -1,3 +1,4 @@
+import os
 from test_source import database
 from test_import import setup_home
 from agentmesh_log.broker.service import Broker,Session
@@ -181,3 +182,60 @@ def test_unmapped_refuses_all(database,tmp_path):
     assert result['unmapped']==['unlisted'] and result['errors']==['UnmappedProject']
     assert result['outcomes']=={} and len(list(broker.replica.keys()))==before
     broker.close()
+
+
+def audit_ops(home):
+    import json
+    from collections import Counter
+    path=home.root/'audit.jsonl'
+    if not path.exists(): return Counter()
+    return Counter(json.loads(line)['op'] for line in path.read_text(encoding='utf-8').splitlines())
+
+
+def test_cycles_no_reaudit(database,tmp_path):
+    import sqlite3
+    home,state,store,agents=setup_home(tmp_path); agent=agents[0]
+    state.grants[agent.agent_id].allow_import=True; store.save(state)
+    broker=Broker(home,store=store); client=LocalClient(broker,agent)
+    mapping=Mapping(dict(format='agentmesh-migration-mapping-v1',projects={},prefixes=[],null_project='work/a',**{'global':'work/a'}))
+    cache=tmp_path/'fixture.db.profile-log.catch-up.json'
+    try:
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(created=2)
+        first=audit_ops(home); assert first['import']==4
+        for cycle in range(1,4):
+            assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
+            ops=audit_ops(home)
+            # Idle cycles audit only the ledger and whoami requests, never per-row imports.
+            assert ops['import']==first['import']
+            assert ops['import_ledger']==first['import_ledger']+cycle and ops['whoami']==first['whoami']+cycle
+        with sqlite3.connect(database) as c: c.execute("UPDATE memory_items SET content='changed' WHERE id=1")
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(revised=1,unchanged=1)
+        assert audit_ops(home)['import']==first['import']+2
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
+        assert audit_ops(home)['import']==first['import']+2
+        assert all(len(v['chain'])<=2 for v in report(client).values())
+        if os.name!='nt': assert cache.stat().st_mode&0o777==0o600
+    finally: broker.close()
+
+
+def test_cache_ledger_moved(database,tmp_path):
+    import sqlite3
+    home,state,store,agents=setup_home(tmp_path); agent=agents[0]
+    state.grants[agent.agent_id].allow_import=True; store.save(state)
+    broker=Broker(home,store=store); client=LocalClient(broker,agent)
+    mapping=Mapping(dict(format='agentmesh-migration-mapping-v1',projects={},prefixes=[],null_project='work/a',**{'global':'work/a'}))
+    cache=tmp_path/'cache.json'
+    try:
+        run(database,mapping,client,cache=cache)
+        # A post-commit hook revises outside catch-up; its cache entry is now stale.
+        with sqlite3.connect(database) as c: c.execute("UPDATE memory_items SET content='hooked' WHERE id=1")
+        assert run(database,mapping,client,refs=['memory_items:1'])['outcomes']==dict(revised=1)
+        before=audit_ops(home)['import']
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
+        assert audit_ops(home)['import']==before+1
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
+        assert audit_ops(home)['import']==before+1
+        cache.write_text('not json',encoding='utf-8')
+        assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
+        assert audit_ops(home)['import']==before+3
+    finally: broker.close()

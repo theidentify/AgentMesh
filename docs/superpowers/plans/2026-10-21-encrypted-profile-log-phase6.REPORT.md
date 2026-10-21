@@ -380,3 +380,33 @@ pass; E2E harnesses that bypass `serve()` now explicitly refresh after remote
 approval to simulate the next background tick. Gateway `node --test` completed
 with **19 passed, 0 failed, 0 skipped**. `git diff --check` passed. Changes remain
 uncommitted on `claude/phase6-deploy-fixes`.
+
+## Follow-ups (2026-10-21)
+
+On `claude/phase6-followups` from main `ec7f844`, recall now checks policy
+membership at the Worker only for exact 32-character lowercase hex profile IDs.
+Other strings reach the bridge unchanged, retaining zod limits. Bridge tests
+verify allowed local names succeed and unauthorized/unknown names never contact
+the broker. Profile names remain in encrypted device metadata; no names were
+added to Worker-visible records. Existing tool descriptions do not claim IDs only.
+
+Connector administration gives exact app IDs precedence over remembered names.
+Case-insensitive name resolution excludes revoked apps, and allow-secret also
+excludes missing policies. Unknown/ambiguous names return `unknown_app` or
+`ambiguous_app` before presence or writes. List output adds the locally remembered
+`display_name`, null when absent. README guidance covers both changes.
+
+TDD reproduced the Worker refusal and CLI resolution/list/error-code failures
+before implementation; regression coverage also checks exact-ID precedence,
+schema limits, and bridge/broker isolation. No body, query, or token logging was
+added. No commits or dependency changes.
+
+Final validation: full Python suite (`python -m pytest -q -p no:cacheprovider
+--tb=no profile-log/tests`) finished with **675 passed, 8 skipped, 5 failed**
+in 98.23 seconds. All five failures explicitly report sandbox-denied socket
+binding: `test_p3_1_processes`, `test_connections_offline`,
+`test_real_transport`, `test_p5_4_concurrent_processes`, and
+`test_s3_custom_http_endpoint`. The initial run also caught missing short test
+IDs; those were fixed and the full rerun passes the portability gate.
+Gateway `node --test` (TAP reporter): **21 passed, 0 failed, 0 skipped**.
+`git diff --check` passes. Changes remain uncommitted.

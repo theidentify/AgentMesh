@@ -118,7 +118,7 @@ def execute(args,*,backend,console):
     state=store.load(); cr=controls(state,storage)
     if args.action=='list':
         apps=sorted({p.split('/')[1] for p in storage.list('connectors/') if re.fullmatch('[0-9a-f]{32}',p.split('/')[1])})
-        return {'apps':[{'app_id':a,'state':p['state']} for a in apps if (p:=cr.policy(a)) is not None]}
+        return {'apps':[{'app_id':a,'display_name':state.control.get('connector_names',{}).get(a),'state':p['state']} for a in apps if (p:=cr.policy(a)) is not None]}
     if args.action=='gateway-init':
         raw=hex_bytes(Path(args.public_key_file).read_text(encoding='utf-8').strip(),32)
         record=gateway_record(state.device,raw,args.origin)
@@ -129,7 +129,18 @@ def execute(args,*,backend,console):
         return {'ok':True}
     if args.action=='approve':
         return approve(home,store,storage,args.code,args.profiles.split(','),args.remember,console)
-    app=next((a for a,n in state.control.get('connector_names',{}).items() if n.casefold()==args.app.casefold()),args.app)
+    app=args.app
+    if not re.fullmatch('[0-9a-f]{32}',app):
+        matches=[]
+        for a,n in state.control.get('connector_names',{}).items():
+            if n.casefold()!=app.casefold(): continue
+            policy=cr.policy(a)
+            if policy is not None and policy['state']=='revoked': continue
+            if args.action=='allow-secret' and policy is None: continue
+            matches.append(a)
+        if not matches: raise ValueError('unknown_app')
+        if len(matches)>1: raise ValueError('ambiguous_app')
+        app=matches[0]
     hex_bytes(app,16)
     if args.action=='allow-secret': return allow_secret(home,store,storage,app,args.minutes,console)
     PresenceManager(home,store).require('agent','revoke',console=console,one_shot=True)

@@ -809,7 +809,10 @@ The default first approval is Claude: read `personal` and `work` up through
 candidate selection and ranking. An app-specific, presence-backed secret window
 lasts 15 minutes by default, at most 60; expiry is checked on the next call.
 Cross-profile recall is disabled: choose one profile per call. `whoami` supplies
-the opaque profile IDs accepted by the Worker, and the app's readable targets.
+the app's readable targets as opaque profile IDs. `recall` also accepts a local
+profile name such as `personal`: the bridge resolves it only within the app's
+policy and refuses unknown or unauthorized names. Profile names remain in
+age-encrypted device metadata; no Worker-visible record stores them.
 
 A device can grant only scopes it holds or descendants, including the remember
 target. Null read scopes require a profile-root grant. Any non-revoked reading
@@ -829,7 +832,12 @@ python -m agentmesh_log.cli bridge serve --home H --host 127.0.0.1 --port 8766
 ```
 
 `approve`, `gateway-init`, `revoke`, and `allow-secret` require console presence.
-Names remembered by this device can also select apps for revoke/allow-secret.
+Names remembered by this device can also select apps for revoke/allow-secret,
+case-insensitively. Revoked apps are excluded from name matching; allow-secret
+also excludes apps with missing policies. No match returns `unknown_app`; multiple
+matches return `ambiguous_app` before any presence prompt or write. Use the exact
+app ID to disambiguate. `connector list` includes each app's locally remembered
+`display_name` (or null when absent), ID, and policy state.
 Approval creates an absent inbox only after verifying profile-root authority.
 The six-digit browser code expires in ten minutes and is single-use. After the
 terminal approval, click **Continue after approval** in the authorization page.

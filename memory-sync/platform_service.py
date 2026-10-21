@@ -156,7 +156,7 @@ def generate_profile_units(argv):
     p.add_argument('--output',required=True,help='new directory for generated files')
     p.add_argument('--interval',type=float,default=300)
     p.add_argument('--s3-bucket'); p.add_argument('--s3-prefix',default=''); p.add_argument('--s3-endpoint')
-    p.add_argument('--s3-credentials'); p.add_argument('--sync-interval',type=float,default=60); p.add_argument('--logs')
+    p.add_argument('--s3-credentials'); p.add_argument('--sync-interval',type=float,default=120); p.add_argument('--logs')
     args=p.parse_args(argv)
     remote=None
     if args.s3_bucket is not None:

@@ -972,12 +972,22 @@ python -m agentmesh_log.cli connector revoke --home H --app claude --s3-bucket B
 ```
 
 Bridge control refresh defaults to `Bridge(sync_interval=15)` seconds, configurable
-when constructing the bridge. Each handled request shares one local registry;
-remote control sync runs at most once per interval. Every drain forces a refresh
-and shares one registry for the pass. Bridge-side revocation takes effect within
-this interval on the next request; the Worker checks R2 and refuses immediately.
+when constructing the bridge. Requests read controls only from the local replica
+and key store, and use the local broker; they never contact remote storage.
+`serve()` starts control sync in a background thread, waits at most 250 ms for
+its first attempt, then serves even if that attempt is still running. Sync repeats
+every interval after an attempt completes; failures are swallowed without logging
+secrets and retried on the next tick. `controls(force=True)` remains an explicit
+synchronous refresh, including at the start of every drain.
+
+Bridge-side revocation and new policies take effect within `sync_interval` plus
+one sync duration when remote sync succeeds; outages extend this bound until a
+successful retry. The Worker still checks R2 and refuses revoked apps immediately.
 Secret-window opening may also wait for refresh; expiry is checked on the next
-call. Device sync excludes connectors/gateway-state/ in both directions.
+call. Drains serialize on a separate lock, and remote I/O holds neither the
+request lock nor the home lock. Only local state updates take those locks;
+remember operations use the broker's own request serialization. Device sync
+excludes connectors/gateway-state/ in both directions.
 
 Policy rate caps use one KV get/put per app/minute with a 120-second TTL. They are
 approximate under concurrent KV updates; the Workers rate-limiting binding is

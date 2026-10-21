@@ -1,4 +1,5 @@
 """Loopback gateway bridge. HTTP never logs request paths, headers or bodies."""
+from contextlib import contextmanager
 import hashlib
 import secrets
 import threading
@@ -46,6 +47,7 @@ class Bridge:
         if not isinstance(sync_interval,(int,float)) or not 0<=sync_interval<=3600: raise ValueError('invalid_request')
         self.sync_interval=sync_interval*1000; self.last_control_sync=None
         self.home,self.store,self.storage,self.clock,self.client_factory=home,store,storage,clock,client_factory
+        self.drain_lock=threading.Lock(); self.control_lock=threading.Lock()
         self.nonces={}; self.lock=threading.RLock(); self.stopped=threading.Event(); self.last_reconciliation=None
         self.bridge_key=provision(home,store)
         with home.lock():
@@ -57,14 +59,18 @@ class Bridge:
             path='registry/outbox-keys/'+state.device.device_id+'.json'
             if path not in set(storage.list(path)): storage.put(path,wire(record))
 
+    @contextmanager
+    def local_update(self):
+        with self.lock, self.home.lock(): yield
+
     def controls(self,*,force=False):
         from ..storage.filesystem import FilesystemStorage
-        local=FilesystemStorage(self.home.root/'replica'); at=self.clock()
-        remote=not isinstance(self.storage,FilesystemStorage) or self.storage.root!=local.root
-        if remote and (force or self.last_control_sync is None or at-self.last_control_sync>=self.sync_interval or at<self.last_control_sync):
+        local=FilesystemStorage(self.home.root/'replica')
+        if force and (not isinstance(self.storage,FilesystemStorage) or self.storage.root!=local.root):
             from ..keyring import sync_control
-            with self.home.lock(): sync_control(self.home,self.store,self.storage)
-            self.last_control_sync=at
+            with self.control_lock:
+                sync_control(self.home,self.store,self.storage,apply_lock=self.local_update)
+                self.last_control_sync=self.clock()
         state=self.store.load()
         return ConnectorRegistry(local,state.account.public_record(),[s for t in state.trees for s in t.scopes.values()])
 
@@ -106,7 +112,7 @@ class Bridge:
         else:
             if policy['remember'] is None or current['remember']!=policy['remember']: return {'error':'denied'}
             args['scope']=scope_names[policy['remember']['scope']]
-        path=provision(self.home,self.store,current)
+        with self.lock: path=provision(self.home,self.store,current)
         if window:
             control=self.client_factory(self.bridge_key)
             try:
@@ -124,6 +130,9 @@ class Bridge:
         finally: client.close()
 
     def drain(self):
+        with self.drain_lock: return self._drain()
+
+    def _drain(self):
         controls=self.controls(force=True)
         result={'stored':0,'rejected':0,'errors':0}; state=self.store.load()
         key=X25519PrivateKey.from_private_bytes(bytes.fromhex(state.control['outbox_private']))
@@ -160,7 +169,7 @@ class Bridge:
                 done.add(path); result['stored']+=1
             except (ValueError,KeyError,StopIteration): result['rejected']+=1
             except Exception: result['errors']+=1
-        with self.home.lock():
+        with self.local_update():
             state=self.store.load(); state.control['connector_drained']=sorted(done)
             floor=maximum<<80
             state.control['connector_outbox_cursor']=''.join(ALPHABET[(floor>>shift)&31] for shift in range(125,-1,-5))
@@ -171,10 +180,20 @@ class Bridge:
 
     def serve(self,*,host='127.0.0.1',port=8766):
         server=bind_server(self,host,port)
+        initial_sync=threading.Event()
+        def control_loop():
+            while not self.stopped.is_set():
+                try: self.controls(force=True)
+                except Exception: pass
+                finally: initial_sync.set()
+                if self.stopped.wait(max(self.sync_interval/1000,.01)): return
+        control_thread=threading.Thread(target=control_loop,daemon=True); control_thread.start()
+        # Slow or unavailable remote storage must not delay HTTP startup.
+        initial_sync.wait(.25)
         def drain_loop():
             while not self.stopped.is_set():
                 try:
-                    with self.lock: self.drain()
+                    self.drain()
                 except Exception: pass
                 if self.stopped.wait(60): return
         thread=threading.Thread(target=drain_loop,daemon=True); thread.start()

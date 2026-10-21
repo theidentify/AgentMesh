@@ -20,7 +20,9 @@ def render(output,home,python,platform,port=8766,*,filesystem=None,s3_bucket=Non
         # A Keychain reference only; the secret itself never enters the rendered file.
         argv+=['--s3-bucket',s3_bucket,'--s3-prefix',s3_prefix,'--s3-endpoint',s3_endpoint,'--s3-credentials',s3_credentials]
     if platform=='macos':
-        data=plistlib.dumps({'Label':'org.agentmesh.profile-log.bridge','ProgramArguments':argv,'RunAtLoad':True,'KeepAlive':True})
+        # Match the broker's <agentmesh root>/logs convention.
+        logs=Path(home).parent/'logs'
+        data=plistlib.dumps({'Label':'org.agentmesh.profile-log.bridge','ProgramArguments':argv,'RunAtLoad':True,'KeepAlive':True,'StandardOutPath':str(logs/'bridge.out.log'),'StandardErrorPath':str(logs/'bridge.err.log')})
         filename='org.agentmesh.profile-log.bridge.plist'
     else:
         root=ET.Element('Task',{'version':'1.4','xmlns':'http://schemas.microsoft.com/windows/2004/02/mit/task'})

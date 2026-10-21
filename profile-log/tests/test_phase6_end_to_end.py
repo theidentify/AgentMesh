@@ -51,6 +51,7 @@ def test_p6_e2e(prefix):
         try:
             state=store.load()
             result=command({'op':'init','prefix':prefix,'directory':str(root/'bucket' if prefix else home.root/'replica'),'account':state.account.public_record(),'device_id':state.device.device_id,'device_key':state.device.private_bytes().hex(),'gateway_key':key.private_bytes(Encoding.DER,PrivateFormat.PKCS8,NoEncryption()).hex(),'gateway_id':__import__('agentmesh_log.connector',fromlist=['gateway_id']).gateway_id(pin),'bridge':f'http://127.0.0.1:{http.server_port}','read':p['read'],'remember':p['remember']})
+            bridge.controls(force=True)  # Simulate the next background tick after approval.
             app=result['app_id']
             assert command({'op':'tool','tool':'remember','arguments':{'body':'live-e2e-marker'}})['status']=='stored'
             assert command({'op':'tool','tool':'recall','arguments':{'query':'live-e2e-marker'}})['data']['results']
@@ -117,6 +118,7 @@ def run_inprocess(tmp_path,*,prefix=''):
     try:
         state=store.load()
         initialized=command({'op':'init','ipc':True,'prefix':prefix,'directory':str(tmp_path/'bucket' if prefix else home.root/'replica'),'account':state.account.public_record(),'device_id':state.device.device_id,'device_key':state.device.private_bytes().hex(),'gateway_key':key.private_bytes(Encoding.DER,PrivateFormat.PKCS8,NoEncryption()).hex(),'gateway_id':gateway_id(pin),'bridge':'https://bridge.example','read':p['read'],'remember':p['remember']})
+        bridge.controls(force=True)  # Simulate the next background tick after approval.
         app=initialized['app_id']
         assert command({'op':'tool','tool':'remember','arguments':{'body':'live-e2e-marker'}})['status']=='stored'
         assert command({'op':'tool','tool':'recall','arguments':{'query':'live-e2e-marker'}})['data']['results']

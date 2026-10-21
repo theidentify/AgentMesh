@@ -318,3 +318,65 @@ After merging main (#62, #64): connector and bridge commands build R2 storage th
 chain, as remote sync does. `bridge render-service` writes only that Keychain reference into the
 service. The S3 `list` merge keeps main's error handling plus `start_after`. Python 612 passed,
 5 skipped; node 16 passed.
+
+## Deploy fixes (2026-10-21)
+
+Uncommitted fixes on `claude/phase6-deploy-fixes` from main `62ed30a`:
+
+- Approval CSP allows only `'self'` and the parsed HTTP(S) redirect origin;
+  rejects CSP delimiters/wildcards and retains the default-src/frame-ancestors restrictions.
+- `/mcp` and both protected-resource metadata paths carry the requested wildcard
+  CORS headers on all responses, with unauthenticated 204 OPTIONS. Approval and
+  admin routes receive no added CORS; Allow-Credentials is not set.
+- Connector admin requests use `User-Agent: agentmesh-log/1` (no package version
+  is defined), retaining the redirect refusal and fixed errors.
+- macOS bridge plists use `<home parent>/logs/bridge.out.log` and `bridge.err.log`,
+  matching the broker's AgentMesh-root log convention. Windows XML is unchanged.
+
+Regression tests failed before implementation and passed afterward. No logging
+of approval codes, tokens, or request/response bodies was added.
+
+Validation: the requested full Python command finished with **650 passed,
+8 skipped, 5 failed**; all five failures explicitly report sandbox-denied socket
+binding (`test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+`test_p5_4_concurrent_processes`, `test_s3_custom_http_endpoint`). The targeted
+Python regression run passed both tests. Gateway `node --test`: **19 passed,
+0 failed**. `git diff --check` passed. Live Cloudflare/Claude validation remains
+an owner deploy step; no commit or deployment was performed.
+
+
+Follow-up: live Claude recall returned `agentmesh_offline` because fresh R2
+connections on the owner's broken advertised IPv6 path took about 10 seconds,
+exceeding the Worker's 9-second bridge timeout.
+
+- Request-time controls now read only the local replica and key store. Recall,
+  whoami, and remember use local broker access without remote storage calls.
+- `serve()` starts a dedicated control-sync thread, allows up to 250 ms for the
+  initial attempt, then starts serving even if sync remains blocked. Subsequent
+  attempts run every `sync_interval` (default 15 seconds) after completion;
+  failures are swallowed without secret logging and retried on the next tick.
+  Explicit `controls(force=True)` and drain retain synchronous refresh.
+- Drains serialize with a separate drain lock. Remote control transfer and
+  outbox list/get calls hold neither the request lock nor the home lock. Local
+  state application reloads the key store after transfer and holds the local
+  update locks, preserving concurrent provisioning. Broker writes retain the
+  broker's own request serialization.
+- Bridge-side revocation and new policies take effect within `sync_interval`
+  plus one sync duration when sync succeeds; outages extend this until a
+  successful retry. The Worker still refuses revoked apps immediately from R2.
+
+TDD: six regression cases failed before implementation. The adapted interval
+case verifies requests never sync; force/drain do. Added tests cover signed
+recall/whoami with a raising remote, bounded startup during blocked sync, retry
+and background revocation, and requests during blocked control/outbox remote
+calls. Targeted result: **10 passed, 1 skipped** (sandbox loopback restriction).
+No body/query logging was added. No commit or deployment was performed.
+
+Final follow-up validation on top of `23fe649`: full Python suite
+(`python -m pytest -q -p no:cacheprovider profile-log/tests`) completed with
+**655 passed, 8 skipped, 5 failed** in 105.38 seconds. All five failures are the
+same sandbox-denied socket-binding gates listed above. Both in-process E2E cases
+pass; E2E harnesses that bypass `serve()` now explicitly refresh after remote
+approval to simulate the next background tick. Gateway `node --test` completed
+with **19 passed, 0 failed, 0 skipped**. `git diff --check` passed. Changes remain
+uncommitted on `claude/phase6-deploy-fixes`.

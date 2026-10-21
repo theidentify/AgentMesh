@@ -7,6 +7,13 @@ import { namespaced } from './storage.js';
 import { schemas,callTool,claim } from './gateway.js';
 const json=(value,status=200,headers={})=>new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});
 const failure=(code='invalid_request',status=400)=>json({error:code},status);
+const corsHeaders={
+ 'Access-Control-Allow-Origin':'*',
+ 'Access-Control-Allow-Methods':'GET, POST, OPTIONS, DELETE',
+ 'Access-Control-Allow-Headers':'Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID',
+ 'Access-Control-Expose-Headers':'WWW-Authenticate, Mcp-Session-Id',
+ 'Access-Control-Max-Age':'86400',
+};
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function authServer(env) {
  return new OAuthAuthorizationServer({issuer:env.ORIGIN,resources:[env.ORIGIN+'/mcp'],defaultResource:env.ORIGIN+'/mcp',authorizeEndpoint:'/authorize',tokenEndpoint:'/token',clientRegistrationEndpoint:'/register',accessTokenTTL:300,refreshTokenTTL:2592000,scopesSupported:['memory'],
@@ -16,6 +23,8 @@ function authServer(env) {
 }
 async function authorize(request,env,as) {
  const api=as.getOAuthApi(env),auth=await api.parseAuthRequest(request);
+ // URL hosts can contain CSP delimiters or wildcards; never widen the source list.
+ const redirect=new URL(auth.redirectUri);if(!['http:','https:'].includes(redirect.protocol)||/[;,'"*\s]/.test(redirect.origin))throw Error('denied');
  if(auth.codeChallengeMethod!=='S256'||!auth.codeChallenge)throw Error('denied');
  const client=await api.lookupClient(auth.clientId);if(!client)throw Error('denied');
  const browser=hex(crypto.getRandomValues(new Uint8Array(32))),browserHash=await sha(bytes(browser));let code,codeHash;
@@ -29,7 +38,7 @@ async function authorize(request,env,as) {
  await env.OAUTH_KV.put('pending:'+codeHash,JSON.stringify(pending),{expirationTtl:600});
  await env.OAUTH_KV.put('browser:'+browserHash,codeHash,{expirationTtl:600});
  const html=`<!doctype html><meta charset="utf-8"><title>Approve AgentMesh</title><h1>${escape(pending.client_name)}</h1><p>Approve on a trusted device using this code:</p><strong>${code}</strong><form method="post" action="/authorize/complete"><button>Continue after approval</button></form>`;
- return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; form-action 'self'; frame-ancestors 'none'",'Referrer-Policy':'no-referrer','Set-Cookie':`am_approval=${browser}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=600`}});
+ return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':`default-src 'none'; form-action 'self' ${redirect.origin}; frame-ancestors 'none'`,'Referrer-Policy':'no-referrer','Set-Cookie':`am_approval=${browser}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=600`}});
 }
 async function complete(request,env,as) {
  const cookie=/(?:^|;\s*)am_approval=([0-9a-f]{64})(?:;|$)/.exec(request.headers.get('Cookie')??'');if(!cookie)throw Error('denied');
@@ -74,7 +83,7 @@ async function admin(request,env,as,action) {
  throw Error('denied');
 }
 export function createGateway({fetcher=fetch,authorizationServer=authServer}={}) {
- return {async fetch(request,env,ctx={waitUntil(){}}) {
+ async function handle(request,env,ctx) {
   try{
    env=namespaced(env);
    const url=new URL(request.url);if(url.origin!==env.ORIGIN)return failure('denied',403);
@@ -104,6 +113,13 @@ export function createGateway({fetcher=fetch,authorizationServer=authServer}={})
    }
    const response=await as.fetch(request,env,ctx);if(response.status>=400)return failure('invalid_request',response.status);return response;
   }catch{return failure('denied',403);}
+ }
+ return {async fetch(request,env,ctx={waitUntil(){}}) {
+  const path=new URL(request.url).pathname,cors=['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp'].includes(path);
+  if(cors&&request.method==='OPTIONS')return new Response(null,{status:204,headers:corsHeaders});
+  const response=await handle(request,env,ctx);if(!cors)return response;
+  const headers=new Headers(response.headers);for(const [name,value]of Object.entries(corsHeaders))headers.set(name,value);
+  return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }};
 }
 export default createGateway();

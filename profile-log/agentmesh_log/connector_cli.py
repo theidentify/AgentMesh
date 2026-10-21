@@ -20,7 +20,7 @@ def admin_request(state,action,payload):
     origin=state.control.get('connector_origin')
     if not origin: raise ValueError('unavailable')
     envelope=signed('connector-admin',state.device._private,device_id=state.device.device_id,ts=now(),nonce=secrets.token_hex(16),action=action,payload=payload)
-    request=urllib.request.Request(origin+'/admin/'+action,data=wire(envelope),headers={'Content-Type':'application/json'},method='POST')
+    request=urllib.request.Request(origin+'/admin/'+action,data=wire(envelope),headers={'Content-Type':'application/json','User-Agent':'agentmesh-log/1'},method='POST')
     # Refuse redirects: signed administration must only reach the pinned origin.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args,**kwargs): return None

@@ -17,17 +17,20 @@ export async function signingKey(env) {return crypto.subtle.importKey('pkcs8',Bu
 export async function tunnel(env,app,tool,args,fetcher=fetch) {
  const body=wire({tool,arguments:args}),ts=Date.now(),nonce=hex(crypto.getRandomValues(new Uint8Array(16)));
  const record=await sign({method:'POST',path:'/bridge',body_sha256:await sha(body),ts,nonce,app_id:app},await signingKey(env),'gateway-request');
- const headers={'Content-Type':'application/json','CF-Access-Client-Id':env.ACCESS_CLIENT_ID,'CF-Access-Client-Secret':env.ACCESS_CLIENT_SECRET,'X-Agentmesh-Key':env.GATEWAY_KEY_ID,'X-Agentmesh-App':app,'X-Agentmesh-Ts':String(ts),'X-Agentmesh-Nonce':nonce,'X-Agentmesh-Signature':record.signature};
+ const headers={'Content-Type':'application/json','CF-Access-Client-Id':String(env.ACCESS_CLIENT_ID??'').trim(),'CF-Access-Client-Secret':String(env.ACCESS_CLIENT_SECRET??'').trim(),'X-Agentmesh-Key':env.GATEWAY_KEY_ID,'X-Agentmesh-App':app,'X-Agentmesh-Ts':String(ts),'X-Agentmesh-Nonce':nonce,'X-Agentmesh-Signature':record.signature};
  const controller=new AbortController();let timer;
  try {
   const operation=(async()=>{
-  const response=await fetcher(`${env.BRIDGE_ORIGIN}/bridge`,{method:'POST',headers,body,signal:controller.signal,redirect:'error'});
+  // Workers fetch accepts only 'follow' or 'manual' ('error' throws); never follow a redirect away from the bridge.
+  const response=await fetcher(`${env.BRIDGE_ORIGIN}/bridge`,{method:'POST',headers,body,signal:controller.signal,redirect:'manual'});
+  if(response.status!==200)console.warn(JSON.stringify({bridge_status:response.status}));
   if([502,530].includes(response.status))return {error:'agentmesh_offline'};
+  if(response.status>=300&&response.status<400)return {error:'unavailable'};
   if(!response.ok)return {error:response.status===403?'denied':'unavailable'};
   const result=await response.json();if(result.error)return {error:fixed.has(result.error)?result.error:'unavailable'};return result;
   })();
   return await Promise.race([operation,new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('agentmesh_offline'));},9000);})]);
- }catch{return {error:'agentmesh_offline'};}finally{clearTimeout(timer);}
+ }catch(e){console.warn(JSON.stringify({bridge_error:e?.name??'Error'}));return {error:'agentmesh_offline'};}finally{clearTimeout(timer);}
 }
 export function ulid() {
  let n=BigInt(Date.now());for(const b of crypto.getRandomValues(new Uint8Array(10)))n=(n<<8n)|BigInt(b);

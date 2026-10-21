@@ -63,3 +63,66 @@ def test_exclusive(tmp_path,platform,unit):
     with pytest.raises(FileExistsError): service.main(argv)
     assert before=={p.name:p.read_bytes() for p in out.iterdir()}
     if __import__('os').name!='nt': assert all(p.stat().st_mode&0o777==0o600 for p in out.iterdir())
+
+
+def remote_config(**kw):
+    return dict(dict(bucket='profile-r2',prefix='v1/',endpoint='https://example.r2.cloudflarestorage.com',
+        credentials='keychain:org.agentmesh.profile-log.r2',sync_interval=60),**kw)
+
+
+def test_r2_plist(tmp_path):
+    cli=[str(tmp_path/'python'),'-m','agentmesh_log.cli']; home=str(tmp_path/'home'); logs=str(tmp_path/'logs')
+    base=plistlib.loads(next(iter(service.render_profile_units('macos','broker',cli,home=home).values())))
+    data=next(iter(service.render_profile_units('macos','broker',cli,home=home,remote=remote_config(),logs=logs).values()))
+    value=plistlib.loads(data)
+    expected=base['ProgramArguments']+['--s3-bucket','profile-r2','--s3-prefix','v1/','--s3-endpoint',
+        'https://example.r2.cloudflarestorage.com','--s3-credentials','keychain:org.agentmesh.profile-log.r2','--sync-interval','60']
+    assert value==dict(base,ProgramArguments=expected,StandardOutPath=str(tmp_path/'logs/broker.out.log'),StandardErrorPath=str(tmp_path/'logs/broker.err.log'))
+    import re
+    assert not any(re.fullmatch('[0-9a-f]{32}|[0-9a-f]{64}',a) for a in value['ProgramArguments'])
+    assert 'EnvironmentVariables' not in value
+
+
+@pytest.mark.parametrize('field,bad',[('bucket','UPPER'),('bucket','a'),('bucket','ab_'),('bucket','a'*64),
+    ('endpoint','http://example.test'),('endpoint','https://example.test\n'),('endpoint','https://u:p@example.test'),
+    ('prefix','../private/'),('prefix','v1/\x00'),('credentials','secret-value'),('credentials','keychain:x\n'),
+    ('sync_interval',9),('sync_interval',float('nan')),('sync_interval',float('inf'))])
+def test_r2_invalid(tmp_path,field,bad):
+    with pytest.raises(ValueError): service.render_profile_units('macos','broker',[str(tmp_path/'python'),'-m','agentmesh_log.cli'],
+        home=str(tmp_path/'home'),remote=remote_config(**{field:bad}))
+
+
+def test_r2_generate(tmp_path,monkeypatch):
+    from test_profile_log_bridge import config
+    db,path,value=config(tmp_path); out=tmp_path/'units'
+    import subprocess
+    monkeypatch.setattr(subprocess,'run',lambda *a,**kw:pytest.fail('renderer executed a command'))
+    argv=['generate','--unit','broker','--platform','macos','--database',str(db),'--home',str(tmp_path/'home'),
+        '--output',str(out),'--s3-bucket','profile-r2','--s3-prefix','v1/','--s3-endpoint','https://example.test',
+        '--s3-credentials','keychain:org.agentmesh.profile-log.r2','--sync-interval','60','--logs',str(tmp_path/'logs')]
+    assert service.main(argv)==0
+    data=next(out.iterdir()).read_bytes(); assert b'--s3-credentials' in data
+    with pytest.raises(FileExistsError): service.main(argv)
+    assert next(out.iterdir()).read_bytes()==data
+    assert not (tmp_path/'logs').exists()
+
+
+def test_r2_generate_missing_credentials(tmp_path):
+    from test_profile_log_bridge import config
+    db,path,value=config(tmp_path); out=tmp_path/'units'
+    with pytest.raises(ValueError): service.main(['generate','--unit','broker','--platform','macos','--database',str(db),
+        '--home',str(tmp_path/'home'),'--output',str(out),'--s3-bucket','profile-r2'])
+    assert not out.exists()
+
+
+def test_r2_parser_does_not_echo_secrets(tmp_path,capsys):
+    secret='fedc9876'*8
+    with pytest.raises(SystemExit): service.main(['generate','--unit','broker','--platform','macos',
+        '--database',str(tmp_path/'db'),'--home',str(tmp_path/'home'),'--output',str(tmp_path/'out'),'--sync-interval',secret])
+    captured=capsys.readouterr(); assert secret not in captured.out+captured.err
+
+
+@pytest.mark.parametrize('logs',['relative','/bad\nlogs','/bad\x85logs'])
+def test_r2_logs_validation(tmp_path,logs):
+    with pytest.raises(ValueError): service.render_profile_units('macos','broker',[str(tmp_path/'python'),'-m','agentmesh_log.cli'],
+        home=str(tmp_path/'home'),remote=remote_config(),logs=logs)

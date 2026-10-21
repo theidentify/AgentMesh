@@ -1,33 +1,35 @@
 """S3-compatible plain PUT storage. Unique keys, not the backend, ensure immutability."""
-import re
+import logging
 from . import validate_key, validate_data, InvalidKey, StorageError, ObjectNotFound
 
 
-def _failed(action, exc):
-    # Only a well-formed S3 error code or the exception class name; never messages, keys or credentials.
-    code = getattr(exc, 'response', {}).get('Error', {}).get('Code') if isinstance(getattr(exc, 'response', None), dict) else None
-    reason = code if type(code) is str and re.fullmatch('[A-Za-z0-9.]{1,64}', code) else type(exc).__name__
-    return StorageError(f'S3 {action} failed ({reason})')
-
-
 class S3Storage:
+    backend = 's3'
     def __init__(self, bucket, *, prefix='', endpoint_url=None, region_name='auto', client=None, client_factory=None):
         validate_key(prefix, prefix=True)
         self.bucket = bucket
         self.prefix = prefix.rstrip('/') + '/' if prefix else ''
+        # SDK debug records include Authorization headers and signed URLs.
+        for name in ('boto3','botocore','s3transfer','urllib3'):
+            logger=logging.getLogger(name); logger.handlers=[logging.NullHandler()]; logger.propagate=False
+            for child in list(logging.Logger.manager.loggerDict):
+                if child.startswith(name+'.'): logging.getLogger(child).disabled=True
         if client is None:
             if client_factory is None:
                 try: import boto3
-                except ImportError: raise StorageError('S3 backend requires optional boto3 dependency') from None
-                client_factory = boto3.client
+                except ImportError: pass
+                else: client_factory = boto3.client
+                if client_factory is None: raise StorageError('S3 backend requires optional boto3 dependency') from None
             try: client = client_factory('s3', endpoint_url=endpoint_url, region_name=region_name)
-            except Exception: raise StorageError('S3 client initialization failed') from None
+            except Exception: pass
+            if client is None: raise StorageError('S3 client initialization failed') from None
         self.client = client
 
     def put(self, key, data):
         validate_key(key); validate_data(data)
-        try: self.client.put_object(Bucket=self.bucket, Key=self.prefix + key, Body=data)
-        except Exception as exc: raise _failed('put', exc) from None
+        try: self.client.put_object(Bucket=self.bucket, Key=self.prefix + key, Body=data); return
+        except Exception: pass
+        raise StorageError('S3 put failed') from None
 
     def get(self, key):
         validate_key(key)
@@ -36,9 +38,12 @@ class S3Storage:
             try: return body.read()
             finally: body.close()
         except Exception as exc:
-            code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
-            if code in ('NoSuchKey', '404', 'NotFound'): raise ObjectNotFound('object not found') from None
-            raise _failed('get', exc) from None
+            response=getattr(exc,'response',None)
+            error=response.get('Error') if type(response) is dict else None
+            code=error.get('Code') if type(error) is dict else None
+            missing=type(code) is str and code in ('NoSuchKey','404','NotFound')
+        if missing: raise ObjectNotFound('object not found') from None
+        raise StorageError('S3 get failed') from None
 
     def list(self, prefix, *, page_size=None, start_after=None):
         validate_key(prefix, prefix=True)
@@ -56,6 +61,6 @@ class S3Storage:
                     try: validate_key(key)
                     except InvalidKey: continue
                     if start_after is None or key > start_after: keys.append(key)
-        except StorageError: raise
-        except Exception as exc: raise _failed('list', exc) from None
-        return iter(sorted(keys))
+        except Exception: pass
+        else: return iter(sorted(keys))
+        raise StorageError('S3 list failed') from None

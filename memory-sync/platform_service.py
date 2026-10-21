@@ -3,6 +3,8 @@ from pathlib import Path
 import plistlib
 import json
 import math
+import re
+from urllib.parse import urlsplit
 import unicodedata
 
 
@@ -75,8 +77,8 @@ def main(argv=None):
 
 
 
-def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=None,agent_key=None,interval=300,authority=True):
-    """Render opt-in broker/catch-up units; no registration or remote sync."""
+def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=None,agent_key=None,interval=300,authority=True,remote=None,logs=None):
+    """Render opt-in broker/catch-up units without registering or starting them."""
     import subprocess
     import xml.etree.ElementTree as ET
     if platform not in ('macos','linux','windows') or unit not in ('broker','catch-up'): raise ValueError('invalid unit')
@@ -91,8 +93,30 @@ def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=Non
         if not authority: return {}
         _validate(cli_argv[0],database,mapping,agent_key,interval)
         argv=[*cli_argv,'migrate','catch-up','--db',database,'--mapping',mapping,'--agent-key',agent_key]
+    if remote is not None:
+        if unit!='broker' or type(remote) is not dict or set(remote)!={'bucket','prefix','endpoint','credentials','sync_interval'}:
+            raise ValueError('invalid remote')
+        bucket,prefix,endpoint,credentials,seconds=(remote[k] for k in ('bucket','prefix','endpoint','credentials','sync_interval'))
+        if any(type(v) is not str or any(unicodedata.category(c)=='Cc' for c in v) for v in (bucket,prefix,endpoint,credentials)):
+            raise ValueError('invalid remote')
+        if not re.fullmatch('[a-z0-9][a-z0-9-]{1,61}[a-z0-9]',bucket): raise ValueError('invalid bucket')
+        parsed=urlsplit(endpoint)
+        if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in endpoint):
+            raise ValueError('invalid endpoint')
+        # Same grammar as profile-log.storage.validate_key(prefix=True), without a package dependency.
+        value=prefix[:-1] if prefix.endswith('/') else prefix
+        if len(prefix)>1024 or (prefix and (not value or any(not re.fullmatch('[A-Za-z0-9_-][A-Za-z0-9._-]*',p) for p in value.split('/')))):
+            raise ValueError('invalid prefix')
+        if not re.fullmatch(r'keychain:[A-Za-z0-9.-]+',credentials): raise ValueError('invalid credentials reference')
+        if type(seconds) not in (int,float) or not math.isfinite(seconds) or seconds<10: raise ValueError('invalid sync interval')
+        argv+=['--s3-bucket',bucket,'--s3-prefix',prefix,'--s3-endpoint',endpoint,'--s3-credentials',credentials,'--sync-interval',format(seconds,'g')]
+    if logs is not None:
+        if unit!='broker': raise ValueError('invalid logs')
+        _validate(cli_argv[0],logs,logs,logs,interval)
     if platform=='macos':
         value=dict(Label=stem,ProgramArguments=argv,RunAtLoad=True,Umask=0o077)
+        if logs is not None:
+            value.update(StandardOutPath=str(Path(logs)/'broker.out.log'),StandardErrorPath=str(Path(logs)/'broker.err.log'))
         if unit=='broker': value['KeepAlive']=True
         else: value['StartInterval']=int(interval)
         return {stem+'.plist':plistlib.dumps(value)}
@@ -123,17 +147,26 @@ def generate_profile_units(argv):
     import argparse
     import os
     from profile_log_bridge import load_config
-    p=argparse.ArgumentParser(description='Render profile-log service files only')
+    class SafeParser(argparse.ArgumentParser):
+        def error(self,message): self.exit(2,'invalid service arguments\n')
+    p=SafeParser(description='Render profile-log service files only')
     p.add_argument('command',choices=['generate']); p.add_argument('--unit',choices=['broker','catch-up'],required=True)
     p.add_argument('--platform',choices=['macos','linux','windows'],required=True)
     p.add_argument('--database',required=True); p.add_argument('--home',required=True)
     p.add_argument('--output',required=True,help='new directory for generated files')
     p.add_argument('--interval',type=float,default=300)
+    p.add_argument('--s3-bucket'); p.add_argument('--s3-prefix',default=''); p.add_argument('--s3-endpoint')
+    p.add_argument('--s3-credentials'); p.add_argument('--sync-interval',type=float,default=60); p.add_argument('--logs')
     args=p.parse_args(argv)
+    remote=None
+    if args.s3_bucket is not None:
+        remote=dict(bucket=args.s3_bucket,prefix=args.s3_prefix,endpoint=args.s3_endpoint,
+            credentials=args.s3_credentials,sync_interval=args.sync_interval)
+    elif args.s3_prefix or args.s3_endpoint or args.s3_credentials: raise ValueError('invalid remote')
     config=load_config(args.database)
     if not config or not config['enabled']: raise ValueError('bridge not enabled')
     files=render_profile_units(args.platform,args.unit,config['cli_argv'],home=args.home,database=args.database,
-        mapping=config['mapping'],agent_key=config['import_agent_key'],interval=args.interval,authority=config['authority'])
+        mapping=config['mapping'],agent_key=config['import_agent_key'],interval=args.interval,authority=config['authority'],remote=remote,logs=args.logs)
     if not files: return 0
     root=Path(args.output)
     if not root.is_absolute() or any(unicodedata.category(c)=='Cc' for c in str(root)) or any(p.is_symlink() for p in (root,*root.parents)): raise ValueError('invalid output')

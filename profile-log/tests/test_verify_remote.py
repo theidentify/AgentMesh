@@ -1,6 +1,7 @@
 """Read-only remote verification, including content-free failure output."""
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -143,7 +144,8 @@ def test_markers_not_folded(synced, capsys, probe):
 
 
 def test_sample(synced, tmp_path, capsys, monkeypatch):
-    db = tmp_path / 'source ?#.db'
+    # URI-special characters in the path; '?' is not a valid Windows filename character.
+    db = tmp_path / ('source ?#%.db' if os.name == 'posix' else 'source #%.db')
     content = 'SECRET sampled content has at least six words in this sentence'
     with sqlite3.connect(db) as conn:
         conn.execute('CREATE TABLE memory_items (content TEXT, status TEXT)')

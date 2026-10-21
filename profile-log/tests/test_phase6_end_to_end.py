@@ -63,10 +63,11 @@ def test_p6_e2e(prefix):
             assert command({'op':'tool','tool':'recall','arguments':{'query':'queued-e2e-marker'}})['data']['results']
             command({'op':'tool','tool':'remember','arguments':{'body':'secret-e2e-marker','label':'secret'}})
             assert not command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})['data']['results']
-            start=now();cr.publish(secret_record(state.device,app,start,start+1000));bridge.controls(force=True)
+            # Wide enough for slow CI runners (Windows) to recall inside the window.
+            start=now();cr.publish(secret_record(state.device,app,start,start+5000));bridge.controls(force=True)
             assert command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})['data']['results']
             import time
-            time.sleep(1.05)
+            while now()<=start+5000: time.sleep(0.1)
             assert not command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})['data']['results']
             assert command({'op':'revoke'})['ok'];bridge.controls(force=True)
             assert command({'op':'tool','tool':'recall','arguments':{'query':'live-e2e-marker'}})['error'] in ('denied','invalid_token')
@@ -127,9 +128,9 @@ def run_inprocess(tmp_path,*,prefix=''):
         assert command({'op':'tool','tool':'remember','arguments':{'body':'secret-e2e-marker','label':'secret'}})['status']=='stored'
         before=command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})
         assert before['data']['results']==[]
-        start=now();cr.publish(secret_record(state.device,app,start,start+1000));bridge.controls(force=True)
+        start=now();cr.publish(secret_record(state.device,app,start,start+5000));bridge.controls(force=True)
         assert command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})['data']['results']
-        time.sleep(1.05)
+        while now()<=start+5000: time.sleep(0.1)
         assert command({'op':'tool','tool':'recall','arguments':{'query':'secret-e2e-marker'}})==before
         assert command({'op':'revoke'})['ok'];bridge.controls(force=True)
         assert command({'op':'tool','tool':'recall','arguments':{'query':'live-e2e-marker'}})['error'] in ('denied','invalid_token')

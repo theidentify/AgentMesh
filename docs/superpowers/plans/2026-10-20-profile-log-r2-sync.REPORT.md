@@ -744,3 +744,36 @@ pass, as does the existing portable test-ID check. `git diff --check` passes.
 ### Review of the lock change (Claude, 2026-10-21)
 - Outside the sandbox: `profile-log/tests` → **511 passed, 5 skipped**, three consecutive runs.
 - Mutation: moving `StagedRemote(...)` (remote LIST/GET) back under `self.lock` makes `test_sync_staging.py` fail.
+
+### I-5 — read-only remote verification
+
+Implemented `python -m agentmesh_log.verify_remote`: inventory/hash comparison, remote wire parsing and
+signed event/path checks, case-sensitive UTF-8 marker scanning (probes of 6+ chars) (including local profile/scope/agent names),
+read-only SQLite sampling, and a disposable restore with local epochs or unwrapped child keys. Output
+is one content-free JSON line with exit codes 0/1/2. No broker construction or lock; filesystem roots
+must already exist. `cli.remote_storage` accepts an optional filesystem factory so the verifier can
+reuse remote configuration and Keychain-only S3 credentials without creating directories. README and
+the D-5 command are updated. A running broker can change objects between observations; this is not an
+atomic snapshot, and a concurrent change can require another verification run.
+
+TDD: the new test file first failed collection because the module did not exist. The targeted command
+passed **19 tests** after implementation (3.93s), covering filesystem and moto S3, missing/tampered
+objects, automatic markers, plaintext/credential/key redaction, read-only DB sampling, unchanged
+home/remote/DB mtimes and SHA-256, malformed arguments, missing roots, wrap-based restore and cleanup:
+
+```sh
+env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests/test_verify_remote.py
+env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests
+```
+
+The first full run caught missing explicit parametrization IDs; those were fixed. Final full result:
+**525 passed, 5 skipped, 5 failed in 46.44s**. All failures are expected sandbox socket-bind denials:
+`test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+`test_p5_4_concurrent_processes`, and `test_s3_custom_http_endpoint`. All 19 verifier cases pass.
+`git diff --check` passes. No live network, installations, new dependencies, commits or GATES.md.
+
+### Review of I-5 (Claude, 2026-10-21)
+- Changed marker matching to case-sensitive, probes >= 6 chars. ASCII case-folding plus 4-char probes (e.g. `work`)
+  would hit random base64 ciphertext by chance (~0.7 expected hits over 459 objects). New tests
+  `test_markers_not_folded[case|profile-case|short]`.
+- Outside the sandbox with a basetemp outside `tempfile.gettempdir()`: `profile-log/tests` → **533 passed, 5 skipped**.

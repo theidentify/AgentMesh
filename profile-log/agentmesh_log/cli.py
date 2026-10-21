@@ -94,10 +94,11 @@ def parser():
     return p
 
 
-def remote_storage(args):
+def remote_storage(args, *, filesystem_factory=None):
+    """Build a remote; an alternate filesystem factory can require an existing root."""
     if args.filesystem:
         from .storage.filesystem import FilesystemStorage
-        return FilesystemStorage(args.filesystem)
+        return (filesystem_factory or FilesystemStorage)(args.filesystem)
     if args.s3_bucket:
         from .storage.s3 import S3Storage
         from .storage.r2creds import validate_remote, load_keychain_credentials

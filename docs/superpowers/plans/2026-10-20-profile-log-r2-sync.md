@@ -94,13 +94,13 @@ Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no
   plus the last ok time. The card shows "stale" when `at` is older than 3× `interval_s`.
 - Read-only, as before; Insight never reads credentials or contacts R2.
 
-### I-5 Verification tool (`profile-log/tools/verify_remote.py`, read-only)
+### I-5 Verification tool (`profile-log/agentmesh_log/verify_remote.py`, read-only)
 - Inputs: home, the same `--s3-*` flags, `--markers FILE` (local plaintext probes, see G-5).
 - It lists the remote prefix, compares the key set with the local replica (`events/ keys/ registry/
   keyring/ profiles/ alerts/`), and compares the **sha256 of every object** on both sides. It parses every
   `events/` and `keys/` object as a sealed envelope or wrap, and every control object as a signed record.
-  It scans every remote byte string for each marker. It does a restore rehearsal: `Replica.sync_once` from
-  R2 into a disposable empty `FilesystemStorage` under `$TMPDIR`, then verifies and opens events with the
+  It scans every remote byte string for each marker. It does a restore rehearsal: downloads remote events and wraps into
+  a disposable empty `FilesystemStorage` under `$TMPDIR`, then verifies and opens events with the
   local keys, compares counts, and deletes the temp directory.
 - Output: one JSON line of counts and booleans only (`missing_remote, missing_local, hash_mismatch,
   unparsable, marker_hits, restored_events, opened_events`). It never prints keys, markers, bodies or
@@ -114,7 +114,7 @@ Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no
 | G-2 No credential leakage (code) | grep diff + tests: no `AWS_` fallback, no secret in argv/plist/status/logs/exceptions | test asserts with sentinel secrets |
 | G-3 Default unchanged | rendering without `remote` is byte-identical; `broker run` without flags behaves as today | fixture test |
 | G-4 Live smoke (owner's terminal) | `AGENTMESH_R2_LIVE=1 pytest profile-log/tests/test_r2_live.py` against the existing bucket/token (values entered by the owner, as on 2026-10-19) | 3 passed, cleanup verified |
-| G-5 Ciphertext only | `verify_remote.py` with markers: all profile/scope paths, agent names, owner email, device hostname, 25 random memory snippets of 6+ words from `mac.db` (generated locally into a 0600 temp file the owner deletes after) | `marker_hits=0`, `unparsable=0` |
+| G-5 Ciphertext only | `verify_remote.py` with markers: all profile/scope paths, agent names, owner email, device hostname, 25 random memory snippets of 6+ words from `mac.db` (`--sample-db` / `--sample 25`, kept only in memory; owner-supplied markers in a 0600 file the owner deletes after) | `marker_hits=0`, `unparsable=0` |
 | G-6 Heads match | same run | `missing_remote=0 missing_local=0 hash_mismatch=0`; remote events = 438 (+ new since) |
 | G-7 Restore rehearsal | same run | `restored_events == local events`, `opened_events == restored_events` |
 | G-8 Steady state | 10 min after D-6: status `last_sync.outcome=ok`, `outbox=0`; `remember` a synthetic memory → within 2 intervals `uploaded≥1`, then `outbox=0`; `launchctl print` shows one broker PID, no restarts | all hold |
@@ -140,8 +140,11 @@ I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner cr
 - **D-5 First sync, one-shot (owner's terminal).** `launchctl bootout gui/$UID/org.agentmesh.profile-log.broker`,
   then `agentmesh-log broker sync --home ~/.agentmesh/profile-log --s3-bucket B --s3-prefix v1/
   --s3-endpoint E --s3-credentials keychain:org.agentmesh.profile-log.r2`. Expect
-  `uploaded≈459 downloaded=0 invalid=0 errors=0`. Then run `verify_remote.py` → **G-5, G-6, G-7**. If any
-  gate fails, stop: go to rollback R-1 and leave the remote data for analysis.
+  `uploaded≈459 downloaded=0 invalid=0 errors=0`. Then run this exact command (replace `B`, `E`, `MARKERS_FILE`, and `MAC_DB` with the owner's local values) → **G-5, G-6, G-7**:
+  ```sh
+  ~/.agentmesh/venv/bin/python -m agentmesh_log.verify_remote --home ~/.agentmesh/profile-log --s3-bucket B --s3-prefix v1/ --s3-endpoint E --s3-credentials keychain:org.agentmesh.profile-log.r2 --markers MARKERS_FILE --sample-db MAC_DB --sample 25
+  ```
+  If any gate fails, stop: go to rollback R-1 and leave the remote data for analysis.
 - **D-6 New plist.** `platform_service.py generate --unit broker … --s3-* … --sync-interval 60 --logs
   ~/.agentmesh/logs --output <new dir>`. `diff` against the live plist shows only the added flags. Then
   install it and `launchctl bootstrap gui/$UID …`.

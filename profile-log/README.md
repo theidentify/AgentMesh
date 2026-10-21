@@ -150,6 +150,11 @@ sorted; leaving it unset preserves the backend's default page size.
 
 ## Broker
 
+Run `python -m agentmesh_log.verify_remote --home H --filesystem DIR --markers FILE` for read-only verification
+(or use the broker’s `--s3-*` flags with Keychain credentials). It emits one JSON line of counts, checks
+remote hashes and plaintext probes, and rehearses restore in a disposable directory without a broker lock.
+Add `--sample-db DB --sample 25` to scan in-memory snippets from a read-only SQLite source.
+
 Phase 3 adds a local memory broker, per-agent RAM-only SQLite FTS5 indexes,
 mutual device/agent authentication, secret/PII detection, encrypted index snapshots,
 a local encrypted replica and explicit synchronization. The earlier library APIs

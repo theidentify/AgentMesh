@@ -80,6 +80,9 @@ host's permission model; POSIX files are created with mode 0600.
 `S3Storage(bucket, prefix='', endpoint_url=None, region_name='auto', client=None,
 client_factory=None)` supports R2, B2, Garage and SeaweedFS-style endpoints through boto's
 normal client configuration. An injected client/factory can configure path-style addressing.
+The broker CLI always supplies explicit Keychain credentials (see below); it never uses
+boto's default credential chain. S3 failures expose fixed messages without captured exception
+context. SDK/HTTP debug logging is suppressed because it can expose signed credentials.
 S3 uses plain PUT and can overwrite: immutability depends on unique event ULIDs, unique wrap
 keys and, later, the Worker. Backend prefixes are isolated directory-like namespaces.
 No conditional writes, deletes, locks or server events are used.
@@ -146,6 +149,16 @@ value such as `2`, it configures boto's paginator while still returning all matc
 sorted; leaving it unset preserves the backend's default page size.
 
 ## Broker
+
+Run `python -m agentmesh_log.verify_remote --home H --filesystem DIR --markers FILE` for read-only verification
+(or use the broker’s `--s3-*` flags with Keychain credentials). It emits one JSON line of counts, checks
+remote hashes and plaintext probes, and rehearses restore in a disposable directory without a broker lock.
+Add `--sample-db DB --sample 25` to scan in-memory snippets from a read-only SQLite source.
+Remote-only prefixes outside the replica (for example `outbox/`) are counted as `unknown_remote` and still scanned.
+
+`python -m agentmesh_log.backup create --home H --out FILE --include PATH…` (POSIX) asks for consent, then writes
+one age file encrypted to this device and the account recovery key; no plaintext archive touches disk.
+`restore --in FILE --to NEW_DIR` decrypts with the device identity.
 
 Phase 3 adds a local memory broker, per-agent RAM-only SQLite FTS5 indexes,
 mutual device/agent authentication, secret/PII detection, encrypted index snapshots,
@@ -216,9 +229,31 @@ Writes and recall do not need a remote. To synchronize explicitly:
 ~/.cache/agentmesh-logvenv/bin/python -m agentmesh_log.cli broker sync --home H --filesystem REPLICA_DIRECTORY
 ```
 
-The optional S3 form uses `--s3-bucket`, `--s3-prefix` and `--s3-endpoint`.
+The optional S3 form requires `--s3-bucket`, an HTTPS `--s3-endpoint`, and
+`--s3-credentials keychain:SERVICE`; `--s3-prefix` selects a namespace. The login
+Keychain service contains accounts `access-key-id` (32 lowercase hex characters) and
+`secret-access-key` (64 lowercase hex characters). Credentials never go in command
+arguments or service files. Ambient AWS environment variables and credential files
+are not used by the broker.
+
 `broker run --sync-interval S` requires the same explicit remote flags; automatic
-synchronization is off by default. No service or daemon is installed. Only invoke
+synchronization is off by default. With an interval, the first attempt is immediate.
+Each S3 attempt rereads both Keychain items, allowing missing/refused credentials to
+recover without a restart. One-shot `broker sync` returns a nonzero exit code for
+missing/refused credentials. Background failures keep the broker running.
+
+The CLI writes `H/sync-status.json` atomically with mode 0600. Its strict schema is
+`at` (UTC ISO timestamp), `outcome` (`ok`, `credentials_missing`, `credentials_refused`,
+`remote_error`, `error`), nonnegative integer `uploaded`, `downloaded`, `invalid`,
+`errors`, `outbox`, `local_objects`, `remote_objects`, positive finite `interval_s`,
+and `backend` (`s3` or `filesystem`). Counts cover events, wraps and control objects;
+remote counts retain the last completed attempt's listing on failure. Outbox counts
+local objects absent from that listing. Status writes occur when outcome/counts change
+or after 600 seconds; stderr emits one content-free line per outcome change. No bucket,
+endpoint, object names, or credentials are recorded. This separate file is the temporary
+integration point until the status work from PR #61 is merged.
+
+No service or daemon is installed. Only invoke
 remote synchronization when you intend to access that remote. `Replica.outbox()`
 counts local event/wrap objects absent from the last successful remote listing.
 Downloaded events must pass certificate/signature and object-path verification.
@@ -430,6 +465,14 @@ and remaps retire the old scope's chain before creating the new root. Runs resum
 the encrypted replica after interruption, including interruption between the two remap
 signatures. Reports contain source IDs, chain IDs, scope names, status and reasons, never
 content or hashes. Report output is exclusive-create, mode 0600, outside the replica.
+Catch-up keeps a local accelerator cache at `DB.profile-log.catch-up.json` (override
+with `AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE`; mode 0600). Each entry pairs a source
+reference with a SHA-256 fingerprint of its last confirmed intent and the resulting ledger
+event. A row whose fingerprint and current ledger head both match is counted unchanged
+without an `import` request, so idle cycles audit only handshake, `import_ledger` and
+`whoami`. Changed rows, remaps, retirements, hook or peer revisions (a moved ledger head)
+and a missing or unreadable cache all fall back to sending the import. Deleting the cache
+is always safe.
 `migrate rows` accepts up to 500 repeated `--ref memory_items:ID` or
 `--ref memory_summaries:ID` arguments.
 

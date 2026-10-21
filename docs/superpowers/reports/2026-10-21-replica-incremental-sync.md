@@ -19,7 +19,20 @@ Setup: 30,000 objects across 7 scope prefixes, 5 `keys/` objects, one new event 
 
 The steady state no longer grows with total history. It is 1 LIST for `keys/` plus 1 per scope prefix, plus GETs for new objects only. `keys/` stays small (one wrap per non-root scope per key epoch; 5 in the fixture), so it is still listed in full.
 
-## Remaining costs (not changed here)
-- **Scopes and devices:** cost per cycle scales with the number of scopes, and the 1M free Class A per month is shared by every device on the account.
-- **Phase 4 `keyring.sync_control`:** still lists `registry/`, `keyring/`, `keys/`, `profiles/` and `alerts/` in full every cycle, which adds about 5 pages per cycle.
+## Through the broker (after #62)
+#62 changed `Broker.sync_once` to stage one listing of `events/`, `keys/`, `registry/`, `keyring/`, `profiles/` and `alerts/` per cycle, outside the broker lock. After this PR:
+- `events/` and `keys/` come from `Replica.prepare()` (under the lock) and `Replica.plan()` (outside it).
+- The 4 control prefixes are still listed whole; they are small.
+- Prefetch skips objects in the negative cache.
+
+Calculated per cycle at 30k objects (not measured):
+
+| | Pages/cycle | Pages/30 days |
+|---|---:|---:|
+| main after #62 (one staged full listing) | 30 + 1 + 4 = 35 | 1,512,000 |
+| this PR | 8 + 4 = 12 | 518,400 |
+
+## Remaining costs
+- **Scopes, prefixes and devices:** cost per cycle scales with the number of scopes plus the 4 control prefixes, and the 1M free Class A per month is shared by every device on the account.
+- **Late events:** an event with an old ULID (a device offline for a long time, or with a clock more than 10 min slow) is picked up only by the daily reconciliation.
 - **Phase 6 outbox drain:** asked to use the same `start_after` cursor (note in the shared notes folder).

@@ -76,35 +76,47 @@ class Replica:
             if prefixes[prefix] is None or ms>prefixes[prefix]: prefixes[prefix] = ms
         return prefixes
 
-    def sync_once(self, remote, on_event=None, *, full=False):
-        result = dict(uploaded=0,downloaded=0,invalid=0,errors=0,skipped=0)
+    def prepare(self, *, full=False):
+        """Snapshot replica state for plan(); callers that share the replica run this under their lock."""
         token = self._verify_token()
         if token!=self._invalid_token: self._invalid.clear(); self._invalid_token = token
         now = self.clock()
         full = full or self.last_full is None or now-self.last_full>=self.reconcile_interval
         if full: self._invalid.clear()
-        try:
-            if full: remote_keys = set(remote.list('events/')) | set(remote.list('keys/'))
-            else:
-                remote_keys = set(remote.list('keys/'))
-                prefixes = self._prefixes(self.keys() | self.remote_keys | remote_keys)
-                for prefix,ms in sorted(prefixes.items()):
-                    if ms is None: remote_keys.update(remote.list(prefix))
-                    else:
-                        cursor_ms = min(ms,int(now*1000))-self.skew_margin*1000
-                        cursor = prefix + floor_ulid(max(0,int(cursor_ms)))
-                        remote_keys.update(remote.list(prefix,start_after=cursor))
-                remote_keys |= self.remote_keys
-        except Exception: result['errors'] += 1; return result
-        self.remote_keys = remote_keys
-        if full: self.last_full = now
+        return dict(full=full,now=now,local=self.keys(),remote=set(self.remote_keys),skip=frozenset(self._invalid))
+
+    def plan(self, remote, *, full=False, prepared=None):
+        """List what changed remotely: everything on start or daily, else keys/ plus each scope after its cursor."""
+        p = prepared or self.prepare(full=full); now = p['now']
+        if p['full']: remote_keys = set(remote.list('events/')) | set(remote.list('keys/'))
+        else:
+            remote_keys = set(remote.list('keys/'))
+            prefixes = self._prefixes(p['local'] | p['remote'] | remote_keys)
+            for prefix,ms in sorted(prefixes.items()):
+                if ms is None: remote_keys.update(remote.list(prefix))
+                else:
+                    cursor_ms = min(ms,int(now*1000))-self.skew_margin*1000
+                    cursor = prefix + floor_ulid(max(0,int(cursor_ms)))
+                    remote_keys.update(remote.list(prefix,start_after=cursor))
+            remote_keys |= p['remote']
+        return dict(full=p['full'],now=now,keys=remote_keys,skip=p['skip'])
+
+    def sync_once(self, remote, on_event=None, *, full=False, plan=None):
+        result = dict(uploaded=0,downloaded=0,invalid=0,errors=0,skipped=0)
+        if plan is None:
+            try: plan = self.plan(remote,full=full)
+            except Exception: result['errors'] += 1; return result
+        # State may change between planning and applying; the next plan retries those objects.
+        if self._verify_token()!=self._invalid_token: self._invalid.clear(); self._invalid_token = self._verify_token()
+        remote_keys = plan['keys']; self.remote_keys = remote_keys
+        if plan['full']: self.last_full = plan['now']
         uploaded = set()
         local = self.keys()
         for key in sorted(local-remote_keys):
             try: remote.put(key,self.storage.get(key)); uploaded.add(key); result['uploaded'] += 1
             except Exception: result['errors'] += 1
         for key in sorted(remote_keys-local):
-            if key in self._invalid: result['skipped'] += 1; continue
+            if key in plan['skip']: result['skipped'] += 1; continue
             try: data = remote.get(key)
             except Exception: result['errors'] += 1; continue
             try:

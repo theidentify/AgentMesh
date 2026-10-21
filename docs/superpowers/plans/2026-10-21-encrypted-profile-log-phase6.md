@@ -49,7 +49,7 @@ support remote connectors.
   - What an app recalls or remembers is visible to that app's vendor, and to Cloudflare in transit.
   - Storage still holds only ciphertext.
 
-**Proposed defaults. Confirm these before execution starts:**
+**Confirmed by the owner on 2026-10-21 (D1–D4):**
 
 - **D1 Remember target:** each profile's `inbox` scope, created if missing. The app's policy names which
   profiles it may write.
@@ -318,7 +318,7 @@ Rules for the surface:
 
 ## Owner deploy steps (after merge; not run by Codex)
 
-- **D-1** Confirm D1–D4 and that #62 is live.
+- **D-1** Check that #62 is live. D1–D4 were confirmed on 2026-10-21.
 - **D-2** Create the named Tunnel and the Access service token. Run the `cloudflared` connector and
   `bridge serve` on the Mac (using the rendered services). Do the same on Windows after its profile-log rollout.
 - **D-3** Generate the gateway key and run `connector gateway-init` on the Mac to write the gateway record. Run

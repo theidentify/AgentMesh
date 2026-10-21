@@ -67,6 +67,25 @@ class SyncRemote:
     def get(self,key): return self.call('get',key)
 
 
+class StagedRemote:
+    """One immutable listing and prefetched objects; writes wait for the flush."""
+    def __init__(self,remote,local):
+        self.keys={key for prefix in PREFIXES for key in remote.list(prefix)}
+        self.data={}; self.uploads=[]
+        for key in sorted(self.keys-local):
+            try: self.data[key]=remote.get(key)
+            except StorageError: pass
+
+    def list(self,prefix): return iter(sorted(k for k in self.keys if k.startswith(prefix)))
+
+    def get(self,key):
+        if key not in self.data: raise StorageError('remote operation failed')
+        return self.data[key]
+
+    def put(self,key,data):
+        self.uploads.append((key,data)); self.keys.add(key); self.data[key]=data
+
+
 @dataclass
 class Session:
     certificate: dict
@@ -97,7 +116,8 @@ class Broker:
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
         self._payload_cache={}
         self.on_sync=on_sync; self._last_sync=None; self._sync_written=None; self._sync_outcome=None
-        self._remote_keys=set(); self._sync_remote=None; self.sync_thread=None
+        self._remote_keys=set(); self.sync_thread=None
+        self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
         from .imports import Imports
         self.imports=Imports(self)
         for grant in self.state.grants.values(): self.index(grant)
@@ -332,27 +352,48 @@ class Broker:
         return {key for prefix in PREFIXES for key in self.replica.storage.list(prefix)}
 
     def sync_once(self, remote):
-        with self.lock:
-            self.refresh()
-            remote=SyncRemote(remote); self._sync_remote=remote
-            before=self.local_keys()
-            if self.state.control.get('phase4'):
-                from ..keyring import sync_control
-                sync_control(self.home,self.store,remote); self.refresh()
-            controls=self.local_keys()-before
-            for grant in self.state.grants.values(): self.index(grant)
-            result=self.replica.sync_once(remote,on_event=self.ingest)
-            result['uploaded']=remote.uploaded; result['downloaded']+=len(controls)
-            if not remote.errors: self._remote_keys=remote.keys
-            if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
+        with self._sync_lock:
+            remote=remote if isinstance(remote,SyncRemote) else SyncRemote(remote)
+            # Filesystem listings are safe alongside immutable local writes.
+            local=self.local_keys()
+            try: staged=StagedRemote(remote,local)
+            except StorageError: return dict(uploaded=0,downloaded=0,invalid=0,errors=remote.errors)
+            failed=set()
+            try:
+                with self.lock:
+                    self.refresh(); before=self.local_keys()
+                    if self.state.control.get('phase4'):
+                        from ..keyring import sync_control
+                        sync_control(self.home,self.store,staged); self.refresh()
+                    controls=self.local_keys()-before
+                    for grant in self.state.grants.values(): self.index(grant)
+                    result=self.replica.sync_once(staged,on_event=self.ingest)
+                    result['downloaded']+=len(controls)
+                    if not remote.errors: self._remote_keys=set(staged.keys)
+                    if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
+            finally:
+                # Even a partial control apply may have queued immutable uploads.
+                for key,data in staged.uploads:
+                    try: remote.put(key,data)
+                    except StorageError: failed.add(key)
+                with self.lock:
+                    self.replica.remote_keys.difference_update(failed)
+                    self._remote_keys.difference_update(failed)
+            result['uploaded']=remote.uploaded
+            result['errors']=max(result['errors']+len(failed),remote.errors)
             return result
 
     def sync_attempt(self,remote,interval):
+        # Serialize status publication too; sync_once also protects the CLI path.
+        with self._attempt_lock: self._sync_attempt(remote,interval)
+
+    def _sync_attempt(self,remote,interval):
         row=dict.fromkeys(COUNTS,0); row.update(outcome='ok',interval_s=interval,backend=getattr(remote,'backend','filesystem'))
-        self._sync_remote=None
+        measured=None
         try:
             target=remote() if callable(remote) else remote
-            result=self.sync_once(target)
+            measured=SyncRemote(target)
+            result=self.sync_once(measured)
             for k in ('uploaded','downloaded','invalid','errors'): row[k]=result[k]
             if row['errors']: row['outcome']='remote_error'
         except StorageError as exc:
@@ -363,9 +404,9 @@ class Broker:
         try:
             with self.lock:
                 local=self.local_keys()
-                if self._sync_remote is not None:
-                    row['uploaded']=self._sync_remote.uploaded
-                    row['errors']=max(row['errors'],self._sync_remote.errors)
+                if measured is not None:
+                    row['uploaded']=measured.uploaded
+                    row['errors']=max(row['errors'],measured.errors)
                 row.update(outbox=len(local-self._remote_keys),local_objects=len(local),remote_objects=len(self._remote_keys))
         except Exception: row['outcome']='error'; row['errors']+=1
         row['at']=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')

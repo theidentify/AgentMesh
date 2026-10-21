@@ -675,6 +675,72 @@ Verification outside the sandbox (socket tests included), from the repository ro
   1 failed: `test_digest_api.py::test_client_envelope_satisfies_bounded_extract_command`, which fails the same way on
   `origin/main` (12c6c91) and is unrelated to this change.
 
-Known limit (follow-up, not blocking): sync still runs under the broker lock, so each 60 s cycle pauses
-recall for the length of the LIST/PUT round trips (about a few seconds; the first upload is done one-shot with the
-broker stopped, D-5). Moving network I/O outside the lock would remove this.
+Former lock limit resolved (2026-10-21 follow-up): remote LIST/GET now run in an unlocked fetch phase,
+and PUT runs in an unlocked flush phase. Only local apply and failed-upload reconciliation hold the broker
+lock. Authenticated broker-connection tests complete recall while LIST or PUT is blocked on an Event;
+ownership assertions cover every remote method, including control sync. Local verification/indexing still
+serialize requests, and prefetched objects plus queued upload bytes consume memory for the attempt.
+
+## PR #62 follow-up: staged network I/O (2026-10-21)
+
+`broker/service.py` now snapshots all six prefixes once and fetches objects absent from the filesystem
+replica without the request lock. Failed GETs become staged `StorageError`s. Under the request lock,
+`StagedRemote` supplies the snapshot and prefetched bytes and queues PUTs while the existing refresh,
+`sync_control`, indexing and `Replica.sync_once(on_event=self.ingest)` execute unchanged. Uploads then
+flush through `SyncRemote` outside the request lock; failed keys are removed from both remote-key sets
+under a short lock, preserving retryable outbox entries and counting only successful uploads. A partial
+control apply also flushes its queued immutable uploads before propagating the apply failure.
+
+A non-reentrant `_sync_lock` serializes the complete fetch/apply/flush flow for both direct one-shot
+sync and the background loop. A separate attempt lock serializes status publication; transfer counters
+belong to each attempt instead of a shared `_sync_remote` field. Existing status schema, throttling,
+outcomes, control download counts and alerts are preserved. Failed LISTs abort before apply and retain
+the previous remote snapshot, including the existing one-shot error-count return contract. Unlike the
+original conservative PUT-failure snapshot described above, a completed apply now retains successful
+uploads and removes just failed uploads, so outbox reports the remaining work accurately.
+
+All regression tests are in `profile-log/tests/broker/test_sync_staging.py`:
+
+- `test_recall_during_network` (LIST/PUT): real authenticated `BrokerClient`/`Broker.connection` over
+  in-memory channels; recall completes before the blocked remote is released, then sync reports `ok`.
+- `test_network_verified`: all remote method ownership assertions, six real LISTs,
+  verified event ingestion visible to recall, and invalid-object counting.
+- `test_failed_flush_retries` (replica/control): failed PUT reports `remote_error`, remains in outbox,
+  and succeeds on the next attempt with exact upload and outbox counts.
+- `test_sync_serialized` (loop/one-shot): concurrent sync entry points cannot overlap remote activity.
+- `test_failed_get_is_staged` (event/control): failed prefetch is counted and never fetched under lock.
+- `test_control_download_unlocked`: control bytes are downloaded and counted with no locked remote I/O.
+- `test_list_abort`: a late LIST failure performs no GET/PUT and preserves prior remote counts.
+
+TDD: the six initial cases were written before production changes and produced **5 failed, 1 passed**
+(3.16s): both blocked-recall cases, remote lock ownership, and both failed-upload cases reproduced the
+old behavior. Additional control/GET coverage passed (**9 passed**, 1.50s) before adding the direct
+one-shot concurrency and late-LIST cases. The first full run caught the one-shot LIST return regression
+and a test-name length violation; both were fixed without changing existing tests.
+
+No network services, installations, new dependencies or commits were used. Changes are confined to
+`profile-log/**` and this report. `keyring.py`, `broker/replica.py`, the CLI and existing tests are unchanged.
+
+Final required verification (live R2 disabled, socket tests enabled):
+
+```sh
+env -u AGENTMESH_R2_LIVE ~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests
+```
+
+```text
+FAILED profile-log/tests/broker/test_isolation.py::test_p3_1_processes
+FAILED profile-log/tests/broker/test_sync_status.py::test_connections_offline
+FAILED profile-log/tests/broker/test_transport.py::test_real_transport
+FAILED profile-log/tests/migrate/test_processes.py::test_p5_4_concurrent_processes
+FAILED profile-log/tests/test_storage.py::test_s3_custom_http_endpoint
+5 failed, 506 passed, 5 skipped in 43.37s
+```
+
+All five failures are `PermissionError: [Errno 1] Operation not permitted` from sandbox socket binding
+(four broker IPC cases and the HTTP endpoint test). None were skipped or changed. The five existing
+skips are the three opt-in live R2 cases and two Windows-only cases. All eleven new staged-sync cases
+pass, as does the existing portable test-ID check. `git diff --check` passes.
+
+### Review of the lock change (Claude, 2026-10-21)
+- Outside the sandbox: `profile-log/tests` → **511 passed, 5 skipped**, three consecutive runs.
+- Mutation: moving `StagedRemote(...)` (remote LIST/GET) back under `self.lock` makes `test_sync_staging.py` fail.

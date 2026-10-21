@@ -34,13 +34,14 @@ def test_immediate_retry_and_recovery(tmp_path,monkeypatch,capsys):
         if len(calls)==2: raise RuntimeError(SECRET)
         return dict(uploaded=0,downloaded=0,invalid=0,errors=0)
     monkeypatch.setattr(b,'sync_once',sync)
-    thread=threading.Thread(target=b.serve,kwargs=dict(server=server,remote=object(),sync_interval=.05)); start=time.monotonic(); thread.start()
+    thread=threading.Thread(target=b.serve,kwargs=dict(server=server,remote=object(),sync_interval=.3)); start=time.monotonic(); thread.start()
     try:
-        assert ready.wait(1) and calls[0]-start<.05
-        deadline=time.monotonic()+2
+        assert ready.wait(1) and calls[0]-start<.2
+        deadline=time.monotonic()+3
         while len(rows)<3 and time.monotonic()<deadline: time.sleep(.01)
         assert [r['outcome'] for r in rows[:3]]==['remote_error','error','ok']
-        assert calls[1]-calls[0]>=.05 and thread.is_alive()
+        # Windows timers can wake ~16 ms early; .25 still proves the interval wait.
+        assert calls[1]-calls[0]>=.25 and thread.is_alive()
         assert all(service.sync_status_valid(r) for r in rows)
     finally: b.close(); thread.join(2)
     output=capsys.readouterr().err

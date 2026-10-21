@@ -186,7 +186,7 @@ def initialize_keyring(state,storage):
     return ring
 
 
-def sync_control(home,store,remote):
+def sync_control(home,store,remote,*,apply_lock=None):
     """Pin immutable control objects locally, then validate before importing keys."""
     from .storage.filesystem import FilesystemStorage
     from .registry_store import RegistryStore
@@ -194,7 +194,7 @@ def sync_control(home,store,remote):
     from .agekeys import DeviceAgeIdentity
     from .keys import unwrap_key
     from .events import wrap_path
-    state=store.load(); local=FilesystemStorage(home.root/'replica')
+    local=FilesystemStorage(home.root/'replica')
     prefixes=('registry/','keyring/','keys/','profiles/','alerts/','connectors/')
     for prefix in prefixes:
         local_paths={p for p in local.list(prefix) if not p.startswith('connectors/gateway-state/')}
@@ -205,56 +205,61 @@ def sync_control(home,store,remote):
             try: parse(data)
             except ValueError: continue
             local.put(path,data)
-    rs=RegistryStore(local,state.account.public_record()); registry=rs.load()
-    state.control['registry_records']=registry_cache(rs)
-    state.certificates=list(registry.certificates.values())
-    import_metadata(state,local,registry)
-    from .bridge.inboxes import import_inboxes
-    import_inboxes(state,local,registry)
-    ring=AgeKeyring(local,registry,[s for t in state.trees for s in t.scopes.values()])
-    from .lifecycle import apply_profile_states
-    apply_profile_states(home,state,local,ring)
-    deleted=set(state.control.get('deleted',[]))
-    def add(key):
-        if key.profile_id in deleted: return False
-        tree=next((t for t in state.trees if t.root.scope_id==key.profile_id),None)
-        if tree is None or key.scope_id not in tree.scopes: return False
-        epochs=tree.epochs.setdefault(key.scope_id,[])
-        if any(k.key_id==key.key_id for k in epochs): return False
-        epochs.append(key); return True
-    for record in ring.records():
-        if record['recipient_device']!=state.device.device_id: continue
-        secret=state.control.get('profile_ages',{}).get(record['profile'])
-        if secret is None: continue
-        try: add(ring.open(record,state.device.device_id,DeviceAgeIdentity.parse(secret)))
-        except ValueError: continue
-    wraps=[]
-    for path in local.list('keys/'):
-        try:
-            record=parse(local.get(path))
-            if wrap_path(record)==path: wraps.append(record)
-        except ValueError: continue
-    changed=True
-    while changed:
-        changed=False
-        keys={k.key_id:k for t in state.trees for epochs in t.epochs.values() for k in epochs}
-        for wrap in wraps:
-            parent=keys.get(wrap['parent_key_id'])
-            if parent is None: continue
-            try: changed=add(unwrap_key(wrap,parent)) or changed
+    # Remote transfer never holds the caller's local state locks. Reload after
+    # transfer so concurrent local provisioning cannot be overwritten.
+    from contextlib import nullcontext
+    with apply_lock() if apply_lock else nullcontext():
+        state=store.load()
+        rs=RegistryStore(local,state.account.public_record()); registry=rs.load()
+        state.control['registry_records']=registry_cache(rs)
+        state.certificates=list(registry.certificates.values())
+        import_metadata(state,local,registry)
+        from .bridge.inboxes import import_inboxes
+        import_inboxes(state,local,registry)
+        ring=AgeKeyring(local,registry,[s for t in state.trees for s in t.scopes.values()])
+        from .lifecycle import apply_profile_states
+        apply_profile_states(home,state,local,ring)
+        deleted=set(state.control.get('deleted',[]))
+        def add(key):
+            if key.profile_id in deleted: return False
+            tree=next((t for t in state.trees if t.root.scope_id==key.profile_id),None)
+            if tree is None or key.scope_id not in tree.scopes: return False
+            epochs=tree.epochs.setdefault(key.scope_id,[])
+            if any(k.key_id==key.key_id for k in epochs): return False
+            epochs.append(key); return True
+        for record in ring.records():
+            if record['recipient_device']!=state.device.device_id: continue
+            secret=state.control.get('profile_ages',{}).get(record['profile'])
+            if secret is None: continue
+            try: add(ring.open(record,state.device.device_id,DeviceAgeIdentity.parse(secret)))
             except ValueError: continue
-    for tree in state.trees:
-        for sid,epochs in tree.epochs.items():
-            try: current=ring.current(tree.root.scope_id,sid)['key_id']
+        wraps=[]
+        for path in local.list('keys/'):
+            try:
+                record=parse(local.get(path))
+                if wrap_path(record)==path: wraps.append(record)
             except ValueError: continue
-            matches=[k for k in epochs if k.key_id==current]
-            if matches:
-                tree.keys[sid]=matches[0]
-                tree.epochs[sid]=[k for k in epochs if k.key_id!=current]+matches
-    from .recovery import collect_alerts
-    collect_alerts(state,local,registry)
-    store.save(state)
-    return state
+        changed=True
+        while changed:
+            changed=False
+            keys={k.key_id:k for t in state.trees for epochs in t.epochs.values() for k in epochs}
+            for wrap in wraps:
+                parent=keys.get(wrap['parent_key_id'])
+                if parent is None: continue
+                try: changed=add(unwrap_key(wrap,parent)) or changed
+                except ValueError: continue
+        for tree in state.trees:
+            for sid,epochs in tree.epochs.items():
+                try: current=ring.current(tree.root.scope_id,sid)['key_id']
+                except ValueError: continue
+                matches=[k for k in epochs if k.key_id==current]
+                if matches:
+                    tree.keys[sid]=matches[0]
+                    tree.epochs[sid]=[k for k in epochs if k.key_id!=current]+matches
+        from .recovery import collect_alerts
+        collect_alerts(state,local,registry)
+        store.save(state)
+        return state
 
 
 def publish_recipient(home,store,storage,profile):

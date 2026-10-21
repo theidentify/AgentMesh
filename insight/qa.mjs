@@ -105,6 +105,7 @@ await evaluate("document.querySelector('nav [data-view=metrics]').click()");
 const frame="document.getElementById('metrics-frame').contentDocument";
 assert.ok(await evaluate(`${frame}.querySelectorAll('#tokens svg rect').length>0`));
 for(const source of ['isolated','historical','bounded']){await evaluate(`${frame}.querySelector('[data-source=${source}]').click()`);assert.ok(await evaluate(`${frame}.getElementById('rowCount').textContent.includes('matching runs')`))}
+assert.deepEqual(await evaluate(`['status','trigger','model'].map(id=>${frame}.getElementById(id).options[0].textContent)`),['All statuses','All triggers','All models']);
 for(const id of ['status','trigger','model']){await evaluate(`(()=>{const select=${frame}.getElementById('${id}');if(select.options.length>1){select.selectedIndex=1;select.dispatchEvent(new Event('change'))}})()`)}
 await evaluate(`${frame}.getElementById('time').value='24';${frame}.getElementById('time').dispatchEvent(new Event('change'))`);
 for(const id of ['status','trigger','model','time'])await evaluate(`${frame}.getElementById('${id}').value='all';${frame}.getElementById('${id}').dispatchEvent(new Event('change'))`);

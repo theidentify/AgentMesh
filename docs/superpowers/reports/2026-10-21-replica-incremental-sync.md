@@ -25,12 +25,14 @@ The steady state no longer grows with total history. It is 1 LIST for `keys/` pl
 - The 4 control prefixes are still listed whole; they are small.
 - Prefetch skips objects in the negative cache.
 
-Calculated per cycle at 30k objects (not measured):
+Measured through `Broker.sync_once` at 30k objects with 7 scope prefixes, one new event per cycle (`python profile-log/tests/broker/measure_broker_sync_cost.py <profile-log root>`, run on main's tree and on this branch):
 
-| | Pages/cycle | Pages/30 days |
-|---|---:|---:|
-| main after #62 (one staged full listing) | 30 + 1 + 4 = 35 | 1,512,000 |
-| this PR | 8 + 4 = 12 | 518,400 |
+| | LIST calls | Keys listed | GETs | Pages/cycle | Pages/30 days at 60 s |
+|---|---:|---:|---:|---:|---:|
+| main after #62 (one staged full listing) | 6 | 30,006 | 1 | 36 | 1,555,200 |
+| this PR (incremental plan + whole control prefixes) | 12 | 20 | 1 | 12 | 518,400 |
+
+The daily reconciliation adds about one full pass (~36 pages) per 1,440 cycles, under 0.03 pages per cycle.
 
 ## Remaining costs
 - **Scopes, prefixes and devices:** cost per cycle scales with the number of scopes plus the 4 control prefixes, and the 1M free Class A per month is shared by every device on the account.

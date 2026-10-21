@@ -226,3 +226,11 @@ I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner cr
   seen ULID, and a negative cache for invalid objects) must land **before a second device is added** or
   before `events/` passes about 5k objects, whichever comes first. Until then a second device should run
   at `--sync-interval 300`.
+
+  **Update 2026-10-21 (#65, incremental listing landed):** a steady-state sync lists `keys/` once, each
+  scope prefix after its ULID cursor (10 min margin, capped at now), and the 4 control prefixes once.
+  It does a full listing on start and every 24 h. Measured through `Broker.sync_once` at 30k objects
+  with 7 scope prefixes: main after #62 used 36 pages per cycle (1.56 M/month at 60 s); #65 uses 12
+  pages per cycle (0.52 M/month; about 0.52 M with the daily reconciliation amortized). The cost now
+  grows with the number of scopes, not with history, so 2 devices at 60 s are about 1.04 M/month, near
+  the free tier. See `docs/superpowers/reports/2026-10-21-replica-incremental-sync.md`.

@@ -21,6 +21,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: profile-log/gateway/package-lock.json
+      - name: Install pinned gateway dependencies for cross-implementation tests
+        working-directory: profile-log/gateway
+        run: npm ci
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -33,3 +41,20 @@ jobs:
       - name: Test from the package directory
         working-directory: profile-log
         run: python -m pytest -q -p no:cacheprovider --basetemp "${{ runner.temp }}/profile-log-pkg" tests
+
+  gateway:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: profile-log/gateway/package-lock.json
+      - name: Install pinned dependencies
+        working-directory: profile-log/gateway
+        run: npm ci
+      - name: Test Worker offline
+        working-directory: profile-log/gateway
+        run: node --test

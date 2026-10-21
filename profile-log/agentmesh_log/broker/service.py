@@ -20,8 +20,8 @@ from .handshake import Challenge
 from .transport import UnixServer, PipeServer
 
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat'.split()),
-    'remember':set('body scope tags task label'.split()), 'revise':set('body scope tags task label revises'.split()),
-    'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
+    'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
+    'connector_window': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
 
 
 @dataclass
@@ -100,6 +100,9 @@ class Broker:
 
     def row(self, envelope, payload, grant):
         if envelope['scope'] not in readable(self.state,grant): return None
+        from .connectors import effective
+        grant=effective(grant)
+        if Label[payload['label']]>Label[grant.max_label]: return None
         if payload['label']=='secret' and not grant.allow_secret: return None
         scope_names=names(self.state); body=payload['body']
         if type(body) is str: body=dict(kind='fact',content=body)
@@ -112,9 +115,11 @@ class Broker:
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
             tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'],
-            _migration=meta)
+            _migration=meta, **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
 
     def index(self, grant):
+        from .connectors import effective
+        grant=effective(grant)
         aid=grant.agent_id; digest=grant.digest()
         if aid in self.indexes and self.index_versions[aid][0]==digest: return self.indexes[aid]
         if aid in self.indexes: self.indexes.pop(aid).close()
@@ -183,6 +188,9 @@ class Broker:
 
     def dispatch(self, session, grant, req, pending, audit):
         op=req['op']; scope_names=names(self.state); allowed=readable(self.state,grant)
+        if op=='connector_window':
+            from .connectors import window
+            return window(self,session,req)
         if op=='import': return self.imports.prepare(session,grant,req,audit)
         if op=='import_ledger':
             if not grant.allow_import: raise ValueError('denied')
@@ -220,7 +228,11 @@ class Broker:
             audit.update(profiles=sorted(profiles),scopes=sorted(scopes))
             result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
                 limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False))
-            if any(r['label']=='secret' for r in result['results']): self.presence.require('secret_read','read')
+            if any(r['label']=='secret' for r in result['results']):
+                if grant.connector_app_id is not None:
+                    from ..registry_store import now
+                    if not grant.allow_secret or now()>=grant.secret_until: raise ValueError('denied')
+                else: self.presence.require('secret_read','read')
             audit['result_ids']=[r['id'] for r in result['results']]
             return result
         if op in ('remember','revise'):
@@ -244,7 +256,10 @@ class Broker:
                 if old.get('_migration'): raise ValueError('denied')
                 if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
                 previous=Label[old['label']]
-            body,tags,task,detected,redactions=sanitize(req['body'],tags,task)
+            from .connectors import outbox_body
+            body,duplicate=outbox_body(self,grant,req)
+            if duplicate is not None: return duplicate
+            body,tags,task,detected,redactions=sanitize(body,tags,task)
             label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general)
             cert=session.certificate
             agent=SimpleNamespace(account_id=cert['account_id'],device_id=cert['device_id'],agent_id=cert['agent_id'],certificate=lambda:dict(cert))

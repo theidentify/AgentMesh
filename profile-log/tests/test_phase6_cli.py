@@ -18,7 +18,7 @@ def test_phase6_cli_parser_and_render(tmp_path):
     args=parser().parse_args(['connector','approve','123456','--home',str(tmp_path),'--profiles','personal,work','--remember','personal/inbox'])
     assert args.action=='approve'
     for platform in ('macos','windows'):
-        result=render(tmp_path/platform,tmp_path,'/usr/bin/python3',platform)
+        result=render(tmp_path/platform,tmp_path,tmp_path/'bin'/'python',platform)
         assert result['rendered']
 
 
@@ -60,7 +60,8 @@ def test_p6_inbox_peer_metadata(tmp_path):
     assert restored.trees[0].keys[scope.scope_id].key_id==state.trees[0].keys[scope.scope_id].key_id
 
 
-def test_p6_approve_creates_inbox(tmp_path):
+def test_p6_approve_creates_inbox(tmp_path,monkeypatch):
+    monkeypatch.setenv('AGENTMESH_ALLOW_FILE_KEYSTORE','1')  # CI basetemp is outside the system temp dir
     from agentmesh_log.oskeystore import initialize
     from agentmesh_log.connector_cli import controls
     from agentmesh_log.broker.grants import resolve

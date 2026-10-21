@@ -1,6 +1,6 @@
 # Profile log remote sync to Cloudflare R2 (Mac) — plan
 
-> Status: **plan only.** Nothing in this document has been run on the live Mac. Deploying (D-1 to D-7)
+> Status: **plan only.** Nothing in this document has been run on the live Mac. Deploying (D-2 to D-7)
 > needs the owner's explicit go-ahead at each **owner checkpoint**. The agent never reads, prints, stores or
 > passes R2 credentials; the owner enters them in their own terminal.
 
@@ -34,25 +34,18 @@ Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no
 | Local replica: events 438, keys 2, registry 7, keyring 12 (459 objects). `sync_control` also pushes `registry/ keyring/ keys/ profiles/ alerts/`. | The first upload is about 459 objects. Control objects are signed public records or age-encrypted, and events and wraps are sealed. The ciphertext-only gate checks every one. |
 | `profile-log-status.json` and the Insight Profile log tab come from PR #61 (`agentmesh_log/status.py`, sections `overview/migration/last_apply/last_catch_up`). | `last_sync` is a new section. **I-4 depends on #61 being merged first.** |
 
-## Decisions proposed (owner confirms at checkpoint C-0)
+## Setup on this Mac (accepted by the owner 2026-10-21)
 
-1. **Credentials in the login Keychain.** Two generic-password items under service
-   `org.agentmesh.profile-log.r2`, accounts `access-key-id` and `secret-access-key`. The owner creates them
-   with `security add-generic-password … -w`, using the interactive prompt, so nothing goes to argv or
-   history. The broker reads them through `/usr/bin/security find-generic-password -w <login keychain>`,
-   the same pattern and ACL as `oskeystore.MacKeychainFile` (default creator `/usr/bin/security`, so
-   launchd runs read without a GUI prompt once the user is logged in). Not chosen: plist
-   `EnvironmentVariables` (plaintext in the plist), `~/.aws/credentials` (plaintext, and it collides with
-   the existing `~/.aws/config`).
-2. **Bucket:** a new dedicated private bucket (suggested name `agentmesh-profile-log`), with a new token
-   scoped to that bucket only. The 2026-10-19 test token is revoked. Prefix `v1/`. Endpoint
-   `https://<account>.r2.cloudflarestorage.com`; the account ID is not secret and goes in the plist.
-3. **Interval:** `--sync-interval 60`, as in the design's sizing.
-4. **Fail open for recall, closed for remote.** If credentials are missing or R2 is unreachable, the broker
-   still serves local recall/remember. Each sync attempt records `last_sync.outcome` (for example
-   `credentials_missing`, `remote_error`) and never crash-loops under `KeepAlive`.
-5. **Remote objects are never deleted by AgentMesh.** Rollback stops syncing. Removing remote data is a
-   manual owner action (the R2 dashboard or `rclone purge` on the prefix).
+- **Bucket and token:** reuse the private bucket and the bucket-scoped "Object Read & Write" token the
+  owner created on 2026-10-19 (both still active). Live data goes under prefix `v1/`, kept apart from the
+  test prefix `agentmesh-live-tests/`. The endpoint account ID is not secret and goes in the plist.
+- **Where the token lives:** the login Keychain, service `org.agentmesh.profile-log.r2`, accounts
+  `access-key-id` and `secret-access-key`. The owner enters it once at a `security … -w` prompt (D-2). The
+  broker reads it with `/usr/bin/security`, using the same pattern as `oskeystore.MacKeychainFile`. It is
+  never put in plist env or `~/.aws`, and never taken from boto's default credential chain.
+- **Interval:** 60 s, as in the design.
+- **Behaviour (not a choice):** a sync failure never stops local recall/remember and never crash-loops.
+  AgentMesh never deletes remote objects.
 
 ## Implementation (Codex implements, Claude reviews; PR against main)
 
@@ -120,7 +113,7 @@ Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no
 | G-1 Tests | `profile-log` and `memory-sync` suites + new tests, CI on 3 OS | all green; no live network in CI (`AGENTMESH_R2_LIVE` unset) |
 | G-2 No credential leakage (code) | grep diff + tests: no `AWS_` fallback, no secret in argv/plist/status/logs/exceptions | test asserts with sentinel secrets |
 | G-3 Default unchanged | rendering without `remote` is byte-identical; `broker run` without flags behaves as today | fixture test |
-| G-4 Live smoke (owner's terminal) | `AGENTMESH_R2_LIVE=1 pytest profile-log/tests/test_r2_live.py` against the **new** bucket/token via Keychain-backed env | 3 passed, cleanup verified |
+| G-4 Live smoke (owner's terminal) | `AGENTMESH_R2_LIVE=1 pytest profile-log/tests/test_r2_live.py` against the existing bucket/token (values entered by the owner, as on 2026-10-19) | 3 passed, cleanup verified |
 | G-5 Ciphertext only | `verify_remote.py` with markers: all profile/scope paths, agent names, owner email, device hostname, 25 random memory snippets of 6+ words from `mac.db` (generated locally into a 0600 temp file the owner deletes after) | `marker_hits=0`, `unparsable=0` |
 | G-6 Heads match | same run | `missing_remote=0 missing_local=0 hash_mismatch=0`; remote events = 438 (+ new since) |
 | G-7 Restore rehearsal | same run | `restored_events == local events`, `opened_events == restored_events` |
@@ -130,12 +123,8 @@ Facts read on 2026-10-20 (read-only: plist, file counts and interpreter only; no
 
 ## Deployment on the Mac (owner at terminal; each step needs a go-ahead)
 
-**C-0 owner checkpoint:** confirm decisions 1-5, bucket name and prefix, and that #61 merges first (or I-4
-waits).
+I-4 waits for #61 to merge. D-1 (bucket and token) is already done: the owner created them on 2026-10-19.
 
-- **D-1 Bucket + token (owner, Cloudflare dashboard).** Create a private bucket, no public access, no
-  r2.dev URL. Create a token: Object Read & Write, scoped to that bucket only. Revoke the 2026-10-19 test
-  token if it is unused.
 - **D-2 Keychain (owner's terminal).** Enter each value at the prompt:
   ```sh
   security add-generic-password -U -s org.agentmesh.profile-log.r2 -a access-key-id -w

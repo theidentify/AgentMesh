@@ -34,11 +34,13 @@ class BrokerClient:
         except Exception:
             self.channel.close(); raise
 
-    def write(self, body, *, scope=None, tags=None, task=None, label=None, revises=None, expected_scope=None):
+    def write(self, body, *, scope=None, tags=None, task=None, label=None, revises=None, expected_scope=None, outbox_id=None):
         req=dict(op='remember' if revises is None else 'revise',body=body,scope=scope,tags=tags or [],task=task,label=label)
         if revises is not None: req['revises']=revises
+        if outbox_id is not None: req['outbox_id']=outbox_id
         response=self.request(req)
         if 'error' in response: return response
+        if outbox_id is not None and set(response)=={'id','label','redactions'}: return response
         if set(response)!={'stage','unsigned'} or response['stage']!='sign': raise ValueError('invalid response')
         unsigned=response['unsigned']; fields(unsigned,EVENT_FIELDS-{'signature'},'agentmesh-event-v1')
         if unsigned['agent_cert']!=self.agent.certificate() or (unsigned['account'],unsigned['device'],unsigned['agent'])!=(self.agent.account_id,self.agent.device_id,self.agent.agent_id):

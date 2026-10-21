@@ -1,0 +1,21 @@
+{
+  "name": "agentmesh-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentMesh MCP gateway Worker: OAuth 2.1, MCP Streamable HTTP, bridge client and encrypted outbox. Holds no data keys.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.2",
+    "@hpke/chacha20poly1305": "1.8.0",
+    "@hpke/core": "1.9.0",
+    "@hpke/dhkem-x25519": "1.8.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.6.5"
+  }
+}

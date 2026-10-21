@@ -91,6 +91,8 @@ def parser():
     project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
     apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
     settings_cmd=commands.add_parser('settings'); settings_cmd.add_argument('action',choices=['show','validate'])
+    from .connector_cli import add_parsers
+    add_parsers(commands)
     return p
 
 
@@ -117,6 +119,9 @@ def remote_storage(args, *, filesystem_factory=None):
 def execute(args,*,backend=None,console=None,input_fn=None):
     console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     input_fn=input if input_fn is None else input_fn
+    if args.command in ('connector','bridge'):
+        from .connector_cli import execute as execute_connector
+        return execute_connector(args,backend=backend,console=console)
     if args.command=='admin':
         from .tui import run_admin
         return run_admin(menu=args.menu,backend=backend,console=console,input_fn=input_fn,filesystem=args.filesystem)

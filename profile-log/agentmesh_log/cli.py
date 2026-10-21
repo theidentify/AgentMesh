@@ -156,6 +156,10 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             from .broker.service import sync_status_valid
             if not sync_status_valid(row): raise ValueError('invalid sync status')
             atomic_write(home.root/'sync-status.json',wire(row))
+            try:
+                from . import status, settings
+                status.synced(settings.root(),row)
+            except Exception: pass
         broker=Broker(home,store=store)
         try: broker.serve(remote=remote,sync_interval=args.sync_interval,on_sync=on_sync)
         finally: broker.close()

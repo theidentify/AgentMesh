@@ -54,7 +54,7 @@ database supplies sync metadata independently of the memory browser selection.
 | Memory Browser | Paginated `memory_items` and `memory_summaries` from the selected backend. Search content, exact project/scope key, kind, status and scope filters. |
 | Agents | Aggregated `source_sessions` and `observation_events` metadata, plus content-free Hermes session metadata. Zero source-session rows do not hide agents with recorded events. |
 | Pipeline | Exact known OMP ingest and summary cron job IDs, last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
-| Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up outcomes. |
+| Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up/remote sync outcomes. |
 | Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata, plus fixed Mac/Windows completed-cycle ACK projections. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
 
 `--agentmesh-home` defaults to `$AGENTMESH_HOME`, otherwise `~/.agentmesh`.
@@ -103,10 +103,12 @@ accounting UI without mixing production logs with isolated smoke samples.
 ### Profile log snapshot
 
 The Profile log tab reads only `profile-log-status.json`, written by
-`agentmesh-log apply` and `agentmesh-log migrate catch-up`. Edit in a terminal
+`agentmesh-log apply`, `agentmesh-log migrate catch-up` and the broker sync loop.
+Remote sync shows the last successful sync and becomes stale after
+`max(3 * interval_s, 600 + 2 * interval_s)` seconds, allowing for throttled status writes. Edit in a terminal
 with `agentmesh-log admin` / `agentmesh-log apply`. This is an observed snapshot,
 not current broker authority; timestamps and age distinguish stale sections.
-The reader never opens broker state, agent keys, settings or apply audit logs.
+The reader never opens broker state, `sync-status.json`, credentials, agent keys, settings or apply audit logs; it never contacts R2.
 It refuses symlinks, non-regular files, malformed/wrong-format JSON and files over
 256 KiB. It projects allowed fields, caps each list at 500 entries with a visible
 truncation notice, and shortens device IDs to 12 characters. Missing values stay

@@ -405,12 +405,16 @@ def metrics(home, agentmesh_home=None, metrics_logs=None):
 def profile_log_status(agentmesh_home, now=None):
     """One bounded, content-free snapshot; never inspect broker files or settings."""
     from datetime import datetime, timezone
+    import math
     import unicodedata
     now = now or datetime.now(timezone.utc)
     result = dict(available=False, availability='missing', truncated=False)
     def text(v):
         return v if isinstance(v, str) and len(v)<=256 and not any(unicodedata.category(c)=='Cc' for c in v) else None
     def count(v): return v if type(v) is int and 0<=v<=2**53-1 else None
+    def interval(v):
+        try: return v if type(v) in (int,float) and math.isfinite(v) and v>0 else None
+        except OverflowError: return None
     def boolean(v): return v if type(v) is bool else None
     def obj(v): return v if isinstance(v, dict) else {}
     def strings(v): return sequence(v, text)
@@ -450,6 +454,16 @@ def profile_log_status(agentmesh_home, now=None):
                 projects=lambda v:sequence(v,lambda r:fields(r,dict(project=text,items=count,summaries=count,target=text)))))
         if 'last_apply' in value:
             result['last_apply'] = event(value['last_apply'],dict(changes=lambda v:counts(v,('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update'))))
+        if 'last_sync' in value:
+            sync=event(value['last_sync'],dict(**{k:count for k in ('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')},
+                interval_s=interval,backend=lambda v:v if v in ('s3','filesystem') else None,last_ok_at=text))
+            sync['last_ok_age_seconds']=age(sync['last_ok_at']); seconds=sync['interval_s']
+            if sync['age_seconds'] is None: sync['at']=None
+            if sync['last_ok_age_seconds'] is None: sync['last_ok_at']=None
+            # Unchanged broker outcomes/counts are only rewritten every 600 seconds.
+            sync['stale_after_seconds']=max(3*seconds,600+2*seconds) if seconds is not None else None
+            sync['stale']=sync['age_seconds']>sync['stale_after_seconds'] if sync['age_seconds'] is not None and seconds is not None else None
+            result['last_sync']=sync
         if 'last_catch_up' in value:
             result['last_catch_up'] = event(value['last_catch_up'],dict(outcomes=lambda v:counts(v,('created','revised','retired','unchanged','other')),
                 skipped=lambda v:counts(v,('mapping_skip','not_recalled','superseded','resolved','deleted','other')),unmapped=strings,errors=strings,

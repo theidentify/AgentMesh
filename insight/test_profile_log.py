@@ -58,6 +58,36 @@ class ProfileLogTests(unittest.TestCase):
         v=fixture(); v['overview']['profiles'][0]['scopes']*=501
         out=self.read(v); self.assertTrue(out['truncated']); self.assertEqual(len(out['overview']['profiles'][0]['scopes']),500)
 
+    def test_remote_sync_projection_and_freshness(self):
+        value=fixture(); self.assertNotIn('last_sync',self.read(value))
+        row=dict(at='2026-10-20T00:00:00Z',outcome='ok',interval_s=60,backend='s3',last_ok_at='2026-10-19T23:59:00Z',
+            uploaded=1,downloaded=0,invalid=0,errors=0,outbox=0,local_objects=2,remote_objects=2)
+        value['last_sync']=row
+        for outcome in ('ok','remote_error','credentials_missing','credentials_refused','error','future_outcome'):
+            row['outcome']=outcome; result=self.read(value)['last_sync']
+            self.assertEqual(result['outcome'],outcome); self.assertEqual(result['age_seconds'],60)
+            self.assertEqual(result['last_ok_age_seconds'],120); self.assertFalse(result['stale'])
+            self.assertEqual(result['stale_after_seconds'],720)
+        for interval,age,stale in ((60,720,False),(60,721,True),(300,1000,False),(300,1201,True),(1000,3001,True)):
+            from datetime import timedelta
+            row.update(interval_s=interval,at=(datetime(2026,10,20,0,1,tzinfo=timezone.utc)-timedelta(seconds=age)).isoformat())
+            self.assertEqual(self.read(value)['last_sync']['stale'],stale)
+        row.update(credentials='PRIVATE',access_key='PRIVATE',secret_key='PRIVATE',extra='PRIVATE',backend={},last_ok_at=None,at=[],outbox=-1)
+        for bad in (True,0,-1,'60',None,float('inf'),float('nan'),{}):
+            row['interval_s']=bad; result=self.read(value)['last_sync']
+            for key in ('interval_s','stale','stale_after_seconds','age_seconds','last_ok_age_seconds','at','outbox','backend'): self.assertIsNone(result[key])
+            self.assertNotIn('PRIVATE',json.dumps(result)); self.assertNotIn('credentials',result)
+        row.update(at='not a timestamp',last_ok_at='not a timestamp')
+        result=self.read(value)['last_sync']; self.assertIsNone(result['at']); self.assertIsNone(result['last_ok_at'])
+        row.update(outcome={},last_ok_at=[])
+        result=self.read(value)['last_sync']; self.assertIsNone(result['outcome']); self.assertIsNone(result['last_ok_at'])
+
+    def test_remote_sync_only_opens_snapshot(self):
+        self.read(fixture())
+        with patch('adapters.os.open',wraps=os.open) as opened:
+            self.assertTrue(adapters.profile_log_status(self.root)['available'])
+        self.assertEqual([call.args[0] for call in opened.call_args_list],[self.path])
+
     def test_g10_malformed_symlink_nonregular_oversize(self):
         self.assertEqual(adapters.profile_log_status(self.root)['availability'],'missing')
         for raw in ('{bad','[]','{}','{"format":"wrong"}',' '*(256*1024+1)):

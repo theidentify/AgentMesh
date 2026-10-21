@@ -465,6 +465,14 @@ and remaps retire the old scope's chain before creating the new root. Runs resum
 the encrypted replica after interruption, including interruption between the two remap
 signatures. Reports contain source IDs, chain IDs, scope names, status and reasons, never
 content or hashes. Report output is exclusive-create, mode 0600, outside the replica.
+Catch-up keeps a local accelerator cache at `DB.profile-log.catch-up.json` (override
+with `AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE`; mode 0600). Each entry pairs a source
+reference with a SHA-256 fingerprint of its last confirmed intent and the resulting ledger
+event. A row whose fingerprint and current ledger head both match is counted unchanged
+without an `import` request, so idle cycles audit only handshake, `import_ledger` and
+`whoami`. Changed rows, remaps, retirements, hook or peer revisions (a moved ledger head)
+and a missing or unreadable cache all fall back to sending the import. Deleting the cache
+is always safe.
 `migrate rows` accepts up to 500 repeated `--ref memory_items:ID` or
 `--ref memory_summaries:ID` arguments.
 

@@ -158,3 +158,23 @@ def test_unknown_reasons_fold_into_other(configured):
     caught_up(db,None,dict(outcomes=dict(created=1,brand_new=2),skipped=dict(archived=3,mapping_skip=1),unmapped=[],errors=[]))
     last=read(root)['last_catch_up']
     assert last['outcomes']==dict(created=1,other=2) and last['skipped']==dict(other=3,mapping_skip=1)
+
+
+def test_g8_catch_up_cache(configured,monkeypatch):
+    root,home,store,db=configured
+    class Ledger(Client):
+        def __init__(self,entries): super().__init__(); self.entries=entries
+        def request(self,value): return {'entries':self.entries} if value['op']=='import_ledger' else {'write':['work/common']}
+        def import_row(self,**value):
+            self.intents.append(value); ident=f"01J{len(self.entries):023d}"
+            self.entries.append(dict(source=value['source'],event=ident,chain=[ident],scope=value['scope'],status='created',reason=None))
+            return {'outcome':'created','label':'general','id':ident}
+    assert run(console=console())['ok']
+    entries=[]; first=Ledger(entries); monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:first)
+    assert cli.execute_migration(arguments(root,db))['outcomes']=={'created':2} and len(first.intents)==2
+    cache=Path(str(db)+'.profile-log.catch-up.json'); assert cache.exists()
+    second=Ledger(entries); monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:second)
+    assert cli.execute_migration(arguments(root,db))['outcomes']=={'unchanged':2} and second.intents==[]
+    assert read(root)['last_catch_up']['outcomes']['unchanged']==2
+    if os.name!='nt': assert cache.stat().st_mode & 0o777==0o600
+    assert 'SENTINEL' not in cache.read_text(encoding='utf-8')

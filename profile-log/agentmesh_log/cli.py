@@ -230,7 +230,11 @@ def execute_migration(args, *, backend=None):
                 home=Path(args.agent_key).resolve().parent.parent
                 write_report(result,args.out,home/'replica')
                 return dict(rows=len(result))
-            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over)
+            cache=None
+            if args.action=='catch-up':
+                import os
+                cache=Path(os.environ.get('AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE',str(args.db)+'.profile-log.catch-up.json'))
+            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache)
         finally: client.close()
         if args.action=='catch-up': caught_up(args.db,mapping,result)
         return result

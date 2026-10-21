@@ -178,3 +178,28 @@ def test_g8_catch_up_cache(configured,monkeypatch):
     assert read(root)['last_catch_up']['outcomes']['unchanged']==2
     if os.name!='nt': assert cache.stat().st_mode & 0o777==0o600
     assert 'SENTINEL' not in cache.read_text(encoding='utf-8')
+
+
+def sync_row():
+    return dict(at='2026-10-20T00:00:00Z',outcome='ok',uploaded=1,downloaded=0,invalid=0,errors=0,outbox=0,local_objects=1,remote_objects=1,interval_s=60,backend='s3')
+
+
+def test_sync_schema():
+    row=dict(sync_row(),last_ok_at=None); value=dict(format=status.FORMAT,updated_at='now',last_sync=row)
+    assert status.valid(value)
+    for key,bad in [('extra',1),('outcome','unknown'),('uploaded',-1),('interval_s',True),('backend','other'),('at','bad'),('last_ok_at',42)]:
+        assert not status.valid(dict(value,last_sync=dict(row,**{key:bad})))
+    del row['last_ok_at']; assert not status.valid(value)
+
+
+def test_synced_preserves_sections(tmp_path):
+    tmp_path.chmod(0o700); row=sync_row(); error=dict(row,outcome='error',at='2026-10-20T00:01:00Z')
+    status.synced(tmp_path,error); assert read(tmp_path)['last_sync']['last_ok_at'] is None
+    status.caught_up(None,None,outcome='disabled')
+    catch=read(settings.root())['last_catch_up']; status.write(tmp_path,last_catch_up=catch)
+    status.synced(tmp_path,row); status.synced(tmp_path,error)
+    value=read(tmp_path); assert value['last_sync']==dict(error,last_ok_at=row['at']) and value['last_catch_up']==catch
+    status.write(tmp_path,last_apply=dict(at='now',outcome='approved',changes={}))
+    assert read(tmp_path)['last_sync']==value['last_sync']
+    atomic_write(tmp_path/'profile-log-status.json',wire(dict(value,extra='invalid')))
+    status.synced(tmp_path,error); assert read(tmp_path)['last_sync']['last_ok_at'] is None

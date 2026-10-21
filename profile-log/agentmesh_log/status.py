@@ -55,6 +55,7 @@ def write(base, **sections):
 def valid(value):
     """Strict structural allow-list also rejects injected fields in retained sections."""
     import unicodedata
+    from .broker.service import sync_status_valid
     text=lambda v:type(v) is str and len(v)<=256 and not any(unicodedata.category(c)=='Cc' for c in v)
     nullable=lambda v:v is None or text(v)
     count=lambda v:type(v) is int and 0<=v<=2**53-1
@@ -63,6 +64,7 @@ def valid(value):
     def seq(f): return lambda v:type(v) is list and all(f(x) for x in v)
     def counts(allowed): return lambda v:type(v) is dict and set(v)<=set(allowed) and all(count(n) for n in v.values())
     schemas={
+        'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
             agents=seq(obj(dict(name=text,read=seq(text),write=seq(text),default_write=nullable,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
             devices=seq(obj(dict(device_id=text,revoked=boolean))))),
@@ -98,4 +100,17 @@ def caught_up(database, mapping, result=None, *, outcome=None, error=None):
         try: sections['migration']=migration(database,mapping)
         except Exception: pass
         write(settings.root(),**sections)
+    except Exception: pass
+
+
+def synced(base, row):
+    try:
+        last_ok_at=None
+        if row['outcome']=='ok': last_ok_at=row['at']
+        else:
+            try:
+                old=parse(settings.read_raw(base/'profile-log-status.json'))
+                if valid(old): last_ok_at=old.get('last_sync',{}).get('last_ok_at')
+            except Exception: pass
+        write(base,last_sync={**row,'last_ok_at':last_ok_at})
     except Exception: pass

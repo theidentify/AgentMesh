@@ -237,3 +237,21 @@ def test_completion_timestamp(tmp_path,monkeypatch):
         b.sync_attempt(object(),60)
         assert rows[-1]['at']=='2026-01-02T00:00:00Z'
     finally: b.close()
+
+
+@pytest.mark.parametrize('broken',[False,True])
+def test_cli_shared_sync_status(tmp_path,monkeypatch,broken):
+    from agentmesh_log import settings, status
+    from .test_cli import cli as invoke
+    home,*_=setup_home(tmp_path); path=settings.root()/'profile-log-status.json'
+    if broken: path.mkdir()
+    row=dict(at='2026-10-20T00:00:00Z',outcome='ok',interval_s=60,backend='filesystem',**{k:0 for k in service.COUNTS})
+    def serve(self,**kw): kw['on_sync'](row)
+    monkeypatch.setattr(Broker,'serve',serve)
+    result=invoke('broker','run','--home',home.root)
+    assert result.returncode==0, result.stdout
+    assert json.loads((home.root/'sync-status.json').read_bytes())==row
+    if broken: assert path.is_dir()
+    else:
+        value=json.loads(path.read_bytes()); assert status.valid(value)
+        assert value['last_sync']==dict(row,last_ok_at=row['at'])

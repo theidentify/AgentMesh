@@ -31,3 +31,20 @@ vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixtur
 assert.ok(nodes.get('profile-log-note').textContent.includes('missing'));
 assert.ok(nodes.get('profile-log-profiles').innerHTML.includes('No observed records'));
 console.log('PASS: Profile log navigation, fixture rendering, escaping, truncation and missing snapshot');
+
+assert.ok(section.includes('broker sync loop'));
+const renderSync=last_sync=>{vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixture:{available:true,last_sync}});return nodes.get('profile-log-sync').innerHTML};
+assert.ok(renderSync(undefined).includes('Off — not configured'));
+const sync={outcome:'ok',at:'2026-10-20T00:00:00Z',age_seconds:60,outbox:0,local_objects:4,remote_objects:5,stale:false};
+assert.ok(renderSync(sync).includes('Last sync 1m ago, outbox 0, local 4 / remote 5'));
+assert.ok(!renderSync(sync).includes('>stale<'));
+for(const outcome of ['remote_error','credentials_missing','credentials_refused','error',attack]){
+ const rendered=renderSync({...sync,outcome});
+ assert.ok(rendered.includes(outcome==='remote_error'?'sync-warning':'sync-error'));
+ assert.ok(rendered.includes('last ok never')); assert.ok(!rendered.includes('<img'));
+ if(outcome===attack)assert.ok(rendered.includes('&lt;img'));
+}
+assert.ok(renderSync({...sync,stale:true}).includes('>stale<'));
+assert.ok(renderSync({...sync,outcome:'remote_error',last_ok_at:sync.at,last_ok_age_seconds:120}).includes('last ok 2m ago'));
+assert.ok(!/<form|<input|<button/.test(renderSync(sync)));
+console.log('PASS: Remote sync absent, ok, errors, stale and escaping');

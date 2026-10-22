@@ -19,6 +19,7 @@ from .broker.service import PREFIXES
 from .encoding import parse
 from .events import event_path, open_event, verify_event, wrap_path
 from .keys import unwrap_key
+from .keyring import CONTROL_EXCLUSIONS
 from .oskeystore import select_store
 from .storage.filesystem import FilesystemStorage, _check
 
@@ -96,7 +97,8 @@ def probes_for(args, state):
 
 
 def inventory(storage):
-    return {key for prefix in PREFIXES for key in storage.list(prefix)}
+    return {key for prefix in PREFIXES for key in storage.list(prefix)
+            if not key.startswith(CONTROL_EXCLUSIONS)}
 
 
 def verify(args):
@@ -108,7 +110,8 @@ def verify(args):
     registry = state.registry()
     local_keys, remote_keys = inventory(local), set(remote.list(''))
     heartbeats = {key for key in remote_keys if key.startswith('registry/heartbeats/')}
-    replica_keys = {key for key in remote_keys if key.startswith(PREFIXES)}
+    replica_keys = {key for key in remote_keys if key.startswith(PREFIXES)
+                    and (not key.startswith(CONTROL_EXCLUSIONS) or key in heartbeats)}
     result = dict(ok=False, local_objects=len(local_keys), remote_objects=len(remote_keys),
                   missing_remote=len(local_keys - replica_keys), missing_local=len(replica_keys - local_keys - heartbeats),
                   unknown_remote=len(remote_keys - replica_keys),

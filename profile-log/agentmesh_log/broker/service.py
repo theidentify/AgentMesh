@@ -13,6 +13,7 @@ from ..model import Label
 from ..errors import LabelLoweringRequiresConfirmation
 from .keystore import FileKeyStore
 from ..storage import StorageError
+from .. import keyring
 from ..presence import PresenceManager
 from .grants import names, resolve, readable, descendants
 from .replica import Replica
@@ -32,7 +33,8 @@ COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','rem
 IO=('bytes_up','bytes_down','class_a','class_b')
 TOTALS=tuple('total_'+k for k in IO)
 NETWORK=set(IO+TOTALS)|{'totals_since'}
-PREFIXES=('events/','keys/','registry/','keyring/','profiles/','alerts/')
+REPLICA_PREFIXES=('events/','keys/')
+PREFIXES=REPLICA_PREFIXES+tuple(p for p in keyring.CONTROL_PREFIXES if p not in REPLICA_PREFIXES)
 
 
 def sync_status_valid(row):
@@ -94,7 +96,9 @@ class StagedRemote:
 
     events/ and keys/ come from the replica's (usually incremental) plan; control prefixes stay small and are listed whole."""
     def __init__(self,remote,local,plan):
-        self.keys=set(plan['keys'])|{key for prefix in PREFIXES[2:] for key in remote.list(prefix) if not key.startswith('registry/heartbeats/')}
+        controls={key for prefix in keyring.CONTROL_PREFIXES if prefix not in REPLICA_PREFIXES
+            for key in remote.list(prefix)}
+        self.keys={key for key in set(plan['keys'])|controls if not key.startswith(keyring.CONTROL_EXCLUSIONS)}
         self.data={}; self.uploads=[]
         for key in sorted(self.keys-local-plan['skip']):
             try: self.data[key]=remote.get(key)
@@ -409,7 +413,9 @@ class Broker:
             if current!=local.key_id or (key_id is not None and key_id!=current): raise ValueError('denied')
 
     def local_keys(self):
-        return {key for prefix in PREFIXES for key in self.replica.storage.list(prefix)}
+        prefixes=dict.fromkeys(REPLICA_PREFIXES+keyring.CONTROL_PREFIXES)
+        return {key for prefix in prefixes for key in self.replica.storage.list(prefix)
+            if not key.startswith(keyring.CONTROL_EXCLUSIONS)}
 
     def sync_once(self, remote):
         with self._sync_lock:
@@ -427,7 +433,7 @@ class Broker:
                         from ..keyring import sync_control
                         sync_control(self.home,self.store,staged); self.refresh()
                     controls=self.local_keys()-before
-                    plan['keys']=plan['keys']|{k for k in staged.keys if k.startswith(PREFIXES[:2])}
+                    plan['keys']=plan['keys']|{k for k in staged.keys if k.startswith(REPLICA_PREFIXES)}
                     for grant in self.state.grants.values(): self.index(grant)
                     result=self.replica.sync_once(staged,on_event=self.ingest,plan=plan)
                     result['downloaded']+=len(controls)

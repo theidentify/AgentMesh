@@ -116,6 +116,15 @@ is switched off and then deleted.
   - bootstrap ZIP distribution;
   - the packet-group parts of `install_join.py` / `install_setup.py`;
   - `bridge.recall_fallback`.
+- **Delete the PostgreSQL mirror** (owner, 2026-10-22: Postgres is no longer used, and `postgresql@14` and its
+  data were removed from the Mac):
+  - `memory-sync/pg_mirror.py` with its tests, and its callers in `agentmesh.py`, `sync_worker.py` and `build_package.py`;
+  - Insight's PostgreSQL reader: `insight/libpq_reader.py`, the `postgres` reader, `INSIGHT_PG_DSN` and
+    `INSIGHT_PRIMARY_BACKEND` in `server.py` / `adapters.py`, and the README;
+  - `memory-sync/SQLITE-CONSUMERS.md` mentions;
+  - a staging-DB migration that drops `_pg_mirror_state` and `_pg_shadow`. It runs inside a transaction, makes
+    no copy of the database, and runs at most once (idempotent).
+  - The live Insight plist no longer sets `INSIGHT_PG_DSN` (removed 2026-10-22).
 - **Keep:** anything the spec lists under "Reuse", including the Ed25519 signing helpers, `key_rotation.py`,
   `identity_backup.py`, `os_unlock`, ingest and Insight. Keep a module if a remaining module still imports it.
   Prove this with an import graph in the REPORT.

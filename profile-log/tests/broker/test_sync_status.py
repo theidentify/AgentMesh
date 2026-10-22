@@ -103,7 +103,7 @@ def test_cli_retry_status(tmp_path,monkeypatch):
     monkeypatch.setattr(creds,'load_keychain_credentials',load)
     import agentmesh_log.storage.s3 as s3
     monkeypatch.setattr(s3,'S3Storage',lambda *a,**kw:remote)
-    def serve(self,*,remote,sync_interval,on_sync=None):
+    def serve(self,*,remote,sync_interval,on_sync=None,on_overview=None):
         if on_sync is not None: self.on_sync=on_sync
         for i in range(3):
             self.sync_attempt(remote,sync_interval)

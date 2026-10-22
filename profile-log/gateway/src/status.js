@@ -58,26 +58,34 @@ async function devices(env,live) {
  if(live){const row={device_id:live.device_id,last_seen_ms:Date.now(),latency_ms:live.latency_ms,live:true},index=rows.findIndex(r=>r.device_id===live.device_id);if(index<0)rows.push(row);else rows[index]=row;}
  return {rows,capped};
 }
-export async function statusData(env,api,fetcher) {
+export async function statusData(env,api,fetcher,timings={}) {
  const started=Date.now(),result=await tunnel(env,STATUS_APP,'status',{},fetcher);let live=null;
+ timings.probe=Date.now()-started;
  try{if(!result.error)live={...statusShape(result),latency_ms:Date.now()-started};}catch{}
  const probe=live?{state:'online',...live}:{state:'offline',reason:result.error==='denied'?'denied':result.error==='agentmesh_offline'?'offline':'unavailable'};
+ let stage=Date.now();
  const inv=await inventory(env.STORAGE),at=Date.now(),outbox=inv.objects.filter(o=>o.key.startsWith('outbox/')),times=outbox.map(itemTime).filter(n=>n!==null);
+ timings.inventory=at-stage;
  // Resolve controls through the bounded snapshot; never read data objects.
  const reads=new Map();
  const bounded={...env,STORAGE:{get:async key=>{if(!reads.has(key))reads.set(key,(async()=>{const object=await env.STORAGE.get(key);return object?await object.arrayBuffer():null;})());const data=await reads.get(key);return data?{arrayBuffer:async()=>data.slice(0)}:null;},list:async({prefix=''})=>({objects:inv.objects.filter(o=>o.key.startsWith(prefix)),truncated:false})}};
  const ids=[...new Set(inv.objects.map(o=>/^connectors\/([0-9a-f]{32})\/policy\//.exec(o.key)?.[1]).filter(Boolean))];
  const apps=[],windows=[];let appsCapped=inv.capped||ids.length>100;
  // A partial control inventory may omit revocations: do not resolve it as authoritative.
+ stage=Date.now();
  if(!inv.capped)for(const app of ids.slice(0,100)){
   const p=await policy(bounded,app,at);if(!p)continue;const names=new Set();let cursor,has=false,pages=0;
   do{const page=await api.listUserGrants(app,{cursor,limit:100});const active=page.items.filter(g=>g.expiresAt===undefined||g.expiresAt>at/1000);has||=active.length>0;for(const grant of active){const client=await api.lookupClient(grant.clientId);if(typeof client?.clientName==='string')names.add(client.clientName.slice(0,256));}cursor=page.cursor;if(++pages===10&&cursor){appsCapped=true;break;}}while(cursor);
   apps.push({app_id:p.app_id,state:p.state,max_label:p.max_label,read:p.read,remember:p.remember,limits:p.limits,has_oauth_grants:has,client_names:[...names],issued_at:p.issued_at});
   const w=await secretWindow(bounded,app,at);if(w)windows.push({app_id:app,not_after:w.not_after});
  }
+ timings.apps=Date.now()-stage;stage=Date.now();
  const errors=Object.fromEntries(ERROR_CODES.map(c=>[c,0]));
  for(const code of ERROR_CODES)for(let i=0;i<24;i++){const n=Number(await env.OAUTH_KV.get(`status:err:${code}:${hour(at-i*3600000)}`)??0);if(Number.isSafeInteger(n)&&n>=0)errors[code]+=n;}
- const known=await devices(env,live),uploaded=inv.objects.filter(o=>o.key.startsWith('events/')).map(o=>new Date(o.uploaded).getTime()).filter(Number.isFinite);
+ timings.errors=Date.now()-stage;stage=Date.now();
+ const known=await devices(env,live);
+ timings.devices=Date.now()-stage;
+ const uploaded=inv.objects.filter(o=>o.key.startsWith('events/')).map(o=>new Date(o.uploaded).getTime()).filter(Number.isFinite);
  return {generated_at_ms:at,bridges:{probe,devices:known.rows,capped:known.capped,note:'The Tunnel routes to any healthy connector; this is observed history, not device enumeration. Unattributed responses cannot identify a device.'},outbox:{count:outbox.length,oldest_age_ms:times.length?Math.max(0,at-Math.min(...times)):null,newest_age_ms:times.length?Math.max(0,at-Math.max(...times)):null,unknown_age_count:outbox.length-times.length,capped:inv.capped,last_drain_ms:live?.last_drain_ms??null,last_drain_result:live?.last_drain_result??null,outbox_cursor_ms:live?.outbox_cursor_ms??null,note:'Object count is not a pending count: the Worker cannot determine which items were drained.'},apps,apps_capped:appsCapped,secret_windows:windows,gateway_errors:errors,r2_sync:{counts:inv.counts,latest_event_uploaded_ms:uploaded.length?Math.max(...uploaded):null,capped:inv.capped,object_limit:10000,note:'Counts and latest upload cover the scanned objects only; capped results are partial. Upload time does not prove convergence.'}};
 }
 async function pendingRequests(env) {
@@ -112,8 +120,10 @@ export async function statusAction(request,env,identity,applyAdmin,fetcher) {
  }catch{return statusResponse('Forbidden',403);}
 }
 export async function serveStatus(request,env,api,fetcher,identity) {
- try{const data=await statusData(env,api,fetcher);if(new URL(request.url).pathname==='/status.json')return statusResponse(JSON.stringify(data),200,'application/json');
-  const pending=await pendingRequests(env);let form=()=>'';
+ const started=Date.now(),timings={probe:0,inventory:0,apps:0,errors:0,devices:0,pending:0,render:0,total:0};
+ const timed=response=>{timings.total=Date.now()-started;response.headers.set('Server-Timing',Object.entries(timings).map(([name,duration])=>`${name};dur=${duration}`).join(', '));return response;};
+ try{const data=await statusData(env,api,fetcher,timings);if(new URL(request.url).pathname==='/status.json')return timed(statusResponse(JSON.stringify(data),200,'application/json'));
+  let stage=Date.now();const pending=await pendingRequests(env);timings.pending=Date.now()-stage;let form=()=>'';
   if(typeof identity?.sub==='string'&&identity.sub){
    const token=hex(crypto.getRandomValues(new Uint8Array(32)));
    await env.OAUTH_KV.put('status:csrf:'+await sha(bytes(token)),JSON.stringify({...identity,exp:Date.now()+900000}),{expirationTtl:900});
@@ -122,6 +132,7 @@ export async function serveStatus(request,env,api,fetcher,identity) {
     return action==='revoke'?'<details><summary class="danger">Revoke</summary><p>Revoke access for this app?</p>'+html+'</details>':html;
    };
   }
-  return statusResponse(statusDashboard(data,pending,form),200,'text/html; charset=utf-8');
- }catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
+  stage=Date.now();const html=statusDashboard(data,pending,form);timings.render=Date.now()-stage;
+  return timed(statusResponse(html,200,'text/html; charset=utf-8'));
+ }catch{countError(env,'unavailable');return timed(statusResponse('Unavailable',503));}
 }

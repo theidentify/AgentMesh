@@ -36,6 +36,17 @@ test('P6-S1 valid Access JWT renders only metadata with expected sections and he
  assert.doesNotMatch(text,/ciphertext-marker|remembered-body-marker/);assert.equal(h.probes,2);assert.equal(h.jwks,1);
  for(const r of [response,html]){assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('X-Frame-Options'),'DENY');assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);assert.match(r.headers.get('Content-Security-Policy'),/default-src 'none'/);}
 });
+test('status routes expose only numeric Server-Timing durations',async()=>{
+ const h=await harness();await approved(h);
+ for(const path of ['/status','/status.json']){
+  const response=await h.get(path);assert.equal(response.status,200);
+  const timing=response.headers.get('Server-Timing');assert.ok(timing);
+  const entries=timing.split(/,\s*/);
+  assert.deepEqual(entries.map(entry=>entry.split(';')[0]),['probe','inventory','apps','errors','devices','pending','render','total']);
+  for(const entry of entries)assert.match(entry,/^[a-z]+;dur=\d+(?:\.\d+)?$/);
+  if(path==='/status.json')for(const name of ['pending','render'])assert.ok(entries.includes(name+';dur=0'));
+ }
+});
 test('P6-S2 Access rejects invalid assertions uniformly before probing',async()=>{
  const h=await harness();const other=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
  const tokens=['',await jwt({}, {},other.privateKey),await jwt({aud:['wrong']}),await jwt({iss:'https://wrong.example'}),await jwt({iat:Math.floor(Date.now()/1000)-600,nbf:Math.floor(Date.now()/1000)-600,exp:Math.floor(Date.now()/1000)-120}),await jwt({exp:1}),await jwt({email:'stranger@example.com'}),await jwt({}, {kid:'unknown'}),await jwt({nbf:9999999999}),await jwt({iat:9999999999}),await jwt({exp:'9999999999'}),await jwt({}, {alg:'HS256'})];

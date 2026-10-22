@@ -57,8 +57,12 @@ def smoke(root, backend):
     signed.write_local(workflow, {'ingest': False, 'summarize': False})
     signed.write_local(runtime, {'app_root': str(app), 'database': str(db), 'exchange': str(exchange),
                                  'node': 'mac', 'security_dir': str(identity), 'workflow_config': str(workflow)})
+    # Legacy packet worker smoke: opt in, since Phase 7a defaults packet sync off.
+    packet_home = root / 'agentmesh-home'; packet_home.mkdir()
+    (packet_home / 'settings.local.json').write_text(json.dumps({'packet_sync': {'enabled': True}}))
+    env = {**os.environ, 'AGENTMESH_HOME': str(packet_home)}
     def run(*args, expected=0):
-        result = subprocess.run([str(binary), *map(str, args)], cwd=root, capture_output=True,
+        result = subprocess.run([str(binary), *map(str, args)], cwd=root, env=env, capture_output=True,
                                 text=True, timeout=180)
         if result.returncode != expected:
             raise AssertionError('frozen OS unlock command returned unexpected exit status')

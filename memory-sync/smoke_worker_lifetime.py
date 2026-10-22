@@ -48,6 +48,10 @@ def main():
             if key.upper() == name:
                 del env[key]
         env[name] = str(extraction)
+    # Legacy packet worker smoke: opt in, since Phase 7a defaults packet sync off.
+    packet_home = root / 'agentmesh-home'; packet_home.mkdir()
+    (packet_home / 'settings.local.json').write_text(json.dumps({'packet_sync': {'enabled': True}}))
+    env['AGENTMESH_HOME'] = str(packet_home)
     node = 'windows' if os.name == 'nt' else 'mac'
 
     def invoke(*args, inputs=None, starter=False):

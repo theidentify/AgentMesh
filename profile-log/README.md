@@ -827,8 +827,17 @@ agentmesh-log connector passkey add --home "$AGENTMESH_HOME/profile-log" --label
 ```
 
 The code is printed once, expires after ten minutes, and only its hash is kept
-in protected local state. Open `/status/passkeys`, sign in through Access, enter
-the device-issued code, then click Create passkey. Email login alone cannot enrol.
+in protected local state. Open `/status/passkeys`, sign in through Access, check
+browser readiness, choose password manager/device or security key, then enter the
+10-character code and click Create passkey. Lowercase is normalized; codes are valid
+10 minutes and single use. JavaScript is required. Platform unlock absence is a
+warning: security keys and password managers remain options. The choice changes
+only browser attachment/hints; the device still issues and verifies everything,
+including required user verification. Email login alone cannot enrol.
+`/status/approve` uses the same readiness check and displays client, profiles,
+remember target and maximum label before the prompt. Results include friendly
+recovery guidance. Device responses do not expose enrolment labels or distinguish
+invalid/expired/used codes, so the UI omits labels and keeps denial guidance general.
 Synced passkeys (including Bitwarden, iCloud and Google) and hardware keys are
 supported; user verification is required. Multiple credentials may be enrolled.
 

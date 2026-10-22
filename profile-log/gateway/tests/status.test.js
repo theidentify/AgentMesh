@@ -205,7 +205,7 @@ test('P6-P6 passkey pages and script are status-only and require JWT',async()=>{
   assert.equal((await h.get(path,await jwt(),h.env.ORIGIN)).status,404);
   const r=await h.get(path,await jwt({sub:'owner'}));assert.equal(r.status,200);
   assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);
-  if(!path.endsWith('.js')){const html=await r.text();assertStatusHtml(r,html,true);assert.match(html,/name="csrf"/);assert.match(html,/\/status\/webauthn.js/);}
+  if(!path.endsWith('.js')){const html=await r.text();assertStatusHtml(r,html,true);assert.match(html,/name="csrf"/);assert.match(html,/<noscript>/);assert.match(html,/id="readiness"/);assert.match(html,/data-origin="https:/);assert.match(html,/\/status\/webauthn.js/);}
  }
  assert.equal(h.probes,0);
 });

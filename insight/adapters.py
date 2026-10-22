@@ -147,6 +147,23 @@ def observed_state(stamp):
         return 'unknown'
 
 
+def retention_status(database):
+    """Applied staging runs only; never open private settings or raw events."""
+    with sqlite_ro(database) as c:
+        result = dict(retention_enabled=False, last_run_at=None, rows_deleted_total=0, last_run=None)
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='agentmesh_retention_runs'").fetchone(): return result
+        fields = ('ran_at','older_than_days','deleted','candidates','kept_evidence','kept_pending','kept_too_new','kept_active_session','applied')
+        row = c.execute('SELECT ' + ','.join(fields) + ' FROM agentmesh_retention_runs WHERE applied=1 ORDER BY rowid DESC LIMIT 1').fetchone()
+        if row:
+            last = dict(zip(fields, row))
+            from datetime import datetime
+            last['ran_at'] = datetime.fromisoformat(last['ran_at']).isoformat()
+            if any(type(last[k]) is not int or last[k] < 0 for k in fields[1:]): raise ValueError('invalid retention counters')
+            total = c.execute('SELECT coalesce(sum(deleted),0) FROM agentmesh_retention_runs WHERE applied=1').fetchone()[0]
+            result.update(retention_enabled=True, last_run_at=last['ran_at'], rows_deleted_total=total, last_run=last)
+        return result
+
+
 def unavailable(label):
     return {'available':False,'error':label + ' unavailable or not configured'}
 
@@ -427,6 +444,9 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
             result['ingest'] = {'available':True,'backend':reader.label,'rows':reader.query(c, 'SELECT source_agent,COUNT(*) AS events,MAX(occurred_at) AS latest_event_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent ORDER BY source_agent'),'cursors':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + 'ingestion_cursors')[0],'errors':reader.query(c, 'SELECT error_type,COUNT(*) AS count,MAX(created_at) AS latest_at FROM ' + reader.prefix + 'ingestion_errors GROUP BY error_type'),'summary_state':reader.query(c, 'SELECT consumer,last_event_id,updated_at FROM ' + reader.prefix + "summary_state WHERE consumer NOT LIKE '%:event:%' ORDER BY consumer LIMIT 30"),'summary_event_markers':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + "summary_state WHERE consumer LIKE '%:event:%'")[0]}
     except Exception:
         result['ingest'] = unavailable('Ingest counters')
+    if result['ingest']['available'] and sync_db:
+        try: result['ingest']['retention'] = retention_status(sync_db)
+        except Exception: result['ingest']['retention'] = unavailable('Staging retention')
     try:
         if not packet_sync_enabled(agentmesh_home):
             raise RuntimeError('packet sync retired')

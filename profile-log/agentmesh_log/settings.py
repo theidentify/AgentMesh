@@ -70,7 +70,7 @@ def validate(value, *, local=False, project=False):
             fields(value['project'], ['name', 'scope'])
             for k, v in value['project'].items(): check(text(v) if k == 'name' else scope(v))
         return value
-    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync'])
+    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging'])
     if '$schema' in value: check(value['$schema'] == SCHEMA)
     if 'profiles' in value:
         check(type(value['profiles']) is dict)
@@ -107,6 +107,12 @@ def validate(value, *, local=False, project=False):
         fields(value['routing'], ['allowed_scopes'])
         if 'allowed_scopes' in value['routing']:
             v = value['routing']['allowed_scopes']; check(type(v) is list and all(scope(s) for s in v))
+    if 'staging' in value:
+        fields(value['staging'], ['retention'])
+        if 'retention' in value['staging']:
+            retention = value['staging']['retention']; fields(retention, ['older_than_days'])
+            if 'older_than_days' in retention:
+                days = retention['older_than_days']; check(type(days) is int and days >= 7)
     if 'packet_sync' in value:
         fields(value['packet_sync'],['enabled'])
         if 'enabled' in value['packet_sync']: check(type(value['packet_sync']['enabled']) is bool)

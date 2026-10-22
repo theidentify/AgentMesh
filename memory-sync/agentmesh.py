@@ -23,6 +23,11 @@ def main(argv=None):
     ingest.add_argument('--root', action='append', default=[])
     ingest.add_argument('--project')
     ingest.add_argument('--start-at')
+    staging = subs.add_parser('staging', help='local staging maintenance')
+    retention = staging.add_subparsers(dest='operation', required=True).add_parser('retention')
+    retention.add_argument('--older-than-days', type=int)
+    retention.add_argument('--apply', action='store_true')
+    retention.add_argument('--json', action='store_true')
     packets = subs.add_parser('packet-sync', help='retire or enable legacy packet transport')
     packets.add_argument('operation', choices=('retire', 'enable'))
     packets.add_argument('--dry-run', action='store_true')
@@ -385,6 +390,12 @@ def main(argv=None):
             report = inspect(args.runtime) if args.action == 'inspect-install' else wizard_status(args.runtime)
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 0
+        if args.action == 'staging' and not args.database:
+            import packet_sync
+            args.database = os.environ.get('AGENTMESH_DATABASE')
+            if not args.database:
+                runtime = json.loads((packet_sync.home() / 'memory-sync/data/runtime.json').read_text(encoding='utf-8'))
+                args.database = runtime['database']
         if not args.database:
             parser.error('--database is required for this action')
         db = Path(args.database).resolve()
@@ -393,6 +404,12 @@ def main(argv=None):
         if args.action == 'recall':
             from recall_memory import recall
             result = recall(db, args.query, project=args.project, limit=args.limit)
+        elif args.action == 'staging':
+            from staging_retention import retain
+            result = retain(db, older_than_days=args.older_than_days, apply=args.apply, workflow_config=args.config)
+            if not args.json:
+                print(' '.join(f'{key}={value}' for key, value in result.items()))
+                return 0
         elif args.action == 'ingest':
             from recall_memory import open_readonly
             with open_readonly(db) as c:

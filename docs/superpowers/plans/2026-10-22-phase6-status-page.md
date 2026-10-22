@@ -182,3 +182,15 @@ close vectors (write-only signers, revocation timing and no widening), stale
 approval resurrection, concurrent
 CSRF consumption and remote-publication failure. Final counts and sandbox limits
 are recorded in the Phase 6 REPORT. No commit or deploy is part of this work.
+
+### Insight UI (2026-10-22)
+
+Status, passkey and action-result pages share the Insight tokens, brand, cards,
+scrolling tables and system dark palette. Authenticated `/status/style.css` is
+status-host-only; HTML CSP permits same-origin styles (passkey pages retain only
+their existing script/connect permissions). Authenticated status-host `/` redirects
+to `/status`. The metadata projection and JSON serialization are unchanged, checked
+against a fixture captured from the pre-UI implementation. Relative times retain
+UTC hover timestamps; partial counts and observation caveats remain visible.
+Revoke uses a native disclosure confirmation before the existing CSRF POST;
+reject/close and all security checks are unchanged. No dependencies or deployment.

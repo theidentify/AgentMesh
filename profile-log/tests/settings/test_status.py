@@ -207,6 +207,17 @@ def test_synced_preserves_sections(tmp_path):
     status.synced(tmp_path,error); assert read(tmp_path)['last_sync']['last_ok_at'] is None
 
 
+def test_legacy_device_rows_valid(tmp_path):
+    """A status file written before heartbeats must stay valid after upgrade (and after rollback)."""
+    tmp_path.chmod(0o700); row=sync_row(); status.synced(tmp_path,row)
+    legacy=dict(generated_at='now',profiles=[],agents=[],devices=[dict(device_id='a'*32,revoked=False)])
+    value=dict(read(tmp_path),overview=legacy); assert status.valid(value)
+    atomic_write(tmp_path/'profile-log-status.json',wire(value))
+    status.write(tmp_path,last_apply=dict(at='now',outcome='approved',changes={}))
+    after=read(tmp_path); assert after['last_sync']==value['last_sync'] and after['overview']==legacy
+    assert not status.valid(dict(value,overview=dict(legacy,devices=[dict(device_id='a'*32,revoked=False,name='x')])))
+
+
 def broker_remote():
     from agentmesh_log.storage import StorageError
     def remote(): raise StorageError('remote operation failed')
@@ -222,7 +233,9 @@ def test_sync_overview_refresh(env,monkeypatch):
     try:
         status.synced(root,sync_row()); broker.sync_attempt(broker_remote(),60)
         value=read(root); device=store.load().device.device_id
-        assert value['overview']['devices']==[dict(device_id=device,revoked=False)]
+        row=value['overview']['devices'][0]
+        assert len(value['overview']['devices'])==1 and row['device_id']==device and not row['revoked']
+        assert row['this_device'] and row['name'] and row['last_sync_outcome']=='remote_error'
         assert value['overview']['profiles'][0]['name']=='work' and value['last_sync']['outcome']=='ok'
         assert status.valid(value) and rows
         broker.sync_attempt(broker_remote(),60); assert len(calls)==1

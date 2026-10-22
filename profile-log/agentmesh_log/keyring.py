@@ -197,8 +197,8 @@ def sync_control(home,store,remote,*,apply_lock=None):
     local=FilesystemStorage(home.root/'replica')
     prefixes=('registry/','keyring/','keys/','profiles/','alerts/','connectors/')
     for prefix in prefixes:
-        local_paths={p for p in local.list(prefix) if not p.startswith('connectors/gateway-state/')}
-        remote_paths={p for p in remote.list(prefix) if not p.startswith('connectors/gateway-state/')}
+        local_paths={p for p in local.list(prefix) if not p.startswith(('connectors/gateway-state/','registry/heartbeats/'))}
+        remote_paths={p for p in remote.list(prefix) if not p.startswith(('connectors/gateway-state/','registry/heartbeats/'))}
         for path in sorted(local_paths-remote_paths): remote.put(path,local.get(path))
         for path in sorted(remote_paths-local_paths):
             data=remote.get(path)

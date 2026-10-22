@@ -551,6 +551,7 @@ def profile_log_status(agentmesh_home, now=None):
             when = datetime.fromisoformat(v.replace('Z','+00:00'))
             return round((now-when).total_seconds(),1) if when.tzinfo else None
         except (AttributeError, ValueError, OverflowError): return None
+    def instant(v): return v if text(v) is not None and 'T' in v and age(v) is not None else None
     def event(v, schema):
         out = fields(v, dict(at=text, outcome=text, **schema)); out['age_seconds'] = age(out['at']); return out
     root = Path(agentmesh_home); path = root/'profile-log-status.json'
@@ -569,7 +570,11 @@ def profile_log_status(agentmesh_home, now=None):
             result['overview'] = fields(value['overview'], dict(generated_at=text,
                 profiles=lambda v:sequence(v,lambda r:fields(r,dict(name=text,scopes=lambda v:sequence(v,lambda r:fields(r,dict(path=text,label=text)))))),
                 agents=lambda v:sequence(v,lambda r:fields(r,dict(name=text,read=strings,write=strings,default_write=text,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
-                devices=lambda v:sequence(v,lambda r:fields(r,dict(device_id=lambda v:(text(v) or '')[:12] or None,revoked=boolean)))))
+                devices=lambda v:sequence(v,lambda r:fields(r,dict(device_id=lambda v:(text(v) or '')[:12] or None,revoked=boolean,
+                    this_device=boolean,name=lambda v:v if type(v) is str and 1<=len(v)<=64 and v.isprintable() else None,
+                    platform=lambda v:v if v in ('macos','windows','linux','ios','android','other') else None,
+                    last_seen_at=instant,last_sync_at=instant,
+                    last_sync_outcome=lambda v:v if v in ('ok','credentials_missing','credentials_refused','remote_error','error') else None)))))
         if 'migration' in value:
             result['migration'] = fields(value['migration'],dict(generated_at=text,unmapped=strings,
                 projects=lambda v:sequence(v,lambda r:fields(r,dict(project=text,items=count,summaries=count,target=text)))))

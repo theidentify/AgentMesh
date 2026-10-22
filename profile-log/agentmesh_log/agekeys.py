@@ -72,3 +72,11 @@ def validate_recipient(value):
 def encrypt(data, recipient):
     try: return pyrage.encrypt(data,[validate_recipient(recipient)])
     except Exception: raise CryptoError('age encryption failed') from None
+
+
+def encrypt_many(data, recipients):
+    try:
+        targets=[validate_recipient(r) for r in recipients]
+        if not targets: raise ValueError()
+        return pyrage.encrypt(data,targets)
+    except Exception: raise CryptoError('age encryption failed') from None

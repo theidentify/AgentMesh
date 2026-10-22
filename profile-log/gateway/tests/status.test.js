@@ -422,3 +422,14 @@ test('grant pagination partial flag survives an app snapshot hit',async()=>{
  for(let i=0;i<2;i++){const data=await (await h.get()).json();assert.equal(data.apps_capped,true);assert.equal(data.r2_sync.capped,false);assert.equal(data.apps.length,1);}
  assert.equal(calls,10);
 });
+
+test('MD-8 heartbeat objects are ignored by the Worker',async()=>{
+ const h=await harness();await writePolicy(h,'client');
+ await h.env.STORAGE.put('registry/heartbeats/'+h.deviceId+'.json',bytes('DEVICE_NAME_SENTINEL'));
+ const get=h.env.STORAGE.get.bind(h.env.STORAGE);
+ h.env.STORAGE.get=async key=>{assert.ok(!key.startsWith('registry/heartbeats/'));return get(key);};
+ const response=await h.get();assert.equal(response.status,200);
+ assert.doesNotMatch(await response.text(),/DEVICE_NAME_SENTINEL/);
+ const cached=await h.env.OAUTH_KV.get('status:inventory','json');
+ assert.ok(!cached.objects.some(o=>o.key.startsWith('registry/heartbeats/')));
+});

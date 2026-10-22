@@ -70,7 +70,11 @@ def validate(value, *, local=False, project=False):
             fields(value['project'], ['name', 'scope'])
             for k, v in value['project'].items(): check(text(v) if k == 'name' else scope(v))
         return value
-    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging'])
+    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging', 'device'])
+    if 'device' in value:
+        from .heartbeats import name_valid
+        fields(value['device'], ['name'])
+        if 'name' in value['device']: check(name_valid(value['device']['name']))
     if '$schema' in value: check(value['$schema'] == SCHEMA)
     if 'profiles' in value:
         check(type(value['profiles']) is dict)

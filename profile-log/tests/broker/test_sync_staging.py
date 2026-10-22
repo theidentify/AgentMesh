@@ -174,9 +174,10 @@ def test_control_download_unlocked(tmp_path):
         def put(self,path,data): assert not b.lock._is_owned(); storage.put(path,data)
     try:
         b.sync_attempt(Remote(),60)
-        assert rows[-1]['outcome']=='ok' and rows[-1]['downloaded']==1 and fetched==[key]
+        assert rows[-1]['outcome']=='ok' and rows[-1]['downloaded']==1
+        assert fetched==[key,'registry/heartbeats/'+b.state.device.device_id+'.json']
         assert rows[-1]['outbox']==0
-        assert rows[-1]['local_objects']==rows[-1]['remote_objects']==len(list(storage.list('')))
+        assert rows[-1]['local_objects']==rows[-1]['remote_objects']==len([p for p in storage.list('') if not p.startswith('registry/heartbeats/')])
     finally: b.close()
 
 

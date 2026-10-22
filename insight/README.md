@@ -326,11 +326,12 @@ forwarding headers would erase this distinction: retain the public Host and
 Cloudflare headers in the tunnel configuration. The listener remains loopback.
 
 Remote access is metadata-only: GET `/`, `/metrics.html`, `/health`,
-`/api/profile-log`, `/api/metrics` and `/api/connections` are allowed after
-verification. All other paths return 404; HEAD and write methods return 405.
+`/api/profile-log`, `/api/metrics`, `/api/connections` and `/api/operations`
+(counts, timestamps and states only) are allowed after verification. All other paths return 404; HEAD and write methods return 405.
 Remote Origin, when supplied, must exactly match `https://insight.krisb8.com`.
-The UI hides content/operations tabs and search controls and does not fetch their
-APIs remotely. Metadata can still reveal operational counts and names; keep the
+The UI hides the Memory Browser and its search controls and never fetches
+`/api/memory*` remotely; Overview, Agents, Pipeline, Sync, Metrics and Profile log
+work remotely. Metadata can still reveal operational counts and names; keep the
 Access policy owner-only. The UI is not the authorization boundary.
 
 Not verified by this change: live tunnel routing, DNS/TLS deployment, the owner's

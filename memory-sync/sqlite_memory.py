@@ -248,7 +248,10 @@ def ingest_file(path, transcript, project=None, agent='omp'):
         synced = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sync_config'").fetchone() is not None
         if synced:
             from memory_sync import allocate_id
+        tombstones = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='observation_event_tombstones'").fetchone()
         for event in events:
+            if tombstones and c.execute('SELECT 1 FROM observation_event_tombstones WHERE event_key=?', (sha256(event.event_key.encode('utf-8')).hexdigest(),)).fetchone():
+                continue
             row = asdict(event)
             if synced:
                 row['id'] = allocate_id(c, 'observation_events')

@@ -7,7 +7,7 @@ from recall_memory import open_readonly, _decode
 from summarize_memory import DEFAULT_CONSUMER
 
 
-# Reused by context, scheduler, and disabled retention audit. Never a scalar cursor.
+# Reused by context, scheduler, and staging retention. Never a scalar cursor.
 COVERAGE_SQL = '''NOT EXISTS(SELECT 1 FROM summary_state s
     WHERE s.consumer=? || ':event:' || CAST(e.id AS TEXT))
     AND NOT EXISTS(SELECT 1 FROM memory_items m,json_each(m.metadata,'$.batch_event_ids') j

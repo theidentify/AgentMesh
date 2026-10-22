@@ -27,6 +27,11 @@ PROTOCOL_REASONS = frozenset({
 })
 
 SAFE_REASONS = frozenset({
+    'retention apply requires packet_sync.enabled=false',
+    'older_than_days must be an integer at least 7',
+    'configured workflow missing; retention refused',
+    'invalid staging settings', 'invalid staging.retention settings',
+    'invalid provenance; retention refused', 'FTS deletion trigger missing or unsupported',
     'cannot read runtime/workflow configuration; refusing to unload worker',
     'absolute paths without traversal required',
     'partial first-run installation requires manual review',
@@ -176,7 +181,7 @@ def report(exc, action):
     is_protocol = action in ('conflicts','resolve','receive-only','activate-protocol','protocol-capability')
     is_key = action in ('identity-protect', 'identity-os-unlock', 'identity-backup', 'identity-restore', 'identity-rotate', 'peer-rotate', 'compromise-report')
     is_join = action in ('prepare-join', 'invite-peer', 'setup-join')
-    if not is_windows and not is_key and not is_join and not is_protocol and action not in ('worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
+    if not is_windows and not is_key and not is_join and not is_protocol and action not in ('staging', 'worker-run', 'worker-start', 'worker-status', 'worker-stop', 'diagnose'):
         return result
     message = str(exc)
     known = (message in SAFE_REASONS or message in PROTOCOL_REASONS or message in KEY_REASONS

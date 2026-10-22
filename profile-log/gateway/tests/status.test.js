@@ -2,8 +2,8 @@ import './setup.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { makeEnv,writePolicy,approved } from './fakes.mjs';
-import { bytes,wire,sign } from '../src/encoding.js';
+import { makeEnv,writePolicy,approved,register,start,finish,admin } from './fakes.mjs';
+import { bytes,wire,sign,sha } from '../src/encoding.js';
 import { callTool,ulid } from '../src/gateway.js';
 const {createGateway}=await import('../src/worker.js');
 const rsa=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
@@ -91,4 +91,107 @@ test('P6-S13 control reads are bounded and consumed streams can be reused',async
  h.env.STORAGE.get=async key=>{assert.ok(!seen.has(key));seen.add(key);const object=await get(key);if(!object)return null;const response=new Response(await object.arrayBuffer());return {arrayBuffer:()=>response.arrayBuffer()};};
  h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>({items:[{clientId:'expired',expiresAt:1}]}),lookupClient:async()=>assert.fail('expired grants must not resolve clients')})})});
  const data=await (await h.get()).json();assert.equal(data.apps.length,2);assert.ok(data.apps.every(a=>!a.has_oauth_grants));
+});
+
+async function actionPost(h,fields,headers={},origin=h.env.STATUS_ORIGIN){
+ return h.worker.fetch(new Request(origin+'/status/action',{method:'POST',headers:{'Cf-Access-Jwt-Assertion':await jwt({sub:'owner'}),Origin:h.env.STATUS_ORIGIN,'Sec-Fetch-Site':'same-origin',...headers},body:new URLSearchParams(fields)}),h.env);
+}
+async function actionToken(h){
+ const html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
+ const token=/name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1];assert.ok(token);return token;
+}
+async function actionHarness(){
+ const h=await harness();await h.env.OAUTH_KV.put('pending:'+'cd'.repeat(32),JSON.stringify({client_name:'<request>',created:Date.now(),expires:Date.now()+600000,browser_hash:'ef'.repeat(32),auth:{body:'private-marker'}}));
+ h.actions=[];h.worker=createGateway({...h.options,fetcher:async(url,options)=>{
+  const body=JSON.parse(new TextDecoder().decode(options.body));if(body.tool==='status')return h.options.fetcher(url,options);
+  assert.equal(options.headers['X-Agentmesh-App'],'0'.repeat(32));h.actions.push(body);
+  return Response.json(await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:crypto.randomUUID().replaceAll('-',''),action:body.arguments.action,payload:{code_hash:body.arguments.code_hash}},h.device,'connector-admin'));
+ }});return h;
+}
+test('P6-S10 actions bind CSRF to JWT identity and reject bad requests before bridge',async()=>{
+ const h=await actionHarness(),csrf=await actionToken(h),fields={csrf,action:'reject',code_hash:'cd'.repeat(32)};
+ for(const [values,headers]of [[{...fields,csrf:''},{}],[{...fields,csrf:'00'.repeat(32)},{}],[fields,{Origin:'https://evil.example'}],[fields,{'Sec-Fetch-Site':'cross-site'}],[fields,{'Cf-Access-Jwt-Assertion':''}],[fields,{'Cf-Access-Jwt-Assertion':await jwt({sub:'another'})}],[fields,{'Cf-Access-Jwt-Assertion':await jwt({sub:'owner',email:'second@example.com'})}]]){
+  assert.equal((await actionPost(h,values,headers)).status,403);assert.equal(h.actions.length,0);
+ }
+ assert.equal((await actionPost(h,fields,{},h.env.ORIGIN)).status,404);
+ assert.equal((await actionPost(h,fields)).status,200);assert.equal(h.actions.length,1);
+ assert.deepEqual(h.actions[0],{tool:'admin',arguments:{action:'reject',code_hash:'cd'.repeat(32)}});
+ assert.equal(await h.env.OAUTH_KV.get('pending:'+'cd'.repeat(32)),null);
+ assert.equal((await actionPost(h,fields)).status,403);assert.equal(h.actions.length,1);
+});
+test('P6-S14 reject admin requires pinned device signature and refuses replay',async()=>{
+ const h=await actionHarness(),payload={code_hash:'cd'.repeat(32)};
+ const envelope=await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:'aa'.repeat(16),action:'reject',payload},h.device,'connector-admin');
+ const send=r=>h.worker.fetch(new Request(h.env.ORIGIN+'/admin/reject',{method:'POST',body:wire(r)}),h.env);
+ assert.equal((await send({...envelope,signature:'00'.repeat(64)})).status,403);
+ assert.equal((await send({...envelope,device_id:'ff'.repeat(16)})).status,403);
+ assert.equal((await send(envelope)).status,200);
+ assert.equal((await send(envelope)).status,403);
+});
+
+test('P6-S15 CSRF expiration, duplicates, strict arguments and concurrent single use',async()=>{
+ const h=await actionHarness();let csrf=await actionToken(h),fields={csrf,action:'reject',code_hash:'cd'.repeat(32)};
+ for(const [body,headers]of [[fields,{Origin:''}],[{...fields,action:'approve'},{}],[{...fields,app_id:'ab'.repeat(16)},{}],[{...fields,code_hash:'no'},{}]]){
+  assert.equal((await actionPost(h,body,headers)).status,403);assert.equal(h.actions.length,0);
+ }
+ const key=[...h.env.OAUTH_KV.data.keys()].find(k=>k.startsWith('status:csrf:'));
+ const row=await h.env.OAUTH_KV.get(key,'json');await h.env.OAUTH_KV.put(key,JSON.stringify({...row,exp:Date.now()-1}));
+ assert.equal((await actionPost(h,fields)).status,403);assert.equal(h.actions.length,0);
+ csrf=await actionToken(h);fields={...fields,csrf};
+ assert.equal((await actionPost(h,[...Object.entries(fields),['action','reject']])).status,403);
+ const results=await Promise.all([actionPost(h,fields),actionPost(h,fields)]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,403]);assert.equal(h.actions.length,1);
+});
+async function revokeDevice(h){
+ const other=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']),id='09'.repeat(16),issued_at=Date.now()-5000;
+ const certificate=await sign({format:'agentmesh-device-cert-v1',account_id:JSON.parse(h.env.ACCOUNT_PUBLIC_RECORD).account_id,device_id:id,device_public_key:Buffer.from(await crypto.subtle.exportKey('raw',other.publicKey)).toString('hex'),issuer:'account',issued_at},h.root.privateKey,'device-cert');
+ await h.env.STORAGE.put(`registry/devices/${id}.json`,wire(await sign({format:'agentmesh-device-record-v1',certificate,age_recipient:'age1synthetic',issued_at},other.privateKey,'device-record')));
+ await h.env.STORAGE.put(`registry/revocations/${h.deviceId}.json`,wire(await sign({format:'agentmesh-device-revocation-v1',device_id:h.deviceId,revoked_by:id,revoked_at:Date.now()-1,reason_code:'removed'},other.privateKey,'device-revocation')));
+}
+for(const action of ['reject','revoke'])test('P6-S16 '+action+' envelopes reject forgery, unpinned/revoked signers and replay',async()=>{
+ const h=await actionHarness();let payload={code_hash:'cd'.repeat(32)},drops=0;
+ if(action==='revoke'){
+  const {p,ref}=await writePolicy(h,'client',{state:'revoked'});payload={app_id:p.app_id,policy_ref:ref};
+  h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>({items:[{id:'grant'}]}),revokeGrant:async()=>{drops++;}})})});
+ }
+ const make=extra=>sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:crypto.randomUUID().replaceAll('-',''),action,payload,...extra},h.device,'connector-admin');
+ const send=r=>h.worker.fetch(new Request(h.env.ORIGIN+'/admin/'+action,{method:'POST',body:wire(r)}),h.env);
+ const r=await make();
+ for(const bad of [{...r,signature:'00'.repeat(64)},await make({device_id:'ff'.repeat(16)}),await make({payload:{...payload,approve:true}})])assert.equal((await send(bad)).status,403);
+ assert.equal(drops,0);assert.equal((await send(r)).status,200);assert.equal((await send(r)).status,403);
+ if(action==='revoke')assert.equal(drops,1);
+ await revokeDevice(h);assert.equal((await send(await make())).status,403);
+});
+test('P6-S17 action forms contain only allowed projections and relay failure is fixed',async()=>{
+ const h=await actionHarness(),{p}=await writePolicy(h,'client');
+ await h.env.STORAGE.put(`connectors/${p.app_id}/secret/test.json`,wire(await sign({format:'agentmesh-connector-secret-window-v1',app_id:p.app_id,not_before:Date.now()-100,not_after:Date.now()+60000,issuer_device:h.deviceId},h.device,'connector-secret-window')));
+ const html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
+ for(const action of ['reject','revoke','close_secret'])assert.ok(html.includes(`name="action" value="${action}"`));
+ assert.doesNotMatch(html,/private-marker|<request>/);assert.match(html,/&lt;request&gt;/);
+ const csrf=await actionToken(h);h.worker=createGateway({...h.options,fetcher:async()=>Response.json({error:'private-marker'})});
+ const result=await actionPost(h,{csrf,action:'close_secret',app_id:p.app_id});assert.equal(result.status,403);assert.equal(await result.text(),'Forbidden');
+});
+
+test('P6-S21 revoke and close relay only exact reductions; mismatched envelope is refused',async()=>{
+ const h=await actionHarness(),{p}=await writePolicy(h,'client');let seen=[];
+ h.worker=createGateway({...h.options,fetcher:async(url,options)=>{
+  const body=JSON.parse(new TextDecoder().decode(options.body));if(body.tool==='status')return h.options.fetcher(url,options);seen.push(body);
+  if(body.arguments.action==='close_secret')return Response.json({status:'ok'});
+  const {ref}=await writePolicy(h,'client',{...p,state:'revoked',issued_at:Date.now()});
+  return Response.json(await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:crypto.randomUUID().replaceAll('-',''),action:'revoke',payload:{app_id:p.app_id,policy_ref:ref}},h.device,'connector-admin'));
+ }});
+ for(const action of ['close_secret','revoke']){const csrf=await actionToken(h);assert.equal((await actionPost(h,{csrf,action,app_id:p.app_id})).status,200);}
+ assert.deepEqual(seen.map(r=>r.arguments),[{action:'close_secret',app_id:p.app_id},{action:'revoke',app_id:p.app_id}]);
+ const csrf=await actionToken(h);
+ assert.equal((await actionPost(h,{csrf,action:'reject',code_hash:'cd'.repeat(32)})).status,403);
+ assert.ok(await h.env.OAUTH_KV.get('pending:'+'cd'.repeat(32)));
+});
+test('P6-S22 reject prevents completion even if a stale approval resurrects KV',async()=>{
+ const h=await harness(),client=await register(h),pending=await start(h,client.client_id),code_hash=await sha(bytes(pending.code));
+ const {p,ref}=await writePolicy(h,client.client_id);
+ assert.equal((await admin(h,'approve',{code_hash,app_id:p.app_id,policy_ref:ref})).status,200);
+ const stale=await h.env.OAUTH_KV.get('pending:'+code_hash);
+ assert.equal((await admin(h,'reject',{code_hash})).status,200);
+ await h.env.OAUTH_KV.put('pending:'+code_hash,stale);
+ assert.equal((await finish(h,pending)).status,403);
 });

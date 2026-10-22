@@ -245,7 +245,7 @@ works as soon as its vendor supports remote MCP connectors.
 
 ### Status page (2026-10-22 amendment)
 
-The read-only status UI lives only at `STATUS_ORIGIN` (for example
+The status UI lives only at `STATUS_ORIGIN` (for example
 `https://status.<owner domain>`), a Workers Custom Domain attached to the same
 Worker. Protect that hostname with a Cloudflare Access self-hosted application,
 Allow policy for the owner's email only, and one-time PIN login. Access on the
@@ -253,7 +253,7 @@ whole `agentmesh-gateway.<sub>.workers.dev` hostname would break deployed OAuth
 and MCP, so `ORIGIN` stays separate; the existing `bridge.<domain>` Tunnel hostname
 keeps its Access Service Auth policy.
 
-Access is defense in depth. On every status GET the Worker independently verifies
+Access is defense in depth. On every supported status request, including POST, the Worker independently verifies
 `Cf-Access-Jwt-Assertion`: WebCrypto RS256 against the team's
 `https://<ACCESS_TEAM_DOMAIN>/cdn-cgi/access/certs`, five-minute in-memory public-key
 cache and refresh on unknown kid, exact issuer, audience containing
@@ -261,17 +261,17 @@ cache and refresh on unknown kid, exact issuer, audience containing
 case-insensitive membership in comma-separated `STATUS_ALLOWED_EMAILS`. No cookie
 fallback; any verification failure is a fixed 403. These four new settings are
 public vars, with no new secrets. Unset `STATUS_ORIGIN` disables status (404).
-Only `GET /status` and `GET /status.json` exist on the status origin; OAuth, MCP,
+Only `GET /status`, `GET /status.json` and `POST /status/action` exist on the status origin; OAuth, MCP,
 admin and well-known routes are 404 there. Status paths are 404 on `ORIGIN`.
 Responses have no CORS, `no-store`, a script-free default-deny CSP with
 `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and no-referrer.
 
 Each load sends one signed `{"tool":"status","arguments":{}}` bridge request
 within the existing nine-second budget. The all-zero 32-hex `app_id` is reserved
-exclusively for this operation. The bridge verifies signature, timestamp and nonce
+for status and the narrowing admin operation below. The bridge verifies signature, timestamp and nonce
 as usual, then returns only device ID, current time, last control sync, last drain
 time/result and ULID-derived outbox cursor time; it never resolves policies or
-creates a broker client. Other uses of the reserved ID and status with real app
+creates a broker client. Other uses of the reserved ID and status/admin with real app
 IDs are denied. A Tunnel can choose any healthy connector: the UI shows observed
 history, not an enumeration, and marks only the live responder. Only status probes
 are recorded (tool calls write nothing). Observations expire from KV after seven days.
@@ -286,6 +286,40 @@ and policy/window resolution is withheld if control inventory may be incomplete.
 HTML escapes every dynamic value. No memory content, ciphertext, tokens, codes,
 queries or bodies are logged or rendered. See the
 [status plan](../plans/2026-10-22-phase6-status-page.md) for setup and verification limits.
+
+
+#### De-escalation amendment (Part 1)
+
+The cloud relays, it never grants. Access email-OTP may request rejection of a
+pending OAuth request, revocation of an existing app, or early closure of an
+active secret window. It can never approve, create/widen policy or open a window.
+The status-only forms require exact same Origin, same-origin Sec-Fetch-Site when
+present, and a single-use 32-byte random CSRF value stored by SHA-256 in OAUTH_KV
+as `status:csrf:<hash> -> {sub,email,exp}` for 15 minutes. The verified Access JWT
+must match both signed identity fields. Conditional R2 claims prevent concurrent
+reuse; deletion of eventually consistent KV alone is insufficient.
+
+The existing signed bridge transport uses STATUS_APP and tool `admin`, with only
+`action` plus `code_hash` for reject or `app_id` for revoke/close_secret. The device
+rechecks narrowing and audits fixed operation/outcome fields. Reject and revoke
+return device-signed `agentmesh-connector-admin-v1` envelopes, verified through
+the same Worker `/admin` logic (account pin, revocations, signature, nonce).
+Reject atomically claims the pending browser completion slot before KV deletion;
+revoke publishes a signed narrowing policy before grant cleanup. Close publishes
+`agentmesh-connector-secret-close-v1` at
+`connectors/{app_id}/secret-close/{ulid}.json`, with app_id, closed_at and
+issuer_device. A window is ignored when `not_before <= closed_at < not_after`
+and the signature verifies against an account device non-revoked at `closed_at`,
+using the registry device chain and revocations. No reader, write-only or
+scope-ancestry check applies. Write-only devices may close windows: like
+revocation, this is intentional narrowing-only authority, never a scope grant.
+A later signer revocation cannot undo a valid past close and reopen access.
+Close records cannot create, reopen or extend windows. Both verifiers use this
+same rule; no ancestry evidence is required. The broker immediately clears
+allow_secret and secret_until through a bridge-only operation. Failure cannot
+raise access. Plain confirmation
+pages contain only fixed outcomes. See the status plan for races and partial
+publication limits.
 
 ## Local-first variants
 

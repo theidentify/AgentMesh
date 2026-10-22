@@ -11,6 +11,7 @@ SCHEMAS = {
  'gateway': {'gateway_public_key','origin','issued_at','issuer_device'},
  'outbox-key': {'device_id','outbox_public_key','issued_at'},
  'connector-policy': {'app_id','display_name_hash','oauth_client_id_hash','read','remember','max_label','allow_cross_profile','limits','state','issuer_device','issued_at'},
+ 'connector-secret-close': {'app_id','closed_at','issuer_device'},
  'connector-secret-window': {'app_id','not_before','not_after','issuer_device'},
  'outbox-item': {'outbox_id','app_id','created_at','recipients','gateway_key_id'},
 }
@@ -29,7 +30,7 @@ def gateway_id(record):
 def shape(record,kind):
     fields(record,SCHEMAS[kind]|{'format','signature'},'agentmesh-'+kind+'-v1')
     hex_bytes(record['signature'],64)
-    for k in ('issued_at','not_before','not_after','created_at'):
+    for k in ('issued_at','not_before','not_after','created_at','closed_at'):
         if k in record: milliseconds(record[k])
     for k in ('issuer_device','device_id','app_id'):
         if k in record: hex_bytes(record[k],16)
@@ -98,7 +99,7 @@ class ConnectorRegistry:
         if kind=='gateway': path='registry/gateway/'+gateway_id(record)+'.json'
         elif kind=='outbox-key': path='registry/outbox-keys/'+record['device_id']+'.json'
         elif kind=='outbox-item': path='outbox/'+record['outbox_id']+'.json'
-        else: path='connectors/'+record['app_id']+('/policy/' if kind=='connector-policy' else '/secret/')+generate()+'.json'
+        else: path='connectors/'+record['app_id']+('/policy/' if kind=='connector-policy' else '/secret-close/' if kind=='connector-secret-close' else '/secret/')+generate()+'.json'
         self.storage.put(path,wire(record)); return path
 
     def records(self,prefix,kind):
@@ -107,7 +108,7 @@ class ConnectorRegistry:
                 r=shape(parse(self.storage.get(path)),kind)
                 leaf=path.removeprefix(prefix)
                 if '/' in leaf or not leaf.endswith('.json'): continue
-                if kind in ('connector-policy','connector-secret-window'): parse_ulid(leaf[:-5])
+                if kind in ('connector-policy','connector-secret-window','connector-secret-close'): parse_ulid(leaf[:-5])
                 yield path,r
             except (ValueError,KeyError,TypeError): continue
 
@@ -156,6 +157,15 @@ class ConnectorRegistry:
 
     def window(self,app_id,*,at=None):
         at=now() if at is None else at; registry,ring=self.context(); accepted=[]
+        closed=[]
+        for path,r in self.records('connectors/'+app_id+'/secret-close/','connector-secret-close'):
+            try:
+                if r['app_id']!=app_id or r['closed_at']>at: continue
+                # Closing only narrows: account membership at closure is sufficient.
+                public=registry.device_public(r['issuer_device'],at=r['closed_at'])
+                verify_signature(r,public,domain('connector-secret-close'))
+                closed.append(r['closed_at'])
+            except (ValueError,KeyError,TypeError): continue
         for path,r in self.records('connectors/'+app_id+'/secret/','connector-secret-window'):
             try:
                 if r['app_id']!=app_id or not r['not_before']<=at<r['not_after']: continue
@@ -164,6 +174,7 @@ class ConnectorRegistry:
                 p=self.policy(app_id,at=r['not_before'])
                 if p is None or p['state']!='active' or not self.reader(ring,r['issuer_device'],r['not_before']): continue
                 if not self.covers(ring,r['issuer_device'],p,r['not_before'],remember=False): continue
+                if any(r['not_before']<=t<r['not_after'] for t in closed): continue
                 accepted.append((r['not_before'],path,r))
             except (ValueError,KeyError,TypeError): continue
         return max(accepted,key=lambda x:x[:2])[2] if accepted else None

@@ -470,3 +470,58 @@ AgentMesh from AI apps”, and wrangler example now document the setup. The
 [status plan](2026-10-22-phase6-status-page.md) supplies owner steps and threat notes.
 Live Custom Domain routing, Access policies/PIN delivery, production JWKS/KV/Tunnel
 behavior, and the Mac app swap were not verified or performed.
+
+### Status de-escalation, Part 1 (uncommitted follow-up)
+
+Working tree remains on `claude/phase6-status-page` at `9c7236f`. Added status-only
+reject, revoke and close-secret forms; each POST repeats Access JWT validation,
+checks Origin/Fetch-Site, consumes an identity-bound 15-minute CSRF token, and
+relays an exact signed admin request under STATUS_APP. Conditional R2 claims
+handle concurrent CSRF replay and rejected-request completion races. Reject and
+revoke reuse the common pinned-device admin verifier. Revoke also checks the
+referenced signed revoked policy before dropping OAuth grants.
+
+The bridge rechecks device controls and narrowing, signs records/envelopes with
+the device key, and appends existing-format audit lines without request content.
+Secret closure is additive; it clears the local broker grant before remote
+publication, so a remote failure cannot preserve the local secret allowance.
+The broker reset operation is bridge-only. FORMAT, the plan's actions/threat
+section and the status spec amendment were updated.
+
+The reviewer settled the close-issuer rule: both Python and Worker accept a
+signature from an account device non-revoked at `closed_at`, with registry chain
+and revocation verification only. Write-only devices may close; reader status,
+scope authority and ancestry are irrelevant to this narrowing-only operation.
+The Worker ancestry implementation was removed, resolving the prior compatibility
+gap without a new public evidence format. A later revocation cannot undo a valid
+past close and reopen access. The bridge also permits write-only close signers.
+`GATES.md` was deleted as instructed and must not be committed.
+
+TDD: the revised shared vector first failed on a write-only close, then passed
+with the new issuer rule. Shared Python-to-Node vectors cover write-only closes,
+revoked-at-closure rejection, later revocation preserving a valid close, interval
+boundaries, future closes, later independent windows, and inability to create,
+reopen or extend a window. A bridge test uses a certified write-only device with
+no read grants to close an active window. The existing action tests cover CSRF,
+JWT/host isolation, device envelopes, replay, strict narrowing, broker reset,
+audit and partial publication failure.
+
+Final full-suite counts follow. No npm dependency or lockfile changes, commits,
+or deployment were performed.
+
+Final validation after the settled issuer-rule change:
+
+- `node --test` in `profile-log/gateway`: **39 passed, 0 failed, 0 skipped**.
+- `~/.cache/agentmesh-logvenv/bin/python -m pytest -q` in `profile-log`:
+  **693 passed, 8 skipped, 5 failed**, 94.82 seconds. All five failures are the
+  previously documented sandbox socket-binding gates: `test_p3_1_processes`,
+  `test_connections_offline`, `test_real_transport`, `test_p5_4_concurrent_processes`
+  and `test_s3_custom_http_endpoint`. Each reports denied local binding.
+- Targeted action suite: **11 passed**, including the shared cross-implementation
+  vector and the write-only bridge close. No tests were weakened or skipped to
+  conceal the socket failures.
+- An initial repository-root pytest invocation hit two unrelated profile-memory
+  module-name collection collisions; the complete profile-log suite above was
+  then run from its proper directory.
+- `git diff --check` passes. `GATES.md` is absent. Package manifest and lockfile
+  diffs are empty. HEAD remains `9c7236f`; no commit or deploy occurred.

@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer';
-import { bytes } from './encoding.js';
+import { bytes,hex,sha,unhex,exact } from './encoding.js';
 import { policy,secretWindow } from './registry.js';
-import { tunnel } from './gateway.js';
+import { tunnel,claim } from './gateway.js';
 import { ERROR_CODES,STATUS_APP,hour,statusShape,countError } from './status-metrics.js';
-const headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",'X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
+const headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",'X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
 export const statusResponse=(body,status=200,type='text/plain; charset=utf-8')=>new Response(body,{status,headers:{...headers,'Content-Type':type}});
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // Each gateway instance caches only public signing keys, never assertions or claims.
@@ -27,7 +27,8 @@ export function accessVerifier(fetcher) {
   const now=Date.now()/1000,skew=30,aud=Array.isArray(claims.aud)?claims.aud:[claims.aud];
   if(claims.iss!==issuer||!aud.includes(env.STATUS_ACCESS_AUD)||!Number.isSafeInteger(claims.exp)||!Number.isSafeInteger(claims.iat)||claims.exp<=now-skew||claims.iat>now+skew||claims.iat>=claims.exp)return false;
   if(claims.nbf!==undefined&&(!Number.isSafeInteger(claims.nbf)||claims.nbf>now+skew||claims.nbf>=claims.exp))return false;
-  return typeof claims.email==='string'&&String(env.STATUS_ALLOWED_EMAILS??'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean).includes(claims.email.toLowerCase());
+  if(!(typeof claims.email==='string'&&String(env.STATUS_ALLOWED_EMAILS??'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean).includes(claims.email.toLowerCase())))return false;
+  return {sub:claims.sub,email:claims.email};
  }catch{return false;}};
 }
 const PREFIXES=['registry/','keyring/','keys/','events/','connectors/','outbox/'];
@@ -79,9 +80,47 @@ export async function statusData(env,api,fetcher) {
  const known=await devices(env,live),uploaded=inv.objects.filter(o=>o.key.startsWith('events/')).map(o=>new Date(o.uploaded).getTime()).filter(Number.isFinite);
  return {generated_at_ms:at,bridges:{probe,devices:known.rows,capped:known.capped,note:'The Tunnel routes to any healthy connector; this is observed history, not device enumeration. Unattributed responses cannot identify a device.'},outbox:{count:outbox.length,oldest_age_ms:times.length?Math.max(0,at-Math.min(...times)):null,newest_age_ms:times.length?Math.max(0,at-Math.max(...times)):null,unknown_age_count:outbox.length-times.length,capped:inv.capped,last_drain_ms:live?.last_drain_ms??null,last_drain_result:live?.last_drain_result??null,outbox_cursor_ms:live?.outbox_cursor_ms??null,note:'Object count is not a pending count: the Worker cannot determine which items were drained.'},apps,apps_capped:appsCapped,secret_windows:windows,gateway_errors:errors,r2_sync:{counts:inv.counts,latest_event_uploaded_ms:uploaded.length?Math.max(...uploaded):null,capped:inv.capped,object_limit:10000,note:'Counts and latest upload cover the scanned objects only; capped results are partial. Upload time does not prove convergence.'}};
 }
-export async function serveStatus(request,env,api,fetcher) {
+async function pendingRequests(env) {
+ const rows=[];let cursor,pages=0,capped=false;
+ do{const page=await env.OAUTH_KV.list({prefix:'pending:',cursor,limit:100});
+  for(const key of page.keys){if(rows.length>=100){capped=true;break;}const hash=key.name.slice(8);if(!/^[0-9a-f]{64}$/.test(hash))continue;
+   const p=await env.OAUTH_KV.get(key.name,'json');if(p&&!p.approval&&!p.completed&&!p.rejected&&p.expires>Date.now())rows.push({code_hash:hash,client_name:typeof p.client_name==='string'?p.client_name.slice(0,256):'App',expires:p.expires});
+  }
+  cursor=page.list_complete?undefined:page.cursor;if(++pages>=10||rows.length>=100){capped||=!!cursor;break;}
+ }while(cursor);return {rows,capped};
+}
+export async function statusAction(request,env,identity,applyAdmin,fetcher) {
+ try{
+  if(request.headers.get('Origin')!==env.STATUS_ORIGIN||![null,'same-origin'].includes(request.headers.get('Sec-Fetch-Site')))throw Error();
+  if(typeof identity.sub!=='string'||!identity.sub||Number(request.headers.get('Content-Length')??0)>4096)throw Error();
+  if(!request.headers.get('Content-Type')?.startsWith('application/x-www-form-urlencoded'))throw Error();
+  const raw=await request.text();if(bytes(raw).length>4096)throw Error();
+  const form=new URLSearchParams(raw),body=Object.fromEntries(form);if([...form].length!==Object.keys(body).length)throw Error();
+  const {csrf,action,...args}=body,field=action==='reject'?'code_hash':'app_id';
+  if(!['reject','revoke','close_secret'].includes(action))throw Error();exact(args,[field]);unhex(args[field],action==='reject'?32:16);unhex(csrf,32);
+  const hash=await sha(bytes(csrf)),key='status:csrf:'+hash,stored=await env.OAUTH_KV.get(key,'json');
+  if(!stored||stored.sub!==identity.sub||stored.email!==identity.email||!Number.isSafeInteger(stored.exp)||stored.exp<=Date.now())throw Error();
+  if(!await claim(env,'status-csrf/'+hash))throw Error();await env.OAUTH_KV.delete(key);
+  const result=await tunnel(env,STATUS_APP,'admin',{action,...args},fetcher);
+  if(result.error)throw Error();
+  if(action==='close_secret'){exact(result,['status']);if(result.status!=='ok')throw Error();}
+  else{
+   if(result.action!==action||result.payload?.[field]!==args[field])throw Error();
+   const response=await applyAdmin(result,action);if(!response.ok)throw Error();
+  }
+  return statusResponse('<!doctype html><meta charset="utf-8"><title>AgentMesh status</title><p>Action completed.</p><a href="/status">Return to status</a>',200,'text/html; charset=utf-8');
+ }catch{return statusResponse('Forbidden',403);}
+}
+export async function serveStatus(request,env,api,fetcher,identity) {
  try{const data=await statusData(env,api,fetcher);if(new URL(request.url).pathname==='/status.json')return statusResponse(JSON.stringify(data),200,'application/json');
+  const pending=await pendingRequests(env);let forms='';
+  if(typeof identity?.sub==='string'&&identity.sub){
+   const token=hex(crypto.getRandomValues(new Uint8Array(32)));
+   await env.OAUTH_KV.put('status:csrf:'+await sha(bytes(token)),JSON.stringify({...identity,exp:Date.now()+900000}),{expirationTtl:900});
+   const form=(action,field,value,label)=>`<form method="post" action="/status/action"><input type="hidden" name="csrf" value="${token}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="${field}" value="${escape(value)}"><button>${escape(label)}</button></form>`;
+   forms='<section><h2>Actions</h2>'+pending.rows.map(p=>form('reject','code_hash',p.code_hash,'Reject '+p.client_name)).join('')+data.apps.filter(p=>p.state==='active').map(p=>form('revoke','app_id',p.app_id,'Revoke '+p.app_id)).join('')+data.secret_windows.map(w=>form('close_secret','app_id',w.app_id,'Close secret window '+w.app_id)).join('')+(pending.capped?'<p>Pending requests are partial.</p>':'')+'</section>';
+  }
   const sections=[['Bridges',data.bridges],['Outbox',data.outbox],['Apps',{items:data.apps,capped:data.apps_capped}],['Secret windows',data.secret_windows],['Gateway errors',data.gateway_errors],['R2 sync',data.r2_sync]];
-  return statusResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AgentMesh status</title><body><h1>AgentMesh status</h1><p>Read-only metadata. Reload for one live bridge probe. Error counts are approximate, over the current and previous 23 UTC hours.</p>'+sections.map(([title,value])=>`<section><h2>${title}</h2><pre>${escape(JSON.stringify(value,null,2))}</pre></section>`).join('')+'</body></html>',200,'text/html; charset=utf-8');
+  return statusResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AgentMesh status</title><body><h1>AgentMesh status</h1><p>Metadata and access-reducing actions. Reload for one live bridge probe. Error counts are approximate, over the current and previous 23 UTC hours.</p>'+sections.map(([title,value])=>`<section><h2>${title}</h2><pre>${escape(JSON.stringify(value,null,2))}</pre></section>`).join('')+forms+'</body></html>',200,'text/html; charset=utf-8');
  }catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
 }

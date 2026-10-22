@@ -34,6 +34,17 @@ def window(broker,session,req):
     return {'status':'ok'}
 
 
+def close_secret(broker,session,req):
+    if set(req)!={'op','app_id'}: raise ValueError('invalid_request')
+    if session.agent_id!=broker.state.control.get('connector_bridge_agent'): raise ValueError('denied')
+    hex_bytes(req['app_id'],16)
+    for aid,g in broker.state.grants.items():
+        if g.connector_app_id==req['app_id']:
+            broker.state.grants[aid]=replace(g,allow_secret=False,secret_until=0)
+    broker.store.save(broker.state); broker.fingerprint=broker.store.fingerprint()
+    return {'status':'ok'}
+
+
 def provision(home,store,policy=None):
     """Protected local administration. One signing identity per app per device."""
     with home.lock():

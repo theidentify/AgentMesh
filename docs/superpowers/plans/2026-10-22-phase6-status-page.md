@@ -59,7 +59,8 @@ and `iat` must be valid integer dates, and `nbf` is checked when present. Time
 checks allow 30 seconds of skew. The signed email must be in the configured
 allowlist. Every validation failure is 403 with the same `Forbidden` body.
 
-The status hostname serves only GET `/status` and GET `/status.json`; all other
+The status hostname serves GET `/status`, GET `/status.json`, and POST
+`/status/action`; all other
 paths/methods are 404, including `/mcp`, `/authorize`, `/token`, `/register`,
 `/admin/*`, and `/.well-known/*`. Status paths are always 404 on `ORIGIN`.
 Responses use `Cache-Control: no-store`, `default-src 'none'`,
@@ -68,7 +69,7 @@ and no CORS. No scripts or inline styles are needed; dynamic HTML is escaped.
 
 One live signed gateway-to-bridge probe per load uses the existing nine-second
 budget and body `{"tool":"status","arguments":{}}`. The 32-zero app ID is reserved
-exclusively for status, not an OAuth app. The normal signature, timestamp and nonce
+for status and the strictly narrowing admin operation, not an OAuth app. The normal signature, timestamp and nonce
 gates precede dispatch; no policies are resolved and no broker client is created.
 The bridge returns only `device_id`, `now_ms`, `last_control_sync_ms`,
 `last_drain_ms`, `last_drain_result` (`stored`, `rejected`, `errors`), and
@@ -103,7 +104,8 @@ R2 lists paginate across `registry/`, `keyring/`, `keys/`, `events/`,
 withheld on a partial inventory because missing revocations would be misleading.
 App display caps at 100 apps and 10 grant pages each; bridge history caps at 1,000
 entries/10 KV pages. Caps are surfaced. Metadata neither proves decryption nor
-full replica convergence. Status performs no R2 writes; only telemetry writes KV.
+full replica convergence. Status GETs write only KV observations and CSRF tokens. Actions also use existing
+conditional R2 nonce/completion claims. The Worker never signs a policy or window.
 Never log or render memory content, ciphertext, tokens, codes, queries or bodies.
 
 ## Verification limits
@@ -113,3 +115,70 @@ Domain attachment, Access PIN delivery or policy configuration, the actual team'
 JWKS, production KV timing, Cloudflare routing/failover, or a replaced Mac app.
 No live deployment or network verification was performed. Full suite results and
 any sandbox limitations are recorded in the Phase 6 REPORT's status amendment.
+
+## Part 1: access-reducing actions (P6-S10 onward)
+
+The cloud relays, it never grants. Access email-OTP is sufficient only for these
+three reductions. Each supported POST repeats the Worker's Access JWT validation.
+`POST /status/action` exists only on `STATUS_ORIGIN`; no admin API, OAuth or MCP
+route is exposed there. No new secrets, dependencies or deployments are needed.
+
+HTML renders escaped, small forms for pending requests (bounded to 100 entries /
+10 KV pages), active apps, and active windows. JSON stays metadata-only. The
+hidden CSRF field is 32 random bytes encoded as hex; only its SHA-256 lookup key
+is stored as `status:csrf:<hash>` with `{sub,email,exp}`, TTL 900 seconds. A
+nonempty signed Access `sub` is required for forms and actions. POST requires
+exact `Origin`, `Sec-Fetch-Site: same-origin` when supplied, matching signed
+sub/email, and an unexpired token. Duplicate fields and extra action arguments
+are denied. A conditional R2 claim makes consumption single-use even under
+concurrent or stale KV reads; KV is then deleted. The CSP permits forms to self
+and no scripts. Auth assertions, OAuth codes/tokens and request bodies never
+reach HTML or logs; the hidden anti-CSRF value is the necessary form-only value.
+
+The gateway signs the existing bridge transport with the reserved all-zero app
+ID and body `{"tool":"admin","arguments":{...}}`. Exact argument sets are
+`{action:"reject",code_hash}`, `{action:"revoke",app_id}` and
+`{action:"close_secret",app_id}`. Ordinary app IDs, approval, widening, window
+opening and extra arguments are refused on the device. The device refreshes
+controls and checks its current account membership. Close does not require
+reader status or scope authority; the other actions retain their existing checks.
+It writes the existing broker audit format with null agent, `connector_<action>`,
+`ok`/`denied`, and no payload fields.
+
+- Reject signs a `connector-admin` envelope containing only `code_hash`. The
+  common Worker admin path verifies the pinned device chain, current revocations,
+  signature and nonce before claiming the browser completion slot and deleting
+  `pending:<code_hash>`. Even a stale approval resurrected in KV cannot complete.
+- Revoke requires an existing policy, copies it with state revoked, signs and
+  publishes it, then signs the usual revoke envelope. The Worker verifies both
+  envelope and referenced revoked record before using the existing grant cleanup.
+- Close requires an active policy/window. It signs an additive secret-close
+  record, applies it locally, clears broker secret grants through a bridge-only
+  operation, and publishes the same bytes remotely. A remote failure returns a
+  fixed denial while preserving the local reduction. Both verifiers ignore
+  windows containing a valid close timestamp; later windows remain independent.
+
+### Threat notes and failure limits
+
+The browser cannot supply policies, scope authority, timestamps or admin
+signatures. The relay response must match the requested action and target before
+it can enter the shared admin verifier. A consumed CSRF token remains consumed
+on failure; reload before retry. Confirmation is a plain page with a status link.
+Revoke/close storage and OAuth cleanup are not one distributed transaction;
+partial failure can reduce locally before reporting failure. Existing remote
+control polling bounds other devices' observation; there is no claim of an
+instantaneous global transaction. R2 claims are durable replay tombstones, using
+the existing gateway-state mechanism. KV expiration alone is never the replay
+oracle. The settled close-issuer rule is intentionally narrowing-only: both
+verifiers accept the signature of any account device non-revoked at `closed_at`,
+including a write-only device, without reader or scope-ancestry checks. Revocations
+are resolved through the account registry. A signer revoked at closure is ignored;
+revocation after a valid close cannot undo that reduction and reopen access.
+Closes cannot create, reopen or extend windows. No public ancestry evidence is
+needed, and the Worker's former read-grant ancestry logic has been removed.
+
+TDD includes initially failing forms/admin/record tests, shared Python-to-Node
+close vectors (write-only signers, revocation timing and no widening), stale
+approval resurrection, concurrent
+CSRF consumption and remote-publication failure. Final counts and sandbox limits
+are recorded in the Phase 6 REPORT. No commit or deploy is part of this work.

@@ -219,7 +219,8 @@ class TransportTests(unittest.TestCase):
 
     def test_g7_resolved_exchange_and_legacy_mismatch(self):
         import adapters
-        am=Path(self.tmp.name)/'am'; (am/'exchange').mkdir(parents=True)
+        am=Path(self.tmp.name).resolve()/'am'; (am/'exchange').mkdir(parents=True)
+        (am/'packet-sync-status.json').write_text(json.dumps({'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}),encoding='utf-8')
         exchange=adapters.layout(self.home,am)['exchange']['path']
         self.assertEqual(transport.observe(self.home,exchange)['availability'],'exchange folder not configured')
         self.assertEqual(self.paths,[])

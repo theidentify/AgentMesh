@@ -17,6 +17,7 @@ class RelocationTests(unittest.TestCase):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         self.root=Path(tmp.name).resolve(); self.home=self.root/'hermes'; self.am=self.root/'agentmesh'
         (self.home/'omp-memory').mkdir(parents=True); self.am.mkdir()
+        self.put(self.am/'packet-sync-status.json',dict(format='agentmesh-packet-sync-status-v1',packet_sync='enabled'))
         (self.home/'cron').mkdir()
         self.put(self.home/'cron/jobs.json',{'jobs':[{'id':adapters.JOB,'last_status':'ok'}]})
         (self.home/'cron/usage_audit.jsonl').write_text('')

@@ -32,6 +32,10 @@ def test_p5_4_concurrent_processes():
         with closing(sqlite3.connect(db)) as c, c:
             c.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text(encoding='utf-8'))
             c.executemany("INSERT INTO memory_items(id,kind,scope,content) VALUES(?,'fact','global','synthetic memory')",[(i,) for i in range(1,31)])
+            c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+            c.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
+        Path(str(db)+'.profile-log.json').write_text(json.dumps(dict(format='agentmesh-profile-log-bridge-v1',device_id=state.device.device_id,staging_node='test-node')))
+        Path(str(db)+'.profile-log.json').chmod(0o600)
         mapping=root/'mapping.json'
         mapping.write_text(json.dumps(dict(format='agentmesh-migration-mapping-v1',projects={},prefixes=[],null_project='work/a',**{'global':'work/a'})),encoding='utf-8')
         env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[2]),'PYTHONDONTWRITEBYTECODE':'1'}

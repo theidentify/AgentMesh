@@ -56,7 +56,7 @@ def load_model(backend=None):
                 if client is not None: client.close()
     model=Model(settings.read(base/'settings.json'),scopes=ns.values(),profiles=[t.root.name for t in state.trees],devices=devices,projects=groups,
                 labels={ns[s.scope_id]:s.default_label.name for t in state.trees for s in t.scopes.values()},sources=sources,ledger=ledger,
-                fingerprint=approver_fingerprint(registry,state.device.device_id),effective=value)
+                fingerprint=approver_fingerprint(registry,state.device.device_id),effective=value,device_id=state.device.device_id)
     managed={aid:name for name,aid in state.control.get('agent_names',{}).items()}
     model.enforced_agents={managed.get(aid,aid):enforced_agent(state,grant) for aid,grant in state.grants.items()}
     return model

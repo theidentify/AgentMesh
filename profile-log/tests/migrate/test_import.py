@@ -7,12 +7,16 @@ from agentmesh_log.encoding import typed
 from agentmesh_log.events import EVENT_DOMAIN
 
 
-def request_body(ident=1, digest='a'*64):
-    return dict(op='import',source=dict(table='memory_items',id=ident),row_hash=digest,
+def request_body(ident=1, digest='a'*64, device=None):
+    value=dict(op='import',source=dict(table='memory_items',id=ident),row_hash=digest,
         created_at=1577836800000,scope='work/a',body=dict(kind='fact',content='migrate database',
         project='alpha',task_ref=None,confidence=1.0,metadata=dict(source=dict(table='memory_items',id=ident,
         scope='global',scope_key=None,memory_key=None,version=None,created_at=None,updated_at=None),
         row_hash=digest,evidence_event_ids=[],retired=False)))
+    if device is not None:
+        value['source']['device']=device
+        value['body']['metadata']['source']['device']=device
+    return value
 
 
 def finish(broker, session, agent, response):
@@ -24,7 +28,7 @@ def finish(broker, session, agent, response):
 def test_p5_7_authority(tmp_path):
     home,state,store,agents=setup_home(tmp_path)
     broker=Broker(home,store=store); agent=agents[0]; session=Session(agent.certificate())
-    assert broker.request(session,request_body()) == {'error':'denied'}
+    assert broker.request(session,request_body(device=state.device.device_id)) == {'error':'denied'}
     assert broker.request(session,dict(op='import_ledger')) == {'error':'denied'}
     for key in ('source','row_hash','evidence_event_ids','retired'):
         assert remember(broker,session,agent,dict(kind='fact',content='safe',metadata={key:None})) == {'error':'invalid_request'}
@@ -35,12 +39,12 @@ def test_p5_3_import_and_retire(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
-    result=finish(broker,s,agent,broker.request(s,request_body()))
+    result=finish(broker,s,agent,broker.request(s,request_body(device=state.device.device_id)))
     assert result['outcome']=='created'
-    assert broker.request(s,request_body()) == dict(outcome='unchanged',id=result['id'])
-    result=finish(broker,s,agent,broker.request(s,request_body(digest='b'*64)))
+    assert broker.request(s,request_body(device=state.device.device_id)) == dict(outcome='unchanged',id=result['id'])
+    result=finish(broker,s,agent,broker.request(s,request_body(device=state.device.device_id,digest='b'*64)))
     assert result['outcome']=='revised'
-    req=request_body(); req['body']=None
+    req=request_body(device=state.device.device_id); req['body']=None
     assert finish(broker,s,agent,broker.request(s,req))['outcome']=='retired'
     assert recall(broker,s)['results']==[]
     broker.close()
@@ -50,11 +54,11 @@ def test_p5_4_reservation(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); a=Session(agent.certificate()); b=Session(agent.certificate())
-    first=broker.request(a,request_body())
+    first=broker.request(a,request_body(device=state.device.device_id))
     assert first.get('stage')=='sign'
-    assert broker.request(b,request_body())=={'error':'busy'}
+    assert broker.request(b,request_body(device=state.device.device_id))=={'error':'busy'}
     finish(broker,a,agent,first)
-    assert broker.request(b,request_body())['outcome']=='unchanged'
+    assert broker.request(b,request_body(device=state.device.device_id))['outcome']=='unchanged'
     broker.close()
 
 
@@ -62,8 +66,8 @@ def test_p5_6_compat_selection(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
-    finish(broker,s,agent,broker.request(s,request_body()))
-    req=request_body(2); req['source']['table']='memory_summaries'
+    finish(broker,s,agent,broker.request(s,request_body(device=state.device.device_id)))
+    req=request_body(2,device=state.device.device_id); req['source']['table']='memory_summaries'
     req['body']['metadata']['source'].update(table='memory_summaries',scope='project',scope_key='alpha',version=1)
     req['body'].update(kind='summary',content='unrelated summary')
     finish(broker,s,agent,broker.request(s,req))
@@ -81,8 +85,8 @@ def test_p5_3_remap_restart(tmp_path):
     grant=state.grants[agent.agent_id]; grant.allow_import=True
     grant.write.append(resolve(state,'work/b')); grant.read.append(resolve(state,'work/b')); store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
-    finish(broker,s,agent,broker.request(s,request_body()))
-    req=request_body(digest='c'*64); req['scope']='work/b'
+    finish(broker,s,agent,broker.request(s,request_body(device=state.device.device_id)))
+    req=request_body(device=state.device.device_id,digest='c'*64); req['scope']='work/b'
     first=broker.request(s,req)
     second=broker.request(s,dict(op='sign',signature=agent._private.sign(EVENT_DOMAIN+typed(first['unsigned'])).hex()))
     assert second.get('stage')=='sign'
@@ -91,7 +95,7 @@ def test_p5_3_remap_restart(tmp_path):
     broker.close(); broker=Broker(home,store=store); s=Session(agent.certificate())
     assert broker.request(s,req)['outcome']=='unchanged'
     assert len(broker.imports.ledger(grant)[0]['chain'])==3
-    req=request_body()
+    req=request_body(device=state.device.device_id)
     assert finish(broker,s,agent,broker.request(s,req))['outcome']=='created'
     assert broker.request(s,req)['outcome']=='unchanged'
     broker.close()
@@ -101,11 +105,11 @@ def test_p5_4_discard_reservation(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); a=Session(agent.certificate()); b=Session(agent.certificate())
-    assert broker.request(a,request_body())['stage']=='sign'
+    assert broker.request(a,request_body(device=state.device.device_id))['stage']=='sign'
     assert broker.request(a,dict(op='invalid'))=={'error':'invalid_request'}
-    assert broker.request(b,request_body())['stage']=='sign'
+    assert broker.request(b,request_body(device=state.device.device_id))['stage']=='sign'
     broker.imports.release(b)
-    assert broker.request(a,request_body())['stage']=='sign'
+    assert broker.request(a,request_body(device=state.device.device_id))['stage']=='sign'
     broker.close()
 
 
@@ -115,7 +119,7 @@ def test_p5_7_replica_forgery(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     broker=Broker(home,store=store)
     sid=state.grants[agent.agent_id].default_write; key=state.trees[0].keys[sid]
-    data=seal_event(key.write_key,agent,request_body()['body'],label=Label.general)
+    data=seal_event(key.write_key,agent,request_body(device=state.device.device_id)['body'],label=Label.general)
     envelope=broker.replica.put_event(data); broker.ingest(envelope,data)
     assert not broker.imports.entries
     broker.close()
@@ -128,7 +132,7 @@ def test_p5_5_secret_and_metadata(tmp_path):
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
     secret='ghp_'+secrets.token_hex(20)
-    req=request_body(); req['body']['content']='synthetic marker '+secret
+    req=request_body(device=state.device.device_id); req['body']['content']='synthetic marker '+secret
     before=broker.replica.outbox()
     result=finish(broker,s,agent,broker.request(s,req))
     assert result['label']=='secret' and result['redactions']
@@ -145,7 +149,7 @@ def test_no_ordinary_revision(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); session=Session(agent.certificate())
-    result=finish(broker,session,agent,broker.request(session,request_body()))
+    result=finish(broker,session,agent,broker.request(session,request_body(device=state.device.device_id)))
     assert broker.request(session,dict(op='revise',body='ordinary replacement',revises=result['id']))=={'error':'denied'}
     broker.close()
 
@@ -163,7 +167,7 @@ def test_import_scope(tmp_path):
     state.grants[agent.agent_id].allow_import=True;store.save(state)
     broker=Broker(home,store=store);session=Session(agent.certificate())
     try:
-        req=request_body();req['scope']='work/b'
+        req=request_body(device=state.device.device_id);req['scope']='work/b'
         assert broker.request(session,req)=={'error':'denied'}
         result=remember(broker,session,agent,'ordinary memory')
         for key in ('source','row_hash','evidence_event_ids','retired'):
@@ -177,7 +181,7 @@ def test_retired_summary_hidden(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
-    req=request_body(2); req['source']['table']='memory_summaries'
+    req=request_body(2,device=state.device.device_id); req['source']['table']='memory_summaries'
     req['body']['metadata']['source'].update(table='memory_summaries',scope='project',scope_key='alpha',version=1)
     req['body'].update(kind='summary',content='project summary')
     finish(broker,s,agent,broker.request(s,req))
@@ -194,7 +198,7 @@ def test_future_timestamp(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); s=Session(agent.certificate())
-    req=request_body(); req['created_at']=int(time.time()*1000)+10*60*1000
+    req=request_body(device=state.device.device_id); req['created_at']=int(time.time()*1000)+10*60*1000
     assert broker.request(s,req)=={'error':'invalid_request'}
     req['created_at']=int(time.time()*1000)+60*1000
     assert finish(broker,s,agent,broker.request(s,req))['outcome']=='created'

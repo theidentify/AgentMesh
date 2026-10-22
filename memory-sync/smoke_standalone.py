@@ -98,6 +98,10 @@ def main():
         env = dict(os.environ)
         # os.environ is case-insensitive on Windows; a copied dict is not.
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
+        # Legacy packet lifecycle smoke: opt in, since Phase 7a defaults packet sync off.
+        packet_home = Path(scratch) / 'agentmesh-home'; packet_home.mkdir()
+        (packet_home / 'settings.local.json').write_text(json.dumps({'packet_sync': {'enabled': True}}))
+        env['AGENTMESH_HOME'] = str(packet_home)
         def run(*args, inputs=None, expected=0):
             command = [str(binary), *map(str, args)]
             result = subprocess.run(command, cwd=root, env=env, input=inputs,

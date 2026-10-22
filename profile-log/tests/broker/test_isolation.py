@@ -125,7 +125,7 @@ def test_p3_5_at_rest(tmp_path):
 def test_p3_6_no_keys(tmp_path):
     home,state,store,agents=setup_home(tmp_path); broker=Broker(home)
     client,sent,thread=connect(broker,agents[0])
-    assert set(client.request({'op':'whoami'}))=={'agent_id','read','write','default_profile','allow_secret'}
+    assert set(client.request({'op':'whoami'}))=={'agent_id','device_id','read','write','default_profile','allow_secret'}
     first=client.write('migrate database'); assert set(first)=={'id','label','redactions'}
     assert set(client.write('migrate database revision',revises=first['id']))=={'id','label','redactions'}
     client.request({'op':'recall','query':'migrate database'}); client.request({'op':'missing'})
@@ -143,7 +143,7 @@ def test_p3_6_no_keys(tmp_path):
         elif 'error' in response: assert set(response)=={'error'}
         elif 'id' in response: assert set(response)=={'id','label','redactions'}
         elif 'results' in response: assert set(response)=={'query','query_plan','candidate_counts','results','evidence'}
-        else: assert set(response)=={'agent_id','read','write','default_profile','allow_secret'}
+        else: assert set(response)=={'agent_id','device_id','read','write','default_profile','allow_secret'}
     record=parse(keyfile(home,state,agents[0]).read_bytes())
     assert set(record)=={'format','agent_cert','agent_private_key','device_public_key','address'}
 

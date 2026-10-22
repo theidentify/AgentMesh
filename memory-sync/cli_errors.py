@@ -27,6 +27,7 @@ PROTOCOL_REASONS = frozenset({
 })
 
 SAFE_REASONS = frozenset({
+    'cannot read runtime/workflow configuration; refusing to unload worker',
     'absolute paths without traversal required',
     'partial first-run installation requires manual review',
     'existing app root and runtime parent required',

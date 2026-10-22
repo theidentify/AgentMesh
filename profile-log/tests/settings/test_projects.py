@@ -77,9 +77,14 @@ def test_s7_cli_parity(env, monkeypatch):
     root, home, store=env; db=root/'synthetic.db'
     with sqlite3.connect(db) as conn:
         conn.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text(encoding='utf-8'))
+        conn.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+        conn.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
         conn.execute("INSERT INTO memory_items(kind,scope,content,confidence) VALUES('fact','global','synthetic marker',1)")
     value=config(); value['agents']={'importer':{'write':['work/common'],'allow_import':True}}
     save_user(value); assert apply_settings(console=console(),output=lambda _:None)['ok']
+    from agentmesh_log.broker.keystore import atomic_write
+    from agentmesh_log.encoding import wire
+    atomic_write(Path(str(db)+'.profile-log.json'),wire(dict(format='agentmesh-profile-log-bridge-v1',device_id=store.load().device.device_id,staging_node='test-node')))
     mapping=root/'equivalent.json'; put(mapping,{'format':'agentmesh-migration-mapping-v1',**value['migration']})
     base=['migrate','plan','--db',str(db)]
     assert execute(parser().parse_args(base+['--settings']))==execute(parser().parse_args(base+['--mapping',str(mapping)]))

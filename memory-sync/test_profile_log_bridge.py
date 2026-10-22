@@ -9,7 +9,7 @@ import profile_log_bridge as bridge
 def config(tmp_path):
     value=dict(format='agentmesh-profile-log-bridge-v1',enabled=True,recall=True,dual_write=True,authority=True,
         cli_argv=[str(tmp_path/'python'),'-m','agentmesh_log.cli'],agent_key=str(tmp_path/'recall.key'),
-        import_agent_key=str(tmp_path/'import.key'),mapping=str(tmp_path/'mapping.json'),profile='work',timeout_seconds=1)
+        import_agent_key=str(tmp_path/'import.key'),mapping=str(tmp_path/'mapping.json'),profile='work',timeout_seconds=1,recall_fallback=True,device_id='a'*32,staging_node='synthetic')
     db=tmp_path/'source.db'; path=tmp_path/'source.db.profile-log.json'
     path.write_text(json.dumps(value),encoding='utf-8'); path.chmod(0o600)
     return db,path,value
@@ -82,14 +82,14 @@ def test_p5_9_hybrid_and_rollback(tmp_path,monkeypatch,capsys):
     value['enabled']=False; path.write_text(json.dumps(value),encoding='utf-8')
     golden=recall_memory.recall(db,'synthetic memory')
     value['enabled']=True; path.write_text(json.dumps(value),encoding='utf-8')
-    row=dict(id='synthetic-ulid',source_ref=dict(table='memory_items',id=1),source_type='durable',kind='fact',content='synthetic broker memory',
+    row=dict(id='synthetic-ulid',author_device='a'*32,source_ref=dict(table='memory_items',id=1),source_type='durable',kind='fact',content='synthetic broker memory',
         project=None,task_ref=None,confidence=1.,scope='work/common',profile='work',label='general',created_at='2020-01-01',updated_at='2020-01-01',
         source=dict(table='memory_items',id=1,scope='global',scope_key=None,memory_key=None,version=None,created_at='2020-01-01',updated_at='2020-01-01'),evidence_event_ids=[])
     monkeypatch.setattr(bridge,'broker_recall',lambda *args:dict(results=[row]))
     result=recall_memory.recall(db,'synthetic memory')
     assert result['backend']=='broker'
     assert result['results'][0]['content']==row['content']
-    assert set(result['results'][0])==set(golden['results'][0])
+    assert set(result['results'][0])==set(golden['results'][0])|{'profile','source_ref'}
     def unavailable(*args): raise bridge.BrokerUnavailable()
     monkeypatch.setattr(bridge,'broker_recall',unavailable)
     fallback=recall_memory.recall(db,'synthetic memory')
@@ -104,7 +104,7 @@ def test_p5_9_cli_failures(tmp_path,monkeypatch,failure):
     from recall_memory import analyze_query
     _,_,value=config(tmp_path)
     def execute(*args,**kwargs):
-        assert kwargs['encoding']=='utf-8' and kwargs['timeout']==1
+        assert kwargs['encoding']=='utf-8' and 0<kwargs['timeout']<=1
         if failure=='timeout': raise subprocess.TimeoutExpired('synthetic',1)
         return SimpleNamespace(returncode=1 if failure=='exit' else 0,stdout='bad' if failure=='json' else '{}')
     monkeypatch.setattr(subprocess,'run',execute)
@@ -184,8 +184,8 @@ def test_subprocess_recall(tmp_path,capsys,mode):
         from test_recall_memory import event
         eid=event(c,'unrelated synthetic evidence')
         c.execute('INSERT INTO memory_sources VALUES(?,?)',(1,eid))
-    golden=recall_memory.recall(db,'synthetic memory',backend='sqlite')
-    row=dict(id='synthetic-ulid',source_ref=dict(table='memory_items',id=1),source_type='durable',kind='fact',content='synthetic broker memory',project=None,task_ref=None,confidence=1.,scope='work/common',profile='work',label='general',created_at='2020-01-01',updated_at='2020-01-01',source=dict(table='memory_items',id=1,scope='global',scope_key=None,memory_key=None,version=None,created_at='2020-01-01',updated_at='2020-01-01'),evidence_event_ids=[])
+    golden=recall_memory._recall(db,'synthetic memory')
+    row=dict(id='synthetic-ulid',author_device='a'*32,source_ref=dict(table='memory_items',id=1),source_type='durable',kind='fact',content='synthetic broker memory',project=None,task_ref=None,confidence=1.,scope='work/common',profile='work',label='general',created_at='2020-01-01',updated_at='2020-01-01',source=dict(table='memory_items',id=1,scope='global',scope_key=None,memory_key=None,version=None,created_at='2020-01-01',updated_at='2020-01-01'),evidence_event_ids=[])
     stub=tmp_path/'stub.py'
     programs={'ok':'print('+repr(json.dumps(dict(query='synthetic memory',query_plan={},candidate_counts={},results=[row],evidence=[])))+')','exit':'raise SystemExit(2)','timeout':'import time; time.sleep(2)','json':"print('invalid')",'shape':"print('{}')"}
     stub.write_text(programs[mode],encoding='utf-8')
@@ -194,8 +194,9 @@ def test_subprocess_recall(tmp_path,capsys,mode):
     if mode=='ok':
         assert result.pop('backend')=='broker'
         assert result['results'][0]['content']==row['content']
-        assert set(result['results'][0])==set(golden['results'][0])
-        assert result['evidence']==golden['evidence'] and result['evidence']
+        assert set(result['results'][0])==set(golden['results'][0])|{'profile','source_ref'}
+        expected=[dict(e,source_id=row['id']) for e in golden['evidence']]
+        assert result['evidence']==expected and result['evidence']
         assert capsys.readouterr().err==''
     else:
         assert result.pop('backend')=='sqlite-fallback'
@@ -210,7 +211,7 @@ def test_rollback_state(tmp_path,monkeypatch):
     db,path,value=config(tmp_path); sqlite_memory.init_database(db)
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO memory_items(id,kind,scope,content,created_at,updated_at) VALUES(1,'fact','global','synthetic sqlite memory','2020-01-01','2020-01-01')")
-    golden=recall_memory.recall(db,'synthetic memory',backend='sqlite')
+    golden=recall_memory._recall(db,'synthetic memory')
     value['enabled']=False;path.write_text(json.dumps(value),encoding='utf-8')
     def tree(): return {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     before=tree()

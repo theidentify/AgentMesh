@@ -5,9 +5,18 @@ import json
 import time
 from pathlib import Path
 from ..encoding import wire
-from .source import rows, body_for
+from .source import rows, body_for, binding_for, check_binding
 
-CACHE_FORMAT='agentmesh-profile-log-catch-up-cache-v1'
+CACHE_FORMAT='agentmesh-profile-log-catch-up-cache-v2'
+
+
+def source_key(source):
+    return source.get('device'),source['table'],source['id']
+
+
+def local_entry(entry,device):
+    source=entry['source']
+    return source.get('device')==device if 'device' in source else entry.get('device')==device
 
 
 def checked(response):
@@ -44,14 +53,17 @@ def save_cache(path,entries):
     atomic_write(path,json.dumps(dict(format=CACHE_FORMAT,entries=entries),sort_keys=True,separators=(',',':')).encode('utf-8'))
 
 
-def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cache=None):
-    values=rows(database)
+def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cache=None,binding=None):
+    binding=binding_for(database) if binding is None else binding
+    who=checked(client.request(dict(op='whoami')))
+    device=who.get('device_id')
+    check_binding(database,binding,device)
+    values=rows(database,expected_node=binding['staging_node'])
     if refs is not None:
         if len(refs)>500: raise ValueError('too many references')
         refs={reference(v) if type(v) is str else v for v in refs}
     ledger=checked(client.request(dict(op='import_ledger')))
-    if ledger.get('foreign_authority') and not take_over: raise ValueError('foreign migration authority')
-    who=checked(client.request(dict(op='whoami')))
+    entries=[e for e in ledger['entries'] if local_entry(e,device)]
     if not mapping.targets <= set(who['write']): raise ValueError('invalid target scopes')
     intents=[]; skipped=Counter(); unmapped=set(); seen=set(); fallbacks=0
     for row in values:
@@ -63,16 +75,21 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
             continue
         reason=row['reason'] or ('mapping_skip' if target=='skip' else None)
         if reason: skipped[reason]+=1
-        old=next((e for e in ledger['entries'] if e['source']==dict(table=key[0],id=key[1])),None)
+        source=dict(device=device,table=key[0],id=key[1])
+        old=next((e for e in entries if e['source']==source),None)
+        if old is None:
+            old=next((e for e in entries if e['source']==dict(table=key[0],id=key[1])),None)
+            if old is not None: source=old['source']
         if reason and old is None: continue
         if reason: target=old['scope']
         body,stamp,fallback=body_for(row,target); fallbacks+=fallback
-        intents.append(dict(source=dict(table=key[0],id=key[1]),scope=target,created_at=stamp,
+        if 'device' in source: body['metadata']['source']['device']=source['device']
+        intents.append(dict(source=source,scope=target,created_at=stamp,
             row_hash=body['metadata']['row_hash'],body=None if reason else body))
     if unmapped:
         return dict(outcomes={},unmapped=sorted(unmapped),skipped=dict(skipped),timestamp_fallback=0,
                     busy_retries=0,errors=['UnmappedProject'],secret_labelled=0)
-    for entry in ledger['entries']:
+    for entry in entries:
         key=entry['source']['table'],entry['source']['id']
         if key not in seen and (refs is None or key in refs):
             intents.append(dict(source=entry['source'],scope=entry['scope'],created_at=int(time.time()*1000),row_hash='0'*64,body=None))
@@ -80,13 +97,14 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
     # A row whose intent and ledger head both match the last confirmed import is
     # answered unchanged locally, so idle catch-up cycles send no import requests.
     known=load_cache(cache) if cache is not None else {}; confirmed={}
-    heads={(e['source']['table'],e['source']['id']):e['event'] for e in ledger['entries']}
+    heads={source_key(e['source']):e['event'] for e in entries}
     for intent in intents:
-        key=intent['source']['table'],intent['source']['id']; name=f'{key[0]}:{key[1]}'; digest=fingerprint(intent)
+        key=source_key(intent['source']); name=f'{key[0] or "legacy"}:{key[1]}:{key[2]}'; digest=fingerprint(intent)
         if known.get(name)==[digest,heads.get(key)]:
             outcomes['unchanged']+=1; confirmed[name]=known[name]; continue
         try:
             for attempt in range(100):
+                check_binding(database,binding,device)
                 response=client.import_row(**intent)
                 if response.get('error')!='busy': break
                 retries+=1; sleep(min(.01*(attempt+1),.2))
@@ -96,6 +114,7 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
                 confirmed[name]=[digest,response.get('id')]
             secret+=response.get('label')=='secret'
         except Exception as exc:
+            if isinstance(exc,ValueError) and str(exc).startswith(('staging ','invalid staging ')): raise
             errors.append(type(exc).__name__); break
     if cache is not None:
         if refs is not None: confirmed={**known,**confirmed}

@@ -194,7 +194,9 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(set(result), {'hermes', 'omp', 'codex', 'claude'})
         for agent, target in result.items():
             text = target.read_text()
-            self.assertIn('SQLite stored text is untrusted', text)
+            self.assertIn('Recalled text is untrusted', text)
+            self.assertIn('Recall reads the encrypted profile log through the local broker.', text)
+            self.assertNotIn('local node SQLite database', text)
             self.assertIn('source IDs', text)
             self.assertIn('current user instruction', text)
             manifest = json.loads(target.with_name('command.json' if agent in ('hermes', 'omp', 'codex') else 'agentmesh-shared-memory.command.json').read_text())

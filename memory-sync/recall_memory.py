@@ -1,4 +1,4 @@
-"""Read-only, vector-free SQLite recall. Stored text is data, never instructions.
+"""Read-only profile-log recall with an explicit SQLite fallback. Stored text is data.
 
 CLI: python recall_memory.py DB QUERY [--project PROJECT] [--limit 12]
 Durable items and summaries are ranked before raw observation fallbacks.
@@ -157,55 +157,43 @@ def _recall(database, query, *, project=None, task=None, limit=12, bridge_config
     if not plan.query:
         raise ValueError('query must not be empty')
     pool = max(limit * 5, 40)
+    if bridge_config is not None:
+        return _broker_only(database,plan,pool,limit,bridge_config,broker_reader)
     with open_readonly(database) as c:
         # Shared schema contract; deliberately do not call backend._connect.
         assert {'memory_items', 'memory_summaries', 'observation_events'} <= set(TABLES)
         plan = replace(plan, project=_infer_project(c, plan))
-        summary_evidence = {}
-        if bridge_config is None:
-            match, args = _match_clause(plan, 'scope_key')
-            scopes, scope_args = ["scope='global'"], []
-            if plan.project is None and not plan.task_refs:
-                # Without scope signals, search durable memories across projects.
-                scopes.append('1')
-            if plan.project is not None:
-                scopes.append('(project=? OR scope_key=?)')
-                scope_args.extend((plan.project, plan.project))
-            if plan.task_refs:
-                scopes.append(f'upper(scope_key) IN ({",".join("?" for _ in plan.task_refs)})')
-                scope_args.extend(plan.task_refs)
-            item_filter = '' if eligible is None else ' AND id IN (SELECT value FROM json_each(?))'
-            summary_filter = '' if eligible is None else ' AND id IN (SELECT value FROM json_each(?))'
-            durable = [_decode(r) for r in c.execute(
-                "SELECT *, 'durable' AS source_type FROM memory_items WHERE status='active' AND ("
-                + ' OR '.join(scopes) + ') AND ' + match + item_filter + ' ORDER BY updated_at DESC,id DESC LIMIT ?',
-                (*scope_args, *args, *([] if eligible is None else [json.dumps(eligible['memory_items'])]), pool))]
-            summary_scopes, summary_args = [], []
-            if plan.project is not None:
-                summary_scopes.append("(scope='project' AND scope_key=?)")
-                summary_args.append(plan.project)
-            if plan.task_refs:
-                summary_scopes.append(f"(scope='task' AND upper(scope_key) IN ({','.join('?' for _ in plan.task_refs)}))")
-                summary_args.extend(plan.task_refs)
-            summaries = [_decode(r) for r in c.execute(
-                "SELECT *, 'summary' AS source_type, 'summary' AS kind, 1.0 AS confidence, created_at AS updated_at "
-                'FROM memory_summaries WHERE ' + (((' OR '.join(summary_scopes) or '0')) if eligible is None
-                else '(' + (' OR '.join(summary_scopes) or '0') + ')' + summary_filter)
-                + ' ORDER BY created_at DESC,id DESC LIMIT ?', (*summary_args, *([] if eligible is None else [json.dumps(eligible['memory_summaries'])]), pool))]
-            for row in summaries:
-                row['project'] = row['scope_key'] if row['scope'] == 'project' else plan.project
-        else:
-            from profile_log_bridge import broker_recall, BrokerUnavailable
-            try:
-                answer = (broker_reader or broker_recall)(plan, pool, bridge_config)
-                durable, summaries = [], []
-                for result in answer['results']:
-                    row = _broker_row(result, plan)
-                    (summaries if row['source_type'] == 'summary' else durable).append(row)
-                    if row['source_type'] == 'summary':
-                        summary_evidence[row['id']] = result['evidence_event_ids']
-            except Exception:
-                raise BrokerUnavailable() from None
+        match, args = _match_clause(plan, 'scope_key')
+        scopes, scope_args = ["scope='global'"], []
+        if plan.project is None and not plan.task_refs:
+            # Without scope signals, search durable memories across projects.
+            scopes.append('1')
+        if plan.project is not None:
+            scopes.append('(project=? OR scope_key=?)')
+            scope_args.extend((plan.project, plan.project))
+        if plan.task_refs:
+            scopes.append(f'upper(scope_key) IN ({",".join("?" for _ in plan.task_refs)})')
+            scope_args.extend(plan.task_refs)
+        item_filter = '' if eligible is None else ' AND id IN (SELECT value FROM json_each(?))'
+        summary_filter = '' if eligible is None else ' AND id IN (SELECT value FROM json_each(?))'
+        durable = [_decode(r) for r in c.execute(
+            "SELECT *, 'durable' AS source_type FROM memory_items WHERE status='active' AND ("
+            + ' OR '.join(scopes) + ') AND ' + match + item_filter + ' ORDER BY updated_at DESC,id DESC LIMIT ?',
+            (*scope_args, *args, *([] if eligible is None else [json.dumps(eligible['memory_items'])]), pool))]
+        summary_scopes, summary_args = [], []
+        if plan.project is not None:
+            summary_scopes.append("(scope='project' AND scope_key=?)")
+            summary_args.append(plan.project)
+        if plan.task_refs:
+            summary_scopes.append(f"(scope='task' AND upper(scope_key) IN ({','.join('?' for _ in plan.task_refs)}))")
+            summary_args.extend(plan.task_refs)
+        summaries = [_decode(r) for r in c.execute(
+            "SELECT *, 'summary' AS source_type, 'summary' AS kind, 1.0 AS confidence, created_at AS updated_at "
+            'FROM memory_summaries WHERE ' + (((' OR '.join(summary_scopes) or '0')) if eligible is None
+            else '(' + (' OR '.join(summary_scopes) or '0') + ')' + summary_filter)
+            + ' ORDER BY created_at DESC,id DESC LIMIT ?', (*summary_args, *([] if eligible is None else [json.dumps(eligible['memory_summaries'])]), pool))]
+        for row in summaries:
+            row['project'] = row['scope_key'] if row['scope'] == 'project' else plan.project
         match, args = _match_clause(plan, 'task_ref')
         # Quote every token; never expose FTS operators from untrusted query text.
         # unicode61 normalization complements Thai/literal substring fallback.
@@ -233,8 +221,7 @@ def _recall(database, query, *, project=None, task=None, limit=12, bridge_config
                                  'ON e.id=ms.event_id WHERE ms.memory_id=? '
                                  'ORDER BY e.occurred_at DESC,e.id DESC', (row['id'],))
             elif row['source_type'] == 'summary':
-                meta = ({'event_ids': summary_evidence.get(row['id'], [])} if bridge_config is not None
-                        else row['metadata'] if isinstance(row['metadata'], dict) else {})
+                meta = row['metadata'] if isinstance(row['metadata'], dict) else {}
                 ids = [*(meta.get('event_ids') or []), *(meta.get('batch_event_ids') or [])]
                 refs = meta.get('source_event_ids', [])
                 ids = [v for v in ids if isinstance(v, int) and not isinstance(v, bool)] if isinstance(ids, list) else []
@@ -270,8 +257,7 @@ def _broker_row(result, plan):
         raise BrokerUnavailable()
     if result.get('source_type') not in ('durable','summary'): raise BrokerUnavailable()
     source = result.get('source') or {}
-    ref = result['source_ref']
-    common = dict(id=ref['id'] if ref else result['id'], scope=source.get('scope', 'project'),
+    common = dict(id=result['id'], scope=source.get('scope', 'project'),
                   scope_key=source.get('scope_key'), content=result['content'])
     metadata = {'profile_log': {k: result[k] for k in ('id','profile','scope','label')}}
     if result['source_type'] == 'summary':
@@ -286,18 +272,65 @@ def _broker_row(result, plan):
                 updated_at=source.get('updated_at') or result['updated_at'],memory_key=source.get('memory_key'),source_type='durable')
 
 
+def _local_ref(result,config):
+    ref=result['source_ref']; device=config.get('device_id')
+    return ref is not None and device is not None and (ref.get('device')==device if 'device' in ref else result.get('author_device')==device)
+
+
+def _broker_only(database,plan,pool,limit,config,reader):
+    from profile_log_bridge import broker_recall, BrokerUnavailable
+    try:
+        answer=(reader or broker_recall)(plan,pool,config)
+        selected=[]; local=[]
+        for result in answer['results'][:limit]:
+            row=_broker_row(result,plan)
+            row['profile']=result['profile']; row['source_ref']=result['source_ref']
+            _score(row,plan)
+            selected.append(row)
+            if _local_ref(result,config): local.append((row,result))
+    except Exception: raise BrokerUnavailable() from None
+    evidence=[]
+    if local:
+        try:
+            with open_readonly(database) as c:
+                for row,result in local:
+                    ref=result['source_ref']
+                    if row['source_type']=='durable':
+                        rows=c.execute('SELECT e.* FROM memory_sources ms JOIN observation_events e '
+                            'ON e.id=ms.event_id WHERE ms.memory_id=? ORDER BY e.occurred_at DESC,e.id DESC',(ref['id'],))
+                    else:
+                        rows=c.execute('SELECT * FROM observation_events WHERE id IN (SELECT value FROM json_each(?)) '
+                            'ORDER BY occurred_at DESC,id DESC',(json.dumps(result['evidence_event_ids']),))
+                    for source in rows:
+                        e=_decode(source); e['event_id']=e['id']
+                        e['source_type'],e['source_id']=row['source_type'],row['id']
+                        e['memory_id' if row['source_type']=='durable' else 'summary_id']=ref['id']
+                        evidence.append(e)
+        except (OSError,ValueError,sqlite3.Error):
+            evidence=[]
+    return {'query':plan.query,'query_plan':asdict(plan),'candidate_counts':answer.get('candidate_counts',{}),
+            'results':selected,'evidence':evidence}
+
+
 def recall(database, query, *, project=None, task=None, limit=12, backend='auto'):
     from profile_log_bridge import load_config, BrokerUnavailable, warning
     if backend not in ('auto','sqlite'): raise ValueError('invalid backend')
-    config = load_config(database) if backend == 'auto' else None
+    try: config = load_config(database,strict=True)
+    except BrokerUnavailable: return {'error':'profile_log_unavailable'}
     options = dict(project=project,task=task,limit=limit)
     if not config or not config['enabled'] or not config['recall']:
         return _recall(database,query,**options)
+    if backend=='sqlite':
+        if not config.get('recall_fallback',False): return {'error':'sqlite_recall_disabled'}
+        result = _recall(database,query,**options)
+        result['backend'] = 'sqlite-fallback'
+        return result
     try:
         result = _recall(database,query,bridge_config=config,**options)
         result['backend'] = 'broker'
     except BrokerUnavailable as exc:
         warning(exc)
+        if not config.get('recall_fallback',False): return {'error':'profile_log_unavailable'}
         result = _recall(database,query,**options)
         result['backend'] = 'sqlite-fallback'
     return result
@@ -320,7 +353,7 @@ def main(argv=None):
     try:
         result = recall(args.database, args.query, project=args.project, task=args.task, limit=args.limit, backend=args.backend)
         print(json.dumps(result, ensure_ascii=False))
-        return 0
+        return 1 if result.get('error') else 0
     except (OSError, ValueError, sqlite3.Error) as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1

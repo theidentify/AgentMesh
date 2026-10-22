@@ -77,10 +77,10 @@ def parser():
     grant.add_argument('--allow-import',action='store_true')
     recall.add_argument('--compat',action='store_true')
     migration=commands.add_parser('migrate'); operations=migration.add_subparsers(dest='action',required=True)
-    for action in ('plan','run','rows','catch-up','report'):
+    for action in ('plan','run','rows','catch-up','report','verify'):
         cmd=operations.add_parser(action)
         cmd.add_argument('--db',required=action!='report')
-        routing=cmd.add_mutually_exclusive_group(required=action in ('run','rows','catch-up'))
+        routing=cmd.add_mutually_exclusive_group(required=action in ('run','rows','catch-up','verify'))
         routing.add_argument('--mapping'); routing.add_argument('--settings',action='store_true')
         cmd.add_argument('--project-dir',action='append',default=[])
         if action!='plan': cmd.add_argument('--agent-key',required=True)
@@ -234,8 +234,15 @@ def execute_migration(args, *, backend=None):
             mapping=effective_mapping(value,store.load(),args.project_dir)
         else: mapping=Mapping.load(args.mapping) if args.mapping else None
         if args.action=='plan': return plan(args.db,mapping)
+        binding=None
+        if args.action in ('run','rows','catch-up','verify'):
+            from .migrate.source import binding_for
+            binding=binding_for(args.db)
         client=BrokerClient.from_file(args.agent_key)
         try:
+            if args.action=='verify':
+                from .migrate.verify import verify
+                return verify(args.db,mapping,client,binding=binding)
             if args.action=='report':
                 result=report(client,args.db,mapping)
                 # Agent files are emitted under HOME/agents; reject replica destinations.
@@ -246,7 +253,7 @@ def execute_migration(args, *, backend=None):
             if args.action=='catch-up':
                 import os
                 cache=Path(os.environ.get('AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE',str(args.db)+'.profile-log.catch-up.json'))
-            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache)
+            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache,binding=binding)
         finally: client.close()
         if args.action=='catch-up': caught_up(args.db,mapping,result)
         return result
@@ -362,7 +369,12 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
         return 1 if 'error' in result or result.get('errors',0) else 0
     except KeyboardInterrupt: return 0
     except Exception as exc:
-        code={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused'}.get(str(exc))
+        code={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused',
+              'staging binding missing or invalid; run apply':'staging_binding_missing',
+              'staging binding device differs from broker':'staging_binding_device_mismatch',
+              'staging node differs from binding':'staging_binding_node_mismatch',
+              'staging identity missing; initialize ingest before apply':'staging_identity_missing',
+              'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         emit(json.dumps({'error':code})); return 1
 

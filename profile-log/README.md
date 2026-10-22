@@ -420,7 +420,7 @@ socket bind is an explicit test failure. Leave live R2 mode disabled for offline
 
 ## Migration from SQLite
 
-Migration is opt-in and offline. SQLite remains the authority; raw observation events
+Migration is opt-in and offline. SQLite is a device-local staging database; raw observation events
 and transcript evidence stay there. Only active durable items and every non-session
 summary row migrate (summary versions are range-allocated IDs, not an order). Item metadata is discarded; provenance contains integer observation
 IDs only. Detectors redact secrets and raise labels before signing. Migration, hooks,
@@ -476,17 +476,12 @@ is always safe.
 `migrate rows` accepts up to 500 repeated `--ref memory_items:ID` or
 `--ref memory_summaries:ID` arguments.
 
-Use exactly one authority device. Two authorities can duplicate roots before seeing
-each other's events. The migrator refuses a broker that already holds foreign-device
-migration events unless the owner explicitly supplies `--take-over`. Peer provenance
-uses **device-level trust**: a paired same-account device with a valid, non-revoked
-chain at event time is trusted. Local provenance requires an agent that currently has
-or previously held `allow_import`; the private state retains those agent IDs even after
-revocation. This permits historical recall after restart without distributing local
-grants. **A compromised paired device can forge or retire migrated rows in scopes whose
-keys it holds**, just as it can forge ordinary events there. No replicated import-grant
-record is introduced; event time uses the signed ULID, not the source row timestamp,
-and has the existing historical timestamp limitations described above.
+Each device imports only its enrolled staging database. New source keys include the
+device ID, so identical integer IDs on different devices remain distinct. Legacy
+keys stay valid only for their authoring device. The local-device key wins after a
+legacy scope move; foreign heads never participate in local revision or retirement.
+`--take-over` is accepted but does nothing. Peer provenance retains device-level
+trust within the source device's namespace; local import-agent history is retained.
 
 Create `<DB>.profile-log.json` (or set `AGENTMESH_PROFILE_LOG_BRIDGE`) as an owner-only,
 non-symlink regular file, mode 0600 on POSIX. All paths must be absolute:
@@ -502,19 +497,32 @@ non-symlink regular file, mode 0600 on POSIX. All paths must be absolute:
   "agent_key": "/absolute/home/agents/recall.key",
   "import_agent_key": "/absolute/home/agents/import.key",
   "mapping": "/absolute/mapping.json",
-  "profile": "work",
+  "profiles": ["work", "personal"],
+  "recall_fallback": false,
+  "device_id": "<this broker device: 32 lowercase hex>",
+  "staging_node": "<staging database node>",
   "timeout_seconds": 5
 }
 ```
 
 The prepared interpreter must resolve `agentmesh_log`; an absolute Python plus an
-absolute CLI script is also accepted. Invalid config disables the bridge and emits one
-sanitized warning. Digest and summary commits spawn a detached `migrate rows` after
-commit; missed hooks are repaired by catch-up. Hybrid recall merges broker durable and
-summary candidates with local observations and evidence, preserving the SQLite row
-shape and adding `backend: "broker"`. Failure returns the full SQLite answer with
-`backend: "sqlite-fallback"` and one warning. `recall_memory.py --backend sqlite` forces
-the original path. No config means unchanged SQL and output.
+absolute CLI script is also accepted. Apply enrolls the binding from broker state
+and the staging node (see below). Never copy another device's binding. Migration
+fails closed without it. The old exact single-`profile` config is accepted for
+recall only until upgraded. Invalid existing configs return an explicit recall
+error. Digest hooks run after commit; catch-up repairs missed hooks.
+
+Recall reads encrypted memories through the local broker only, querying each
+configured profile separately and concurrently within one total timeout. It
+interleaves ranks in configured profile order, dedupes event IDs, and sums candidate
+counts before truncation. It requires ordinary read grants, not cross-profile
+permission or a cross-profile presence window. Any failed profile fails the whole
+recall with `profile_log_unavailable`. Only `recall_fallback:true` permits SQLite
+fallback (marked `sqlite-fallback`). Explicit `--backend sqlite` without that flag
+returns `sqlite_recall_disabled` while bridge recall is enabled. Results retain
+log IDs plus `source_ref`; optional local evidence is expanded only for locally
+owned sources. No config or explicitly disabled bridge recall retains standalone
+SQLite behavior. Shared-memory context uses the same failure policy.
 
 Generate services with the memory-sync interpreter; generation never registers them:
 
@@ -526,35 +534,129 @@ python memory-sync/platform_service.py generate --unit catch-up --platform macos
 Use absolute paths. The new output directories must not exist. Outputs are 0600
 launchd plists, systemd service/timer files (`--platform linux`), or Task Scheduler XML
 (`--platform windows`). Review the argv, then load/register them yourself. Broker units
-have no automatic remote sync. Existing sync service generation is unchanged.
+have no automatic remote sync. Worker units are generated when packet sync or workflow ingest/summary needs them.
 
-Before rollout, the reviewer runs parity on an owner-approved snapshot using the
-profile-log interpreter:
+Parity rehearsal uses the source read-only and a disposable encrypted broker, with
+no SQLite backup or staging copy. Run it while staging is quiescent; concurrent
+writes can change its result. Reports contain metrics, missing/changed counts and
+integer IDs, never contents or queries. Foreign-device sources are excluded from
+local comparisons. The in-process `profile_log_parity.compare` checks a local
+broker's caught-up heads against staging with the same binding and source priority.
 
 ```sh
-python memory-sync/profile_log_parity.py --db SNAPSHOT --mapping MAPPING --sample 200 --out NEW_PARITY_REPORT
+python memory-sync/profile_log_parity.py --db DB --mapping MAPPING --sample 200 --out NEW_PARITY_REPORT
 ```
 
-Optional `--queries FILE` reads UTF-8 queries, one per line. The tool makes a backup-API
-snapshot in a disposable 0700 directory, with 0600 files, then creates a disposable
-file-keystore broker. The snapshot and its SQLite sidecars are the sole plaintext
-exception approved by the owner on **2026-10-20**. Everything is removed on success or
-error. The report contains metrics, integer IDs and per-run HMACs, never query/content
-or project names. Required thresholds: overlap at 12 ≥ 0.95 and top-five hit ≥ 0.98.
-`broker init --file-keystore` is for disposable homes only: system temporary directories,
-or an explicitly set `AGENTMESH_ALLOW_FILE_KEYSTORE=1`; use the OS key store for rollout.
+### Live staging presence verification
 
-After the Windows native key-store smoke and pairing, configure Windows for recall
-with `authority: false` and `dual_write: false`. It reads paired events; hooks and
-catch-up do nothing there. Existing packet sync brings other devices' SQLite rows to
-the Mac authority for catch-up. Raw transcript ingest remains unchanged everywhere.
+Use the import agent key to check the live local broker, without importing rows:
 
-Rollback: set `enabled: false` or delete the bridge config. This immediately restores
-SQLite recall and stops notifications; disable the generated units too. Before any
-`broker sync`, remove the dedicated migration home when ready to discard its local
-replica. After synchronization, use `profile delete` with its recovery/presence procedure
-and the documented old-share/offline-backup limitations. Disabling the bridge alone
-does not delete encrypted events or revoke already distributed keys.
+```sh
+python -m agentmesh_log.cli migrate verify --db DB --settings --agent-key IMPORT_AGENT_KEY
+# Or replace --settings with --mapping MAPPING
+```
+
+The command validates the enrolled device/staging binding before reading the ledger.
+It returns only `{"missing":0,"retired_but_present":0}` counts: active, mapped staging
+rows with no local ledger entry, or with a retired local head. It uses the same
+local device-first, locally authored legacy-second source lookup as migration;
+foreign rows and staging rows intended for retirement or mapping `skip` do not count.
+No memory bodies, source IDs or hashes are emitted, and no imports, revisions or
+retirements are requested. Normal broker request auditing still applies.
+
+This is a presence check, not changed-content parity: the ledger exposes no hashes,
+so zero counts cannot establish that content or destination scopes match. Run
+catch-up, then run it again while staging is quiescent; zero `created` and `revised`
+outcomes in the second result supply the unchanged-write evidence. Keep the live
+presence counts alongside that result; the disposable parity rehearsal above does
+not verify the real broker's ledger.
+
+### Phase 7a upgrade and rollback
+
+Initialize a fresh staging identity through ingest if the database has no
+`_sync_config`; ingest creates one singleton UUID node in
+`agentmesh_staging_identity`. Existing sync databases use `_sync_config.node`.
+`apply` reads this identity without changing the database and records the current
+broker device plus staging node. An old binding cannot be silently rebound by
+changing the database path. Run apply to upgrade the bridge before catch-up.
+Enrolment/profile/read-grant widening requires the normal one-shot **agent** console
+presence (type `apply`); it does not open a cross-profile presence window.
+
+Merge this fragment into settings.json, preserving other declared agents:
+
+```json
+{
+  "packet_sync": {"enabled": false},
+  "agents": {
+    "recall": {"read": ["work", "personal"], "write": [], "default_write": null,
+               "allow_secret": false, "allow_cross_profile": false, "allow_import": false}
+  },
+  "bridge": {"profiles": ["work", "personal"], "recall_fallback": false}
+}
+```
+
+Remove `bridge.profile` when setting `bridge.profiles`; retain the existing importer,
+mapping, bridge enabled/authority/dual_write and local database/CLI declarations.
+Then run `python -m agentmesh_log.cli apply --dry-run` and
+`python -m agentmesh_log.cli apply`. This repository change does not alter live grants.
+
+On macOS, run `python memory-sync/agentmesh.py packet-sync retire --dry-run`, then
+`python memory-sync/agentmesh.py packet-sync retire`. It writes
+`settings.local.json` with `packet_sync.enabled:false`, invokes
+`launchctl bootout gui/<uid>/org.agentmesh.sync` only when workflow ingest and summary
+are off, and prints the actions/results. Retirement reads `--runtime PATH` (default
+`$AGENTMESH_HOME/memory-sync/data/runtime.json`) and its workflow configuration.
+Unreadable configuration refuses unloading. A worker needed for ingest/summary stays
+loaded with packet work disabled. Otherwise a loaded worker logs retirement once and
+idles until the owner retires it; managed workers still honor stop/nonce requests.
+Missing jobs (launchctl status 3) are idempotent. The generated unit and exchange
+folder remain intact. Settings errors fail without running a sync cycle.
+
+For an owned Windows installation:
+`agentmesh.exe packet-sync retire --installed-state C:\AgentMesh\installed.json`.
+If workflow needs the worker it is retained. Otherwise this delegates to the
+existing ownership-checked autostart operation and updates
+its manifest through the injectable runner. For a legacy unmanaged job use the
+explicit `--task-name NAME`. Linux retirement disables `agentmesh.service` through
+`systemctl --user disable --now`. No command deletes exchange history or a database.
+
+Rollback: first apply `bridge.recall_fallback:true`; then run `packet-sync enable`
+(with the same Windows installed-state argument). On macOS reload the retained unit:
+`launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/org.agentmesh.sync.plist"`.
+On Linux use `systemctl --user enable --now agentmesh.service`. Alternatively render
+a new unit to a new destination with `platform_service.py generate` and register it.
+Windows retains its existing worker ownership/drain checks; acknowledge a required
+drain only after performing it. Packet and SQLite fallback behavior are then restored.
+No packet, RANGES, or conflict-resolution code is removed in 7a.
+
+### Fresh Windows join (owner runbook; not executed here)
+
+1. Install the profile-log package and prepared interpreters on Windows.
+2. Pair as a **new device** with the Phase 4 commit-reveal flow above, granting the
+   required work/personal scopes and comparing the six-digit code.
+3. Run the first broker sync from R2 with the existing account storage prefix and
+   credential reference; let it finish before enabling local recall.
+4. Create a **new, empty staging path**, leaving the old Windows database untouched
+   and unused. Run `python memory-sync/sqlite_memory.py init NEW_STAGING_DB`, then
+   `python memory-sync/memory_sync.py init NEW_STAGING_DB --node windows --group NEW_UUID`.
+   The retained local ID allocator needs this metadata; initialization sends no packets.
+   Configure the importer and recall grants, local database/CLI paths, mapping, and
+   bridge `enabled:true`, `authority:true`, `dual_write:true`, `recall:true`,
+   `profiles:["work","personal"]`, `recall_fallback:false`. Apply records
+   `device_id` from this broker and `staging_node:"windows"`.
+5. Run `python memory-sync/agentmesh.py --database NEW_STAGING_DB ingest --start-at now`
+   with the desired transcript directories. An offset ISO timestamp is also accepted.
+   Existing cursors or a previous start boundary cause refusal; they are never reset.
+   The persistent boundary excludes older events in new, copied, and appended files;
+   old sessions produce no observations or summarize calls. Missing/invalid event
+   timestamps roll back that file without advancing its cursor; repair and retry
+   without `--start-at`. Future scheduled ingest retains the stored boundary.
+6. Generate the broker/catch-up units and configure the Phase 6 bridge plus
+   `cloudflared` with the **same tunnel token** as the other connector. Use the
+   Phase 6 runbook below for the gateway, local bridge and tunnel settings.
+
+`packet_sync.enabled` stays false throughout. Never migrate or copy the old Windows
+DB, packet history, device identities or keys into the new staging path.
 
 ## Settings and admin UI
 
@@ -652,11 +754,11 @@ Only `settings.local.json` may add these bridge fields:
 
 The database path is absolute. CLI argv accepts either an absolute interpreter plus
 `-m agentmesh_log.cli`, or an absolute interpreter plus an absolute CLI script.
-Timeouts are 1–30 seconds. A configured bridge needs database, CLI argv, profile and
+Timeouts are 1–30 seconds. A configured bridge needs database, CLI argv, profile or profiles and
 both named agents. Enabled bridges also need a migration mapping. Its default flags
-are enabled=false, recall=true, dual_write=true, authority=false, timeout=10.
-Apply renders the bridge's exact existing schema to `<database>.profile-log.json`,
-with key paths pointing to `agents/<name>.key`; it never opens the database to render
+are enabled=false, recall=true, recall_fallback=false, dual_write=true, authority=false, timeout=10.
+Apply renders the bridge's exact extended schema to `<database>.profile-log.json`,
+with key paths pointing to `agents/<name>.key`; render_bridge stays content-free; apply reads only the staging node identity before rendering
 this file. Disabling preserves the file and renders `enabled: false`. Partial bridge
 updates retain previously applied bridge fields. A bare initial `enabled: false`
 needs no database or output file.
@@ -713,7 +815,7 @@ it does not stop migration. Apply includes routes from remembered trusted folder
 are processed in canonical-path order, making duplicate project-name routing
 predictable; prefer a unique project name per trusted repository.
 
-All five migration operations accept `--settings` instead of `--mapping`, and reject
+All migration operations accept `--settings` instead of `--mapping`, and reject
 using both. Settings mode loads this device's initialized broker state for trusted
 routes. The original `--mapping` form remains available, including plan without a
 broker. Repeat `--project-dir` as needed:
@@ -1138,3 +1240,8 @@ be replayed to another bridge or after a restart within the ±60-second timestam
 window, with the Access token. This bounded replay risk is accepted. The bridge's
 secret_read operation relies on its agent key file; same-OS-user code can read
 that file, matching Phase 4's agent-file trust boundary.
+
+Insight reads the content-free `packet-sync-status.json` projection written by apply and
+`packet-sync retire|enable`; it never reads private settings. Missing status defaults
+to retired. Packet peer, transport, receipt and outbox panes show retirement; staging
+database panes continue to work. Apply after manually changing packet settings.

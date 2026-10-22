@@ -11,12 +11,18 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'profile-log'))
 from broker.support import setup_home
 from agentmesh_log.broker.service import Broker
 from agentmesh_log.migrate.mapping import Mapping,plan
-from agentmesh_log.migrate.run import run
+from agentmesh_log.migrate.run import run as migrate_run
+from agentmesh_log.migrate.source import staging_node
 from agentmesh_log.migrate.ledger import report
 from profile_log_parity import local_client
 import recall_memory
 import profile_log_bridge
 import test_bounded_digest as bounded_fixture
+
+
+def run(db,mapping,client,**kwargs):
+    who=client.request(dict(op='whoami'))
+    return migrate_run(db,mapping,client,binding=dict(device_id=who['device_id'],staging_node=staging_node(db)),**kwargs)
 
 
 def test_end_to_end(tmp_path,monkeypatch):
@@ -27,7 +33,7 @@ def test_end_to_end(tmp_path,monkeypatch):
     mapping=Mapping(dict(format='agentmesh-migration-mapping-v1',projects={'demo':'work/a'},prefixes=[],null_project='work/a',**{'global':'work/a'}))
     notifications=[]
     monkeypatch.setattr(profile_log_bridge,'notify_rows',lambda db,refs:notifications.append(refs))
-    monkeypatch.setattr(profile_log_bridge,'load_config',lambda db:dict(enabled=True,recall=True))
+    monkeypatch.setattr(profile_log_bridge,'load_config',lambda db,**kw:dict(enabled=True,recall=True,device_id=state.device.device_id))
     def read(plan,pool,config):
         return client.request(dict(op='recall',query=plan.query,project=plan.project,
             task=plan.task_refs[0] if plan.task_refs else None,compat=True,limit=min(pool,100)))
@@ -39,10 +45,10 @@ def test_end_to_end(tmp_path,monkeypatch):
         assert len(notifications)==1
         assert run(test.db,mapping,client)['outcomes']['created']==2
         for query in ('manual deployment','deployment status'):
-            old=recall_memory.recall(test.db,query,backend='sqlite')
+            old=recall_memory._recall(test.db,query)
             new=recall_memory.recall(test.db,query)
             assert new['backend']=='broker'
-            assert [(r['source_type'],r['id']) for r in new['results']]==[(r['source_type'],r['id']) for r in old['results']]
+            assert [(r['source_type'],r['source_ref']['id']) for r in new['results']]==[(r['source_type'],r['id']) for r in old['results'] if r['source_type']!='event']
         test.event(2,'Manual deployment restriction is resolved.')
         task=api.prepare(test.db); api.apply(test.db,task,test.payload(task,'resolved',True))
         assert len(notifications)==2
@@ -57,6 +63,8 @@ def test_p5_1_operations_read_only(tmp_path,monkeypatch,mode):
     with sqlite3.connect(db) as c:
         c.executescript(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
         c.execute('PRAGMA journal_mode='+mode)
+        c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+        c.execute("INSERT INTO agentmesh_staging_identity VALUES('synthetic')")
         c.execute("INSERT INTO memory_items(kind,scope,content,created_at,updated_at) VALUES('fact','global','synthetic memory','2020-01-01','2020-01-01')")
     c.close()
     before=hashlib.sha256(db.read_bytes()).digest()
@@ -69,7 +77,7 @@ def test_p5_1_operations_read_only(tmp_path,monkeypatch,mode):
     mapping=Mapping(value);mapping_file=tmp_path/'mapping.json';mapping_file.write_text(json.dumps(value),encoding='utf-8')
     try:
         plan(db,mapping); run(db,mapping,client);run(db,mapping,client,refs=['memory_items:1']);run(db,mapping,client)
-        monkeypatch.setattr(profile_log_bridge,'load_config',lambda db:dict(enabled=True,recall=True))
+        monkeypatch.setattr(profile_log_bridge,'load_config',lambda db,**kw:dict(enabled=True,recall=True,device_id=state.device.device_id))
         monkeypatch.setattr(profile_log_bridge,'broker_recall',lambda p,n,c:client.request(dict(op='recall',query=p.query,compat=True,limit=n)))
         recall_memory.recall(db,'synthetic memory')
         from profile_log_parity import run as parity

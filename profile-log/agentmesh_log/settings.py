@@ -70,7 +70,7 @@ def validate(value, *, local=False, project=False):
             fields(value['project'], ['name', 'scope'])
             for k, v in value['project'].items(): check(text(v) if k == 'name' else scope(v))
         return value
-    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge'])
+    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync'])
     if '$schema' in value: check(value['$schema'] == SCHEMA)
     if 'profiles' in value:
         check(type(value['profiles']) is dict)
@@ -107,12 +107,19 @@ def validate(value, *, local=False, project=False):
         fields(value['routing'], ['allowed_scopes'])
         if 'allowed_scopes' in value['routing']:
             v = value['routing']['allowed_scopes']; check(type(v) is list and all(scope(s) for s in v))
+    if 'packet_sync' in value:
+        fields(value['packet_sync'],['enabled'])
+        if 'enabled' in value['packet_sync']: check(type(value['packet_sync']['enabled']) is bool)
     if 'bridge' in value:
         b = value['bridge']
-        fields(b, ['enabled', 'recall', 'dual_write', 'profile', 'timeout_seconds', 'recall_agent', 'import_agent'] + (['database', 'authority', 'cli_argv'] if local else []))
+        fields(b, ['enabled', 'recall', 'dual_write', 'recall_fallback', 'profile', 'profiles', 'timeout_seconds', 'recall_agent', 'import_agent'] + (['database', 'authority', 'cli_argv', 'device_id', 'staging_node'] if local else []))
+        check(not ('profile' in b and 'profiles' in b))
         for k, v in b.items():
-            if k in ('enabled', 'recall', 'dual_write', 'authority'): check(type(v) is bool)
+            if k in ('enabled', 'recall', 'dual_write', 'authority', 'recall_fallback'): check(type(v) is bool)
             elif k == 'timeout_seconds': check(type(v) in (int, float) and 1 <= v <= 30)
+            elif k == 'profiles': check(type(v) is list and bool(v) and all(scope(n) and '/' not in n for n in v) and len(set(v))==len(v))
+            elif k == 'device_id': check(type(v) is str and bool(re.fullmatch('[0-9a-f]{32}',v)))
+            elif k == 'staging_node': check(text(v))
             elif k == 'profile': check(scope(v) and '/' not in v)
             elif k in ('recall_agent', 'import_agent'): check(type(v) is str and bool(AGENT.fullmatch(v)))
             elif k == 'database': check(text(v) and Path(v).is_absolute())

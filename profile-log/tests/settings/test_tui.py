@@ -6,7 +6,7 @@ from agentmesh_log.tui.model import Model
 
 
 def model():
-    return Model({'agents':{'reader':{'read':[],'write':[]}}}, scopes=['work/common','work/new'], profiles=['work'], devices=[{'device_id':'device','revoked':False}], projects=[{'project':'demo','items':2,'summaries':1,'target':'work/common'}])
+    return Model({'agents':{'reader':{'read':[],'write':[]}}}, device_id='a'*32, scopes=['work/common','work/new'], profiles=['work'], devices=[{'device_id':'device','revoked':False}], projects=[{'project':'demo','items':2,'summaries':1,'target':'work/common'}])
 
 
 def test_model_grid_mapping_pair():
@@ -23,7 +23,7 @@ def test_model_grid_mapping_pair():
 
 def test_mapping_preview():
     m=model(); m.sources=[dict(table='memory_items',id=1,project='demo',target='work/common',reason=None),dict(table='memory_items',id=2,project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(source={'table':'memory_items','id':1},scope='work/common',status='created')]
+    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='created')]
     m.set_target('demo','work/new')
     assert m.preview()=={'retired':1,'recreated':1,'created':1}
 
@@ -143,14 +143,14 @@ def test_fake_curses_grid_save():
 
 def test_preview_global():
     m=model(); m.sources=[dict(table='memory_items',id=1,scope='global',project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(source={'table':'memory_items','id':1},scope='work/common',status='created')]
+    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='created')]
     m.set_target('demo','work/new')
     assert m.preview()=={'retired':0,'recreated':0,'created':0}
 
 
 def test_preview_retired_same_scope():
     m=model(); m.sources=[dict(table='memory_items',id=1,project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(source={'table':'memory_items','id':1},scope='work/common',status='retired')]
+    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='retired')]
     assert m.preview()=={'retired':0,'recreated':1,'created':0}
 
 

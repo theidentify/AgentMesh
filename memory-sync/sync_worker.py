@@ -15,30 +15,40 @@ import sqlite_memory
 from runtime_lock import cycle_locked
 
 
+def run_once(database, exchange, *args, **kwargs):
+    import packet_sync
+    packets=packet_sync.enabled()
+    if not packets and not packet_sync.workflow_needed(database,kwargs.get('workflow_config')):
+        return classify({'format': 'agentmesh-status-v1', 'packet_sync': 'retired',
+                         'updated_at': datetime.now(timezone.utc).isoformat()})
+    return _run_once(database, exchange, *args, packet_enabled=packets, **kwargs)
+
+
 @cycle_locked
-def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
+def _run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, force_summary=False,
              force_legacy_summary=False, progress=None, security_dir=None, _ota_version=None,
-             security_state=None, preflight=None, interrupt=None):
+             security_state=None, preflight=None, interrupt=None, packet_enabled=True):
     if preflight is not None:
         preflight()  # Inside cycle lock, before any ingestion or policy writes.
     exchange = Path(exchange)
-    try:
-        exchange_ready = (exchange / '.stfolder').is_dir()
-    except OSError:
-        exchange_ready = False
-    if not exchange_ready:
-        # Never recreate an unmounted exchange or write without its marker.
-        report = {'sync': memory_sync.status(database),
-                  'cycle': {'receive': {'unavailable': True}}}
-        return classify(report)
     security = None
-    if security_dir is not None:
-        from signed_packets import Security
-        security = Security(security_dir, os_unlock=True).require_unlocked()  # unattended: refuse a locked key up front
-    # Fail closed before mirror/ingestion/summary can write after signed activation.
-    with memory_sync.connect(database) as c, c:
-        c.execute('BEGIN IMMEDIATE')
-        memory_sync._security_policy(c, security, exchange)
+    if packet_enabled:
+        try:
+            exchange_ready = (exchange / '.stfolder').is_dir()
+        except OSError:
+            exchange_ready = False
+        if not exchange_ready:
+            # Never recreate an unmounted exchange or write without its marker.
+            report = {'sync': memory_sync.status(database),
+                      'cycle': {'receive': {'unavailable': True}}}
+            return classify(report)
+        if security_dir is not None:
+            from signed_packets import Security
+            security = Security(security_dir, os_unlock=True).require_unlocked()  # unattended: refuse a locked key up front
+        # Fail closed before mirror/ingestion/summary can write after signed activation.
+        with memory_sync.connect(database) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            memory_sync._security_policy(c, security, exchange)
     mirror = None
     if postgres_dsn:
         import pg_mirror
@@ -59,10 +69,10 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
                                 postgres_mirror=bool(postgres_dsn))}
     except Exception as exc:
         workflow_report = {'ingestion': {'error': type(exc).__name__}}
-    if progress:
+    if progress and packet_enabled:
         progress('Publishing and receiving peer changes')
     interrupted=interrupt is not None and interrupt()
-    cycle = ({'interrupted':True} if interrupted else memory_sync.cycle(database, exchange,
+    cycle = ({} if not packet_enabled else {'interrupted':True} if interrupted else memory_sync.cycle(database, exchange,
              security=security, **({'interrupt':interrupt} if interrupt is not None else {})))
     interrupted=cycle.get('interrupted',False) or (interrupt is not None and interrupt())
     if interrupted: cycle['interrupted']=True
@@ -74,13 +84,16 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
             force = force_summary or (force_legacy_summary and settings.get('summary_backend', 'legacy') == 'legacy')
             result = workflow.summarize(database, settings, force=force)
             workflow_report['summary'] = result
-            if result['status'] == 'committed':
+            if packet_enabled and result['status'] == 'committed':
                 if progress:
                     progress('Publishing generated memory and provenance')
                 workflow_report['summary_sync'] = memory_sync.cycle(database, exchange, security=security,
                     **({'interrupt':interrupt} if interrupt is not None else {}))
         except Exception as exc:
             workflow_report['summary'] = {'status': 'blocked', 'error': type(exc).__name__}
+    if not packet_enabled:
+        return classify(dict(format='agentmesh-status-v1',packet_sync='retired',
+            updated_at=datetime.now(timezone.utc).isoformat(),workflow=workflow_report,postgres_mirror=mirror))
     state = memory_sync.status(database)
     security_report = dict(state['security'])
     wizard_path = Path(security_state) if security_state is not None else Path(database).parent / 'security-wizard.json'
@@ -98,7 +111,7 @@ def run_once(database, exchange, postgres_dsn=None, *, workflow_config=None, for
         from signed_packets import read_trust
         peers = [p for p in read_trust(security.directory)['peers'].values() if p['sender'] != security.public['sender'] and p['group'] == security.public['group']]
         security_report['pairing'] = 'approved' if any(not p['revoked'] for p in peers) else 'revoked' if peers else 'pending'
-    report = {'format': 'agentmesh-status-v1', 'node': state['node'],
+    report = {'format': 'agentmesh-status-v1', 'packet_sync': 'enabled', 'node': state['node'],
               'group': state['group_id'], 'platform': platform.system(),
               'updated_at': datetime.now(timezone.utc).isoformat(),
               'counts': sqlite_memory.status(database)['counts'],
@@ -186,13 +199,23 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.interval <= 0:
         parser.error('interval must be positive')
+    import packet_sync
     dsn = os.environ.get('OMP_MEMORY_DSN') if args.postgres else None
     if args.postgres and not dsn:
         parser.error('--postgres requires OMP_MEMORY_DSN')
     from terminal_progress import TerminalProgress
     first = True
+    idle_logged = False
     try:
         while True:
+            if not packet_sync.enabled() and not packet_sync.workflow_needed(args.database,args.workflow_config):
+                if not idle_logged:
+                    print(json.dumps({'format':'agentmesh-status-v1','packet_sync':'retired'}),flush=True)
+                    idle_logged=True
+                if args.once: return 0
+                time.sleep(args.interval)
+                continue
+            idle_logged=False
             with TerminalProgress() as progress:
                 try:
                     progress('Starting sync cycle')

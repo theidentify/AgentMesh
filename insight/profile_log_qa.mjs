@@ -26,17 +26,17 @@ for(const id of ['cards','profiles','agents','devices','migration','outcomes']){
 }
 assert.ok(nodes.get('profile-log-devices').innerHTML.includes('active'));
 assert.ok(nodes.get('profile-log-devices').innerHTML.includes('revoked'));
-assert.ok(nodes.get('profile-log-note').textContent.includes('truncated'));
+assert.ok(nodes.get('profile-log-note').textContent.includes('cut to the first 500'));
 vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixture:{available:false,availability:'missing'}});
 assert.ok(nodes.get('profile-log-note').textContent.includes('missing'));
-assert.ok(nodes.get('profile-log-profiles').innerHTML.includes('No observed records'));
+assert.ok(nodes.get('profile-log-profiles').innerHTML.includes('Shown after the next agentmesh-log apply'));
 console.log('PASS: Profile log navigation, fixture rendering, escaping, truncation and missing snapshot');
 
 assert.ok(section.includes('broker sync loop'));
 const renderSync=last_sync=>{vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixture:{available:true,last_sync}});return nodes.get('profile-log-sync').innerHTML};
 assert.ok(renderSync(undefined).includes('Off — not configured'));
 const sync={outcome:'ok',at:'2026-10-20T00:00:00Z',age_seconds:60,outbox:0,local_objects:4,remote_objects:5,stale:false};
-assert.ok(renderSync(sync).includes('Last sync 1m ago, outbox 0, local 4 / remote 5'));
+assert.ok(renderSync(sync).includes('Last sync 1m ago · 0 waiting to upload · 4 objects here, 5 in R2'));
 assert.ok(!renderSync(sync).includes('>stale<'));
 for(const outcome of ['remote_error','credentials_missing','credentials_refused','error',attack]){
  const rendered=renderSync({...sync,outcome});

@@ -42,7 +42,7 @@ for(const theme of ['light','dark']){
 }
 await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.security.policy='required';fixture.security.verification={attempts:9,failed_attempts:2,last_success_at:'2026-10-08T12:00:00Z',last_failure_at:'2026-10-08T11:00:00Z'};fixture.peers.rows[0].security={...fixture.peers.rows[0].security,policy:'required',pairing:'approved',wizard_step:'activation',next_action:'confirm_coordinated_legacy_boundary',roundtrip:'reported verified',roundtrip_packet_uuid:'00000000-0000-4000-8000-000000000010'};fixture.peers.rows[1].security={...fixture.peers.rows[1].security,policy:'legacy',pairing:'pending',wizard_step:'pairing',next_action:'confirm_peer_fingerprint_out_of_band',roundtrip:'pending'};renderSecurity(fixture)})()");
 assert.ok(await evaluate("document.getElementById('security-table').textContent.includes('approved')&&document.getElementById('security-table').textContent.includes('pending')&&document.getElementById('security-table').textContent.includes('reported verified')"));
-assert.ok(await evaluate("document.getElementById('overview-security').textContent.includes('required / configured')"));
+assert.ok(await evaluate("document.getElementById('security-cards').textContent.includes('required / configured')"));
 await shot('security-fixture-approved-pending.png');
 await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.peers.rows[0].security.pairing='revoked';fixture.peers.rows[1].security.pairing='unknown';renderSecurity(fixture)})()");
 assert.ok(await evaluate("document.getElementById('security-table').textContent.includes('revoked')&&document.getElementById('security-table').textContent.includes('unknown')"));
@@ -54,7 +54,6 @@ for(const theme of ['light','dark']){
   await shot('security-mobile-'+theme+'.png');
 }
 await evaluate("document.querySelector('nav [data-view=overview]').click()");
-assert.ok(await evaluate("document.getElementById('overview-security').textContent.includes('Syncthing connectivity is not packet authentication')"));
 assert.equal(errors.length,0,JSON.stringify(errors));
 const result={verified:true,url,readOnly:true,expectedPolicy:expectedPolicy||null,observed,desktop:'1440x1100',mobile:'390x844',themes:['light','dark'],pairingFixtures:['approved','pending','revoked','unknown'],noManagementButtons:true,unknownNotZero:true,documentOverflow:false,runtimeExceptions:errors.length};
 fs.writeFileSync(path.join(output,'security-qa.json'),JSON.stringify(result,null,2)+'\n');

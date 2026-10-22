@@ -289,6 +289,40 @@ def peer_status(home, now=None, agentmesh_home=None):
             'note':'Completed-cycle ACKs only, not a live process, Syncthing connection or proof of full convergence. Fresh means age at most 5 minutes; stale does not mean offline. Missing or invalid values remain unknown.'}
 
 
+def launchd_jobs(agentmesh_home=None, agents=None):
+    """Ingest/summary now run as launchd jobs whose wrapper writes status/job-<name>.json; Hermes cron is the fallback."""
+    import plistlib
+    from datetime import datetime, timedelta
+    base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+    agents = Path(agents or Path.home()/'Library/LaunchAgents')
+    rows = []
+    for label, name in (('Ingest','ingest'),('Summary','summary')):
+        try:
+            state = json.loads((base/'status'/('job-'+name+'.json')).read_text())
+            if not isinstance(state, dict):
+                raise ValueError('Invalid job status')
+        except (OSError, ValueError):
+            continue
+        row = {'name':label,'id':'org.agentmesh.'+name,'available':True,'source':'launchd','last_run_at':state.get('at') if isinstance(state.get('at'), str) else None,
+               'last_status':'ok' if state.get('ok') is True else 'error' if state.get('ok') is False else None,'has_error':state.get('ok') is False,
+               'failing_since':None if state.get('ok') is not False else state.get('since'),'enabled':None,'state':None,'interval_seconds':None,'next_run_at':None}
+        try:
+            with open(agents/('org.agentmesh.'+name+'.plist'), 'rb') as f:
+                plist = plistlib.load(f)
+            row['enabled'] = True
+            interval = plist.get('StartInterval')
+            if type(interval) is int and interval > 0:
+                row['interval_seconds'] = interval
+                row['state'] = 'every '+(str(interval//60)+' min' if interval % 60 == 0 else str(interval)+' s')
+                if row['last_run_at']:
+                    row['next_run_at'] = (datetime.fromisoformat(row['last_run_at'].replace('Z', '+00:00'))+timedelta(seconds=interval)).isoformat()
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            row['enabled'] = False
+        row['observation_state'] = observed_state(row['last_run_at'])
+        rows.append(row)
+    return rows
+
+
 def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     from datetime import datetime, timezone
     result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
@@ -308,17 +342,20 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     except Exception:
         result['hermes_sessions'] = unavailable('Hermes session metadata')
     try:
-        jobs = json.loads((home/'cron/jobs.json').read_text())['jobs']
-        selected = []
-        for label, job_id in (('Ingest','eabd6e41c22d'),('Summary','6fcf5646d34d')):
-            job = next((j for j in jobs if j.get('id') == job_id), None)
-            row = {'name':label,'id':job_id,'available':job is not None}
-            if job:
-                row.update({k:job.get(k) for k in ('enabled','state','no_agent','last_status','last_run_at','next_run_at')})
-                row['has_error'] = bool(job.get('last_error'))
-                row['observation_state'] = observed_state(job.get('last_run_at'))
-            selected.append(row)
-        pipeline = {'available':True,'jobs':selected,'note':'Exact known cron jobs, observed configuration and last execution. No prompts, commands or error payloads exposed.'}
+        selected = launchd_jobs(agentmesh_home)
+        note = 'Launchd jobs: last result and time from the job wrapper; next run is last run plus the interval.'
+        if len(selected) != 2:
+            selected, note = [], 'Hermes cron jobs: configuration and last run. Prompts, commands and error text are not shown.'
+            jobs = json.loads((home/'cron/jobs.json').read_text())['jobs']
+            for label, job_id in (('Ingest','eabd6e41c22d'),('Summary','6fcf5646d34d')):
+                job = next((j for j in jobs if j.get('id') == job_id), None)
+                row = {'name':label,'id':job_id,'available':job is not None,'source':'hermes-cron'}
+                if job:
+                    row.update({k:job.get(k) for k in ('enabled','state','no_agent','last_status','last_run_at','next_run_at')})
+                    row['has_error'] = bool(job.get('last_error'))
+                    row['observation_state'] = observed_state(job.get('last_run_at'))
+                selected.append(row)
+        pipeline = {'available':True,'jobs':selected,'note':note}
         item = layout(home, agentmesh_home)['coordinator']
         state_path = item['path']
         pipeline['coordinator'] = dict(available=False, source=item['source'], pending=None, phase=None, success_day=None)
@@ -331,7 +368,7 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
         result['pipeline'] = unavailable('Pipeline cron metadata')
     try:
         with reader.connect() as c:
-            result['ingest'] = {'available':True,'backend':reader.label,'rows':reader.query(c, 'SELECT source_agent,COUNT(*) AS events,MAX(occurred_at) AS latest_event_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent ORDER BY source_agent'),'cursors':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + 'ingestion_cursors')[0],'errors':reader.query(c, 'SELECT error_type,COUNT(*) AS count,MAX(created_at) AS latest_at FROM ' + reader.prefix + 'ingestion_errors GROUP BY error_type'),'summary_state':reader.query(c, 'SELECT consumer,last_event_id,updated_at FROM ' + reader.prefix + 'summary_state ORDER BY consumer LIMIT 30')}
+            result['ingest'] = {'available':True,'backend':reader.label,'rows':reader.query(c, 'SELECT source_agent,COUNT(*) AS events,MAX(occurred_at) AS latest_event_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent ORDER BY source_agent'),'cursors':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + 'ingestion_cursors')[0],'errors':reader.query(c, 'SELECT error_type,COUNT(*) AS count,MAX(created_at) AS latest_at FROM ' + reader.prefix + 'ingestion_errors GROUP BY error_type'),'summary_state':reader.query(c, 'SELECT consumer,last_event_id,updated_at FROM ' + reader.prefix + "summary_state WHERE consumer NOT LIKE '%:event:%' ORDER BY consumer LIMIT 30"),'summary_event_markers':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + "summary_state WHERE consumer LIKE '%:event:%'")[0]}
     except Exception:
         result['ingest'] = unavailable('Ingest counters')
     try:
@@ -399,7 +436,8 @@ def metrics(home, agentmesh_home=None, metrics_logs=None):
     cron['window_phase']=pending.get('phase') if isinstance(pending,dict) else None
     cron['last_success_day']=(state.get('success') or {}).get('day')
     cron['idle_inferred']=bool(state_path.exists() and job.get('no_agent') and job.get('last_status')=='ok' and pending is None)
-    return {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'report':result,'cron':cron,'runs':{'historical':historical,'bounded':bounded,'isolated':isolated},'isolated_aggregate':aggregate(isolated),'matched_workload_savings_percent':None,'notes':['No matched-workload savings or quality claim. Actual dollar cost unknown.','Backlog is last observed in run metrics, not a live database count.','Idle inferred from completed window + successful no-agent tick; no new LLM calls are made.','Isolated DB smoke is separate from production-source logs. Historical per-run uncached/cache/calls are unknown in chart; matched session totals remain in coverage table.']}
+    cron['job']=next((row for row in launchd_jobs(agentmesh_home) if row['name']=='Summary'),None)
+    return {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'report':result,'cron':cron,'runs':{'historical':historical,'bounded':bounded,'isolated':isolated},'isolated_aggregate':aggregate(isolated),'matched_workload_savings_percent':None,'notes':['Dollar cost is not recorded, and these totals do not show savings: the old and new jobs did different amounts of work.','"Waiting events" comes from the last run\'s log, not a live database count.','"Test runs" used a separate copy of the database and never touched real memory.']}
 
 
 def profile_log_status(agentmesh_home, now=None):

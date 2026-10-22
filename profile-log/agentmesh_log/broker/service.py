@@ -29,11 +29,20 @@ SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles sco
 
 
 COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
+IO=('bytes_up','bytes_down','class_a','class_b')
+TOTALS=tuple('total_'+k for k in IO)
+NETWORK=set(IO+TOTALS)|{'totals_since'}
 PREFIXES=('events/','keys/','registry/','keyring/','profiles/','alerts/')
 
 
 def sync_status_valid(row):
-    if type(row) is not dict or set(row)!=set(COUNTS)|{'at','outcome','interval_s','backend'}: return False
+    if type(row) is not dict: return False
+    required=set(COUNTS)|{'at','outcome','interval_s','backend'}
+    if set(row) not in (required,required|NETWORK): return False
+    if NETWORK<=set(row):
+        if any(type(row[k]) is not int or not 0<=row[k]<=2**53-1 for k in IO+TOTALS): return False
+        from ..heartbeats import iso_valid
+        if not iso_valid(row['totals_since']): return False
     if any(type(row[k]) is not int or row[k]<0 for k in COUNTS): return False
     if row['outcome'] not in ('ok','credentials_missing','credentials_refused','remote_error','error'): return False
     if row['backend'] not in ('s3','filesystem'): return False
@@ -47,6 +56,11 @@ def sync_status_valid(row):
 class SyncRemote:
     def __init__(self,remote):
         self.remote=remote; self.keys=set(); self.uploaded=0; self.errors=0
+        self.io=dict.fromkeys(IO,0); self.start=dict(getattr(remote,'io',self.io))
+
+    def counters(self):
+        source=getattr(self.remote,'io',None)
+        return {k:source[k]-self.start[k] for k in IO} if source is not None else dict(self.io)
 
     def call(self,name,*args):
         try: return getattr(self.remote,name)(*args)
@@ -54,6 +68,7 @@ class SyncRemote:
         raise StorageError('remote operation failed') from None
 
     def list(self,prefix,*,start_after=None):
+        self.io['class_a']+=1
         try: keys=set(self.remote.list(prefix) if start_after is None else self.remote.list(prefix,start_after=start_after))
         except Exception: self.errors+=1
         else:
@@ -62,9 +77,16 @@ class SyncRemote:
         raise StorageError('remote operation failed') from None
 
     def put(self,key,data):
-        self.call('put',key,data); self.keys.add(key); self.uploaded+=1
+        self.io['class_a']+=1
+        self.call('put',key,data); self.io['bytes_up']+=len(data); self.keys.add(key); self.uploaded+=1
 
-    def get(self,key): return self.call('get',key)
+    def get(self,key):
+        self.io['class_b']+=1
+        data=self.call('get',key); self.io['bytes_down']+=len(data); return data
+
+    def head(self,key):
+        self.io['class_b']+=1
+        return self.call('head',key)
 
 
 class StagedRemote:
@@ -121,6 +143,13 @@ class Broker:
         self.on_sync=on_sync; self._last_sync=None; self._sync_written=None; self._sync_outcome=None
         from ..heartbeats import Heartbeats
         self.heartbeats=Heartbeats(); self._sync_row=None
+        self._totals=dict.fromkeys(TOTALS,0); self._totals_since=datetime.now(timezone.utc).isoformat()
+        try:
+            from .. import settings
+            old=parse(settings.read_raw(home.root/'sync-status.json'))
+            if sync_status_valid(old) and NETWORK<=set(old):
+                self._totals={k:old[k] for k in TOTALS}; self._totals_since=old['totals_since']
+        except Exception: pass
         self.on_overview=on_overview; self._overview_written=None
         self._remote_keys=set(); self.sync_thread=None
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
@@ -450,16 +479,22 @@ class Broker:
             try: print('profile-log sync: '+row['outcome']+' uploaded='+str(row['uploaded'])+' outbox='+str(row['outbox']),file=sys.stderr)
             except Exception: pass
             else: self._sync_outcome=row['outcome']
-        now=time.monotonic(); counts={k:v for k,v in row.items() if k!='at'}
-        if counts!=self._last_sync or self._sync_written is None or now-self._sync_written>=600:
+        now=time.monotonic()
+        if measured is not None and self.state.control.get('phase4'):
+            try: self.heartbeats.update(measured,self.state,row,tick=now)
+            except Exception as exc: self.heartbeats.error(exc)
+        io=measured.counters() if measured is not None else dict.fromkeys(IO,0)
+        for k in IO: self._totals['total_'+k]+=io[k]
+        row.update(io,**self._totals,totals_since=self._totals_since)
+        # Persist every cycle with traffic, otherwise retain the existing idle throttle.
+        counts={k:v for k,v in row.items() if k not in {'at',*NETWORK}}
+        traffic=any(io.values())
+        if traffic or counts!=self._last_sync or self._sync_written is None or now-self._sync_written>=600:
             try:
                 if self.on_sync is not None: self.on_sync(dict(row))
             except Exception: pass
             else: self._last_sync=counts; self._sync_written=now
         self._sync_row=dict(row)
-        if measured is not None and self.state.control.get('phase4'):
-            try: self.heartbeats.update(measured.remote,self.state,row,tick=now)
-            except Exception as exc: self.heartbeats.error(exc)
         self._publish_overview(now)
 
     def _publish_overview(self, now):

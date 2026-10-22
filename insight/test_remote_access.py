@@ -299,3 +299,11 @@ else{assert(calls.includes('/api/operations?backend=sqlite'));assert.equal(eleme
 '''
     result = subprocess.run([node, '-e', 'const REMOTE='+json.dumps(remote)+';const SCRIPT='+json.dumps(script)+';'+harness], capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr
+
+
+def test_storage_remote(app,signing,monkeypatch):
+    import storage
+    monkeypatch.setattr(storage.Observer,'compute',lambda self:{'available':True})
+    assert app('/api/storage',signing[1]())[0]==200
+    assert app('/api/storage?path=x',signing[1]())[0]==400
+    assert app('/api/storage')[0]==403

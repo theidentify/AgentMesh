@@ -36,7 +36,7 @@ async function inventory(bucket) {
  const scans=await Promise.all(PREFIXES.map(async prefix=>{
   const objects=[];let cursor,pages=0,capped=false;
   do{const page=await bucket.list({prefix,cursor,limit:Math.min(1000,10000-objects.length)});
-   objects.push(...page.objects.slice(0,10000-objects.length).map(o=>({key:o.key,...(o.uploaded!==undefined?{uploaded:o.uploaded}:{})})));cursor=page.truncated?page.cursor:undefined;
+   objects.push(...page.objects.filter(o=>!o.key.startsWith('registry/heartbeats/')).slice(0,10000-objects.length).map(o=>({key:o.key,...(o.uploaded!==undefined?{uploaded:o.uploaded}:{})})));cursor=page.truncated?page.cursor:undefined;
    if(objects.length>=10000||++pages>=10000||(page.truncated&&!cursor)){capped=true;break;}
   }while(cursor);return {objects,capped};
  }));

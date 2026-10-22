@@ -20,14 +20,22 @@ def folded(value, allowed):
 def timestamp(): return datetime.now(timezone.utc).isoformat()
 
 
-def overview(state):
+def overview(state, *, heartbeats=None, last_sync=None):
     from .apply import enforced_agent
     from .broker.grants import names
-    ns=names(state); registry=state.registry()
+    from .heartbeats import local, iso
+    ns=names(state); registry=state.registry(); rows=[]
+    for d in sorted(registry._devices):
+        own=d==state.device.device_id; revoked=d in registry.revocations
+        value=local(d,last_sync) if own else (heartbeats or {}).get(d,{}) if not revoked else {}
+        rows.append(dict(device_id=d,revoked=revoked,this_device=own,name=value.get('name'),platform=value.get('platform'),
+            last_seen_at=timestamp() if own else iso(value.get('issued_at')),last_sync_at=iso(value.get('last_sync_at')),
+            last_sync_outcome=value.get('last_sync_outcome')))
+        if own and last_sync: rows[-1]['last_sync_at']=last_sync['at']
     return dict(generated_at=timestamp(),
         profiles=[dict(name=t.root.name,scopes=[dict(path=ns[s.scope_id],label=s.default_label.name) for s in t.scopes.values()]) for t in state.trees],
         agents=[dict(name=name,**enforced_agent(state,state.grants[aid])) for name,aid in sorted(state.control.get('agent_names',{}).items()) if aid in state.grants],
-        devices=[dict(device_id=d,revoked=d in registry.revocations) for d in sorted(registry._devices)])
+        devices=rows)
 
 
 def migration(database, mapping):
@@ -63,11 +71,16 @@ def valid(value):
     def obj(schema): return lambda v:type(v) is dict and set(v)==set(schema) and all(f(v[k]) for k,f in schema.items())
     def seq(f): return lambda v:type(v) is list and all(f(x) for x in v)
     def counts(allowed): return lambda v:type(v) is dict and set(v)<=set(allowed) and all(count(n) for n in v.values())
+    from .heartbeats import name_valid, iso_valid, PLATFORMS, OUTCOMES as SYNC_OUTCOMES
     schemas={
         'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
             agents=seq(obj(dict(name=text,read=seq(text),write=seq(text),default_write=nullable,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
-            devices=seq(obj(dict(device_id=text,revoked=boolean))))),
+            # Legacy {device_id,revoked} rows stay valid so an upgrade or rollback never drops other sections.
+            devices=seq(lambda v:obj(dict(device_id=text,revoked=boolean))(v) or obj(dict(device_id=text,revoked=boolean,this_device=boolean,
+                name=lambda v:v is None or name_valid(v),platform=lambda v:v is None or v in PLATFORMS,
+                last_seen_at=lambda v:v is None or iso_valid(v),last_sync_at=lambda v:v is None or iso_valid(v),
+                last_sync_outcome=lambda v:v is None or v in SYNC_OUTCOMES))(v)))),
         'migration':obj(dict(generated_at=text,projects=seq(obj(dict(project=nullable,items=count,summaries=count,target=text))),unmapped=seq(text))),
         'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update')))),
         'last_catch_up':obj(dict(at=text,outcome=text,outcomes=counts(OUTCOMES),skipped=counts(SKIPPED),

@@ -1,6 +1,7 @@
-"""Atomic no-clobber filesystem storage, with guarded portable filesystem calls."""
+"""Atomic filesystem storage; only device heartbeat slots allow replacement."""
 from contextlib import contextmanager
 import os
+import re
 from pathlib import Path
 import stat
 import uuid
@@ -82,6 +83,18 @@ class FilesystemStorage:
             try:
                 with os.fdopen(fd, 'wb') as stream:
                     stream.write(data); stream.flush(); os.fsync(stream.fileno())
+                if re.fullmatch(r'registry/heartbeats/[0-9a-f]{32}\.json',key):
+                    # Only sealed heartbeat slots are mutable; all log objects stay immutable.
+                    if isinstance(parent,int):
+                        try: info=os.stat(name,dir_fd=parent,follow_symlinks=False)
+                        except FileNotFoundError: pass
+                        else:
+                            if not stat.S_ISREG(info.st_mode): raise StorageError('regular object file required')
+                        os.replace(temp,name,src_dir_fd=parent,dst_dir_fd=parent)
+                    else:
+                        _check(parent/name); os.replace(parent/temp,parent/name)
+                    if isinstance(parent,int): os.fsync(parent)
+                    return
                 try:
                     if isinstance(parent, int): os.link(temp, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
                     else:
@@ -90,8 +103,10 @@ class FilesystemStorage:
                 except FileExistsError:
                     if self._read(parent, name) != data: raise ObjectExists('object already exists with different bytes')
             finally:
-                if isinstance(parent, int): os.unlink(temp, dir_fd=parent)
-                else: (parent / temp).unlink()
+                try:
+                    if isinstance(parent, int): os.unlink(temp, dir_fd=parent)
+                    else: (parent / temp).unlink()
+                except FileNotFoundError: pass
             if isinstance(parent, int): os.fsync(parent)
 
     def list(self, prefix, *, start_after=None):

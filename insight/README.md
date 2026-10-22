@@ -282,10 +282,15 @@ configuration or memory is changed by this subproject.
 
 Owner setup (not performed by this change):
 
-1. On the existing tunnel, add public hostname `insight.krisb8.com` pointing to
-   `http://127.0.0.1:51877`. Leave `bridge.krisb8.com` and its routing untouched.
-2. Create a Cloudflare Access self-hosted application for `insight.krisb8.com`.
-   Require an owner-only email OTP policy. Copy the application's AUD.
+1. Create a separate remote-managed tunnel named `agentmesh-insight-mac` in the
+   Cloudflare dashboard, connected only by this Mac. Move `insight.krisb8.com`
+   from `agentmesh-bridge` to this tunnel, pointing to `http://127.0.0.1:51877`.
+   Remove that hostname from `agentmesh-bridge`; keep `bridge.krisb8.com` there.
+   The bridge tunnel can then have Mac and Windows connectors without
+   load-balancing Insight across machines. Install the connector as described below.
+2. Keep the existing Cloudflare Access application, owner-only email OTP policy
+   and AUD for `insight.krisb8.com`: the hostname has not changed. For a first
+   installation, create that self-hosted application and copy its AUD.
 3. In `~/Library/LaunchAgents/org.agentmesh.insight.plist`, set these entries in
    `EnvironmentVariables` (configuration only, no tokens or secrets):
 
@@ -338,3 +343,86 @@ Not verified by this change: live tunnel routing, DNS/TLS deployment, the owner'
 Access policy/OTP flow, the launch-agent interpreter/restart, or remote browser
 connectivity. Local tests use generated RSA keys and injected JWKS, not production
 assertions. Snapshot metadata does not prove worker liveness or convergence.
+
+
+### Device heartbeats
+
+Both the Sync Devices card and Profile log Devices table show the device name,
+platform, this-device/revoked state, last seen and last sync outcome/time. A peer
+without a readable heartbeat shows **never reported**, including a peer whose
+last heartbeat predates this device joining. Local values are live observations;
+peer values come from verified, decrypted heartbeats cached for 15 minutes.
+These are observations, not proof of liveness or convergence.
+
+Optionally set `"device": {"name": "My Mac"}` in `settings.json` (1–64 printable
+characters). Otherwise the broker uses the hostname, removes a trailing `.local`
+and truncates it to 64 characters. Platform is detected from Python's platform.
+Names/platform are exposed only through the local status projection and the
+existing authenticated `/api/profile-log` route. They are sealed inside age
+ciphertext in storage; the Worker ignores heartbeat objects. Memory content
+continues to stay local in Insight's remote view.
+
+Each device overwrites its signed `registry/heartbeats/<device_id>.json`, sealed
+to all non-revoked device age recipients. Publishing is limited to once per
+15 minutes, with immediate exceptions when the sync outcome or recipient set
+changes. Reads use one LIST and a GET per heartbeat every 15 minutes. Failed
+heartbeat operations log only their exception class and do not change sync results.
+The cache is in broker memory and resets on restart.
+
+Steady-state R2 cost per device per 30-day month: 96 PUT/day ≈ 2.9k Class A;
+96 LIST/day ≈ 2.9k Class A; N × 2.9k Class B GETs. Three devices total ≈ 17k
+Class A and 26k Class B, below the stated free tier of 1M Class A / 10M Class B.
+Outcome/recipient changes and broker restarts add operations beyond that baseline.
+
+### Install the dedicated Mac connector (owner steps)
+
+These steps change live routing and are intentionally not executed by the tests.
+
+1. In the Cloudflare dashboard create `agentmesh-insight-mac`, and obtain its
+   connector token. On this Mac, use Keychain Access to add a generic password
+   item with service/name `org.agentmesh.insight.tunnel`, account `agentmesh`,
+   and the token as its password, or run
+   `security add-generic-password -s org.agentmesh.insight.tunnel -a agentmesh -w`
+   with nothing after `-w` so it prompts for the token. Do not paste the token
+   into a shell command, plist, repository file or log. Ensure the login Keychain is unlocked and
+   allows the `security` command to read this item.
+2. Ensure `cloudflared` is already installed. The template PATH covers Homebrew
+   on Apple Silicon and Intel. Adjust it if the binary lives elsewhere.
+3. Copy `tunnel/run-insight-tunnel.sh` to `~/.agentmesh/services/insight-tunnel.sh`
+   (mode 0700), so the service never runs from a git checkout. Copy
+   `tunnel/org.agentmesh.insight-tunnel.plist` to
+   `~/Library/LaunchAgents/org.agentmesh.insight-tunnel.plist` and replace
+   `__HOME__` with your absolute home path, XML-escaping special characters.
+   launchd does not expand `~` or `$HOME`. Keep `~/.agentmesh/status/` at mode 0700
+   and the copied plist private. The plist contains no token. The first start may
+   show a Keychain prompt for `security`; choose Always Allow.
+4. Validate and start the connector:
+
+   ```sh
+   plutil -lint "$HOME/Library/LaunchAgents/org.agentmesh.insight-tunnel.plist"
+   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.agentmesh.insight-tunnel.plist"
+   ```
+
+   The script reads Keychain silently and supplies `TUNNEL_TOKEN` only in the
+   environment of `cloudflared tunnel --no-autoupdate run`. Missing token,
+   Keychain access or binary produces a fixed error and nonzero exit. RunAtLoad
+   and KeepAlive restart it; logs go under `~/.agentmesh/status/`.
+5. Move `insight.krisb8.com` to the dedicated tunnel's published application route
+   `http://127.0.0.1:51877`, removing it from `agentmesh-bridge`. Keep Insight's
+   public Host and Cloudflare headers. Verify owner OTP access, all metadata
+   views and remote memory denial. Confirm the bridge still serves its gateway
+   route, and only this Mac connects to the Insight tunnel. Keep the existing
+   Access app/AUD and Insight server configuration.
+
+Rollback: **first** add `insight.krisb8.com` back to `agentmesh-bridge` with service
+`http://127.0.0.1:51877` (remove its dedicated-tunnel route), **then** stop the
+connector:
+
+```sh
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.agentmesh.insight-tunnel.plist"
+```
+
+The Access app/AUD remain unchanged on rollback. Remove the copied launch-agent
+plist if it must stay disabled after the next login. A later Windows Insight
+gets a separate hostname such as `insight-<name>.krisb8.com` and its own tunnel;
+Windows Insight is not implemented here.

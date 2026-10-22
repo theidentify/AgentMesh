@@ -91,3 +91,41 @@ all 34 passkey tests pass. Gateway `node --test`: **45 passed, 0 failed,
 0 skipped**. The existing transport fixture now initializes its real RLock because
 `handle()` owns nonce locking; its assertions are unchanged. `git diff --check`
 passes, `GATES.md` is absent, and no commits were made.
+
+
+## Enrolment and approval UX
+
+Branch `claude/passkey-enrol-ux` starts at main `074d95d`. No commits or deploys.
+The single-page wizard checks secure context, configured status origin and browser
+passkey support before continuing. Platform unlock absence or probe failure is a
+warning; optional client capabilities are information only. Choose password
+manager/device or physical security key before entering the uppercase-normalized
+10-character device code (10 minutes, single use), then explicitly create.
+Attachment and WebAuthn hints are browser preferences only (unsupported hints are
+ignored by browsers); challenge, RP, user, resident key and UV remain device-owned.
+
+Approval shares readiness and explicitly displays the device's client/profiles,
+remember target, maximum label and limits before its assertion prompt. Both flows
+use fixed friendly errors, safe text rendering, focused steps, live results and a
+no-JavaScript explanation. Success links to approval and CLI list/remove guidance.
+Labels and enrolled kinds are omitted because the existing protocol does not
+return them. The device returns generic denial for invalid/expired/used codes;
+the UI explains that possibility without asserting a cause. Dedicated fixed code
+mappings are tested for future responses, without broadening the Worker allowlist.
+
+TDD: option preservation, readiness decisions and fixed error tests failed before
+implementation. Fake-browser tests exercise both choices, approval policy,
+normalization, CSRF rotation, cancellation and offline recovery. Existing JWT,
+single-use CSRF, host isolation and exact CSP assertions remain in force. No device
+verification, npm dependencies, inline scripts/styles or CSP changes. Readiness
+checks browser/device unlock capability; actual trusted-device availability is
+established by the existing begin call. Real authenticator/browser UX still needs
+manual validation.
+
+UX validation: gateway `node --test`: **57 passed, 0 failed, 0 skipped**.
+Full `profile-log/tests` Python suite: **733 passed, 8 skipped, 5 failed**
+(113.17 seconds). The five failures are the documented sandbox socket-bind gates:
+`test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+`test_p5_4_concurrent_processes`, and `test_s3_custom_http_endpoint`.
+All report `Operation not permitted`; a fully green run requires an environment
+allowing local socket binding. `git diff --check` passes.

@@ -1,4 +1,4 @@
-import { statusPage } from './status-ui.js';
+import { statusPage, escape } from './status-ui.js';
 import { bytes,hex,sha,unhex,exact } from './encoding.js';
 import { tunnel,claim } from './gateway.js';
 import { STATUS_APP } from './status-metrics.js';
@@ -19,7 +19,22 @@ export async function passkeyPage(request,env,identity,applyAdmin,fetcher){
  if(request.method==='GET'){
   if(path==='/status/webauthn.js')return statusResponse(webauthnScript,200,'text/javascript; charset=utf-8');
   const token=await csrf(env,identity),title=register?'Enrol a passkey':'Approve a connector';
-  const html=statusPage(title,'<section class="panel ceremony"><form data-ceremony="'+(register?'register':'approve')+'" method="post"><input type="hidden" name="csrf" value="'+token+'"><label>'+(register?'Device enrolment code':'Six-digit app approval code')+' <input name="code" type="password" autocomplete="off" required maxlength="'+(register?'10':'6')+'"></label><button class="primary">Continue</button></form><p id="outcome" role="status"></p><button class="primary" id="confirm" hidden>Continue with passkey</button><a href="/status">Return to status</a><script src="/status/webauthn.js" defer></script></section>');
+  const html=statusPage(title,`<section class="panel ceremony">
+<noscript><p>JavaScript is required for passkeys. Enable JavaScript for this status site and reload.</p></noscript>
+<form data-ceremony="${register?'register':'approve'}" data-origin="${escape(env.STATUS_ORIGIN)}" method="post">
+<input type="hidden" name="csrf" value="${token}">
+<section id="readiness" tabindex="-1"><h2>1. Check browser readiness</h2><ul id="checks"><li>Checking secure context, origin and passkey support…</li></ul><p id="capabilities" class="muted"></p><button type="button" class="primary" id="ready-next" disabled>Continue</button></section>
+${register?`<section id="kind" tabindex="-1" hidden><h2>2. Choose your passkey kind</h2>
+<label class="kind-choice"><input type="radio" name="kind" value="platform" checked> Password manager or this device <span>Bitwarden, iCloud Keychain, Google Password Manager, Touch ID / Windows Hello. Password managers can sync across devices; device-only passkeys may not. A password-manager account compromise equals a passkey compromise.</span></label>
+<label class="kind-choice"><input type="radio" name="kind" value="security-key"> Security key <span>YubiKey or another physical key: strongest protection; you must carry it.</span></label><p class="muted">This choice is a browser preference. Your trusted device still issues and verifies the passkey.</p><button type="button" id="kind-next" class="primary">Use this kind</button></section>`:''}
+<section id="code-step" tabindex="-1" hidden><h2>${register?'3. Enter the device code':'2. Enter the app code'}</h2>
+<p id="code-help">${register?'Run <code>connector passkey add</code> on your trusted device. Enter its 10-character code (letters A–Z and digits 2–9). Lowercase is converted to uppercase. Valid 10 minutes, single use.':'Enter the six-digit code shown by the app. You will review the requested access before approving.'}</p>
+<label>${register?'Device enrolment code':'Six-digit app approval code'} <input name="code" type="password" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="code-help" required minlength="${register?'10':'6'}" maxlength="${register?'10':'6'}" pattern="${register?'[A-Za-z2-9]{10}':'[0-9]{6}'}"></label><button class="primary">Check code with device</button></section>
+</form>
+<section id="review" tabindex="-1" hidden><h2>${register?'4. Create your passkey':'3. Review access'}</h2><p id="summary"></p><button class="primary" id="confirm" hidden>Continue with passkey</button></section>
+<p id="outcome" role="status" aria-live="polite"></p>
+<section id="result" tabindex="-1" hidden><h2>Result</h2><div id="success-next" hidden>${register?'<p>Next: <a href="/status/approve">approve a connector at /status/approve</a>.</p><p>List with <code>connector passkey list</code>; remove with <code>connector passkey remove HASH_PREFIX</code> on your device.</p>':''}</div><p><a href="${register?'/status/passkeys':'/status/approve'}">Start again</a></p></section>
+<a href="/status">Return to status</a><script src="/status/webauthn.js" defer></script></section>`);
   const result=statusResponse(html,200,'text/html; charset=utf-8');result.headers.set('Content-Security-Policy',"default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");return result;
  }
  try{

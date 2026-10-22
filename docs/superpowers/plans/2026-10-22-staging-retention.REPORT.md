@@ -91,7 +91,7 @@ Receipts outnumber the user and assistant rows, so tool rows carry receipts too 
 - rollback on a delete failure;
 - the CLI.
 
-Also: `insight/test_staging_retention_view.py` (2 tests) and `profile-log/tests/settings/test_staging_retention_settings.py` (3 tests).
+Also: `insight/test_staging_retention_view.py` (2 tests) and `profile-log/tests/settings/test_retention.py` (3 tests).
 
 **Mutation testing.** Each mutation was applied alone, and `test_staging_retention.py` had to fail. All were killed:
 - the evidence gate;
@@ -112,7 +112,19 @@ Also: `insight/test_staging_retention_view.py` (2 tests) and `profile-log/tests/
 - dry-run read-only;
 - both packet-sync checks together. Each one alone survives, because the other check catches it.
 
-**Suites.** These are local on macOS; the PR's CI covers profile-log and the smokes. See the PR for counts.
+**Suites** (local, macOS):
+
+| Suite | Passed |
+|---|---|
+| profile-log | 782 |
+| memory-sync | 1901 |
+| insight | 184 |
+
+The only failures also fail on `main`:
+- `test_p6_s12_close_cross_verifier` needs the gateway's npm dependencies, which CI has;
+- `test_digest_api.py::test_client_envelope_satisfies_bounded_extract_command`.
+
+CI covers profile-log on three OSes, plus the standalone smokes.
 
 ## Owner steps (Mac, after merge)
 `REV` is the merge commit. Run from your own terminal. Nothing below copies `mac.db`.

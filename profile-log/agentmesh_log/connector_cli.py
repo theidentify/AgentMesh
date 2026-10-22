@@ -31,32 +31,34 @@ def admin_request(state,action,payload):
     except Exception: raise ValueError('unavailable') from None
 
 
-def approve(home,store,storage,code,profiles,remember,console,*,admin=admin_request):
-    if not re.fullmatch(r'[0-9]{6}',code): raise ValueError('invalid_request')
-    state=store.load(); cr=controls(state,storage); registry,ring=cr.context(); device=state.device.device_id; at=now()
+def approval_proposal(state,storage,profiles,remember,*,scope_id=None,max_label='internal'):
+    cr=controls(state,storage); registry,ring=cr.context(); device=state.device.device_id; at=now()
     registry.device_public(device,at=at)
     reads=[{'profile':resolve(state,name),'scopes':None} for name in profiles]
-    if not reads or len({e['profile'] for e in reads})!=len(reads): raise ValueError('invalid_request')
+    if not reads or len({e['profile'] for e in reads})!=len(reads) or max_label not in ('general','internal'): raise ValueError('invalid_request')
     parent,sep,leaf=remember.rpartition('/')
     if not sep or leaf!='inbox': raise ValueError('invalid_request')
-    root=resolve(state,parent); tree=next(t for t in state.trees if t.root.scope_id==root)
+    root=resolve(state,parent)
     try: target=resolve(state,remember); missing=False
     except ValueError: target=root; missing=True
-    proposal={'read':reads,'remember':{'profile':root,'scope':target}}
+    proposal={'read':reads,'remember':{'profile':root,'scope':target},'max_label':max_label,'allow_cross_profile':False,'limits':{'recall_limit_max':20,'requests_per_minute':60}}
     if not cr.reader(ring,device,at) or not cr.covers(ring,device,proposal,at): raise ValueError('denied')
-    pending=admin(state,'pending',{'code_hash':digest(code)})
-    if type(pending.get('client_id')) is not str or type(pending.get('client_name')) is not str: raise ValueError('invalid_request')
-    PresenceManager(home,store).require('agent','approve',console=console,one_shot=True,summary='Approve the displayed connector with the selected profile access.')
+    if missing: proposal['remember']['scope']=scope_id or secrets.token_hex(16)
+    return proposal,missing
+
+
+def apply_approval(home,store,storage,code_hash,client_id_hash,client_name,profiles,remember,proposal):
+    # Caller has proved presence (console or WebAuthn). Recheck authority and exact proposal before writes.
     state=store.load()
+    current,missing=approval_proposal(state,storage,profiles,remember,scope_id=proposal['remember']['scope'],max_label=proposal['max_label'])
+    if current!=proposal: raise ValueError('denied')
     if missing:
         from .admin import create_scope
-        create_scope(home,state,remember)
-        target=resolve(state,remember)
+        create_scope(home,state,remember,scope_id=proposal['remember']['scope'])
     app=secrets.token_hex(16)
-    record=policy_record(state.device,app,pending['client_name'],pending['client_id'],read=reads,remember={'profile':root,'scope':target})
-    state.control.setdefault('connector_names',{})[app]=pending['client_name']
+    record=signed('connector-policy',state.device._private,app_id=app,display_name_hash=digest(client_name),oauth_client_id_hash=client_id_hash,**proposal,state='active',issuer_device=state.device.device_id,issued_at=now())
+    state.control.setdefault('connector_names',{})[app]=client_name
     store.save(state)
-    # Publish local control additions through the explicit configured storage.
     local=FilesystemStorage(home.root/'replica')
     for prefix in ('registry/','keyring/','keys/'):
         existing=set(storage.list(prefix))
@@ -64,10 +66,21 @@ def approve(home,store,storage,code,profiles,remember,console,*,admin=admin_requ
             if path not in existing: storage.put(path,local.get(path))
     if missing:
         from .bridge.inboxes import publish
-        publish(state,storage,target)
+        publish(state,storage,proposal['remember']['scope'])
     ref=controls(state,storage).publish(record)
-    admin(state,'approve',{'code_hash':digest(code),'app_id':app,'policy_ref':ref})
-    return {'app_id':app,'state':'active'}
+    if storage is not local: local.put(ref,wire(record))
+    return signed('connector-admin',state.device._private,device_id=state.device.device_id,ts=now(),nonce=secrets.token_hex(16),action='approve',payload={'code_hash':code_hash,'app_id':app,'policy_ref':ref})
+
+
+def approve(home,store,storage,code,profiles,remember,console,*,admin=admin_request):
+    if not re.fullmatch(r'[0-9]{6}',code): raise ValueError('invalid_request')
+    state=store.load(); proposal,_=approval_proposal(state,storage,profiles,remember)
+    pending=admin(state,'pending',{'code_hash':digest(code)})
+    if type(pending.get('client_id')) is not str or type(pending.get('client_name')) is not str: raise ValueError('invalid_request')
+    PresenceManager(home,store).require('agent','approve',console=console,one_shot=True,summary='Approve the displayed connector with the selected profile access.')
+    envelope=apply_approval(home,store,storage,digest(code),digest(pending['client_id']),pending['client_name'],profiles,remember,proposal)
+    admin(store.load(),'approve',envelope['payload'])
+    return {'app_id':envelope['payload']['app_id'],'state':'active'}
 
 
 def allow_secret(home,store,storage,app,minutes,console):
@@ -101,12 +114,26 @@ def add_parsers(commands):
             cmd.add_argument('code'); cmd.add_argument('--profiles',required=True); cmd.add_argument('--remember',required=True)
         if action in ('revoke','allow-secret'): cmd.add_argument('--app',required=True)
         if action=='allow-secret': cmd.add_argument('--minutes',type=int,default=15)
+    cmd=operations.add_parser('passkey'); actions=cmd.add_subparsers(dest='passkey_action',required=True)
+    for action in ('add','list','remove','settings'):
+        sub=actions.add_parser(action);sub.add_argument('--home',required=True);remote_flags(sub)
+        if action=='add': sub.add_argument('--label',required=True)
+        if action=='remove': sub.add_argument('credential_hash_prefix')
+        if action=='settings':
+            sub.add_argument('--rp-id');sub.add_argument('--origin');sub.add_argument('--profiles');sub.add_argument('--remember');sub.add_argument('--max-label',choices=['general','internal'])
     bridge=commands.add_parser('bridge'); operations=bridge.add_subparsers(dest='action',required=True)
     serve=operations.add_parser('serve'); serve.add_argument('--home',required=True); serve.add_argument('--host',default='127.0.0.1'); serve.add_argument('--port',type=int,default=8766); remote_flags(serve)
     render=operations.add_parser('render-service'); remote_flags(render); render.add_argument('--home',required=True); render.add_argument('--output',required=True); render.add_argument('--python',required=True); render.add_argument('--platform',choices=['macos','windows'],required=True); render.add_argument('--port',type=int,default=8766)
 
 
 def execute(args,*,backend,console):
+    # All connector writers share the bridge lock file: never restore stale ceremony state.
+    if args.command=='connector':
+        with BrokerHome(args.home).lock(): return _execute(args,backend=backend,console=console)
+    return _execute(args,backend=backend,console=console)
+
+
+def _execute(args,*,backend,console):
     if args.command=='bridge' and args.action=='render-service':
         from .bridge.services import render
         return render(args.output,args.home,args.python,args.platform,args.port,filesystem=args.filesystem,s3_bucket=args.s3_bucket,s3_prefix=args.s3_prefix,s3_endpoint=args.s3_endpoint,s3_credentials=args.s3_credentials)
@@ -115,6 +142,21 @@ def execute(args,*,backend,console):
         from .bridge import Bridge
         if args.host!='127.0.0.1': raise ValueError('loopback_required')
         Bridge(home,store,storage).serve(host=args.host,port=args.port); return {'ok':True}
+    if args.action=='passkey':
+        from .passkeys import Passkeys,settings
+        service=Passkeys(home,store,storage)
+        if args.passkey_action=='add': return service.add(args.label,console)
+        if args.passkey_action=='list': return service.listing()
+        if args.passkey_action=='remove': return service.remove(args.credential_hash_prefix,console)
+        state=store.load();cfg=settings(state)
+        changes={k:getattr(args,k) for k in ('rp_id','origin','profiles','remember','max_label') if getattr(args,k) is not None}
+        if changes:
+            if 'profiles' in changes: changes['profiles']=changes['profiles'].split(',')
+            if 'rp_id' in changes and 'origin' not in changes: changes['origin']='https://'+changes['rp_id']
+            state.control['passkey_settings']={**cfg,**changes};settings(state)
+            service.authority();PresenceManager(home,store).require('device','approve',console=console,one_shot=True)
+            fresh=store.load();fresh.control['passkey_settings']=state.control['passkey_settings'];store.save(fresh)
+        return {'settings':settings(store.load())}
     state=store.load(); cr=controls(state,storage)
     if args.action=='list':
         apps=sorted({p.split('/')[1] for p in storage.list('connectors/') if re.fullmatch('[0-9a-f]{32}',p.split('/')[1])})

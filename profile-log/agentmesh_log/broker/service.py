@@ -218,6 +218,13 @@ class Broker:
                 self.index_versions[aid]=version
 
     def request(self, session, request):
+        # Serialize protected-state saves with CLI/bridge ceremonies, including first access.
+        with self.lock:
+            try:
+                with self.home.lock(): return self._request(session,request)
+            except FileExistsError: return {'error':'busy'}
+
+    def _request(self, session, request):
         with self.lock:
             audit=dict(agent_id=session.agent_id,op='invalid',outcome='invalid')
             pending=session.pending; session.pending=None

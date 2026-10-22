@@ -101,7 +101,7 @@ class ScopeTree:
         self.epochs = {profile.scope_id: [key]}
         self.wraps = {}
 
-    def add(self, parent, kind, name, default_label=Label.general):
+    def add(self, parent, kind, name, default_label=Label.general, *, scope_id=None):
         from .keys import ScopeReadKey, wrap_key
         if parent not in self.scopes or kind not in ('common', 'project'):
             raise ValidationError('invalid scope parent or kind')
@@ -109,7 +109,8 @@ class ScopeTree:
             raise ValidationError('invalid scope name')
         if any(s.parent == parent and s.name == name for s in self.scopes.values()):
             raise ValidationError('duplicate scope name')
-        scope = Scope(self.root.profile_id, parent, kind, name, default_label)
+        if scope_id in self.scopes: raise ValidationError('duplicate scope id')
+        scope = Scope(self.root.profile_id, parent, kind, name, default_label, **({'scope_id':scope_id} if scope_id is not None else {}))
         key = ScopeReadKey.generate(scope.profile_id, scope.scope_id)
         record = wrap_key(key, self.keys[parent])
         self.scopes[scope.scope_id] = scope

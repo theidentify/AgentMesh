@@ -8,8 +8,8 @@ from .broker.grants import Grant, resolve, names
 from .broker.keystore import atomic_write
 
 
-def create_scope(home, state, name, label=Label.general):
-    scope = state.add(name, label)
+def create_scope(home, state, name, label=Label.general, *, scope_id=None):
+    scope = state.add(name, label, scope_id=scope_id)
     if state.control.get('phase4'):
         from .keyring import initialize_keyring
         from .storage.filesystem import FilesystemStorage

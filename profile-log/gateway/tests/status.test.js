@@ -195,3 +195,63 @@ test('P6-S22 reject prevents completion even if a stale approval resurrects KV',
  await h.env.OAUTH_KV.put('pending:'+code_hash,stale);
  assert.equal((await finish(h,pending)).status,403);
 });
+
+test('P6-P6 passkey pages and script are status-only and require JWT',async()=>{
+ const h=await harness();
+ for(const path of ['/status/passkeys','/status/approve','/status/webauthn.js']){
+  assert.equal((await h.get(path,'')).status,403);
+  assert.equal((await h.get(path,await jwt(),h.env.ORIGIN)).status,404);
+  const r=await h.get(path,await jwt({sub:'owner'}));assert.equal(r.status,200);
+  assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);
+  if(!path.endsWith('.js')){const html=await r.text();assert.match(html,/name="csrf"/);assert.match(html,/\/status\/webauthn.js/);}
+ }
+ assert.equal(h.probes,0);
+});
+
+test('P6-P6 passkey relay needs single-use CSRF and cannot grant forged approval',async()=>{
+ const h=await harness(),client=await register(h),pending=await start(h,client.client_id),token=await jwt({sub:'owner'});let calls=0;
+ h.worker=createGateway({...h.options,fetcher:async()=>{calls++;return Response.json({action:'approve',payload:{code_hash:await sha(bytes(pending.code))}});}});
+ async function csrf(){const r=await h.get('/status/approve',token);return /name="csrf" value="([0-9a-f]+)"/.exec(await r.text())?.[1];}
+ const post=(body,origin=h.env.STATUS_ORIGIN)=>h.worker.fetch(new Request(h.env.STATUS_ORIGIN+'/status/approve',{method:'POST',headers:{'Cf-Access-Jwt-Assertion':token,'Origin':origin,'Content-Type':'application/json'},body:JSON.stringify(body)}),h.env);
+ const args={step:'approve_finish',code_hash:await sha(bytes(pending.code)),device_id:h.deviceId,challenge_id:'ab'.repeat(32),assertion:{id:'assertion-marker'}};
+ assert.equal((await post(args)).status,403);assert.equal(calls,0);
+ const value=await csrf();assert.ok(value);
+ assert.equal((await post({...args,csrf:value},'https://evil.example')).status,403);assert.equal(calls,0);
+ assert.equal((await post({...args,csrf:value})).status,403);assert.equal(calls,1);
+ assert.equal((await post({...args,csrf:value})).status,403);assert.equal(calls,1);
+ const stored=await h.env.OAUTH_KV.get('pending:'+args.code_hash,'json');assert.ok(!stored.approval);
+ for(const row of h.env.OAUTH_KV.data.values())assert.ok(!JSON.stringify(row).includes('assertion-marker'));
+});
+
+test('P6-P6 approval begin relays hashes and returns transient names; finish applies signed envelope',async()=>{
+ const h=await harness(),client=await register(h),flow=await start(h,client.client_id),token=await jwt({sub:'owner'}),codeHash=await sha(bytes(flow.code));
+ const {p,ref}=await writePolicy(h,client.client_id);let seen;
+ const policy=Object.fromEntries(['read','remember','max_label','allow_cross_profile','limits'].map(k=>[k,p[k]]));
+ const envelope=await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:'ab'.repeat(16),action:'approve',payload:{code_hash:codeHash,app_id:p.app_id,policy_ref:ref}},h.device,'connector-admin');
+ h.worker=createGateway({...h.options,fetcher:async(url,options)=>{
+  seen=JSON.parse(new TextDecoder().decode(options.body));assert.equal(seen.tool,'passkey');
+  if(seen.arguments.step==='approve_finish')return Response.json(envelope);
+  return Response.json({options:{rpId:'status.example',challenge:'YQ',userVerification:'required'},device_id:h.deviceId,challenge_id:'ab'.repeat(32),policy,profile_names:['private-profile-marker'],remember_name:'private-profile-marker/inbox'});
+ }});
+ const html=await (await h.get('/status/approve',token)).text();const csrf=/name="csrf" value="([0-9a-f]+)"/.exec(html)[1];
+ const post=body=>h.worker.fetch(new Request(h.env.STATUS_ORIGIN+'/status/approve',{method:'POST',headers:{'Cf-Access-Jwt-Assertion':token,Origin:h.env.STATUS_ORIGIN,'Content-Type':'application/json'},body:JSON.stringify(body)}),h.env);
+ const result=await (await post({step:'approve_begin',code:flow.code,csrf})).json();
+ assert.deepEqual(seen.arguments,{step:'approve_begin',code_hash:codeHash,client_id_hash:await sha(bytes(client.client_id)),client_name:'Claude'});
+ assert.deepEqual(result.profile_names,['private-profile-marker']);assert.equal(result.client_name,'Claude');
+ const finishArgs={step:'approve_finish',code_hash:codeHash,device_id:h.deviceId,challenge_id:result.challenge_id,assertion:{id:'assertion-marker'},csrf:result.csrf};
+ assert.equal((await post(finishArgs)).status,200);
+ assert.ok((await h.env.OAUTH_KV.get('pending:'+codeHash,'json')).approval);
+ assert.equal((await finish(h,flow)).status,302);
+ for(const row of h.env.OAUTH_KV.data.values())assert.doesNotMatch(JSON.stringify(row),/assertion-marker|private-profile-marker/);
+});
+
+test('P6-P6 offline and wrong-device outcomes are fixed and never grant',async()=>{
+ for(const [status,body,expected]of [[502,null,'agentmesh_offline'],[403,{error:'wrong_device'},'wrong_device'],[200,{error:'private-error-marker'},'denied']]){
+  const h=await harness(),token=await jwt({sub:'owner'});
+  h.worker=createGateway({...h.options,fetcher:async()=>body?Response.json(body,{status}):new Response(null,{status})});
+  const html=await (await h.get('/status/passkeys',token)).text(),csrf=/name="csrf" value="([0-9a-f]+)"/.exec(html)[1];
+  const r=await h.worker.fetch(new Request(h.env.STATUS_ORIGIN+'/status/passkeys',{method:'POST',headers:{'Cf-Access-Jwt-Assertion':token,Origin:h.env.STATUS_ORIGIN,'Content-Type':'application/json'},body:JSON.stringify({csrf,step:'register_begin',code:'ABCDEFGHJK'})}),h.env);
+  assert.deepEqual(await r.json(),{error:expected});
+  for(const row of h.env.OAUTH_KV.data.values())assert.doesNotMatch(JSON.stringify(row),/ABCDEFGHJK|private-error-marker/);
+ }
+});

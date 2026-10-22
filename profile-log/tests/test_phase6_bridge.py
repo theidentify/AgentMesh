@@ -1,4 +1,5 @@
 import hashlib
+import threading
 import pytest
 from agentmesh_log.bridge import Bridge, request_headers, bind_server
 from agentmesh_log.connector import gateway_record
@@ -10,7 +11,7 @@ from test_phase6_records import fixture
 def make(tmp_path):
     cr,p,a,b,c,tree,reg=fixture(tmp_path)
     key=Ed25519PrivateKey.generate(); pin=gateway_record(a,key.public_key().public_bytes_raw(),'https://example.workers.dev',issued_at=5); cr.publish(pin)
-    bridge=Bridge.__new__(Bridge); bridge.controls=lambda:cr; bridge.clock=lambda:100; bridge.nonces={}
+    bridge=Bridge.__new__(Bridge); bridge.controls=lambda:cr; bridge.clock=lambda:100; bridge.nonces={}; bridge.lock=threading.RLock()
     bridge.invoke=lambda app,body,**kwargs:{'status':'ok'}
     return bridge,key,p,pin
 

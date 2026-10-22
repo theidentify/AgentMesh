@@ -83,13 +83,13 @@ class BrokerState:
         for tree in trees: tree.add(tree.root.scope_id, 'common', 'common')
         return cls(account, device, [device.certificate(account)], trees, {}, secrets.token_bytes(32), secrets.token_bytes(32))
 
-    def add(self, name, default_label=Label.general):
+    def add(self, name, default_label=Label.general, *, scope_id=None):
         from .grants import resolve
         parent_name,sep,local=name.rpartition('/')
         if not sep or not local: raise ValueError('invalid scope name')
         parent=resolve(self,parent_name)
         tree=next(t for t in self.trees if parent in t.scopes)
-        return tree.add(parent,'project',local,default_label)
+        return tree.add(parent,'project',local,default_label,scope_id=scope_id)
 
     def registry(self):
         registry = Registry(self.account.public_record())

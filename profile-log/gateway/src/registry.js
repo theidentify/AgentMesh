@@ -60,14 +60,14 @@ export function policyShape(p) {
   for(const [k,max]of [['recall_limit_max',20],['requests_per_minute',1000]])if(!Number.isInteger(p.limits[k])||p.limits[k]<1||p.limits[k]>max)throw Error('denied');
   return p;
 }
-export async function policy(env,app,at=Date.now()) {
-  unhex(app,16);const reg=await registry(env);let current;
+export async function policy(env,app,at=Date.now(),reg=null) {
+  unhex(app,16);reg??=await registry(env);let current;
   const rows=(await records(env.STORAGE,`connectors/${app}/policy/`)).sort((a,b)=>a[1].issued_at-b[1].issued_at||a[0].localeCompare(b[0]));
   for(const [path,p]of rows){try{policyShape(p);if(!new RegExp(`^connectors/${app}/policy/[0-7][0-9A-HJKMNP-TV-Z]{25}\\.json$`).test(path)||p.app_id!==app||p.issued_at>at)continue;await verify(p,await reg.publicKey(p.issuer_device,p.issued_at),'connector-policy');current=p;}catch{}}
   return current;
 }
-export async function secretWindow(env,app,at=Date.now()) {
-  unhex(app,16);const reg=await registry(env),closed=[];
+export async function secretWindow(env,app,at=Date.now(),reg=null) {
+  unhex(app,16);reg??=await registry(env);const closed=[];
   for(const [path,c]of await records(env.STORAGE,`connectors/${app}/secret-close/`)){try{
     exact(c,['format','signature','app_id','closed_at','issuer_device']);
     if(c.format!=='agentmesh-connector-secret-close-v1'||c.app_id!==app||!Number.isSafeInteger(c.closed_at)||c.closed_at<0||c.closed_at>at||!new RegExp(`^connectors/${app}/secret-close/[0-7][0-9A-HJKMNP-TV-Z]{25}\\.json$`).test(path))continue;

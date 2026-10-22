@@ -817,6 +817,35 @@ devices. Outbox objects can already be drained; counts are not queue depth.
 Partial scans are marked, and KV history/error counts are approximate. See the
 [owner setup plan](../docs/superpowers/plans/2026-10-22-phase6-status-page.md).
 
+Status loads start the live probe, inventory, error history, device observations
+and HTML pending list concurrently. The six R2 prefixes paginate independently;
+results are combined in registry/keyring/keys/events/connectors/outbox order with
+an exact 10,000-object maximum. Partial snapshots remain non-authoritative for
+app controls. At most 100 apps resolve concurrently, sharing one verified registry
+per request. `Server-Timing` retains `probe`, `inventory`, `apps`, `errors`,
+`devices`, `pending`, `render` and `total`; stages measure their own elapsed time,
+so overlapping durations are not additive.
+
+Only listing metadata (object keys/upload times, counts and the partial flag) is
+cached in `OAUTH_KV` at `status:inventory`. KV shares the snapshot across Worker
+instances without new bindings or dependencies. Its TTL is 60 seconds, but readers
+reject snapshots aged 45 seconds or more using `generated_at_ms`. Cache failures
+fall back to listing. The probe, device observations, error counts and policy
+verification are fresh on each load. Successful reject/revoke/close-secret actions
+and passkey approval delete the snapshot before responding. KV is eventually
+consistent: deletion is awaited, but another location or an overlapping cache fill
+can still expose a snapshot until its 45-second age limit. This cache is for the
+status display; authorization continues to verify current signed controls.
+
+Error telemetry writes one JSON map of fixed code-to-count entries per UTC hour,
+`status:err:<yyyymmddhh>`, with a 48-hour TTL. Increments are best-effort
+read-modify-write; concurrent increments can lose a few counts. Readers fetch the
+last 24 hourly documents concurrently and also add the old
+`status:err:<code>:<yyyymmddhh>` values for those hours. New code never writes the
+old format. Remove compatibility reads only after every old-format writer has
+been retired for at least 48 hours (including any rollback deployments), when
+all legacy keys have expired; there is no deployment-date assumption in code.
+
 ### Passkey enrolment and approval
 
 The cloud relays, it never grants. On a trusted device, issue a one-use enrolment

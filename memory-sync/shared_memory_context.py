@@ -1,4 +1,4 @@
-"""Read-only SQLite compatibility entrypoint; no caller rules are installed."""
+"""Shared memory context through the configured local recall backend."""
 import argparse
 import json
 import os
@@ -24,6 +24,19 @@ def pending_ids(c, consumer=DEFAULT_CONSUMER):
 def context(database, *, project=None, task=None, query=None, limit=20, consumer=DEFAULT_CONSUMER):
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError('limit outside bounds')
+    from profile_log_bridge import load_config,BrokerUnavailable
+    try: config=load_config(database,strict=True)
+    except BrokerUnavailable: return dict(error='profile_log_unavailable')
+    if config and config['enabled'] and config['recall']:
+        from recall_memory import recall
+        result=recall(database,query or task or project or 'memory',project=project,task=task,limit=limit)
+        if 'error' in result: return result
+        summaries=[r for r in result['results'] if r['source_type']=='summary']
+        items=[r for r in result['results'] if r['source_type']=='durable']
+        lines=['# Shared Memory Context','','Backend: '+result['backend']]
+        for row in summaries+items:
+            lines+=['',f"### {row['kind']} | {row.get('profile', 'sqlite')} | {row['id']}",row['content']]
+        return dict(summaries=summaries,items=items,recent_unsummarized=[],markdown='\n'.join(lines),backend=result['backend'])
     with open_readonly(database) as c:
         summaries = [_decode(r) for r in c.execute('''SELECT * FROM memory_summaries WHERE
             (? IS NULL AND ? IS NULL) OR (scope='project' AND scope_key=?) OR (scope='task' AND scope_key=?)
@@ -71,8 +84,9 @@ def main(argv=None):
     if not args.database:
         p.error('--database or AGENTMESH_DATABASE required')
     result = context(args.database, project=args.project, task=args.task, query=args.query, limit=args.limit, consumer=args.consumer)
-    print(json.dumps(result, ensure_ascii=False) if args.json else result['markdown'])
+    print(json.dumps(result, ensure_ascii=False) if args.json or 'error' in result else result['markdown'])
+    return int('error' in result)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

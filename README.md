@@ -88,15 +88,18 @@ are configured outside Git; absent sources are shown as unavailable. See
 
 ## Architecture
 
-Each device owns its local SQLite database. Immutable change packets travel
-through a dedicated Syncthing exchange folder. The receiving script validates
-and imports packets, preserving receipts and tombstones and refusing conflicts
-rather than silently overwriting independent edits. Local integer-ID ranges
-are separated for the three node identities.
+Each device ingests into its local SQLite staging database. Post-commit imports and
+catch-up write device-qualified sources into the encrypted profile log, synchronized
+through R2. Local recall reads the log through the broker, including independently
+granted work and personal profiles; broker outages return an explicit error.
 
-Do not synchronize live SQLite database, WAL, or SHM files as a substitute for
-record-level sync. Direct Syncthing exchange requires overlapping online time.
-See [sync APIs, CLI, conflict handling and limitations](memory-sync/SYNC.md).
+Phase 7a defaults `packet_sync.enabled` to false. Packet/RANGES/conflict code remains
+for rollback. Workers preserve configured workflow ingest/summary while skipping
+packet work; units remain when workflow needs them. Otherwise workers idle until
+the upgrade command retires their service, preserving exchange history.
+SQLite fallback requires explicit `bridge.recall_fallback:true`.
+See the [upgrade, rollback and fresh Windows runbook](profile-log/README.md#phase-7a-upgrade-and-rollback).
+Never synchronize live SQLite, WAL or SHM files.
 
 ## Private bootstrap construction
 

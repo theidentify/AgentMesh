@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import sqlite3
 import pytest
 from agentmesh_log.apply import apply_settings
 from agentmesh_log.broker.keystore import BrokerHome, BrokerState, FileKeyStore
@@ -18,6 +19,10 @@ def env(tmp_path, monkeypatch):
     home = BrokerHome(root / 'profile-log'); store = FileKeyStore(home)
     state = BrokerState.create(['work']); state.control['windows'] = {'agent': now()+900000, 'first_access': now()+900000}
     store.save(state)
+    with sqlite3.connect(root/'db') as c:
+        c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+        c.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
+    c.close()
     return root, home, store
 
 
@@ -105,7 +110,7 @@ def test_s8_bridge(env):
     local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
     assert run(console=console())['ok']
     path=root/'db.profile-log.json'; config=json.loads(path.read_text(encoding='utf-8'))
-    assert set(config)=={'format','enabled','recall','dual_write','authority','cli_argv','agent_key','import_agent_key','mapping','profile','timeout_seconds'}
+    assert set(config)=={'format','enabled','recall','dual_write','authority','cli_argv','agent_key','import_agent_key','mapping','profile','timeout_seconds','recall_fallback','device_id','staging_node'}
     assert config['agent_key']==str(root/'agents/reader.key')
     value['bridge']['enabled']=False; save_user(value)
     assert run()['ok']; assert json.loads(path.read_text(encoding='utf-8'))['enabled'] is False
@@ -254,7 +259,7 @@ def test_s2_bridge_flags_off_narrow(env):
     root, home, store=env
     value={'agents':{'a':{'read':[],'write':[]}}}; save_user(value); assert run(console=console())['ok']
     state=store.load()
-    state.control['applied_bridge']=dict(enabled=True,recall=True,dual_write=True,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=[sys.executable,'-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
+    state.control['applied_bridge']=dict(device_id=state.device.device_id,staging_node='test-node',recall_fallback=False,enabled=True,recall=True,dual_write=True,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=[sys.executable,'-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
     state.control['applied_mapping']={'format':'agentmesh-migration-mapping-v1','global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
     store.save(state)
     value['bridge']={'recall':False,'dual_write':False}; save_user(value); calls=[]

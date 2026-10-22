@@ -18,7 +18,7 @@ from agentmesh_log.broker.client import BrokerClient
 from agentmesh_log.broker.service import Broker,Session
 from agentmesh_log.identity import AgentIdentity
 from agentmesh_log.migrate.mapping import Mapping
-from agentmesh_log.migrate.source import snapshot,rows
+from agentmesh_log.migrate.source import rows,body_for,staging_node,check_binding
 from agentmesh_log.migrate.run import run as migrate
 from agentmesh_log.oskeystore import initialize
 from agentmesh_log.presence import CLASSES
@@ -39,7 +39,7 @@ def run(database,mapping_file,*,queries=None,sample=200,out=None,inspect=None):
     mapping=Mapping.load(mapping_file); started=time.monotonic()
     with tempfile.TemporaryDirectory(prefix='am-parity-') as directory:
         root=Path(directory).resolve(); root.chmod(0o700)
-        copied=snapshot(database,root/'snapshot.db')
+        copied=Path(database)
         home=BrokerHome(root/'broker')
         profiles=sorted({target.split('/')[0] for target in mapping.targets})
         if not profiles: raise ValueError('no mapped profiles')
@@ -63,12 +63,14 @@ def run(database,mapping_file,*,queries=None,sample=200,out=None,inspect=None):
         store.save(state)
         broker=Broker(home,store=store)
         try:
-            migration=migrate(copied,mapping,local_client(broker,importer))
+            binding=dict(device_id=state.device.device_id,staging_node=staging_node(copied))
+            migration=migrate(copied,mapping,local_client(broker,importer),binding=binding)
             if migration['errors']: raise ValueError('migration failed')
             if inspect: inspect(root,copied,broker)
             values=rows(copied); eligible={p:{'memory_items':[],'memory_summaries':[]} for p in profiles}
             withheld=set(); unmapped=0
-            for _,payload in broker.payloads():
+            for envelope,payload in broker.payloads():
+                if envelope['device']!=state.device.device_id: continue
                 body=payload['body']
                 if payload['label']=='secret' and isinstance(body,dict) and 'source' in body.get('metadata',{}):
                     source=body['metadata']['source']; withheld.add((source['table'],source['id']))
@@ -101,9 +103,10 @@ def run(database,mapping_file,*,queries=None,sample=200,out=None,inspect=None):
                     answer=client.request(dict(op='recall',query=plan.query,project=plan.project,
                         task=plan.task_refs[0] if plan.task_refs else None,profiles=[profile],compat=True,limit=min(pool,100)))
                     if 'error' in answer: raise ValueError('broker unavailable')
+                    answer['results']=[r for r in answer['results'] if r.get('source_ref') and (r['source_ref'].get('device',r.get('author_device'))==state.device.device_id)]
                     return answer
-                new=recall_memory._recall(copied,query,project=project,task=task,limit=12,bridge_config={},broker_reader=read)
-                def ids(answer): return [(r['source_type'],r['id']) for r in answer['results'] if r['source_type']!='event']
+                new=recall_memory._recall(copied,query,project=project,task=task,limit=12,bridge_config=binding,broker_reader=read)
+                def ids(answer): return [(r['source_type'],r.get('source_ref',{}).get('id',r['id'])) for r in answer['results'] if r['source_type']!='event']
                 a,b=ids(old),ids(new); sa,sb=set(a),set(b)
                 overlaps.append(len(sa&sb)/len(sa|sb) if sa|sb else 1.)
                 hits.append(len(set(a[:5])&set(b[:5]))/len(a[:5]) if a[:5] else 1.)
@@ -114,12 +117,31 @@ def run(database,mapping_file,*,queries=None,sample=200,out=None,inspect=None):
                 top5_hit=sum(hits)/len(hits) if hits else 1.,exact_order=sum(exact)/len(exact) if exact else 1.,
                 failures=failures,counts=dict(queries=len(query_set),withheld=len(withheld),unmapped=unmapped,
                     items=sum(r['table']=='memory_items' for r in values),summaries=sum(r['table']=='memory_summaries' for r in values)),
-                timings=dict(seconds=round(time.monotonic()-started,3)))
+                timings=dict(seconds=round(time.monotonic()-started,3)),**compare(copied,mapping,broker,binding))
         finally: broker.close()
     if out is not None:
         fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as stream: json.dump(result,stream,ensure_ascii=False)
     return result
+
+
+
+def compare(database,mapping,broker,binding):
+    from agentmesh_log.migrate.run import local_entry
+    check_binding(database,binding,broker.state.device.device_id)
+    device=broker.state.device.device_id; missing=changed=0
+    for row in rows(database):
+        target=mapping.target(row)
+        if row['reason'] or target=='skip': continue
+        head=broker.imports.head((device,row['table'],row['id']))
+        if head is None:
+            old=broker.imports.head((None,row['table'],row['id']))
+            if old is not None and old[0]['device']==device: head=old
+        if head is None: missing+=1; continue
+        env,payload=head; meta=payload['body']['metadata']
+        expected=body_for(row,target)[0]['metadata']['row_hash']
+        if meta['retired'] or meta['row_hash']!=expected or names(broker.state)[env['scope']]!=target: changed+=1
+    return dict(missing=missing,changed=changed)
 
 
 def main(argv=None):

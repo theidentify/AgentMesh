@@ -12,6 +12,8 @@ def database(tmp_path, request):
     c = sqlite3.connect(path)
     c.executescript((Path(__file__).resolve().parents[3] / 'memory-sync/schema.sql').read_text(encoding='utf-8'))
     c.execute('PRAGMA journal_mode=' + request.param)
+    c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+    c.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
     c.execute("INSERT INTO memory_items(id,kind,scope,content,metadata,updated_at) VALUES(1,'fact','global','synthetic memory','{\"evidence\":\"excluded\"}','2020-01-01 00:00:00')")
     c.execute("INSERT INTO memory_summaries(scope,scope_key,content,metadata) VALUES('task','AM-1','summary','{\"event_ids\":[1,true],\"source_event_ids\":[2,\"excluded\"]}')")
     c.commit(); c.close()

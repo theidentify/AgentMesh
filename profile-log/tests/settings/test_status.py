@@ -18,6 +18,8 @@ def configured(env):
     root,home,store=env; db=root/'fixture.db'
     with sqlite3.connect(db) as c:
         c.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text())
+        c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+        c.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
         c.execute("INSERT INTO memory_items(kind,scope,project,content) VALUES('fact','project','AgentMesh','ROW_BODY_SENTINEL')")
         c.execute("INSERT INTO memory_summaries(scope,scope_key,content) VALUES('project','AgentMesh','SUMMARY_BODY_SENTINEL')")
     c.close()
@@ -36,9 +38,9 @@ def arguments(root,db):
 
 
 class Client:
-    def __init__(self): self.intents=[]; self.closed=False
+    def __init__(self,device): self.intents=[]; self.closed=False; self.device=device
     def request(self,value):
-        return {'entries':[]} if value['op']=='import_ledger' else {'write':['work/common']}
+        return {'entries':[]} if value['op']=='import_ledger' else {'write':['work/common'],'device_id':self.device}
     def import_row(self,**value): self.intents.append(value); return {'outcome':'created','label':'general'}
     def close(self): self.closed=True
 
@@ -50,7 +52,7 @@ def test_g8_apply_catch_up_content(configured,monkeypatch):
     assert before['overview']['agents'][0]['name']=='reader'
     assert before['overview']['devices'] and before['overview']['profiles']
     assert before['migration']['projects']==[dict(project='AgentMesh',items=1,summaries=1,target='work/common')]
-    client=Client(); monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:client)
+    client=Client(store.load().device.device_id); monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:client)
     result=cli.execute_migration(arguments(root,db)); assert result['outcomes']=={'created':2} and client.closed
     value=read(root); assert value['overview']==before['overview'] and value['last_apply']==before['last_apply']
     assert value['last_catch_up']['outcome']=='ok' and value['format']==status.FORMAT
@@ -84,7 +86,7 @@ def test_g9_dry_run_and_rollback(configured,monkeypatch):
 @pytest.mark.parametrize('unsafe',['symlink','unwritable'],ids=['link','ro'])
 def test_g9_writer_failure(configured,monkeypatch,unsafe):
     root,home,store,db=configured; assert run(console=console())['ok']
-    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client())
+    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client(store.load().device.device_id))
     with monkeypatch.context() as m:
         m.setattr(status,'write',lambda *_,**kw:None)
         expected_apply=run(); expected_catch=cli.execute_migration(arguments(root,db))
@@ -96,7 +98,7 @@ def test_g9_writer_failure(configured,monkeypatch,unsafe):
         monkeypatch.setattr(status,'atomic_write',fail)
     monkeypatch.setattr(cli,'emit',lambda _:None)
     assert run()==expected_apply and cli.main(['apply'])==0
-    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client())
+    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client(store.load().device.device_id))
     args=arguments(root,db); result=cli.execute_migration(args)
     assert result==expected_catch
     argv=['migrate','catch-up','--db',str(db),'--mapping',args.mapping,'--agent-key',args.agent_key]
@@ -111,7 +113,7 @@ def test_g9_writer_failure(configured,monkeypatch,unsafe):
 
 def test_g9_catch_up_outcomes(configured,monkeypatch):
     root,home,store,db=configured; assert run(console=console())['ok']; overview=read(root)['overview']
-    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client()); args=arguments(root,db)
+    monkeypatch.setattr(cli.BrokerClient,'from_file',lambda _:Client(store.load().device.device_id)); args=arguments(root,db)
     def fail(*_,**kw): raise ValueError('PRIVATE_ERROR_MESSAGE')
     with monkeypatch.context() as m:
         m.setattr('agentmesh_log.migrate.run.run',fail)
@@ -163,8 +165,8 @@ def test_unknown_reasons_fold_into_other(configured):
 def test_g8_catch_up_cache(configured,monkeypatch):
     root,home,store,db=configured
     class Ledger(Client):
-        def __init__(self,entries): super().__init__(); self.entries=entries
-        def request(self,value): return {'entries':self.entries} if value['op']=='import_ledger' else {'write':['work/common']}
+        def __init__(self,entries): super().__init__(store.load().device.device_id); self.entries=entries
+        def request(self,value): return {'entries':self.entries} if value['op']=='import_ledger' else {'write':['work/common'],'device_id':self.device}
         def import_row(self,**value):
             self.intents.append(value); ident=f"01J{len(self.entries):023d}"
             self.entries.append(dict(source=value['source'],event=ident,chain=[ident],scope=value['scope'],status='created',reason=None))

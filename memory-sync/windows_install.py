@@ -775,7 +775,14 @@ def run(action, *, runtime, program_root=None, installed_state=None, binary=None
 
 
 def change_task(adapter, state, state_path, *, enabled, finish=True):
+    import packet_sync
     previous = state['task']
+    packets=packet_sync.enabled()
+    retained=not packets and packet_sync.runtime_workflow(state['runtime'])
+    if not packets and not retained:
+        if previous is None:
+            return {'status': 'retired', 'worker_changed': False}
+        enabled = False
     state['status'] = 'in_progress'
     state['pending'] = {'operation': 'task', 'phase': 'task', 'previous': previous, 'transition': state.get('pending')}
     save(state_path, state)
@@ -790,4 +797,6 @@ def change_task(adapter, state, state_path, *, enabled, finish=True):
     if finish:
         state.update(status='ready', pending=None)
     save(state_path, state)
-    return {'status': 'enabled' if enabled else 'disabled', 'worker_changed': False}
+    result={'status': 'enabled' if enabled else 'disabled', 'worker_changed': False}
+    if retained and enabled: result['worker']='retained for workflow ingest/summary; packet work disabled'
+    return result

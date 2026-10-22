@@ -22,6 +22,15 @@ def main(argv=None):
     ingest = subs.add_parser('ingest', description=__import__('brand').description('Incrementally ingest local agent sessions.'), formatter_class=argparse.RawDescriptionHelpFormatter)
     ingest.add_argument('--root', action='append', default=[])
     ingest.add_argument('--project')
+    ingest.add_argument('--start-at')
+    packets = subs.add_parser('packet-sync', help='retire or enable legacy packet transport')
+    packets.add_argument('operation', choices=('retire', 'enable'))
+    packets.add_argument('--dry-run', action='store_true')
+    packets.add_argument('--task-name')
+    packets.add_argument('--installed-state')
+    packets.add_argument('--runtime', help='read-only runtime; defaults under AGENTMESH_HOME/memory-sync/data')
+    packets.add_argument('--legacy-drained', action='store_true')
+    packets.add_argument('--unmanaged-drained', action='store_true')
     summary = subs.add_parser('summarize', description=__import__('brand').description('Generate provenance-grounded memory on the primary.'), formatter_class=argparse.RawDescriptionHelpFormatter)
     summary.add_argument('--preview', action='store_true', help='explicitly print private source task')
     for name in ('once', 'watch'):
@@ -179,6 +188,13 @@ def main(argv=None):
             command.add_argument('--inventory', help='local JSON peer inventory including offline peers')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'packet-sync':
+            import packet_sync
+            report = packet_sync.configure(args.operation, dry_run=args.dry_run,
+                task_name=args.task_name, installed_state=args.installed_state,
+                legacy_drained=args.legacy_drained, unmanaged_drained=args.unmanaged_drained, runtime=args.runtime)
+            print(json.dumps(report, sort_keys=True))
+            return int(any(c['status'] == 'failed' for c in report['commands']))
         if args.action=='protocol-capability':
             from protocol_activation import CAPABILITY
             print(json.dumps({'format':'agentmesh-protocol-capability-v1','protocol_capability':CAPABILITY},sort_keys=True))
@@ -372,7 +388,7 @@ def main(argv=None):
         if not args.database:
             parser.error('--database is required for this action')
         db = Path(args.database).resolve()
-        if not db.is_file():
+        if args.action != 'recall' and not db.is_file():
             raise FileNotFoundError('database must already be initialized')
         if args.action == 'recall':
             from recall_memory import recall
@@ -384,7 +400,7 @@ def main(argv=None):
                     raise ValueError('PostgreSQL mirror owns transcript ingestion on this source machine')
             from ingest_sessions import ingest
             roots = dict(root.split('=', 1) for root in args.root) if args.root else None
-            result = ingest(db, roots=roots, project=args.project)
+            result = ingest(db, roots=roots, project=args.project, **({'start_at': args.start_at} if args.start_at else {}))
         elif args.action == 'summarize':
             import workflow
             import summarize_memory
@@ -418,6 +434,8 @@ def main(argv=None):
             import sqlite_memory
             result = {'sync': memory_sync.status(db), 'counts': sqlite_memory.status(db)['counts']}
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        if args.action == 'recall':
+            return int(bool(result.get('error')))
         if args.action == 'once':
             return int(sync_worker.failed(result))
         if args.action == 'ingest':

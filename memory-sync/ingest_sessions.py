@@ -13,7 +13,7 @@ DEFAULT_ROOTS = {'omp': '.omp/agent/sessions', 'codex': '.codex/sessions',
                  'claude': '.claude/projects'}
 
 
-def ingest(database, roots=None, home=None, project=None):
+def ingest(database, roots=None, home=None, project=None, start_at=None):
     """Ingest transcripts into an initialized SQLite database.
 
     Explicit roots replace defaults (including an empty mapping). Found counts
@@ -21,6 +21,8 @@ def ingest(database, roots=None, home=None, project=None):
     and cursor-complete files. Processed counts backend attempts. Errors counts
     failed files/directories, with one class name per error and no paths/messages.
     Only complete newline-terminated records are consumed by the backend.
+    start_at persists a timestamp floor and refuses existing cursors. Missing
+    event timestamps fail the file without advancing its cursor.
     """
     home = Path(home).expanduser() if home is not None else Path.home()
     database = Path(database).expanduser().resolve()
@@ -30,6 +32,7 @@ def ingest(database, roots=None, home=None, project=None):
     roots = roots if roots is not None else {a: home / p for a, p in DEFAULT_ROOTS.items()}
     if any(agent not in DEFAULT_ROOTS for agent in roots):
         raise ValueError('unsupported agent')
+    sqlite_memory.configure_ingestion(database, start_at)
     report: dict[str, Any] = dict(found=0, processed=0, skipped=0, inserted=0,
                                   errors=0, error_classes=[])
 
@@ -100,6 +103,7 @@ def main(argv=None):
     parser.add_argument('database', help='initialized local SQLite database')
     parser.add_argument('--root', action='append', metavar='AGENT=PATH',
                         help='replace default discovery roots; repeat for multiple agents')
+    parser.add_argument('--start-at', help='seed fresh ingestion at now or an offset ISO timestamp')
     parser.add_argument('--project', help='fixed project for newly ingested events')
     args = parser.parse_args(argv)
     roots = None
@@ -113,7 +117,7 @@ def main(argv=None):
                 parser.error('--root accepts one directory per agent')
             roots[agent] = path
     try:
-        result = ingest(args.database, roots=roots, project=args.project)
+        result = ingest(args.database, roots=roots, project=args.project, start_at=args.start_at)
     except Exception as exc:
         result = dict(found=0, processed=0, skipped=0, inserted=0,
                       errors=1, error_classes=[type(exc).__name__])

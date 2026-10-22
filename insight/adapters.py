@@ -203,9 +203,22 @@ def local_security(c):
     return result
 
 
+def packet_sync_enabled(agentmesh_home=None):
+    root=Path(agentmesh_home or os.environ.get('AGENTMESH_HOME',str(Path.home()/'.agentmesh'))).expanduser()
+    path=root/'packet-sync-status.json'
+    try:
+        if path.is_symlink() or any(p.is_symlink() for p in path.parents): return False
+        value=json.loads(path.read_text(encoding='utf-8'))
+        return value=={'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}
+    except (OSError,ValueError,TypeError): return False
+
+
 def peer_status(home, now=None, agentmesh_home=None):
     """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
     from datetime import datetime, timezone
+    if not packet_sync_enabled(agentmesh_home):
+        return {'rows':[], 'transport':'packet sync retired', 'freshness_threshold_seconds':300,
+                'packet_sync':'retired', 'note':'packet sync retired; see profile-log devices and sync status.'}
     now = now or datetime.now(timezone.utc)
     item = layout(home, agentmesh_home)['status']
     root = item['path']
@@ -335,6 +348,8 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     except Exception:
         result['ingest'] = unavailable('Ingest counters')
     try:
+        if not packet_sync_enabled(agentmesh_home):
+            raise RuntimeError('packet sync retired')
         if not sync_db:
             raise RuntimeError('No staging database')
         with sqlite_ro(sync_db) as c:
@@ -352,6 +367,11 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
     result['sync']['peers'] = peer_status(home, agentmesh_home=agentmesh_home)
     if 'security' not in result['sync']: result['sync']['security'] = security_projection(None)
+    if not packet_sync_enabled(agentmesh_home):
+        result['sync'].update(available=False, packet_sync='retired', error='packet sync retired',
+                              note='packet sync retired; see profile-log devices and sync status.',
+                              receipts=None, outbox=[], diagnostics=[], workers=[])
+        transport = {'available':False, 'status':'packet sync retired', 'note':'packet sync retired', 'rows':[]}
     if transport is None:
         from syncthing_transport import observe
         transport = observe(home, exchange=layout(home, agentmesh_home)['exchange']['path'])

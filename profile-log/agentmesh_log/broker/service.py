@@ -177,7 +177,7 @@ class Broker:
         elif not body_valid(body): body=dict(kind='fact',content=wire(body).decode())
         from .imports import admitted
         migration=admitted(self,envelope,payload)
-        meta=body.get('metadata',{}) if migration else {}
+        meta={**body.get('metadata',{}),'author_device':envelope['device']} if migration else {}
         instant=datetime.fromtimestamp(payload['created_at']/1000,timezone.utc).isoformat().replace('+00:00','Z')
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
@@ -277,7 +277,7 @@ class Broker:
                 type(p['body'].get('metadata')) is dict and 'source' in p['body']['metadata']
                 for e,p in self.payloads())}
         if op=='whoami':
-            result=dict(agent_id=session.agent_id,read=sorted(scope_names[s] for s in allowed),
+            result=dict(agent_id=session.agent_id,device_id=self.state.device.device_id,read=sorted(scope_names[s] for s in allowed),
                 write=sorted(scope_names[s] for s in grant.write),default_profile=scope_names[grant.default_profile],allow_secret=grant.allow_secret)
             if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
             return result

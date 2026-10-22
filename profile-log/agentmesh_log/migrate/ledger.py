@@ -3,17 +3,22 @@ from pathlib import Path
 import os
 from ..encoding import wire
 from .source import rows
-from .run import checked
+from .run import checked,local_entry
 
 
 def report(client,database=None,mapping=None):
-    result={}
-    for entry in checked(client.request(dict(op='import_ledger')))['entries']:
-        src=entry['source']; result[f"{src['table']}:{src['id']}"]={k:v for k,v in entry.items() if k!='source'}
+    result={}; device=checked(client.request(dict(op='whoami')))['device_id']
+    entries=checked(client.request(dict(op='import_ledger')))['entries']
+    def name(src): return (src['device']+':' if 'device' in src else '')+f"{src['table']}:{src['id']}"
+    for entry in entries:
+        result[name(entry['source'])]={k:v for k,v in entry.items() if k!='source'}
     if database is not None:
         if mapping is None: raise ValueError('mapping required')
         for row in rows(database):
-            key=f"{row['table']}:{row['id']}"
+            src=dict(device=device,table=row['table'],id=row['id']); key=name(src)
+            if key not in result:
+                old=next((e for e in entries if local_entry(e,device) and e['source']==dict(table=row['table'],id=row['id'])),None)
+                if old is not None: key=name(old['source'])
             reason=row['reason']
             try:
                 target=mapping.target(row)

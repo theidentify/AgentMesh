@@ -24,7 +24,8 @@ await send('Runtime.enable'); await send('Page.enable');
 await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
 await send('Page.navigate',{url:url.replace(/#.*$/,'')+'#sync'});
 await until("document.getElementById('updated')?.textContent.startsWith('Observed')");
-await until("document.querySelectorAll('#security-table tbody tr').length===2");
+await until("ops.sync.peers!=null");
+assert.equal(await evaluate("document.querySelectorAll('#security-table tbody tr').length"),await evaluate('ops.sync.peers.rows.length'));
 assert.equal(await evaluate("document.getElementById('sync').hidden"),false);
 assert.equal(await evaluate("document.querySelectorAll('#security-table button').length"),0);
 assert.ok(await evaluate("document.getElementById('security-note').textContent.includes('unsigned telemetry')"));
@@ -40,11 +41,11 @@ for(const theme of ['light','dark']){
   assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
   await shot('security-desktop-'+theme+'.png');
 }
-await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.security.policy='required';fixture.security.verification={attempts:9,failed_attempts:2,last_success_at:'2026-10-08T12:00:00Z',last_failure_at:'2026-10-08T11:00:00Z'};fixture.peers.rows[0].security={...fixture.peers.rows[0].security,policy:'required',pairing:'approved',wizard_step:'activation',next_action:'confirm_coordinated_legacy_boundary',roundtrip:'reported verified',roundtrip_packet_uuid:'00000000-0000-4000-8000-000000000010'};fixture.peers.rows[1].security={...fixture.peers.rows[1].security,policy:'legacy',pairing:'pending',wizard_step:'pairing',next_action:'confirm_peer_fingerprint_out_of_band',roundtrip:'pending'};renderSecurity(fixture)})()");
+await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.peers.rows=[{peer:'Mac',security:{}},{peer:'Windows',security:{}}];fixture.security.policy='required';fixture.security.verification={attempts:9,failed_attempts:2,last_success_at:'2026-10-08T12:00:00Z',last_failure_at:'2026-10-08T11:00:00Z'};fixture.peers.rows[0].security={...fixture.peers.rows[0].security,policy:'required',pairing:'approved',wizard_step:'activation',next_action:'confirm_coordinated_legacy_boundary',roundtrip:'reported verified',roundtrip_packet_uuid:'00000000-0000-4000-8000-000000000010'};fixture.peers.rows[1].security={...fixture.peers.rows[1].security,policy:'legacy',pairing:'pending',wizard_step:'pairing',next_action:'confirm_peer_fingerprint_out_of_band',roundtrip:'pending'};renderSecurity(fixture)})()");
 assert.ok(await evaluate("document.getElementById('security-table').textContent.includes('approved')&&document.getElementById('security-table').textContent.includes('pending')&&document.getElementById('security-table').textContent.includes('reported verified')"));
 assert.ok(await evaluate("document.getElementById('overview-security').textContent.includes('required / configured')"));
 await shot('security-fixture-approved-pending.png');
-await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.peers.rows[0].security.pairing='revoked';fixture.peers.rows[1].security.pairing='unknown';renderSecurity(fixture)})()");
+await evaluate("(()=>{const fixture=structuredClone(ops.sync);fixture.peers.rows=[{peer:'Mac',security:{}},{peer:'Windows',security:{}}];fixture.peers.rows[0].security.pairing='revoked';fixture.peers.rows[1].security.pairing='unknown';renderSecurity(fixture)})()");
 assert.ok(await evaluate("document.getElementById('security-table').textContent.includes('revoked')&&document.getElementById('security-table').textContent.includes('unknown')"));
 await evaluate('renderSecurity(ops.sync)');
 await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});

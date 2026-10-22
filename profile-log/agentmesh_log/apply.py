@@ -37,20 +37,34 @@ def mapping_value(value):
 def bridge_value(value, state, base):
     if 'bridge' not in value: return None
     old = state.control.get('applied_bridge', {})
+    old=deepcopy(old)
+    if 'profiles' in value['bridge']: old.pop('profile',None)
+    if 'profile' in value['bridge']: old.pop('profiles',None)
     b = settings.merge(old, value['bridge'])
-    b = settings.merge(dict(enabled=False, recall=True, dual_write=True, authority=False, timeout_seconds=10), b)
+    b = settings.merge(dict(enabled=False, recall=True, recall_fallback=False, dual_write=True, authority=False, timeout_seconds=10), b)
     if not b['enabled'] and not old and set(value['bridge']) == {'enabled'}: return b
-    if any(k not in b for k in ('database', 'cli_argv', 'profile', 'recall_agent', 'import_agent')):
+    if any(k not in b for k in ('database', 'cli_argv', 'recall_agent', 'import_agent')):
         raise ValueError('invalid_settings')
     settings.validate({'bridge': b}, local=True)
-    if b['profile'] not in {t.root.name for t in state.trees}: raise ValueError('invalid_settings')
+    profiles=b.get('profiles',[b['profile']] if 'profile' in b else [])
+    if not profiles or not set(profiles)<={t.root.name for t in state.trees}: raise ValueError('invalid_settings')
+    from .migrate.source import staging_node
+    node=staging_node(b['database']); device=state.device.device_id
+    if ('device_id' in b and b['device_id']!=device) or ('staging_node' in b and b['staging_node']!=node):
+        raise ValueError('invalid_settings')
+    b.update(device_id=device,staging_node=node)
     return b
 
 
 def render_bridge(base, bridge):
     """Return the bridge's exact field set without opening the database."""
+    extra=('recall_fallback','device_id','staging_node')
+    if any(k in bridge for k in extra) and not all(k in bridge for k in extra): raise ValueError('invalid_settings')
+    if 'profiles' in bridge and not all(k in bridge for k in extra): raise ValueError('invalid_settings')
     return dict(format='agentmesh-profile-log-bridge-v1',
-                **{k: bridge[k] for k in ('enabled', 'recall', 'dual_write', 'authority', 'cli_argv', 'profile', 'timeout_seconds')},
+                **{k: bridge[k] for k in ('enabled', 'recall', 'dual_write', 'authority', 'cli_argv', 'timeout_seconds')},
+                **{k:bridge[k] for k in extra if k in bridge},
+                **({'profiles':bridge['profiles']} if 'profiles' in bridge else {'profile':bridge['profile']}),
                 agent_key=str(base / 'agents' / (bridge['recall_agent'] + '.key')),
                 import_agent_key=str(base / 'agents' / (bridge['import_agent'] + '.key')),
                 mapping=str(base / 'migration-mapping.json'))
@@ -91,7 +105,7 @@ def diff(value, state, mapping=None, bridge=None):
     if mapping is not None and mapping != state.control.get('applied_mapping'):
         add('mapping_change', 'migration', before=state.control.get('applied_mapping'), after=mapping)
     if bridge is not None and bridge != state.control.get('applied_bridge'):
-        old = state.control.get('applied_bridge', dict(enabled=False,recall=True,dual_write=True,authority=False,timeout_seconds=10))
+        old = state.control.get('applied_bridge', dict(enabled=False,recall=True,recall_fallback=False,dual_write=True,authority=False,timeout_seconds=10))
         kind = 'bridge_enable' if bridge['enabled'] and not old.get('enabled', False) else 'bridge_disable' if old.get('enabled', False) and not bridge['enabled'] else 'bridge_update'
         # Paths are not necessary to describe agent selection or widening flags.
         public = lambda b: {k: v for k, v in b.items() if k not in ('database', 'cli_argv')}
@@ -243,4 +257,7 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
                 from .status import applied
                 if state is not None: state = store.load()
                 applied(base,outcome,changes,state,value,mapping)
+                if value is not None:
+                    path=base/'packet-sync-status.json'; settings.safe(path,missing=True)
+                    atomic_write(path,wire(dict(format='agentmesh-packet-sync-status-v1',packet_sync='enabled' if value.get('packet_sync',{}).get('enabled',False) else 'retired')))
             except Exception: pass

@@ -17,17 +17,20 @@ def _validate(python, app_dir, database, exchange, interval):
         raise ValueError('interval must be finite and positive')
 
 
-def render_systemd(python, app_dir, database, exchange, interval=60):
+def render_systemd(python, app_dir, database, exchange, interval=60, workflow_config=None):
     _validate(python, app_dir, database, exchange, interval)
+    if workflow_config is not None: _validate(python, app_dir, database, workflow_config, interval)
     args = [str(python), str(Path(app_dir) / 'sync_worker.py'), str(database), str(exchange), '--interval', str(interval)]
+    if workflow_config is not None: args += ['--workflow-config', str(workflow_config)]
     command = ' '.join(json.dumps(arg, ensure_ascii=False).replace('%', '%%') for arg in args)
     return ('[Unit]\nDescription=AgentMesh memory sync\n\n[Service]\n'
             'Type=simple\nExecStart=:' + command + '\nRestart=always\nRestartSec=10\n'
             'UMask=0077\n\n[Install]\nWantedBy=default.target\n')
 
 
-def render_launchagent(python, app_dir, database, exchange, interval=60, postgres_dsn=None):
+def render_launchagent(python, app_dir, database, exchange, interval=60, postgres_dsn=None, workflow_config=None):
     _validate(python, app_dir, database, exchange, interval)
+    if workflow_config is not None: _validate(python, app_dir, database, workflow_config, interval)
     logs = Path(database).parent
     config = {
         'Label': 'org.agentmesh.sync',
@@ -36,6 +39,7 @@ def render_launchagent(python, app_dir, database, exchange, interval=60, postgre
         'StandardOutPath': str(logs / 'agentmesh.stdout.log'),
         'StandardErrorPath': str(logs / 'agentmesh.stderr.log'),
     }
+    if workflow_config is not None: config['ProgramArguments'] += ['--workflow-config', str(workflow_config)]
     if postgres_dsn:
         config['ProgramArguments'].append('--postgres')
         config['EnvironmentVariables'] = {'OMP_MEMORY_DSN': postgres_dsn}
@@ -56,14 +60,20 @@ def main(argv=None):
     for name in ['python', 'app-dir', 'database', 'exchange', 'output']:
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--interval', type=float, default=60)
+    parser.add_argument('--workflow-config')
     parser.add_argument('--postgres', action='store_true', help='macOS only: read OMP_MEMORY_DSN from generation environment')
     args = parser.parse_args(argv)
+    import packet_sync
+    packets=packet_sync.enabled()
+    if not packets and not packet_sync.workflow_needed(args.database, args.workflow_config):
+        print('packet sync retired; no sync unit generated')
+        return 0
     dsn = os.environ.get('OMP_MEMORY_DSN') if args.postgres else None
     if args.postgres and (args.platform != 'macos' or not dsn):
         parser.error('--postgres requires macos and OMP_MEMORY_DSN')
     try:
         values = (args.python, args.app_dir, args.database, args.exchange, args.interval)
-        data = render_launchagent(*values, postgres_dsn=dsn) if args.platform == 'macos' else render_systemd(*values).encode('utf-8')
+        data = render_launchagent(*values, postgres_dsn=dsn, workflow_config=args.workflow_config) if args.platform == 'macos' else render_systemd(*values, workflow_config=args.workflow_config).encode('utf-8')
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Exclusive creation avoids overwriting existing services or following symlinks.
@@ -72,6 +82,9 @@ def main(argv=None):
             stream.write(data)
     except (ValueError, OSError):
         parser.error('cannot generate service: invalid arguments or output already exists/unwritable')
+    if not packets:
+        import json
+        print(json.dumps({'worker':'retained for workflow ingest/summary; packet work disabled'}))
     return 0
 
 

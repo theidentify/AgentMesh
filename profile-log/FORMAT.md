@@ -505,7 +505,7 @@ certificate validation and import ordering.
 A retirement revises the current head, retaining source, setting retired=true and
 content="". All recall modes hide retired heads. A scope move retires the old chain,
 then creates a new root; there are no cross-scope revisions. The source ledger is
-reconstructed from readable encrypted replica events, keyed by (table,id), with the
+reconstructed from readable encrypted replica events, keyed by (device-or-null,table,id), with the
 largest event ULID as head. No separate ledger file is authoritative.
 
 ### Import trust
@@ -544,20 +544,69 @@ and two-step signature checks remain in force.
 `{"entries":[{"source":{"table":TABLE,"id":INT},"event":ULID,"chain":[ULID,...],
 "scope":NAME,"status":"created"|"revised"|"retired","reason":null}],
 "foreign_authority":BOOL}`. Entries are filtered to caller write scopes and contain
-no bodies or hashes. foreign_authority reports observed foreign-device migration
-provenance, allowing the migrator to require an explicit --take-over.
+no bodies or hashes. foreign_authority still reports observed foreign-device migration provenance for compatibility.
+It no longer blocks migration; --take-over remains accepted as a no-op.
 
 Recall accepts optional `"compat":true` (bool, default false). Compat durable selection
 includes globals; all rows when neither project nor task is selected; project/scope_key
 matches; and task scope_key matches, with ordinary text matching. Summaries require a
 matching project or task source scope and are included without a text-match requirement.
 Results retain broker fields and add source_type (durable|summary), source_ref
-({table,id} or null), source (original source fields or null), scope_key and
+({device?,table,id} or null), author_device (head author or null), source (original source fields or null), scope_key and
 evidence_event_ids. These support the local bridge's existing SQLite row shape and
 local evidence expansion. candidate_counts.summaries counts selected summaries.
-Non-migrated events have source_ref=null and remain durable. Without compat the old
-result field set is unchanged. Index schema version 5 adds source_table, source_scope,
+Non-migrated events have source_ref=null and remain durable. Local SQLite provenance is expanded only
+for a source.device matching the enrolled device, or a legacy source whose author_device matches it. Without compat the old
+result field set is unchanged. Index schema version 6 adds source_device alongside source_table, source_scope,
 scope_key and retired; older snapshots rebuild.
+
+## Phase 7a source and bridge rules
+
+`source` in import requests and reserved body `metadata.source` gains optional
+`device`, exactly 32 lowercase hex characters. When present in either location it
+must be present and equal in both. Old encrypted events without it remain valid;
+legacy entries are never rewritten. The device is not included in row_hash.
+Ledger entries additionally return `device`, the head envelope's authoring device.
+`whoami` adds `device_id`, the current broker device. Neither exposes key material.
+Reports qualify device sources as `device:table:id`; legacy sources remain `table:id`.
+
+The broker rejects a device-qualified import unless source.device is its own ID.
+Replica provenance with source.device different from the envelope device is ignored.
+Legacy import requests may only revise or retire an existing legacy head authored
+by this broker's device. New legacy roots are always denied. A legacy scope move
+retires that legacy chain and converts the continuation source and body source to
+this device's form before creating the destination root. Interrupted moves resume
+through the device form. An already-retired legacy head retires as unchanged.
+
+Migration prefers a local device entry, then a legacy entry authored by this
+device, otherwise creates a device source. Its missing-row sweep considers only
+local device entries and locally authored legacy heads. Foreign rows cannot be
+revised or retired merely because their integer IDs collide with local staging.
+The source identity is `_sync_config.node`, or a singleton
+`agentmesh_staging_identity(node TEXT NOT NULL)` initialized by ingest when no
+sync config exists. Apply reads that identity and records `device_id` from protected
+broker state plus `staging_node` in the bridge. Run, rows and catch-up fail before
+imports if the binding is missing, the node differs, or the broker device differs.
+Identity is also checked in the source read transaction and before each import.
+
+Bridge v1 accepts the exact old field set for recall compatibility, or the exact
+extended set adding `recall_fallback` (bool, default false), `device_id`, and
+`staging_node`. Extended configurations use either `profile` (one name) or
+`profiles` (nonempty unique name list), never both. Missing bindings cannot migrate.
+Recall uses one concurrent single-profile request per configured profile within one
+total timeout. It interleaves each profile's ranks in configuration order, dedupes
+by event ID and truncates to the candidate pool. Counts sum across responses before
+deduplication/truncation. Any failure rejects the whole result. These calls do not
+request cross-profile permission or presence; the broker's multi-profile gate is
+unchanged. Each agent must independently hold the listed read grants.
+
+Bridge recall returns only broker candidates, retaining log IDs and profile/source
+references. Local evidence is optional and never fetched for foreign references.
+Broker failure returns `{"error":"profile_log_unavailable"}` with nonzero CLI
+status; SQLite fallback, including explicit `--backend sqlite`, requires
+`recall_fallback:true` and is marked `backend:"sqlite-fallback"`. Invalid existing
+bridge configs fail closed for recall. No config or explicitly disabled recall
+retains the old standalone SQLite behavior.
 
 ## Phase 6 records
 
@@ -728,3 +777,18 @@ issuing device ID and challenge ID; other devices refuse `wrong_device`.
 The reserved STATUS_APP tool `passkey` has only register_begin/register_finish/
 approve_begin/approve_finish. Approval returns the existing signed connector-admin
 approve envelope and uses the same Worker verification/replay claims as CLI.
+
+### Live migration verification
+
+`migrate verify --db DB --settings|--mapping M --agent-key K` uses the configured
+import agent's local broker connection, requiring `allow_import`. It checks the
+staging enrolment binding, reads `whoami` and `import_ledger`, and emits exactly
+`{"missing":INT,"retired_but_present":INT}`. Counts include only staging rows whose
+migration intent is live and mapped, using local device sources before legacy
+sources authored by this device. Foreign-device entries cannot satisfy a row.
+The operation never sends `import` or `sign`, writes no migration cache/report,
+and preserves normal broker request auditing.
+
+No hashes are present in the ledger; this command makes no changed-content or
+scope-equality claim. A second catch-up with zero created/revised outcomes, with
+staging quiescent, is the separate unchanged-write check.

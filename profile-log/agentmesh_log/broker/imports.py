@@ -14,9 +14,11 @@ SOURCE_FIELDS = {'table','id','scope','scope_key','memory_key','version','create
 
 
 def source_key(source):
-    if type(source) is not dict or set(source) != {'table','id'} or source['table'] not in TABLES or type(source['id']) is not int:
+    if type(source) is not dict or set(source) not in ({'table','id'}, {'device','table','id'}) or source['table'] not in TABLES or type(source['id']) is not int:
         raise ValueError('invalid_request')
-    return source['table'], source['id']
+    device=source.get('device')
+    if 'device' in source and (type(device) is not str or not re.fullmatch('[0-9a-f]{32}',device)): raise ValueError('invalid_request')
+    return device, source['table'], source['id']
 
 
 def validate(body, source, digest):
@@ -25,8 +27,8 @@ def validate(body, source, digest):
     meta=body.get('metadata')
     if type(meta) is not dict or set(meta)!=RESERVED: raise ValueError('invalid_request')
     src=meta['source']
-    if type(src) is not dict or set(src)!=SOURCE_FIELDS: raise ValueError('invalid_request')
-    if {k:src[k] for k in ('table','id')}!=source: raise ValueError('invalid_request')
+    if type(src) is not dict or set(src) not in (SOURCE_FIELDS, SOURCE_FIELDS|{'device'}): raise ValueError('invalid_request')
+    if {k:src[k] for k in ('device','table','id') if k in src}!=source: raise ValueError('invalid_request')
     if src['scope'] not in ('global','project','task','session'): raise ValueError('invalid_request')
     if any(src[k] is not None and type(src[k]) is not str for k in ('scope_key','memory_key','created_at','updated_at')): raise ValueError('invalid_request')
     if src['version'] is not None and type(src['version']) is not int: raise ValueError('invalid_request')
@@ -49,7 +51,8 @@ def admitted(broker, envelope, payload):
                 return None
     except (ValueError, KeyError): return None
     try:
-        source={k:src[k] for k in ('table','id')}; key=source_key(source)
+        source={k:src[k] for k in ('device','table','id') if k in src}; key=source_key(source)
+        if key[0] is not None and key[0]!=envelope['device']: return None
         validate(body,source,meta.get('row_hash'))
         if type(meta['row_hash']) is not str or not re.fullmatch('[0-9a-f]{64}',meta['row_hash']): return None
     except (ValueError,KeyError,TypeError): return None
@@ -91,10 +94,10 @@ class Imports:
 
     def ledger(self,grant):
         result=[]; scope_names=names(self.broker.state)
-        for key in sorted(self.entries):
+        for key in sorted(self.entries,key=lambda k:(k[0] or '',k[1],k[2])):
             envelope,payload=self.head(key)
             if envelope['scope'] not in grant.write: continue
-            result.append(dict(source=dict(table=key[0],id=key[1]),event=envelope['id'],
+            result.append(dict(source=dict(table=key[1],id=key[2],**({'device':key[0]} if key[0] is not None else {})),device=envelope['device'],event=envelope['id'],
                 chain=sorted(self.entries[key]),scope=scope_names[envelope['scope']],
                 status='retired' if payload['body']['metadata']['retired'] else
                 ('created' if len(self.entries[key])==1 else 'revised'),reason=None))
@@ -104,7 +107,12 @@ class Imports:
         b=self.broker
         if not grant.allow_import: raise ValueError('denied')
         if set(req)!={'op','source','row_hash','created_at','scope','body'}: raise ValueError('invalid_request')
-        key=source_key(req['source']); digest=req['row_hash']; stamp=req['created_at']
+        key=source_key(req['source'])
+        if key[0] is not None and key[0]!=b.state.device.device_id: raise ValueError('denied')
+        if key[0] is None:
+            head=self.head(key)
+            if head is None or head[0]['device']!=b.state.device.device_id: raise ValueError('denied')
+        digest=req['row_hash']; stamp=req['created_at']
         if type(digest) is not str or not re.fullmatch('[0-9a-f]{64}',digest): raise ValueError('invalid_request')
         if type(stamp) is not int or not 0<=stamp<2**63 or stamp>int(time.time()*1000)+300000: raise ValueError('invalid_request')
         if type(req['scope']) is not str: raise ValueError('invalid_request')
@@ -123,14 +131,24 @@ class Imports:
             if body is not None and not retired and sid==env['scope'] and digest==oldbody['metadata']['row_hash']:
                 return dict(outcome='unchanged',id=env['id'])
             if body is None or (sid!=env['scope'] and not retired):
-                if body is not None: continuation=copy.deepcopy(req)
+                if body is not None:
+                    continuation=copy.deepcopy(req)
+                    if key[0] is None:
+                        continuation['source']['device']=b.state.device.device_id
+                        continuation['body']['metadata']['source']['device']=b.state.device.device_id
                 sid=env['scope']; body=copy.deepcopy(oldbody)
                 body['content']=''; body['metadata']['retired']=True
                 body['metadata']['row_hash']=digest
                 outcome='retired'; revises=env['id']; previous=Label[payload['label']]
             elif sid==env['scope']:
                 outcome='revised'; revises=env['id']; previous=Label[payload['label']]
-            else: outcome='created'
+            else:
+                if key[0] is None:
+                    continuation=copy.deepcopy(req)
+                    continuation['source']['device']=b.state.device.device_id
+                    continuation['body']['metadata']['source']['device']=b.state.device.device_id
+                    return self.prepare(session,grant,continuation,audit)
+                outcome='created'
         elif body is None: return dict(outcome='unchanged',id=None)
         else: outcome='created'
         b.check_write_epoch(sid)

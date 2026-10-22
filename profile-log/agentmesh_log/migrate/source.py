@@ -1,5 +1,5 @@
 """Read-only source, whitelisted bodies and private backup snapshots."""
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -31,8 +31,10 @@ def open_source(database):
         c.close()
 
 
-def rows(database):
+def rows(database, *, expected_node=None):
     with open_source(database) as c:
+        if expected_node is not None and node_from_connection(c)!=expected_node:
+            raise ValueError('staging node differs from binding')
         evidence = {}
         for r in c.execute('SELECT memory_id,event_id FROM memory_sources ORDER BY event_id'):
             if type(r['event_id']) is int:
@@ -95,3 +97,38 @@ def snapshot(database, destination):
         destination.unlink(missing_ok=True)
         raise
     return destination
+
+
+def node_from_connection(c):
+    table='_sync_config' if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_config' AND type='table'").fetchone() else 'agentmesh_staging_identity'
+    try: values=c.execute('SELECT node FROM '+table).fetchall()
+    except sqlite3.Error: raise ValueError('staging identity missing; initialize ingest before apply') from None
+    if len(values)!=1 or type(values[0][0]) is not str or not values[0][0] or any(ord(ch)<32 for ch in values[0][0]):
+        raise ValueError('invalid staging identity')
+    return values[0][0]
+
+
+def staging_node(database):
+    with closing(sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro',uri=True)) as c:
+        c.execute('PRAGMA query_only=ON')
+        return node_from_connection(c)
+
+
+def binding_for(database):
+    from ..encoding import parse
+    from ..settings import safe
+    path=Path(os.environ.get('AGENTMESH_PROFILE_LOG_BRIDGE',str(database)+'.profile-log.json'))
+    try:
+        safe(path)
+        value=parse(path.read_bytes())
+        if value.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError()
+        return {k:value[k] for k in ('device_id','staging_node')}
+    except Exception: raise ValueError('staging binding missing or invalid; run apply') from None
+
+
+def check_binding(database,binding,device):
+    import re
+    if type(binding) is not dict or type(binding.get('device_id')) is not str or not re.fullmatch('[0-9a-f]{32}',binding['device_id']) or type(binding.get('staging_node')) is not str or not binding['staging_node']:
+        raise ValueError('staging binding missing or invalid; run apply')
+    if binding['device_id']!=device: raise ValueError('staging binding device differs from broker')
+    if staging_node(database)!=binding['staging_node']: raise ValueError('staging node differs from binding')

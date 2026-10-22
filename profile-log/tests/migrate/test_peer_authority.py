@@ -14,7 +14,7 @@ def test_p5_7_peer_import(tmp_path):
     peer=None
     try:
         session=Session(importer.certificate())
-        result=finish(origin,session,importer,origin.request(session,request_body()))
+        result=finish(origin,session,importer,origin.request(session,request_body(device=state.device.device_id)))
         assert result['outcome']=='created'
         # A peer holds the same granted scope keys and trusted device chain.
         # Agent grants are local, as in Phase 4 pairing; they are not replicated.
@@ -42,7 +42,7 @@ def test_p5_7_peer_import(tmp_path):
         assert len(peer.imports.ledger(peer_state.grants[agent.agent_id]))==1
         from broker.support import recall
         result=recall(peer,Session(agent.certificate()),compat=True)
-        assert result['results'][0]['source_ref']==dict(table='memory_items',id=1)
+        assert result['results'][0]['source_ref']==dict(device=state.device.device_id,table='memory_items',id=1)
     finally:
         if peer: peer.close()
         origin.close()
@@ -52,7 +52,7 @@ def test_local_revoked(tmp_path):
     home,state,store,agents=setup_home(tmp_path); agent=agents[0]
     state.grants[agent.agent_id].allow_import=True; store.save(state)
     broker=Broker(home,store=store); session=Session(agent.certificate())
-    finish(broker,session,agent,broker.request(session,request_body()))
+    finish(broker,session,agent,broker.request(session,request_body(device=state.device.device_id)))
     broker.close()
     state=store.load(); state.revoke(agent.agent_id); store.save(state)
     broker=Broker(home,store=store)
@@ -72,13 +72,13 @@ def test_peer_revoked(tmp_path):
     broker=Broker(home,store=store)
     try:
         key=state.trees[0].keys[resolve(state,'work/a')]
-        data=seal_event(key.write_key,agent,request_body()['body'])
+        data=seal_event(key.write_key,agent,request_body(device=peer.device_id)['body'])
         envelope=verify_event(data,state.registry())
         registry=state.registry()
         from agentmesh_log.registry_store import revocation
         registry.add_revocation(revocation(peer.device_id,state.device,revoked_at=0))
         broker.state.registry=lambda:registry
-        assert admitted(broker,envelope,{'body':request_body()['body']}) is None
+        assert admitted(broker,envelope,{'body':request_body(device=peer.device_id)['body']}) is None
         broker.ingest(envelope,data)
         assert not broker.imports.entries
     finally: broker.close()

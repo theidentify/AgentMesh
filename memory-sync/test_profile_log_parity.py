@@ -13,6 +13,8 @@ def corpus(tmp_path):
     db=tmp_path/'synthetic.db'
     c=sqlite3.connect(db)
     c.executescript(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
+    c.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
+    c.execute("INSERT INTO agentmesh_staging_identity VALUES('parity')")
     for i in range(300):
         project='SyntheticProject'+str(i%5)
         scope='global' if i%11==0 else ('task' if i%7==0 else 'project')
@@ -36,22 +38,23 @@ def test_p5_6_parity(corpus,tmp_path,capsys):
     assert all(marker not in report for marker in (b'synthetic portability',b'SyntheticProject',b'marker'))
     print('overlap_at_12='+str(result['overlap_at_12'])+' top5_hit='+str(result['top5_hit']))
     assert result['overlap_at_12']>=.95 and result['top5_hit']>=.98
+    assert result['missing']==result['changed']==0
 
 
-def test_snapshot_dir_mode(corpus):
+def test_rehearsal_dir_mode(corpus):
     def inspect(root,snapshot,broker):
         if os.name!='nt': assert root.stat().st_mode&0o777==0o700
     parity.run(*corpus,sample=0,inspect=inspect)
 
 
-def test_snapshot_file_modes(corpus):
+def test_rehearsal_file_modes(corpus):
     def inspect(root,snapshot,broker):
         if os.name!='nt':
             assert all(p.stat().st_mode&0o777==0o600 for p in root.rglob('*') if p.is_file())
     parity.run(*corpus,sample=0,inspect=inspect)
 
 
-def test_snapshot_plaintext(corpus):
+def test_rehearsal_plaintext(corpus):
     def inspect(root,snapshot,broker):
         allowed={snapshot,*(Path(str(snapshot)+suffix) for suffix in ('-wal','-shm','-journal'))}
         bearing=set()
@@ -60,17 +63,18 @@ def test_snapshot_plaintext(corpus):
                 data=path.read_bytes()
                 if any('synthetic portability'.encode(codec) in data for codec in ('utf-8','utf-16-le','utf-16-be')):
                     bearing.add(path)
-        assert snapshot in bearing and bearing<=allowed
+        assert snapshot==corpus[0] and not snapshot.is_relative_to(root)
+        assert not bearing
     parity.run(*corpus,sample=0,inspect=inspect)
 
 
-def test_snapshot_success(corpus):
+def test_rehearsal_success(corpus):
     visited=[]
     parity.run(*corpus,sample=0,inspect=lambda root,*_:visited.append(root))
     assert visited and all(not p.exists() for p in visited)
 
 
-def test_snapshot_error(corpus):
+def test_rehearsal_error(corpus):
     visited=[]
     def inspect(root,*_):
         visited.append(root)

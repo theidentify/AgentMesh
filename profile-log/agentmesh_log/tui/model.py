@@ -5,7 +5,8 @@ from .. import settings
 
 class Model:
     def __init__(self, user, *, scopes=(), profiles=(), devices=(), projects=(), labels=None,
-                 sources=(), ledger=None, fingerprint='', effective=None):
+                 sources=(), ledger=None, fingerprint='', effective=None, device_id=None):
+        self.device_id=device_id
         self.user=deepcopy(user); self.scopes=sorted(scopes); self.profiles=sorted(profiles)
         self.labels=dict(labels or {}); self.devices=deepcopy(devices); self.projects=deepcopy(projects)
         self.sources=deepcopy(sources); self.ledger=deepcopy(ledger); self.fingerprint=fingerprint
@@ -57,7 +58,11 @@ class Model:
     def preview(self):
         if self.ledger is None: return None
         result=dict(retired=0,recreated=0,created=0)
-        entries={(e['source']['table'],e['source']['id']):e for e in self.ledger}
+        from ..migrate.run import local_entry
+        if self.device_id is None: return None
+        entries={}
+        for e in sorted(self.ledger,key=lambda e:'device' in e['source']):
+            if local_entry(e,self.device_id): entries[(e['source']['table'],e['source']['id'])]=e
         migration=settings.merge(self.effective,self.user).get('migration',{})
         routes=migration.get('projects',{})
         seen=set()

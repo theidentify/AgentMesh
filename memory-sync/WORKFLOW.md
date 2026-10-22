@@ -3,7 +3,7 @@
   <img src="assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
 </picture>
 
-# AgentMesh ingest → summarize → sync → recall
+# AgentMesh ingest → summarize → encrypted profile log → recall
 
 ## Scope and topology
 
@@ -87,8 +87,25 @@ explicit operator step. Exact scheduling flags are runtime-owned.
    arrivals below that mark. Provider failure must not advance successful work.
 4. Exchange generated memories, summaries and receipts back to peers. Inspect
    status diagnostics/outbox/pending/conflicts, not just Syncthing connectivity.
-5. Agents perform read-only recall against their own local database. Query output
-   supplies source IDs; cite them and verify current facts independently.
+5. With the profile-log bridge enabled, agents recall encrypted memories through the
+   local broker. Configured profiles are queried separately; errors never silently
+   fall back to SQLite. Query output supplies log IDs and source references. Cite
+   them and verify current facts independently.
+
+The packet workflow above is the retained rollback path. Phase 7a defaults
+`packet_sync.enabled:false`; the worker skips packet capture, publication and
+receive while preserving configured workflow ingest/summary. With no workflow it
+logs once and idles until stopped. Keep the profile-log post-commit hooks and
+catch-up unit enabled. `agentmesh.py packet-sync retire` records the switch and
+unloads/disables the platform job through an injectable runner only when runtime
+configuration confirms the worker is not needed for ingest/summary. Exchange data and unit files are retained. Set
+`bridge.recall_fallback:true` and `packet-sync enable`, then reload/register the
+retained unit to restore the old behavior. See the [profile-log runbook](../profile-log/README.md#phase-7a-upgrade-and-rollback).
+
+`ingest --start-at now|OFFSET_ISO` establishes a persistent boundary only on an
+empty ingestion cursor set. Earlier events are never sent to summarization.
+Missing/invalid event timestamps fail that file without advancing its cursor;
+repair and retry without repeating `--start-at`. Existing cursors cannot be reset.
 
 ## Install opt-in agent instructions
 
@@ -176,3 +193,12 @@ CLI installation. They do not read private transcripts or install into a live ho
 Actual native Windows/Linux execution, PowerShell execution, provider auth,
 peer delivery, agent discovery and scheduling must still be verified on target
 machines. A Mac test pass is not cross-platform deployment proof.
+
+Packet retirement disables packet capture, exchange publication/receipt and signing
+checks only. Configured workflow ingest and summary keep running; a worker with no
+workflow idles until stopped. Retirement retains workflow workers and refuses to
+unload when its runtime/workflow configuration cannot be read. Pass `--runtime`
+for a nondefault runtime. With bridge recall enabled, `--backend sqlite` requires
+`recall_fallback: true`; otherwise it returns `sqlite_recall_disabled`. Broker row
+IDs and evidence `source_id` are opaque event ULIDs; `source_ref.id` and evidence
+`memory_id`/`summary_id` are staging integers usable only after local ownership checks.

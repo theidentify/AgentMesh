@@ -34,13 +34,13 @@ await shot('insight-desktop-light.png');
 const views=['overview','metrics','memory','agents','pipeline','sync','profile-log'];
 for(const name of views){await evaluate(`document.querySelector('nav [data-view="${name}"]').click()`);await delay(150);assert.equal(await evaluate(`document.getElementById('${name}').hidden`),false)}
 await evaluate("document.querySelector('nav [data-view=sync]').click()");
-await until("document.querySelectorAll('#peer-table tbody tr').length===2");
+await until("ops.sync.peers!=null");
 assert.equal(await evaluate("[...document.querySelectorAll('nav svg.icon')].every(s=>s.getAttribute('aria-hidden')==='true'&&s.getAttribute('viewBox')==='0 0 24 24') && document.querySelectorAll('nav svg.icon').length===7"),true);
 const peerObserved=await evaluate("ops.sync.peers");
 const transportObserved=await evaluate("ops.sync.transport_status");
 assert.equal(await evaluate("document.querySelectorAll('#transport-table tbody tr').length"),transportObserved.rows.length);
 assert.equal(await evaluate("document.querySelector('#overview-cards .card:last-child .value').textContent"),transportObserved.status);
-assert.ok(await evaluate("document.getElementById('transport-note').textContent.includes('not database application or recall')"));
+assert.ok(await evaluate("document.getElementById('transport-note').textContent.includes(ops.sync.packet_sync==='retired'?'packet sync retired':'not database application or recall')"));
 for(const row of transportObserved.rows){
   assert.ok(await evaluate(`document.getElementById('transport-table').textContent.includes(${JSON.stringify(row.peer)})`));
   if(row.completion_percent!==null)assert.ok(await evaluate(`document.getElementById('transport-table').textContent.includes(num(${row.completion_percent})+'%')`));
@@ -48,9 +48,9 @@ for(const row of transportObserved.rows){
 await evaluate("(()=>{const fixture=structuredClone(ops.sync.transport_status);fixture.status='unknown';fixture.rows=[{peer:'Exchange peer 1',status:'unknown',paused:null,connection_type:'unknown',remote_folder_state:'unknown',completion_percent:null,pending_bytes:null,pending_items:null,completion_state:'unavailable'}];renderTransport(fixture)})()");
 assert.ok(await evaluate("document.getElementById('transport-table').textContent.includes('unknown')&&document.getElementById('transport-table').textContent.includes('unavailable')"));
 await evaluate("renderTransport(ops.sync.transport_status)");
-assert.deepEqual(await evaluate("[...document.querySelectorAll('#peer-table tbody tr')].map(r=>r.cells[0].textContent)"),['Mac','Windows']);
+assert.deepEqual(await evaluate("[...document.querySelectorAll('#peer-table tbody tr')].map(r=>r.cells[0].textContent)"),peerObserved.rows.map(p=>p.peer));
 assert.ok(await evaluate("document.getElementById('peer-note').textContent.includes(Intl.DateTimeFormat().resolvedOptions().timeZone)"));
-await evaluate("(()=>{const fixture=structuredClone(ops.sync.peers);fixture.rows[0]={...fixture.rows[0],available:false,availability:'missing',ack_at:null,age_seconds:null,freshness:'unknown',has_error:null};fixture.rows[1]={...fixture.rows[1],age_seconds:3600,freshness:'stale',has_error:true};renderPeers(fixture)})()");
+await evaluate("(()=>{const fixture=structuredClone(ops.sync.peers);fixture.rows[0]={peer:'Mac',available:false,availability:'missing',ack_at:null,age_seconds:null,freshness:'unknown',has_error:null};fixture.rows[1]={peer:'Windows',age_seconds:3600,freshness:'stale',has_error:true};renderPeers(fixture)})()");
 assert.ok(await evaluate("document.getElementById('peer-table').textContent.includes('missing')&&document.getElementById('peer-table').textContent.includes('stale')&&document.getElementById('peer-table').textContent.includes('reported errors')"));
 await evaluate("renderPeers(ops.sync.peers)");
 for(const peer of peerObserved.rows){
@@ -123,7 +123,8 @@ assert.notEqual(initial,after);
 assert.notEqual(initialMetrics,await evaluate("document.getElementById('metrics-frame').contentDocument.getElementById('notice').textContent"));
 await evaluate("document.getElementById('refresh').click()");
 await until("!document.getElementById('refresh').disabled");
-assert.notEqual(transportObserved.observed_at,await evaluate("ops.sync.transport_status.observed_at"));
+if(transportObserved.observed_at)assert.notEqual(transportObserved.observed_at,await evaluate("ops.sync.transport_status.observed_at"));
+else assert.equal(transportObserved.status,'packet sync retired');
 assert.equal(errors.length,0,JSON.stringify(errors));
 const report={verified:true,transport:transportObserved,transportRefreshedAt:await evaluate("ops.sync.transport_status.observed_at"),views,desktop:'1440x1100',mobile:'390x844',themes:['light','dark'],memory:'search, clear, project/kind/scope/status filters, collection, pagination, detail, connection isolation',metrics:'charts, three sources, time/status/trigger/model filters, refresh',documentOverflow:false,autoRefresh:{initial,after},runtimeExceptions:errors.length,peers:peerObserved,peerFixtures:'missing, stale and reported-error rendering',sidebar:'seven local inline stroke SVG icons'};
 fs.writeFileSync(path.join(output,'qa-result.json'),JSON.stringify(report,null,2));

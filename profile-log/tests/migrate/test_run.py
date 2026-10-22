@@ -3,11 +3,15 @@ from test_source import database
 from test_import import setup_home
 from agentmesh_log.broker.service import Broker,Session
 from agentmesh_log.migrate.mapping import Mapping
-from agentmesh_log.migrate.run import run
+from agentmesh_log.migrate.run import run as migrate_run
 from agentmesh_log.migrate.ledger import report
 from agentmesh_log.events import EVENT_DOMAIN
 from agentmesh_log.encoding import typed
 
+
+def run(database,mapping,client,**kwargs):
+    kwargs.setdefault('binding',dict(device_id=client.broker.state.device.device_id,staging_node='test-node'))
+    return migrate_run(database,mapping,client,**kwargs)
 
 class LocalClient:
     def __init__(self,broker,agent): self.broker,self.agent,self.session=broker,agent,Session(agent.certificate())
@@ -27,7 +31,7 @@ def test_p5_2_run_report(database,tmp_path):
     assert run(database,mapping,client)['outcomes']['created']==2
     assert run(database,mapping,client)['outcomes']['unchanged']==2
     result=report(client,database,mapping)
-    assert set(result)=={'memory_items:1','memory_summaries:1'}
+    assert set(result)=={state.device.device_id+':memory_items:1',state.device.device_id+':memory_summaries:1'}
     assert all(len(v['chain'])==1 for v in result.values())
     broker.close()
 
@@ -47,9 +51,9 @@ def test_p5_2_skipped_and_catchup(database,tmp_path):
     # A second summary row for the same key is its own source; the first stays live.
     assert result['outcomes']['retired']==1 and result['outcomes']['created']==1
     ledger=report(client,database,mapping)
-    assert len(ledger)==4 and ledger['memory_summaries:3']['reason']=='not_recalled'
-    assert ledger['memory_items:1']['status']=='retired'
-    assert ledger['memory_summaries:1']['status']=='created' and ledger['memory_summaries:2']['status']=='created'
+    assert len(ledger)==4 and ledger[state.device.device_id+':memory_summaries:3']['reason']=='not_recalled'
+    assert ledger[state.device.device_id+':memory_items:1']['status']=='retired'
+    assert ledger[state.device.device_id+':memory_summaries:1']['status']=='created' and ledger[state.device.device_id+':memory_summaries:2']['status']=='created'
     with sqlite3.connect(database) as c: c.execute('DELETE FROM memory_summaries WHERE id=2')
     assert run(database,mapping,client)['outcomes']['retired']==1
     broker.close()

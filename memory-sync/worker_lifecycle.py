@@ -129,6 +129,7 @@ def stop_reason(directory, nonce):
 
 def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, startup_deadline=None):
     import sync_worker
+    import packet_sync
     positive(interval)
     runtime = absolute(runtime)
     runtime_bytes = read_local(runtime, private=True)
@@ -136,7 +137,11 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
     from protocol_activation import require_capability
     # Bootstrap runtimes omit security paths; use the wizard's defaults.
     security_dir, security_state = security_paths(config, runtime)
-    if scope['policy'] == 'legacy' and not legacy_drained:
+    idle=not packet_sync.enabled() and not packet_sync.workflow_needed(config['database'],config.get('workflow_config'))
+    if idle and once:
+        print('packet sync retired')
+        return 0
+    if not idle and scope['policy'] == 'legacy' and not legacy_drained:
         raise ValueError('legacy worker must be drained explicitly; acknowledge unsigned policy')
     directory = control(config, create=True)
     nonce = nonce or str(uuid.uuid4())
@@ -177,6 +182,7 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 raise ValueError('database scope or signing key changed')
         save()
         result = 0
+        idle_logged = False
         try:
             while not stop_requested(directory, nonce):
                 if read_local(runtime, private=True) != runtime_bytes:
@@ -184,6 +190,21 @@ def run(runtime, *, once=False, interval=60, legacy_drained=False, nonce=None, s
                 current, current_scope = load(runtime, allow_exchange_unavailable=True)
                 if current != config or current_scope != scope:
                     raise ValueError('database scope or signing key changed')
+                idle=not packet_sync.enabled() and not packet_sync.workflow_needed(config['database'],config.get('workflow_config'))
+                if idle:
+                    if not idle_logged:
+                        print('packet sync retired',flush=True)
+                        idle_logged=True
+                        record['idle']=True
+                        save()
+                    deadline=time.monotonic()+interval
+                    while time.monotonic()<deadline and not stop_requested(directory,nonce):
+                        time.sleep(min(.1,max(0,deadline-time.monotonic())))
+                    continue
+                if scope['policy']=='legacy' and not legacy_drained:
+                    raise ValueError('legacy worker must be drained explicitly; acknowledge unsigned policy')
+                idle_logged=False
+                record['idle']=False
                 report = sync_worker.run_once(config['database'], config['exchange'],
                     workflow_config=config.get('workflow_config'), force_summary=False,
                     security_dir=security_dir if scope['policy'] == 'required' else None,
@@ -270,7 +291,7 @@ def start(runtime, *, interval=60, legacy_drained=False, timeout=60):
     with Wait('Starting the worker and waiting for its first sync cycle', timeout, done='Worker running'):
         while time.monotonic() < deadline:
             record = status(runtime)
-            if record.get('nonce') == nonce and record['state'] == 'running' and record['cycles'] > 0 and (not record['last_error'] or record.get('failure_kind') == 'transient'):
+            if record.get('nonce') == nonce and record['state'] == 'running' and (record['cycles'] > 0 or record.get('idle') is True) and (not record['last_error'] or record.get('failure_kind') == 'transient'):
                 return record
             if process.poll() is not None:
                 _CHILDREN.pop(nonce, None)

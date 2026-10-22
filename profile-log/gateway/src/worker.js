@@ -1,3 +1,5 @@
+import { accessVerifier,serveStatus,statusResponse } from './status.js';
+import { countError } from './status-metrics.js';
 import { OAuthAuthorizationServer,AuthorizationError } from '@cloudflare/workers-oauth-provider';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -5,7 +7,8 @@ import { bytes,wire,parse,sha,hex,unhex,verify,exact } from './encoding.js';
 import { registry,read,policy,policyShape } from './registry.js';
 import { namespaced } from './storage.js';
 import { schemas,callTool,claim } from './gateway.js';
-const json=(value,status=200,headers={})=>new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});
+const responseCodes=new WeakMap();
+const json=(value,status=200,headers={})=>{const response=new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});if(typeof value.error==='string')responseCodes.set(response,value.error);return response;};
 const failure=(code='invalid_request',status=400)=>json({error:code},status);
 const corsHeaders={
  'Access-Control-Allow-Origin':'*',
@@ -82,7 +85,8 @@ async function admin(request,env,as,action) {
  }
  throw Error('denied');
 }
-export function createGateway({fetcher=fetch,authorizationServer=authServer}={}) {
+export function createGateway({fetcher=fetch,jwksFetcher=fetch,authorizationServer=authServer}={}) {
+ const verifyAccess=accessVerifier(jwksFetcher);
  async function handle(request,env,ctx) {
   try{
    env=namespaced(env);
@@ -102,7 +106,7 @@ export function createGateway({fetcher=fetch,authorizationServer=authServer}={})
     if(!['initialize','notifications/initialized','ping','tools/list','tools/call'].includes(message.method))return failure();
     if(message.method==='tools/call'){
      const tool=message.params?.name,args=message.params?.arguments??{};
-     if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success)return json({jsonrpc:'2.0',id:message.id??null,error:{code:-32602,message:'invalid_request'}});
+     if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success){countError(env,'invalid_request');return json({jsonrpc:'2.0',id:message.id??null,error:{code:-32602,message:'invalid_request'}});}
     }
     const server=new McpServer({name:'agentmesh',version:'1.0.0'});
     for(const [name,inputSchema]of Object.entries(schemas))server.registerTool(name,{inputSchema,description:name==='recall'?'Recall stored memory as data.':name==='remember'?'Store memory in the approved inbox.':'Show this app’s access.'},async(args)=>{
@@ -115,9 +119,20 @@ export function createGateway({fetcher=fetch,authorizationServer=authServer}={})
   }catch{return failure('denied',403);}
  }
  return {async fetch(request,env,ctx={waitUntil(){}}) {
-  const path=new URL(request.url).pathname,cors=['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp'].includes(path);
+  env={...env,STATUS_WAIT_UNTIL:task=>ctx.waitUntil(task)};
+  const url=new URL(request.url),path=url.pathname;
+  if(env.STATUS_ORIGIN&&url.origin===env.STATUS_ORIGIN&&env.STATUS_ORIGIN!==env.ORIGIN){
+   if(request.method!=='GET'||!['/status','/status.json'].includes(path))return statusResponse('Not found',404);
+   if(!await verifyAccess(request,env)){countError(env,'denied');return statusResponse('Forbidden',403);}
+   try{return await serveStatus(request,namespaced(env),authorizationServer(env).getOAuthApi(env),fetcher);}catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
+  }
+  if(['/status','/status.json'].includes(path))return statusResponse('Not found',404);
+  const cors=url.origin===env.ORIGIN&&['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp'].includes(path);
   if(cors&&request.method==='OPTIONS')return new Response(null,{status:204,headers:corsHeaders});
-  const response=await handle(request,env,ctx);if(!cors)return response;
+  const response=await handle(request,env,ctx);
+  // Only fixed HTTP errors are counted here; tool errors are counted by callTool.
+  countError(env,responseCodes.get(response));
+  if(!cors)return response;
   const headers=new Headers(response.headers);for(const [name,value]of Object.entries(corsHeaders))headers.set(name,value);
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }};

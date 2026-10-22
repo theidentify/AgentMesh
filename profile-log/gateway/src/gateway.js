@@ -1,3 +1,4 @@
+import { STATUS_APP,statusShape,bridgeSeen,countError } from './status-metrics.js';
 import { Buffer } from 'node:buffer';
 import { CipherSuite,HkdfSha256 } from '@hpke/core';
 import { DhkemX25519HkdfSha256 } from '@hpke/dhkem-x25519';
@@ -18,7 +19,7 @@ export async function tunnel(env,app,tool,args,fetcher=fetch) {
  const body=wire({tool,arguments:args}),ts=Date.now(),nonce=hex(crypto.getRandomValues(new Uint8Array(16)));
  const record=await sign({method:'POST',path:'/bridge',body_sha256:await sha(body),ts,nonce,app_id:app},await signingKey(env),'gateway-request');
  const headers={'Content-Type':'application/json','CF-Access-Client-Id':String(env.ACCESS_CLIENT_ID??'').trim(),'CF-Access-Client-Secret':String(env.ACCESS_CLIENT_SECRET??'').trim(),'X-Agentmesh-Key':env.GATEWAY_KEY_ID,'X-Agentmesh-App':app,'X-Agentmesh-Ts':String(ts),'X-Agentmesh-Nonce':nonce,'X-Agentmesh-Signature':record.signature};
- const controller=new AbortController();let timer;
+ const started=Date.now(),controller=new AbortController();let timer;
  try {
   const operation=(async()=>{
   // Workers fetch accepts only 'follow' or 'manual' ('error' throws); never follow a redirect away from the bridge.
@@ -27,7 +28,10 @@ export async function tunnel(env,app,tool,args,fetcher=fetch) {
   if([502,530].includes(response.status))return {error:'agentmesh_offline'};
   if(response.status>=300&&response.status<400)return {error:'unavailable'};
   if(!response.ok)return {error:response.status===403?'denied':'unavailable'};
-  const result=await response.json();if(result.error)return {error:fixed.has(result.error)?result.error:'unavailable'};return result;
+  const result=await response.json();if(result.error)return {error:fixed.has(result.error)?result.error:'unavailable'};
+  // Only the status probe identifies its responder; tool calls write nothing (KV write budget).
+  if(tool==='status'&&app===STATUS_APP){const status=statusShape(result);bridgeSeen(env,status.device_id,Date.now()-started);return status;}
+  return result;
   })();
   return await Promise.race([operation,new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('agentmesh_offline'));},9000);})]);
  }catch(e){console.warn(JSON.stringify({bridge_error:e?.name??'Error'}));return {error:'agentmesh_offline'};}finally{clearTimeout(timer);}
@@ -55,6 +59,10 @@ export async function enqueue(env,app,args) {
  return {status:'queued',outbox_id:id};
 }
 export async function callTool(env,auth,tool,args,fetcher=fetch) {
+ let result;try{result=await invokeTool(env,auth,tool,args,fetcher);}catch{result={error:'unavailable'};}
+ countError(env,result.error);return result;
+}
+async function invokeTool(env,auth,tool,args,fetcher) {
  if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success)return {error:'invalid_request'};
  const app=auth.props.app_id,p=await policy(env,app);
  if(!p||p.state!=='active'||p.oauth_client_id_hash!==await sha(bytes(auth.clientId)))return {error:'denied'};

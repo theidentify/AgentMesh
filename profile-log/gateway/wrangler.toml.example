@@ -9,6 +9,13 @@ workers_dev = true
 R2_PREFIX = "v1/"
 ORIGIN = "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"
 BRIDGE_ORIGIN = "https://YOUR-TUNNEL-HOSTNAME"
+# Optional status page: public vars, no new secrets. Unset STATUS_ORIGIN disables it.
+# STATUS_ORIGIN = "https://status.YOUR-DOMAIN"
+# ACCESS_TEAM_DOMAIN = "YOUR-TEAM.cloudflareaccess.com"
+# STATUS_ACCESS_AUD = "REPLACE_WITH_STATUS_ACCESS_APPLICATION_AUD"
+# STATUS_ALLOWED_EMAILS = "owner@example.com"
+# Protect this separate hostname with an Access self-hosted app (owner email, PIN).
+# Do not put Access on workers.dev: that would block OAuth and MCP.
 GATEWAY_KEY_ID = "REPLACE_WITH_PUBLIC_GATEWAY_KEY_ID"
 # Trusted account pin, copied from the owner's protected backup, never trusted from R2.
 ACCOUNT_PUBLIC_RECORD = '{"format":"agentmesh-account-v1","account_id":"REPLACE_WITH_ACCOUNT_ID","root_public_key":"REPLACE_WITH_PUBLIC_ACCOUNT_ROOT"}'
@@ -30,3 +37,8 @@ simple = { limit = 60, period = 60 }
 # GATEWAY_SIGNING_KEY: base64 DER PKCS8 Ed25519 private key
 # ACCESS_CLIENT_ID: Cloudflare Access service token client ID
 # ACCESS_CLIENT_SECRET: Cloudflare Access service token secret
+
+# Attach the status hostname to this same Worker as a Workers Custom Domain.
+# [[routes]]
+# pattern = "status.YOUR-DOMAIN"
+# custom_domain = true

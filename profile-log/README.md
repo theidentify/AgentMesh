@@ -784,6 +784,40 @@ has no forms or write operations.
 
 ## Using AgentMesh from AI apps
 
+### Status page
+
+Open `https://status.<owner domain>/status` and sign in using the owner's email
+and Cloudflare Access one-time PIN. `/status.json` provides the same metadata.
+The separate `STATUS_ORIGIN` must be attached to the gateway Worker as a Workers
+Custom Domain and protected by an Access self-hosted application with an Allow
+policy for the owner's email only. Do not protect the whole workers.dev hostname:
+that would break OAuth/MCP for Claude and ChatGPT. The existing Tunnel hostname
+keeps its Access Service Auth protection.
+
+Configure only public vars: `STATUS_ORIGIN`, `ACCESS_TEAM_DOMAIN` (team hostname,
+without `https://`), `STATUS_ACCESS_AUD` (the Access application's AUD), and
+`STATUS_ALLOWED_EMAILS` (comma-separated, case-insensitive). No new secrets.
+Leaving `STATUS_ORIGIN` unset disables the feature. The Worker also verifies each
+`Cf-Access-Jwt-Assertion` with WebCrypto RS256 and team JWKS (five-minute cache,
+refresh on unknown kid), issuer, audience, times with 30-second skew and allowed
+email. It never falls back to `CF_Authorization`; failures return a fixed 403.
+Only GET `/status` and `/status.json` are available on that hostname; OAuth, MCP,
+admin and well-known routes return 404. Status paths return 404 on `ORIGIN`.
+All status responses are no-store with default-deny CSP, frame denial,
+no-referrer and no CORS.
+
+The page shows observed bridge devices, one live probe, outbox object ages/count,
+app policies and OAuth client names, active secret-window expiry, fixed gateway
+error counts and R2 prefix counts/latest event upload. It contains only metadata:
+profile/scope IDs are opaque, never names; memory and ciphertext are never shown.
+The signed bridge status operation reserves app ID `00000000000000000000000000000000`;
+update the Mac app so its bridge supports it. Tunnel routing cannot enumerate
+devices. Outbox objects can already be drained; counts are not queue depth.
+Partial scans are marked, and KV history/error counts are approximate. See the
+[owner setup plan](../docs/superpowers/plans/2026-10-22-phase6-status-page.md).
+
+### Connecting AI apps
+
 Phase 6 adds a standard remote MCP endpoint at `{origin}/mcp`: Streamable HTTP,
 OAuth authorization code with PKCE S256, dynamic client registration, and protected
 resource metadata. It exposes only `whoami`, `recall`, and `remember`. Each approved

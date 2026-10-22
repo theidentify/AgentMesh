@@ -243,6 +243,50 @@ works as soon as its vendor supports remote MCP connectors.
   An always-on home device enrolled as another trusted device remains an option later, and it uses the same
   bridge.
 
+### Status page (2026-10-22 amendment)
+
+The read-only status UI lives only at `STATUS_ORIGIN` (for example
+`https://status.<owner domain>`), a Workers Custom Domain attached to the same
+Worker. Protect that hostname with a Cloudflare Access self-hosted application,
+Allow policy for the owner's email only, and one-time PIN login. Access on the
+whole `agentmesh-gateway.<sub>.workers.dev` hostname would break deployed OAuth
+and MCP, so `ORIGIN` stays separate; the existing `bridge.<domain>` Tunnel hostname
+keeps its Access Service Auth policy.
+
+Access is defense in depth. On every status GET the Worker independently verifies
+`Cf-Access-Jwt-Assertion`: WebCrypto RS256 against the team's
+`https://<ACCESS_TEAM_DOMAIN>/cdn-cgi/access/certs`, five-minute in-memory public-key
+cache and refresh on unknown kid, exact issuer, audience containing
+`STATUS_ACCESS_AUD`, expiry/issued-at and any not-before with 30-second skew, and
+case-insensitive membership in comma-separated `STATUS_ALLOWED_EMAILS`. No cookie
+fallback; any verification failure is a fixed 403. These four new settings are
+public vars, with no new secrets. Unset `STATUS_ORIGIN` disables status (404).
+Only `GET /status` and `GET /status.json` exist on the status origin; OAuth, MCP,
+admin and well-known routes are 404 there. Status paths are 404 on `ORIGIN`.
+Responses have no CORS, `no-store`, a script-free default-deny CSP with
+`frame-ancestors 'none'`, `X-Frame-Options: DENY`, and no-referrer.
+
+Each load sends one signed `{"tool":"status","arguments":{}}` bridge request
+within the existing nine-second budget. The all-zero 32-hex `app_id` is reserved
+exclusively for this operation. The bridge verifies signature, timestamp and nonce
+as usual, then returns only device ID, current time, last control sync, last drain
+time/result and ULID-derived outbox cursor time; it never resolves policies or
+creates a broker client. Other uses of the reserved ID and status with real app
+IDs are denied. A Tunnel can choose any healthy connector: the UI shows observed
+history, not an enumeration, and marks only the live responder. Only status probes
+are recorded (tool calls write nothing). Observations expire from KV after seven days.
+
+Both representations expose only metadata: outbox count/ages (never ciphertext
+reads, never a pending-count claim), bridge drain metadata, verified app policies
+with opaque IDs and OAuth client names/grant presence, active secret-window
+expiry, fixed error-code counts for 24 UTC hourly buckets, prefix counts and latest
+event upload. Error counters are best-effort, non-atomic KV writes with 48-hour
+TTL. R2 scans paginate and stop at 10,000 objects; partial results are labelled,
+and policy/window resolution is withheld if control inventory may be incomplete.
+HTML escapes every dynamic value. No memory content, ciphertext, tokens, codes,
+queries or bodies are logged or rendered. See the
+[status plan](../plans/2026-10-22-phase6-status-page.md) for setup and verification limits.
+
 ## Local-first variants
 
 - **Default:** encrypted log + relay (this design).

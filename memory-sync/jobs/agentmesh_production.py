@@ -37,10 +37,10 @@ def execute(action,argv=None):
   from bounded_digest import run_lock
   with run_lock(str(CONFIG)+'.'+action):
    if action=='ingest':
-    from ingest_sessions import ingest
+    from ingest_sessions import ingest,raise_for_errors
     from sqlite_export import publish
     report=ingest(c['database'],roots=c['roots']);save(c,'last-ingest',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
-    if report['errors']:raise ValueError('native ingestion errors')
+    raise_for_errors(report)
     exported=publish(c['database'],c['export_root']);save(c,'last-export',dict(observed_at=datetime.now(timezone.utc).isoformat(),**exported))
    elif action=='summary':
     from digest_scheduler import tick

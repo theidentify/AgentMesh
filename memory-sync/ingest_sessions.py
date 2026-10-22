@@ -37,6 +37,11 @@ def ingest(database, roots=None, home=None, project=None):
         report['errors'] += 1
         report['error_classes'].append(type(exc).__name__)
 
+    def walk_error(exc):
+        # A directory removed after its parent was listed is not an ingest error.
+        if not isinstance(exc, FileNotFoundError):
+            error(exc)
+
     for agent, directory in roots.items():
         try:
             directory = Path(directory).expanduser()
@@ -47,13 +52,14 @@ def ingest(database, roots=None, home=None, project=None):
                 continue
             if not root.is_dir():
                 continue
-            for base, dirs, files in os.walk(root, followlinks=False, onerror=error):
+            for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
                 dirs[:] = sorted(d for d in dirs if not (Path(base) / d).is_symlink()
                                  and not (agent == 'claude' and d == 'subagents'))
                 for name in sorted(files):
                     if not name.endswith('.jsonl'):
                         continue
                     report['found'] += 1
+                    attempted = False
                     try:
                         candidate = Path(base) / name
                         transcript = candidate.resolve()
@@ -68,6 +74,7 @@ def ingest(database, roots=None, home=None, project=None):
                             report['skipped'] += 1
                             continue
                         report['processed'] += 1
+                        attempted = True
                         result = sqlite_memory.ingest_file(database, transcript, project=project, agent=agent)
                         if result.get('skipped'):
                             report['processed'] -= 1
@@ -82,6 +89,13 @@ def ingest(database, roots=None, home=None, project=None):
                         if invalid:
                             import json
                             error(json.JSONDecodeError('', '', 0))
+                    except FileNotFoundError as exc:
+                        # The agent deleted or rotated this transcript mid-walk.
+                        if candidate.exists():
+                            error(exc)
+                        else:
+                            report['processed'] -= attempted
+                            report['skipped'] += 1
                     except Exception as exc:
                         # Parser shape errors and unreadable files are independent;
                         # never expose exception strings or transcript paths.
@@ -89,6 +103,25 @@ def ingest(database, roots=None, home=None, project=None):
         except Exception as exc:
             error(exc)
     return report
+
+
+def raise_for_errors(report):
+    """Fail the job with a fixed, notifier-safe detail: error class names and counts only."""
+    import re
+    from collections import Counter
+    from bounded_protocol import ValidationError
+    if not report['errors']:
+        return
+    counts = Counter(c if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,40}', c) else 'Error'
+                     for c in report['error_classes'])
+    detail = 'native ingestion errors: '
+    for index, (name, count) in enumerate(sorted(counts.items())):
+        part = ('' if index == 0 else ', ') + f'{name}={count}'
+        if len(detail) + len(part) > 190:
+            detail += ', ...'
+            break
+        detail += part
+    raise ValidationError(detail)
 
 
 def main(argv=None):

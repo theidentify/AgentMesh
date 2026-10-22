@@ -135,6 +135,51 @@ class IngestSessionsTests(unittest.TestCase):
         self.assertEqual(report['error_classes'], ['PermissionError'])
         self.assertNotIn('SECRET', json.dumps(report))
 
+    def test_transcript_removed_during_ingest_is_skipped_not_an_error(self):
+        # Agents delete or rotate transcripts while a minute-long walk runs.
+        from unittest.mock import patch
+        root = self.home / 'custom'
+        gone = self.write(root / 'gone.jsonl').resolve()
+        self.write(root / 'healthy.jsonl', ident='healthy')
+        original = sqlite_memory.ingest_file
+        def vanish(database, transcript, **kwargs):
+            if Path(transcript) == gone:
+                gone.unlink()
+            return original(database, transcript, **kwargs)
+        with patch.object(sqlite_memory, 'ingest_file', vanish):
+            report = self.ingest(roots={'omp': root})
+        self.assertEqual((report['inserted'], report['skipped'], report['errors']), (1, 1, 0))
+
+    def test_directory_removed_during_walk_is_not_an_error(self):
+        from unittest.mock import patch
+        import ingest_sessions
+        root = self.home / 'custom'
+        self.write(root / 'healthy.jsonl')
+        original = ingest_sessions.os.walk
+        def walk(top, onerror=None, **kwargs):
+            onerror(FileNotFoundError(2, 'SECRET removed', str(root / 'gone')))
+            yield from original(top, onerror=onerror, **kwargs)
+        with patch.object(ingest_sessions.os, 'walk', walk):
+            report = self.ingest(roots={'omp': root})
+        self.assertEqual((report['inserted'], report['errors']), (1, 0))
+
+    def test_failure_detail_names_only_error_classes(self):
+        import re
+        from bounded_protocol import ValidationError, error_detail
+        from ingest_sessions import raise_for_errors
+        raise_for_errors(dict(errors=0, error_classes=[]))
+        with self.assertRaises(ValidationError) as caught:
+            raise_for_errors(dict(errors=3, error_classes=['PermissionError', 'OperationalError', 'PermissionError']))
+        detail = error_detail(caught.exception)
+        self.assertEqual(detail, 'native ingestion errors: OperationalError=1, PermissionError=2')
+        job_notify = __import__('job_notify')
+        self.assertTrue(job_notify.DETAIL.match(detail))
+        with self.assertRaises(ValidationError) as caught:
+            raise_for_errors(dict(errors=40, error_classes=['Bad Name!'] + ['E%02dError' % i for i in range(39)]))
+        detail = error_detail(caught.exception)
+        self.assertTrue(job_notify.DETAIL.match(detail) and len(detail) <= 200 and 'Bad Name' not in detail)
+        self.assertTrue(re.search(r'Error=1', detail))
+
     def test_cli_repeatable_roots_project_and_safe_json_stdout(self):
         omp = self.home / 'custom-omp'
         claude = self.home / 'custom-claude'

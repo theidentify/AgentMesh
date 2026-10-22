@@ -9,6 +9,7 @@ import tempfile
 
 from recall_memory import open_readonly, _decode
 from bounded_digest import run_lock
+from bounded_protocol import ValidationError  # fixed messages reach job status lines
 
 EXPORT_LOCK_WAIT = 120
 
@@ -40,7 +41,7 @@ def check_links(root):
             path, _, anchor = target[len('OMP Memory/'):].partition('#')
             checked += 1
             if path not in notes or (anchor and anchor.lstrip('^') not in anchors[path]):
-                raise ValueError('broken generated source/navigation link')
+                raise ValidationError('broken generated source/navigation link')
             sources += bool(anchor)
     return dict(links_checked=checked, source_links_checked=sources, broken_links=0)
 
@@ -75,7 +76,7 @@ def projection(database):
             tasks[task].append(e)
     def source(eid):
         if eid not in locations:
-            raise ValueError('missing evidence source')
+            raise ValidationError('missing evidence source')
         return link(locations[eid], f'event {eid}', eid)
     for identity, values in sorted(sessions.items()):
         lines = ['Source path: `' + text(identity) + '`', '']
@@ -121,7 +122,7 @@ def publish(database, root):
     root = Path(root).expanduser().absolute()
     # Reject symlink ancestors before resolving or creating any output.
     if any(p.is_symlink() for p in (root, *root.parents)):
-        raise ValueError('symlink export root refused')
+        raise ValidationError('symlink export root refused')
     root.parent.mkdir(parents=True, exist_ok=True)
     # Ingest and summary both export; wait out a sibling export instead of failing.
     with run_lock(str(root) + '.export', wait=EXPORT_LOCK_WAIT, name='export'), tempfile.TemporaryDirectory(prefix='.agentmesh-export-', dir=root.parent) as temp:
@@ -136,9 +137,9 @@ def publish(database, root):
         for path in notes:
             dest = root / path
             if any(p.is_symlink() for p in (dest, *dest.parents)):
-                raise ValueError('symlink export target refused')
+                raise ValidationError('symlink export target refused')
             if dest.exists() and not dest.read_text(encoding='utf-8').startswith('---\ngenerated: true\ngenerator: agentmesh-sqlite-v1\n'):
-                raise ValueError('manual projection note collision')
+                raise ValidationError('manual projection note collision')
         for path in notes:
             dest = root / path
             dest.parent.mkdir(parents=True, exist_ok=True)

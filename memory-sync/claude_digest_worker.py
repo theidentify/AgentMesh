@@ -74,6 +74,30 @@ def normalize_usage(usage, cost=None):
             'reasoning_tokens': None, 'actual_cost_usd': cost}
 
 
+class CLIFailure(ValueError):
+    def __init__(self, reason=None):
+        super().__init__('Claude command failed')
+        self.reason = reason
+
+
+def failure_reason(stdout):
+    """A fixed reason from the CLI's result line (HTTP status or reason code), never its text."""
+    try:
+        result = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(result, dict):
+        return None
+    status = result.get('api_error_status')
+    if type(status) is int and 100 <= status <= 599:
+        return 'api_error %d' % status
+    for key in ('terminal_reason', 'subtype'):
+        value = result.get(key)
+        if isinstance(value, str) and value != 'success' and re.fullmatch(r'[a-z][a-z0-9_]{0,39}', value):
+            return value
+    return None
+
+
 def decode_result(result, model):
     if not isinstance(result, dict) or result.get('is_error') or result.get('subtype', 'success') != 'success':
         raise ValueError('Claude reported an unsuccessful result')
@@ -99,11 +123,17 @@ def main(argv=None):
                                  input=content, text=True, encoding='utf-8', capture_output=True,
                                  timeout=args.timeout, check=False)
         if process.returncode:
-            raise ValueError('Claude command failed')
-        print(canonical(decode_result(json.loads(process.stdout), args.model)))
+            raise CLIFailure(failure_reason(process.stdout))
+        result = json.loads(process.stdout)
+        if isinstance(result, dict) and result.get('is_error'):
+            raise CLIFailure(failure_reason(process.stdout))
+        print(canonical(decode_result(result, args.model)))
         return 0
-    except Exception as exc:
+    except CLIFailure as exc:
         # Never echo CLI output: it may contain source-bearing evidence.
+        print(canonical(dict(error_class='ValueError', **({'reason': exc.reason} if exc.reason else {}))))
+        return 1
+    except Exception as exc:
         print(canonical(dict(error_class=type(exc).__name__)))
         return 1
 

@@ -51,9 +51,13 @@ def _prepare(c, consumer, primary_node, max_events, event_chars, related_chars, 
     for row in rows:
         row['metadata'] = json.loads(row['metadata'])
     events = collect(rows, event_chars, max_events)
+    # A session item is updatable only from its own session: its identity is
+    # immutable, so another session's evidence could never validate against it.
+    sessions = sorted({e['source_session_id'] for e in events if e.get('source_session_id')})
     related = [dict(r) for r in c.execute('''SELECT memory_key,kind,scope,scope_key,project,content,status,confidence
-        FROM memory_items WHERE memory_key IS NOT NULL AND (project IS ? OR scope='global') ORDER BY memory_key''',
-        (events[0]['project'],))] if events else []
+        FROM memory_items WHERE memory_key IS NOT NULL AND (project IS ? OR scope='global')
+        AND (scope IS NOT 'session' OR scope_key IN (SELECT value FROM json_each(?))) ORDER BY memory_key''',
+        (events[0]['project'], canonical(sessions)))] if events else []
     if len(encode(related)) > related_chars:
         raise ValidationError('related context overflow; coverage unchanged')
     request = build_request(events, related, context_chars) if events else None
@@ -212,14 +216,29 @@ def extract_command(request, *, model='gpt-6-luna', command=None, timeout=120):
     try:
         result = subprocess.run([*command, '--model', model], input=canonical(request),
                                 text=True, encoding='utf-8', capture_output=True, timeout=timeout)
-        if result.returncode or len(result.stdout) > 2000000:
-            raise ValidationError('model worker failed; coverage unchanged')
+    except subprocess.TimeoutExpired:
+        raise ValidationError('model worker timed out; coverage unchanged') from None
+    except OSError:
+        raise ValidationError('model worker unavailable; coverage unchanged') from None
+    if result.returncode or len(result.stdout) > 2000000:
+        raise ValidationError('model worker failed%s; coverage unchanged' % worker_reason(result.stdout))
+    try:
         output = load_packet(result.stdout)
-        if not isinstance(output, dict) or set(output) != {'payload','provider','model','api_calls','usage'} or output['model'] != model:
-            raise ValidationError('invalid model result envelope')
-        return output
-    except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+    except (UnicodeError, ValueError):
         raise ValidationError('model worker unavailable or invalid; coverage unchanged') from None
+    if not isinstance(output, dict) or set(output) != {'payload','provider','model','api_calls','usage'} or output['model'] != model:
+        raise ValidationError('invalid model result envelope')
+    return output
+
+
+def worker_reason(stdout):
+    """': <reason>' from a failed worker's own fixed status line, else ''."""
+    import re
+    try:
+        reason = json.loads(stdout).get('reason') if len(stdout) < 1000 else None
+    except (ValueError, AttributeError):
+        return ''
+    return ': ' + reason if isinstance(reason, str) and re.fullmatch(r'[a-z][a-z0-9_ ]{0,39}', reason) else ''
 
 
 def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_model=None,
@@ -249,8 +268,9 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
             metric['submitted_chars'] = len(task['request']['instructions']) + len(task['request']['input'][0]['content']) + len(encode(task['request']['text']))
             metric['context_max_chars'] = metric['submitted_chars']
             metric['llm_api_calls'] = None  # unknown until the boundary reports
-            def call(chosen):
-                result = extractor(task['request'], model=chosen) if extractor else extract_command(task['request'], model=chosen, command=command)
+            def call(chosen, request=None):
+                request = request or task['request']
+                result = extractor(request, model=chosen) if extractor else extract_command(request, model=chosen, command=command)
                 results.append(result)
                 metric['provider'], metric['model'] = result['provider'], result['model']
                 metric['llm_api_calls'] = sum(r['api_calls'] for r in results) if all(type(r.get('api_calls')) is int for r in results) else None
@@ -263,18 +283,32 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                 costs = [(r.get('usage') or {}).get('actual_cost_usd') for r in results]
                 metric['actual_cost_usd'] = round(sum(costs), 6) if all(type(v) in (int, float) and v >= 0 for v in costs) else None
                 return result
+            def checked(payload):
+                validate(copy.deepcopy(payload), task['events'], task['related'])
+                # A new key may collide with a key hidden from this batch (another
+                # session's item); reject it here so the retry can pick another key.
+                keys = [i.get('memory_key') for i in payload['items']]
+                with connect(db) as c:
+                    hidden = c.execute('SELECT 1 FROM memory_items WHERE memory_key IN (SELECT value FROM json_each(?))',
+                                       (canonical(sorted(set(keys) - {r['memory_key'] for r in task['related']})),)).fetchone()
+                if hidden:
+                    raise ValidationError('stable key exists outside submitted context')
             def first_valid(chosen):
                 # One same-model retry when output fails validation (e.g. evidence
                 # coverage); explicit conflicts and worker failures are not retried.
                 result = call(chosen)
                 try:
-                    validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                    checked(result['payload'])
                 except ConflictError:
                     raise
-                except ValidationError:
+                except ValidationError as exc:
                     metric['retries'] += 1
-                    result = call(chosen)
-                    validate(copy.deepcopy(result['payload']), task['events'], task['related'])
+                    # Only the fixed protocol message goes back, never payload text.
+                    retry = dict(task['request'], instructions=task['request']['instructions'] +
+                                 '\nYour previous answer for this exact batch was rejected by the validator: %s. '
+                                 'Fix that and return the complete corrected JSON.' % error_detail(exc))
+                    result = call(chosen, retry)
+                    checked(result['payload'])
                 return result
             try:
                 result = first_valid(model)

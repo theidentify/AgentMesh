@@ -78,3 +78,23 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
     assert worker.main(['--model', 'claude-sonnet-5-5', '--claude', str(fake)]) == 1
     out = capsys.readouterr().out
     assert 'SECRET' not in out and json.loads(out) == {'error_class': 'ValueError'}
+
+
+@pytest.mark.parametrize('stdout, code, reason', [
+    ({'type': 'result', 'is_error': True, 'subtype': 'success', 'api_error_status': 529,
+      'terminal_reason': 'api_error', 'result': 'SECRET provider text'}, 1, 'api_error 529'),
+    ({'type': 'result', 'is_error': True, 'subtype': 'success', 'terminal_reason': 'api_error',
+      'result': 'SECRET provider text'}, 1, 'api_error'),
+    ({'type': 'result', 'is_error': True, 'subtype': 'error_max_budget_usd'}, 0, 'error_max_budget_usd'),
+    ({'type': 'result', 'is_error': True, 'terminal_reason': 'SECRET Free Text!'}, 1, None),
+])
+def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
+    import claude_digest_worker as worker
+    fake = tmp_path / 'claude'
+    fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(stdout) + "'\nexit " + str(code) + "\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr('sys.stdin', __import__('io').StringIO(json.dumps(request())))
+    assert worker.main(['--model', 'claude-haiku-5-5', '--claude', str(fake)]) == 1
+    out = capsys.readouterr().out
+    expected = {'error_class': 'ValueError'} if reason is None else {'error_class': 'ValueError', 'reason': reason}
+    assert 'SECRET' not in out and json.loads(out) == expected

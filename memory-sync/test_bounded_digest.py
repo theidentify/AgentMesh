@@ -24,13 +24,13 @@ class BoundedTests(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec('bounded_digest'), 'bounded SQLite adapter missing')
         return importlib.import_module('bounded_digest')
 
-    def event(self, ident, text, project='demo'):
+    def event(self, ident, text, project='demo', session='session'):
         with memory_sync.connect(self.db) as c, c:
             c.execute('UPDATE _sync_config SET importing=1')
             c.execute('''INSERT INTO observation_events
                 (id,event_key,source_path,source_session_id,source_event_id,project,role,kind,content,source_hash)
                 VALUES(?,?,?,?,?,?,'user','user_request',?,?)''',
-                (ident, 'event-' + str(ident), 'private/sample.jsonl', 'session', str(ident), project, text, 'hash-' + str(ident)))
+                (ident, 'event-' + str(ident), 'private/sample.jsonl', session, str(ident), project, text, 'hash-' + str(ident)))
             c.execute('UPDATE _sync_config SET importing=0')
 
     def payload(self, task, status='active', update=False):
@@ -299,6 +299,109 @@ class BoundedTests(unittest.TestCase):
         self.event(2, 'A correction.')
         with self.assertRaises(ValueError):
             api.prepare(self.db, related_chars=1)
+
+    def session_item(self, task, session):
+        e = task['events'][0]
+        return dict(items=[dict(memory_key='session.demo.open_loop.deploy-check', kind='open_loop', scope='session',
+                                scope_key=session, project='demo', content=e['content'], status='active', confidence=1.0,
+                                source_event_ids=[e['id']], evidence=[dict(event_id=e['id'], quote=e['content'])])],
+                    reviewed_event_ids=[e['id'] for e in task['events']], conflicts=[])
+
+    def test_session_items_of_other_sessions_are_not_offered_for_update(self):
+        # A Codex session in the same worktree project must not be asked to update
+        # a Claude session's item: its identity can never hold the new evidence.
+        api = self.api()
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("UPDATE observation_events SET source_session_id='claude-a' WHERE id=1")
+        task = api.prepare(self.db)
+        self.assertEqual(api.apply(self.db, task, self.session_item(task, 'claude-a'))['status'], 'committed')
+        self.event(2, 'Codex checked the deployment.', session='codex-b')
+        task = api.prepare(self.db)
+        self.assertEqual(task['related'], [])
+        anyof = task['request']['text']['format']['schema']['properties']['items']['items']['anyOf']
+        self.assertFalse(any('session.demo.open_loop.deploy-check' in json.dumps(v) for v in anyof))
+        api.apply(self.db, task, dict(items=[], reviewed_event_ids=[2], conflicts=[]))
+        self.event(3, 'The deployment check is done.', session='claude-a')
+        task = api.prepare(self.db)
+        self.assertEqual([r['memory_key'] for r in task['related']], ['session.demo.open_loop.deploy-check'])
+        payload = self.session_item(task, 'claude-a')
+        for field in ('kind', 'scope', 'scope_key', 'project'):
+            del payload['items'][0][field]
+        payload['items'][0]['status'] = 'resolved'
+        self.assertEqual(api.apply(self.db, task, payload)['status'], 'committed')
+
+    def test_project_and_global_items_stay_in_context_across_sessions(self):
+        api = self.api()
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task))
+        self.event(2, 'Deployment is still manual.', session='codex-b')
+        self.assertEqual([r['memory_key'] for r in api.prepare(self.db)['related']],
+                         ['project.demo.constraint.manual-deploy'])
+
+    def test_new_key_colliding_with_hidden_session_item_is_retried(self):
+        api = self.api()
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("UPDATE observation_events SET source_session_id='claude-a' WHERE id=1")
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.session_item(task, 'claude-a'))
+        self.event(2, 'Codex checked the deployment.', session='codex-b')
+        requests = []
+        def extractor(request, *, model):
+            requests.append(request)
+            payload = self.session_item(api.prepare(self.db), 'codex-b')
+            if len(requests) == 2:
+                payload['items'][0]['memory_key'] = 'session.demo.open_loop.codex-deploy-check'
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        self.assertEqual(api.run_once(self.db, extractor=extractor)['status'], 'committed')
+        self.assertIn('stable key exists outside submitted context', requests[1]['instructions'])
+
+    def test_retry_tells_the_model_which_validation_failed(self):
+        api = self.api()
+        requests = []
+        def extractor(request, *, model):
+            requests.append(request)
+            payload = self.payload(api.prepare(self.db))
+            if len(requests) == 1:
+                payload['items'][0]['evidence'][0]['event_id'] = 99
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        result = api.run_once(self.db, extractor=extractor)
+        self.assertEqual(result['status'], 'committed')
+        first, second = requests
+        self.assertNotIn('rejected', first['instructions'])
+        self.assertTrue(second['instructions'].startswith(first['instructions']))
+        self.assertIn('evidence coverage mismatch', second['instructions'][len(first['instructions']):])
+        self.assertEqual((second['input'], second['text']), (first['input'], first['text']))
+        self.assertEqual(result['task']['request'], first)
+
+    def worker(self, script):
+        fake = Path(self.temp.name) / 'worker'
+        fake.write_text('#!/bin/sh\n' + script + '\n')
+        fake.chmod(0o755)
+        return [str(fake)]
+
+    def test_worker_failure_detail_keeps_only_a_safe_reason(self):
+        from bounded_protocol import ValidationError, error_detail
+        api = self.api()
+        request = api.prepare(self.db)['request']
+        cases = [
+            ('cat >/dev/null; echo \'{"error_class":"ValueError","reason":"api_error 529"}\'; exit 1',
+             'model worker failed: api_error 529; coverage unchanged'),
+            ('cat >/dev/null; echo \'{"error_class":"ValueError","reason":"SECRET evidence!"}\'; exit 1',
+             'model worker failed; coverage unchanged'),
+            ('cat >/dev/null; echo SECRET; exit 1', 'model worker failed; coverage unchanged'),
+            ('cat >/dev/null; echo \'{"payload":{}}\'', 'invalid model result envelope'),
+            ('cat >/dev/null; echo not-json', 'model worker unavailable or invalid; coverage unchanged'),
+        ]
+        for script, detail in cases:
+            with self.assertRaises(ValidationError) as caught:
+                api.extract_command(request, model='m', command=self.worker(script))
+            self.assertEqual(error_detail(caught.exception), detail)
+        with self.assertRaises(ValidationError) as caught:
+            api.extract_command(request, model='m', command=[str(Path(self.temp.name) / 'missing')])
+        self.assertEqual(error_detail(caught.exception), 'model worker unavailable; coverage unchanged')
+        with self.assertRaises(ValidationError) as caught:
+            api.extract_command(request, model='m', command=self.worker('sleep 5'), timeout=0.2)
+        self.assertEqual(error_detail(caught.exception), 'model worker timed out; coverage unchanged')
 
 
 def test_error_detail_exposes_only_protocol_messages():

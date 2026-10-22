@@ -323,6 +323,48 @@ def launchd_jobs(agentmesh_home=None, agents=None):
     return rows
 
 
+JOB_DETAIL = re.compile(r'^[A-Za-z0-9 _.,:;/()=-]{1,200}$')
+
+
+def job_failures(agentmesh_home=None, now=None, tail=1024*1024):
+    """Failed runs from the launchd job wrapper logs (JSON lines of safe fields only), newest first."""
+    from datetime import datetime, timedelta, timezone
+    base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+    now = now or datetime.now(timezone.utc)
+    rows, counts = [], {}
+    for name in ('ingest', 'summary'):
+        runs = {'day':0,'day_failed':0,'week_failed':0}
+        try:
+            with open(base/'status'/('launchd-'+name+'.log'), 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell()-tail))
+                lines = f.read().decode('utf-8', 'replace').splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                value = json.loads(line)
+                at = datetime.fromisoformat(value['at'].replace('Z', '+00:00'))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+            if not isinstance(value, dict) or at.tzinfo is None:
+                continue
+            failed = type(value.get('exit')) is int and value['exit'] != 0
+            age = now-at
+            if age <= timedelta(days=1):
+                runs['day'] += 1
+                runs['day_failed'] += failed
+            if failed and age <= timedelta(days=7):
+                runs['week_failed'] += 1
+                pick = lambda key, pattern: value.get(key) if isinstance(value.get(key), str) and pattern.match(value[key]) else None
+                rows.append({'job':name.capitalize(),'at':at.isoformat(),'exit':value['exit'],
+                             'error_class':pick('error_class', re.compile(r'^[A-Za-z_][A-Za-z0-9_.]{0,63}$')),
+                             'status':pick('status', re.compile(r'^[a-z_]{1,32}$')),'detail':pick('detail', JOB_DETAIL)})
+        counts[name] = runs
+    rows.sort(key=lambda row: row['at'], reverse=True)
+    return {'available':bool(counts),'counts':counts,'rows':rows[:50]}
+
+
 def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     from datetime import datetime, timezone
     result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
@@ -363,6 +405,7 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
             state = json.loads(state_path.read_text())
             pending = state.get('pending')
             pipeline['coordinator'] = {'available':True,'source':item['source'],'pending':pending is not None,'phase':pending.get('phase') if isinstance(pending, dict) else None,'success_day':(state.get('success') or {}).get('day')}
+        pipeline['failures'] = job_failures(agentmesh_home)
         result['pipeline'] = pipeline
     except Exception:
         result['pipeline'] = unavailable('Pipeline cron metadata')

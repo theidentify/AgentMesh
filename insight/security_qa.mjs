@@ -27,7 +27,7 @@ await until("document.getElementById('updated')?.textContent.startsWith('Observe
 await until("document.querySelectorAll('#security-table tbody tr').length===2");
 assert.equal(await evaluate("document.getElementById('sync').hidden"),false);
 assert.equal(await evaluate("document.querySelectorAll('#security-table button').length"),0);
-assert.ok(await evaluate("document.getElementById('security-note').textContent.includes('unsigned telemetry')"));
+assert.ok(await evaluate("document.getElementById('security-note').textContent.includes('legacy mode')"));
 const observed=await evaluate("({local:ops.sync.security,peers:ops.sync.peers.rows.map(p=>({peer:p.peer,security:p.security}))})");
 if(expectedPolicy==='legacy'){
   assert.equal(observed.local.policy,'legacy');

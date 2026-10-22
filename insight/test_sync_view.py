@@ -60,3 +60,43 @@ def test_launchd_jobs_replace_retired_cron(tmp_path):
     assert (summary['state'], summary['next_run_at']) == ('every 5 min', '2026-10-22T09:10:00+00:00')
     (tmp_path/'status/job-ingest.json').write_text('[]')
     assert [row['name'] for row in adapters.launchd_jobs(tmp_path, agents)] == ['Summary']
+
+
+def test_job_failures_from_wrapper_log(tmp_path):
+    """Whole-run failures come from the job wrapper log; unsafe text never passes through."""
+    from datetime import datetime, timezone
+    import adapters
+    (tmp_path/'status').mkdir()
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+    lines = [{'at':'2026-10-22T11:00:00+00:00','exit':0,'job':'ingest'},
+             {'at':'2026-10-22T11:30:00+00:00','exit':1,'job':'ingest','error_class':'ValueError','status':'blocked'},
+             {'at':'2026-10-18T11:30:00+00:00','exit':1,'job':'ingest','error_class':'OSError'},
+             {'at':'2026-10-01T11:30:00+00:00','exit':1,'job':'ingest','error_class':'Old'},
+             {'at':'2026-10-22T11:40:00+00:00','exit':1,'job':'ingest','error_class':'<b>x','detail':'secret\nline'}]
+    (tmp_path/'status/launchd-ingest.log').write_text('skipped partial line\n'+'\n'.join(json.dumps(l) for l in lines)+'\nnot json\n')
+    data = adapters.job_failures(tmp_path, now)
+    assert data['counts'] == {'ingest':{'day':3,'day_failed':2,'week_failed':3}}
+    assert [row['error_class'] for row in data['rows']] == [None, 'ValueError', 'OSError']
+    assert data['rows'][0]['detail'] is None and data['rows'][1]['status'] == 'blocked'
+    assert adapters.job_failures(tmp_path/'missing', now) == {'available':False,'counts':{},'rows':[]}
+
+
+def test_overview_verdict_lists_job_failures():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node unavailable for UI script check')
+    script = Path(__file__).with_name('index.html').read_text(encoding='utf-8').split('<script>')[1].split('</script>')[0]
+    harness = HARNESS.split("const peer=")[0] + r'''
+const recent=new Date(Date.now()-3600e3).toISOString();
+context.DATA={pipeline:{jobs:[{name:'Ingest',has_error:false},{name:'Summary',has_error:true}],failures:{counts:{ingest:{day:60,day_failed:2,week_failed:3},summary:{day:10,day_failed:4,week_failed:4}},rows:[{job:'Summary',at:recent,exit:1,error_class:'ValidationError',status:'blocked',detail:'model worker unavailable'},{job:'Ingest',at:recent,exit:1,error_class:'ValueError',status:'blocked'}]}},agents:{rows:[]}};
+vm.runInContext("ops=DATA;connections={rows:[{id:'sqlite',label:'SQLite',available:true,items:5,summaries:2}]};syncProblems=['Windows last finished a sync cycle 5d ago.'];renderOverview();",context);
+const head=element('overview-headline').innerHTML;
+assert.equal(element('overview-headline').className,'sync-headline bad');
+assert.match(head,/3 things need attention/);
+assert.match(head,/Summary job is failing right now: ValidationError · model worker unavailable/);
+assert.match(head,/Ingest job failed 2 times in the last 24 h/);
+assert.match(element('overview-cards').innerHTML,/6 failed runs in the last 24 h/);
+assert.match(element('overview-failures').innerHTML,/ValueError/);
+'''
+    result = subprocess.run([node, '-e', 'const SCRIPT='+json.dumps(script)+';'+harness], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stderr

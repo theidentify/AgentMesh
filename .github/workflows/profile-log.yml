@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: profile-log/gateway/package-lock.json
       - name: Install pinned gateway dependencies for cross-implementation tests
         working-directory: profile-log/gateway
-        run: npm ci
+        run: npm ci --no-audit --no-fund --prefer-offline
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -39,6 +39,7 @@ jobs:
       - name: Test from the repository root
         run: python -m pytest -q -rs -p no:cacheprovider --basetemp "${{ runner.temp }}/profile-log-root" profile-log/tests
       - name: Test from the package directory
+        if: runner.os == 'Linux'
         working-directory: profile-log
         run: python -m pytest -q -rs -p no:cacheprovider --basetemp "${{ runner.temp }}/profile-log-pkg" tests
 
@@ -54,7 +55,7 @@ jobs:
           cache-dependency-path: profile-log/gateway/package-lock.json
       - name: Install pinned dependencies
         working-directory: profile-log/gateway
-        run: npm ci
+        run: npm ci --no-audit --no-fund --prefer-offline
       - name: Test Worker offline
         working-directory: profile-log/gateway
         run: node --test

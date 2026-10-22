@@ -19,17 +19,17 @@ let [head,devices]=run({node:'mac',peers:{rows:[peer('Mac','fresh',30),peer('Win
 assert.equal(head.className,'sync-headline');
 assert.match(head.innerHTML,/Everything is in sync/);
 assert.match(devices,/this device/);
-assert.match(devices,/Profile log → R2/);
+assert.match(element('sync-profile').innerHTML,/Backup to R2/);assert.match(element('sync-profile').innerHTML,/Desktop, web and mobile/);
 [head,devices]=run({node:'mac',peers:{rows:[peer('Mac','fresh',30),peer('Windows','stale',5*86400)]},transport_status:{rows:[{peer:'Windows',status:'disconnected'}]}},{last_sync:{outcome:'remote_error',last_ok_at:'x',last_ok_age_seconds:7200}});
 assert.equal(head.className,'sync-headline bad');
 assert.match(head.innerHTML,/3 things need attention/);
-assert.match(head.innerHTML,/Windows last finished a sync cycle 5d ago/);
-assert.match(head.innerHTML,/Syncthing cannot reach Windows \(disconnected\)/);
+assert.match(head.innerHTML,/Old sync: Windows last finished a sync cycle 5d ago/);
+assert.match(head.innerHTML,/Old sync: Syncthing cannot reach Windows \(disconnected\)/);
 assert.match(head.innerHTML,/remote error; last success 2h ago/);
 assert.match(devices,/Last synced 5d ago/);
 [head]=run({node:'mac',peers:{rows:[{...peer('Mac','fresh',30),sync:{pending:2,conflict:1,invalid:0}}]}},{last_sync:null});
 assert.equal(head.className,'sync-headline warn');
-assert.match(head.innerHTML,/Mac has 3 packets waiting/);
+assert.match(head.innerHTML,/Old sync: Mac has 3 packets waiting/);
 '''
 
 

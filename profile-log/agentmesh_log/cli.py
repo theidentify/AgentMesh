@@ -165,8 +165,11 @@ def execute(args,*,backend=None,console=None,input_fn=None):
                 from . import status, settings
                 status.synced(settings.root(),row)
             except Exception: pass
+        def on_overview(value):
+            from . import status, settings
+            status.write(settings.root(),overview=value)
         broker=Broker(home,store=store)
-        try: broker.serve(remote=remote,sync_interval=args.sync_interval,on_sync=on_sync)
+        try: broker.serve(remote=remote,sync_interval=args.sync_interval,on_sync=on_sync,on_overview=on_overview)
         finally: broker.close()
         return {'ok':True}
     with home.lock():

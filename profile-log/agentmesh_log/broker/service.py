@@ -110,7 +110,7 @@ def body_valid(body):
 
 
 class Broker:
-    def __init__(self, home, *, store=None, on_sync=None):
+    def __init__(self, home, *, store=None, on_sync=None, on_overview=None):
         from ..oskeystore import select_store
         self.home,self.store,self.lock = home,store or select_store(home),threading.RLock()
         self.presence=PresenceManager(home,self.store)
@@ -119,6 +119,7 @@ class Broker:
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
         self._payload_cache={}
         self.on_sync=on_sync; self._last_sync=None; self._sync_written=None; self._sync_outcome=None
+        self.on_overview=on_overview; self._overview_written=None
         self._remote_keys=set(); self.sync_thread=None
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
         from .imports import Imports
@@ -453,7 +454,17 @@ class Broker:
                 if self.on_sync is not None: self.on_sync(dict(row))
             except Exception: pass
             else: self._last_sync=counts; self._sync_written=now
+        self._publish_overview(now)
 
+    def _publish_overview(self, now):
+        # Content-free status refresh; at most once a minute and never fatal to sync.
+        if self.on_overview is None or (self._overview_written is not None and now-self._overview_written<60): return
+        self._overview_written=now
+        try:
+            from ..status import overview
+            with self.lock: value=overview(self.state)
+            self.on_overview(value)
+        except Exception: pass
 
     def connection(self, conn):
         session=None
@@ -486,10 +497,11 @@ class Broker:
                 if session is not None: self.imports.release(session)
             conn.close()
 
-    def serve(self, *, server=None, remote=None, sync_interval=None, on_sync=None):
+    def serve(self, *, server=None, remote=None, sync_interval=None, on_sync=None, on_overview=None):
         if sync_interval is not None and (remote is None or type(sync_interval) not in (int,float) or not math.isfinite(sync_interval) or sync_interval<=0):
             raise ValueError('invalid sync configuration')
         if on_sync is not None: self.on_sync=on_sync
+        if on_overview is not None: self.on_overview=on_overview
         self.server=server or (PipeServer if os.name=='nt' else UnixServer)(self.home.address(self.state.device.device_id))
         if sync_interval is not None:
             def sync_loop():

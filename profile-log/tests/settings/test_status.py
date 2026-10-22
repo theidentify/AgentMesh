@@ -203,3 +203,39 @@ def test_synced_preserves_sections(tmp_path):
     assert read(tmp_path)['last_sync']==value['last_sync']
     atomic_write(tmp_path/'profile-log-status.json',wire(dict(value,extra='invalid')))
     status.synced(tmp_path,error); assert read(tmp_path)['last_sync']['last_ok_at'] is None
+
+
+def broker_remote():
+    from agentmesh_log.storage import StorageError
+    def remote(): raise StorageError('remote operation failed')
+    return remote
+
+
+def test_sync_overview_refresh(env,monkeypatch):
+    from agentmesh_log.broker import service
+    root,home,store=env; calls=[]; rows=[]; clock=[1000.0]
+    monkeypatch.setattr(service.time,'monotonic',lambda:clock[0])
+    def on_overview(value): calls.append(value); status.write(root,overview=value)
+    broker=service.Broker(home,store=store,on_sync=rows.append,on_overview=on_overview)
+    try:
+        status.synced(root,sync_row()); broker.sync_attempt(broker_remote(),60)
+        value=read(root); device=store.load().device.device_id
+        assert value['overview']['devices']==[dict(device_id=device,revoked=False)]
+        assert value['overview']['profiles'][0]['name']=='work' and value['last_sync']['outcome']=='ok'
+        assert status.valid(value) and rows
+        broker.sync_attempt(broker_remote(),60); assert len(calls)==1
+        clock[0]+=60; broker.sync_attempt(broker_remote(),60); assert len(calls)==2
+    finally: broker.close()
+
+
+def test_sync_overview_failure(env,monkeypatch):
+    from agentmesh_log.broker import service
+    root,home,store=env; rows=[]
+    def broken(value): raise RuntimeError('status writer failed')
+    broker=service.Broker(home,store=store,on_sync=rows.append,on_overview=broken)
+    try:
+        broker.sync_attempt(broker_remote(),60); assert rows and rows[0]['outcome']=='remote_error'
+        monkeypatch.setattr(status,'overview',lambda state:1/0); broker._overview_written=None
+        broker.sync_attempt(broker_remote(),60)
+    finally: broker.close()
+    assert not (root/'profile-log-status.json').exists()

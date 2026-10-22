@@ -94,4 +94,4 @@ def report(audit_path, state_path, metrics_path, job_id='6fcf5646d34d'):
             'baseline_latest':baseline[-1] if baseline else None,'new':aggregate(runs),
             'new_by_status':{status:aggregate([r for r in runs if r.get('status')==status]) for status in sorted({r['status'] for r in runs})},
             'new_latest':runs[-1] if runs else None,
-            'notes':['Historical prompt_tokens includes cached input; state.db input_tokens is uncached.','Unknown values remain null; known_samples gives metric coverage.','Quota/subscription token consumption is not actual dollar cost.','Replay/dry-run samples are not matched-workload production effectiveness benchmarks.','Historical maximum per-call context and event throughput unavailable from these sources.']}
+            'notes':['Old cron runs include cached input in "Input total"; newer runs report cached input separately.','"unknown" means the log did not record that value. It is never counted as zero.']}

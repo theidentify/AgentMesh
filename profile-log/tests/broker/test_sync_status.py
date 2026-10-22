@@ -77,7 +77,7 @@ def test_control_counts(tmp_path):
     rows=[]; b=Broker(home,on_sync=rows.append); remote=FilesystemStorage(tmp_path/'remote')
     try:
         b.sync_attempt(remote,60); row=rows[-1]
-        count=len(list(remote.list('')))
+        count=len([p for p in remote.list('') if not p.startswith('registry/heartbeats/')])
         assert count>len(b.replica.keys())
         assert row['uploaded']==row['local_objects']==row['remote_objects']==count
         assert row['outbox']==0 and row['outcome']=='ok'

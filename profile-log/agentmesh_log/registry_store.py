@@ -7,6 +7,7 @@ from .agekeys import validate_recipient
 from .errors import IdentityError
 
 SCHEMAS = {
+ 'device-heartbeat': {'device_id','issued_at','age'},
  'profile-recipient': {'device_id','profile_id','age_recipient','issued_at'},
  'profile-recovery': {'profile_id','recovery_key_id','age_recipient','issued_at','age'},
  'device-record': {'certificate','age_recipient','issued_at'},

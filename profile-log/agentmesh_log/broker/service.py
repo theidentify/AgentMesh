@@ -72,7 +72,7 @@ class StagedRemote:
 
     events/ and keys/ come from the replica's (usually incremental) plan; control prefixes stay small and are listed whole."""
     def __init__(self,remote,local,plan):
-        self.keys=set(plan['keys'])|{key for prefix in PREFIXES[2:] for key in remote.list(prefix)}
+        self.keys=set(plan['keys'])|{key for prefix in PREFIXES[2:] for key in remote.list(prefix) if not key.startswith('registry/heartbeats/')}
         self.data={}; self.uploads=[]
         for key in sorted(self.keys-local-plan['skip']):
             try: self.data[key]=remote.get(key)
@@ -119,6 +119,8 @@ class Broker:
         self.indexes={}; self.index_versions={}; self.stopped=threading.Event(); self.server=None
         self._payload_cache={}
         self.on_sync=on_sync; self._last_sync=None; self._sync_written=None; self._sync_outcome=None
+        from ..heartbeats import Heartbeats
+        self.heartbeats=Heartbeats(); self._sync_row=None
         self.on_overview=on_overview; self._overview_written=None
         self._remote_keys=set(); self.sync_thread=None
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
@@ -454,6 +456,10 @@ class Broker:
                 if self.on_sync is not None: self.on_sync(dict(row))
             except Exception: pass
             else: self._last_sync=counts; self._sync_written=now
+        self._sync_row=dict(row)
+        if measured is not None and self.state.control.get('phase4'):
+            try: self.heartbeats.update(measured.remote,self.state,row,tick=now)
+            except Exception as exc: self.heartbeats.error(exc)
         self._publish_overview(now)
 
     def _publish_overview(self, now):
@@ -462,7 +468,7 @@ class Broker:
         self._overview_written=now
         try:
             from ..status import overview
-            with self.lock: value=overview(self.state)
+            with self.lock: value=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row)
             self.on_overview(value)
         except Exception: pass
 

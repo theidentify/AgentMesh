@@ -107,9 +107,10 @@ def verify(args):
     probes = probes_for(args, state)
     registry = state.registry()
     local_keys, remote_keys = inventory(local), set(remote.list(''))
+    heartbeats = {key for key in remote_keys if key.startswith('registry/heartbeats/')}
     replica_keys = {key for key in remote_keys if key.startswith(PREFIXES)}
     result = dict(ok=False, local_objects=len(local_keys), remote_objects=len(remote_keys),
-                  missing_remote=len(local_keys - replica_keys), missing_local=len(replica_keys - local_keys),
+                  missing_remote=len(local_keys - replica_keys), missing_local=len(replica_keys - local_keys - heartbeats),
                   unknown_remote=len(remote_keys - replica_keys),
                   hash_mismatch=0, unparsable=0, probes=len(probes), marker_hits=0,
                   restored_events=0, opened_events=0)
@@ -125,7 +126,7 @@ def verify(args):
                 result['marker_hits'] += 1
             if key not in replica_keys:
                 continue
-            if key in local_keys and hashlib.sha256(data).digest() != hashlib.sha256(local.get(key)).digest():
+            if key not in heartbeats and key in local_keys and hashlib.sha256(data).digest() != hashlib.sha256(local.get(key)).digest():
                 result['hash_mismatch'] += 1
             if key.startswith(('events/', 'keys/')):
                 restored.put(key, data)

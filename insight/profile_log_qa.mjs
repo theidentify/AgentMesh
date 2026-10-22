@@ -10,7 +10,7 @@ assert.ok(!/<form|<input|<button/.test(section));
 assert.ok(section.includes('agentmesh-log admin / agentmesh-log apply'));
 assert.ok(html.includes("jsonFetch('/api/profile-log')"));
 const helpers=html.slice(html.indexOf('const $='),html.indexOf('const agentColumns='));
-const renderer=html.slice(html.indexOf('function renderProfileLog('),html.indexOf('function renderPeers('));
+const renderer=html.slice(html.indexOf('function deviceTable('),html.indexOf('function renderPeers('));
 const nodes=new Map();
 const document={getElementById(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:''});return nodes.get(id)}};
 const attack='<img src=x onerror="throw 1">&\'';

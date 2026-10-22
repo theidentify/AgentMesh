@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 import adapters
 import remote_access
+import storage
 
 
 class Cache:
@@ -63,6 +64,7 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
 
     connection_cache = Cache(connections)
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
+    storage_cache = storage.Cache(storage.Observer(home, agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
     access = remote_access.Verifier()
 
     class Handler(BaseHTTPRequestHandler):
@@ -109,6 +111,9 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
                     return self.send(200, Path(__file__).with_name('index.html' if path=='/' else 'metrics.html').read_bytes(), 'text/html; charset=utf-8')
                 if path == '/health':
                     return self.send(200, {'status':'ok','pid':os.getpid(),'readonly':True,'remote':remote})
+                if path == '/api/storage':
+                    if args: raise ValueError('Unknown parameter')
+                    return self.send(200, storage_cache.get())
                 if path == '/api/profile-log':
                     if args:
                         raise ValueError('Unknown parameter')

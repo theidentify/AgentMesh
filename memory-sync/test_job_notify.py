@@ -98,3 +98,16 @@ def test_protocol_detail_is_forwarded_but_free_text_is_not():
     assert 'detail' not in job_notify.summary_fields('{"detail": "token=sk-ant-abc \\"quoted\\" <html>"}')
     text = job_notify.message('summary', 'failed', 1, fields, 't0', 't1')
     assert 'error_class=ValidationError: unsupported evidence quote' in text
+
+
+def test_resource_fields(tmp_path,monkeypatch,capsys):
+    from types import SimpleNamespace
+    ticks=iter([10.,14.]); usage=iter([SimpleNamespace(ru_utime=1.,ru_stime=2.,ru_maxrss=0),SimpleNamespace(ru_utime=2.,ru_stime=2.5,ru_maxrss=8*1024*1024)])
+    monkeypatch.setattr(job_notify.time,'monotonic',lambda:next(ticks))
+    monkeypatch.setattr(job_notify.resource,'getrusage',lambda who:next(usage))
+    monkeypatch.setattr(job_notify.sys,'platform','darwin')
+    monkeypatch.setattr(job_notify.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0,stdout='',stderr=''))
+    assert job_notify.run('summary',['fake'],tmp_path,now='fixed')==0
+    row=json.loads(capsys.readouterr().out)
+    assert (row['wall_s'],row['cpu_s'],row['maxrss_mb'])==(4,1.5,8)
+    assert row['job']=='summary' and row['at']=='fixed' and row['exit']==0

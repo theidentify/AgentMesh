@@ -49,7 +49,7 @@ for(const count of [1,3]){
 
 def test_md7_allowlist():
     from remote_access import ALLOWED_PATHS
-    assert ALLOWED_PATHS==frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections', '/api/operations'))
+    assert ALLOWED_PATHS==frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections', '/api/operations', '/api/storage'))
 
 
 @pytest.mark.parametrize('mode',['ok','empty','failed','missing-cloudflared','missing-security'])

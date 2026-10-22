@@ -331,11 +331,11 @@ forwarding headers would erase this distinction: retain the public Host and
 Cloudflare headers in the tunnel configuration. The listener remains loopback.
 
 Remote access is metadata-only: GET `/`, `/metrics.html`, `/health`,
-`/api/profile-log`, `/api/metrics`, `/api/connections` and `/api/operations`
+`/api/profile-log`, `/api/metrics`, `/api/connections`, `/api/operations` and `/api/storage`
 (counts, timestamps and states only) are allowed after verification. All other paths return 404; HEAD and write methods return 405.
 Remote Origin, when supplied, must exactly match `https://insight.krisb8.com`.
 The UI hides the Memory Browser and its search controls and never fetches
-`/api/memory*` remotely; Overview, Agents, Pipeline, Sync, Metrics and Profile log
+`/api/memory*` remotely; Overview, Agents, Pipeline, Sync, Metrics, Profile log and Storage
 work remotely. Metadata can still reveal operational counts and names; keep the
 Access policy owner-only. The UI is not the authorization boundary.
 
@@ -426,3 +426,63 @@ The Access app/AUD remain unchanged on rollback. Remove the copied launch-agent
 plist if it must stay disabled after the next login. A later Windows Insight
 gets a separate hostname such as `insight-<name>.krisb8.com` and its own tunnel;
 Windows Insight is not implemented here.
+
+### Storage, costs, compute, buffers and network IO
+
+The Storage tab and authenticated `GET /api/storage` expose only sizes, counts,
+SQLite schema names and fixed operational labels. A single background computation
+refreshes every ten minutes. The first request returns `available: false,
+pending: true` immediately; refresh failures retain the previous result and expose
+only an exception class. Request handlers never walk directories, run `dbstat`,
+spawn processes or fetch tunnel metrics. No deletion, vacuum or R2 request is made
+by Insight.
+
+SQLite uses `--sqlite` and `adapters.sqlite_ro`; missing tables remain unknown.
+Without `dbstat`, table row counts replace byte sizes. Directory accounting uses
+one bounded, non-symlink walk (200,000 entries) and reports truncation/unreadable
+sources. Reclaimable entries are suggestions only. Orphan snapshot detection is
+suppressed on incomplete walks so unseen agent keys are not mistaken for removal.
+
+Ship **storage.py and pricing.json** alongside server.py and the existing Insight
+assets in each release. Prices are the plan's 2026-10-22 defaults, with sources
+shown in the UI; they were not rechecked online during this offline implementation.
+`<agentmesh_home>/insight-pricing.json` merges individual known keys into the shipped
+prices. Numeric values must be finite and nonnegative; `as_of` is an ISO date.
+An invalid file restores defaults with a visible flag. Energy defaults to 5 W per
+CPU core and an unknown electricity price. Optional sibling
+`<agentmesh_home>/insight-config.json` accepts `cloudflared_metrics_port` (default
+20241). The fixed numeric-loopback `/metrics` fetch refuses redirects, caps its
+body at 1 MiB and enforces a two-second deadline. Tunnel rates need two samples;
+counter resets yield unknown rates until a new baseline is available.
+
+R2 bytes remain an estimate from replica size and object counts. Legacy status
+uses prefix/sync estimates for requests; new broker status supplies measured
+PUT/LIST and GET/HEAD counts, including LIST pages, SDK retry sends and heartbeat
+traffic. Payload bytes exclude HTTP/TLS overhead. Totals and their epoch survive
+restart through `sync-status.json`; every cycle with traffic publishes the totals.
+Legacy status files remain valid. Monthly cost and network projections are
+estimates, not invoices; unknown inputs never become zero costs.
+
+Summary API-equivalent costs use production bounded-run metrics only, de-duplicated
+by run ID. Month-to-date and seven-day windows use UTC. The subscription note is
+retained unless a run records `billing_source: api_key`. Separately recorded
+`cache_write_5m_tokens` / `cache_write_1h_tokens` are priced at their write rates;
+otherwise writes remain part of uncached input. Unknown breakdowns use total input
+and are flagged. Unknown models produce unknown costs.
+
+Compute samples fixed launchd labels and exact-name cloudflared via argv, with
+five-second subprocess timeouts and one combined ps call. Job aggregates read
+bounded launchd log tails; old lines remain readable but missing CPU/wall fields
+make affected totals unknown. `memory-sync/job_notify.py` is shared with
+memory-sync: it adds monotonic wall time, child user+system CPU deltas and RSS to
+the existing content-free JSON line. `ru_maxrss` is the platform's child high-water
+mark, not an additive delta; Windows without `resource` records null CPU/RSS.
+The estimate of summary waiting time is wall minus CPU, not a measured API trace.
+
+Follow-ups deliberately left outside this change: bridge drain-status persistence,
+a catch-up waiting count, wrapping catch-up for resource recording, audit log
+rotation (it currently grows forever), and a likely pruning bug leaving encrypted
+per-agent index snapshots after agent removal. No plist or live copy is changed.
+Per-process nettop remains not measured: its sampling and macOS output are unstable,
+and root-owned cloudflared attribution would need sudo. Worker/KV/Access usage
+requires the Cloudflare dashboard; Insight uses no provider token.

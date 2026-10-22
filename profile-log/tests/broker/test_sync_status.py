@@ -54,9 +54,9 @@ def test_throttle_schema_hook(tmp_path,monkeypatch,capsys):
     monkeypatch.setattr(service.time,'monotonic',lambda:now[0])
     try:
         b.sync_attempt(remote,60); b.sync_attempt(remote,60) # upload count changed
-        b.sync_attempt(remote,60); assert len(rows)==2
-        now[0]=599; b.sync_attempt(remote,60); assert len(rows)==2
-        now[0]=600; b.sync_attempt(remote,60); assert len(rows)==3
+        b.sync_attempt(remote,60); assert len(rows)==3
+        now[0]=599; b.sync_attempt(remote,60); assert len(rows)==4
+        now[0]=600; b.sync_attempt(remote,60); assert len(rows)==5
         row=rows[-1]; assert service.sync_status_valid(row)
         for field,value in [('extra',SECRET),('outcome',SECRET),('uploaded',True),('outbox',-1),
             ('interval_s',float('nan')),('backend',SECRET),('at','yesterday')]:
@@ -65,7 +65,7 @@ def test_throttle_schema_hook(tmp_path,monkeypatch,capsys):
             bad=dict(row); del bad[field]; assert not service.sync_status_valid(bad)
         def fail(row): raise RuntimeError(SECRET)
         b.on_sync=fail; now[0]=1200; b.sync_attempt(remote,60)
-        b.on_sync=rows.append; b.sync_attempt(remote,60); assert len(rows)==4
+        b.on_sync=rows.append; b.sync_attempt(remote,60); assert len(rows)==6
     finally: b.close()
     assert capsys.readouterr().err.count('profile-log sync: ok')==1
 

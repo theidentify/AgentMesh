@@ -17,6 +17,11 @@ import re
 import ssl
 import subprocess
 import sys
+import time
+try:
+    import resource
+except ImportError:
+    resource = None
 import urllib.request
 
 WEBHOOK = re.compile(r'^https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$')
@@ -102,6 +107,8 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
         previous = json.loads(state_path.read_text())
     except (OSError, ValueError):
         previous = None
+    started = time.monotonic()
+    before = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
     try:
         process = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         code, out, err = process.returncode, process.stdout, process.stderr
@@ -109,6 +116,10 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
         code, out, err = 124, '', json.dumps({'error_class': 'Timeout'})
     except OSError:
         code, out, err = 127, '', json.dumps({'error_class': 'LaunchError'})
+    wall = round(time.monotonic()-started, 3)
+    after = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
+    cpu = round(max(0, after.ru_utime+after.ru_stime-before.ru_utime-before.ru_stime), 3) if after else None
+    rss = round(after.ru_maxrss/(1024*1024 if sys.platform=='darwin' else 1024), 3) if after else None
     now = now or datetime.now(timezone.utc).isoformat(timespec='seconds')
     ok = code == 0
     fields = summary_fields(out + '\n' + err)
@@ -133,7 +144,7 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
     tmp = state_path.with_suffix('.tmp')
     tmp.write_text(json.dumps(state, sort_keys=True))
     os.replace(tmp, state_path)
-    print(json.dumps(dict(job=name, at=now, exit=code, event=event, notified=notified, **fields), sort_keys=True))
+    print(json.dumps(dict(job=name, at=now, exit=code, event=event, notified=notified, wall_s=wall, cpu_s=cpu, maxrss_mb=rss, **fields), sort_keys=True))
     return code
 
 

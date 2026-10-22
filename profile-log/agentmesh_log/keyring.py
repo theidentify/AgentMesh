@@ -9,6 +9,10 @@ from .registry_store import shape, signed, domain, now
 from .errors import KeyAccessError
 
 
+CONTROL_PREFIXES=('registry/','keyring/','keys/','profiles/','alerts/','connectors/')
+CONTROL_EXCLUSIONS=('connectors/gateway-state/','registry/heartbeats/')
+
+
 class Keyring(Protocol):
     def open(self, record, recipient_device, identity) -> ScopeReadKey: ...
     def current(self, profile, scope) -> dict: ...
@@ -195,10 +199,9 @@ def sync_control(home,store,remote,*,apply_lock=None):
     from .keys import unwrap_key
     from .events import wrap_path
     local=FilesystemStorage(home.root/'replica')
-    prefixes=('registry/','keyring/','keys/','profiles/','alerts/','connectors/')
-    for prefix in prefixes:
-        local_paths={p for p in local.list(prefix) if not p.startswith(('connectors/gateway-state/','registry/heartbeats/'))}
-        remote_paths={p for p in remote.list(prefix) if not p.startswith(('connectors/gateway-state/','registry/heartbeats/'))}
+    for prefix in CONTROL_PREFIXES:
+        local_paths={p for p in local.list(prefix) if not p.startswith(CONTROL_EXCLUSIONS)}
+        remote_paths={p for p in remote.list(prefix) if not p.startswith(CONTROL_EXCLUSIONS)}
         for path in sorted(local_paths-remote_paths): remote.put(path,local.get(path))
         for path in sorted(remote_paths-local_paths):
             data=remote.get(path)

@@ -79,7 +79,7 @@ def test_good(synced, capsys):
 def test_unknown_remote(synced, capsys, monkeypatch):
     remote = synced[2]
     count = len(list(remote.list('')))
-    for prefix in ('connectors/', 'outbox/', 'archive/'):
+    for prefix in ('future-tier/', 'outbox/', 'archive/'):
         remote.put(prefix + 'extra', b'not JSON')
     calls = []
     original = remote.list
@@ -265,3 +265,16 @@ def test_read_error(synced, capsys, monkeypatch):
     monkeypatch.setattr(verify_remote.cli, 'remote_storage', refused)
     code, result = run(args_for(synced), capsys)
     assert code == 2 and result == {'ok': False, 'error': 'verification_error'}
+
+
+def test_connector_inventory(synced, capsys):
+    home, _, remote, _ = synced
+    local = FilesystemStorage(home.root/'replica')
+    local.put('connectors/policies/device.json', b'{}')
+    remote.put('connectors/policies/device.json', b'{}')
+    remote.put('connectors/gateway-state/remote.json', b'{}')
+    local.put('connectors/gateway-state/local.json', b'{}')
+    code, result = run(args_for(synced), capsys)
+    assert code == 0
+    assert result['missing_local'] == result['missing_remote'] == 0
+    assert result['unknown_remote'] == 1

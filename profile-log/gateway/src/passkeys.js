@@ -1,3 +1,4 @@
+import { statusPage } from './status-ui.js';
 import { bytes,hex,sha,unhex,exact } from './encoding.js';
 import { tunnel,claim } from './gateway.js';
 import { STATUS_APP } from './status-metrics.js';
@@ -18,8 +19,8 @@ export async function passkeyPage(request,env,identity,applyAdmin,fetcher){
  if(request.method==='GET'){
   if(path==='/status/webauthn.js')return statusResponse(webauthnScript,200,'text/javascript; charset=utf-8');
   const token=await csrf(env,identity),title=register?'Enrol a passkey':'Approve a connector';
-  const html='<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>'+title+'</title><h1>'+title+'</h1><form data-ceremony="'+(register?'register':'approve')+'" method="post"><input type="hidden" name="csrf" value="'+token+'"><label>'+(register?'Device enrolment code':'Six-digit app approval code')+' <input name="code" type="password" autocomplete="off" required maxlength="'+(register?'10':'6')+'"></label><button>Continue</button></form><p id="outcome" role="status"></p><button id="confirm" hidden>Continue with passkey</button><a href="/status">Return to status</a><script src="/status/webauthn.js" defer></script></html>';
-  const result=statusResponse(html,200,'text/html; charset=utf-8');result.headers.set('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");return result;
+  const html=statusPage(title,'<section class="panel ceremony"><form data-ceremony="'+(register?'register':'approve')+'" method="post"><input type="hidden" name="csrf" value="'+token+'"><label>'+(register?'Device enrolment code':'Six-digit app approval code')+' <input name="code" type="password" autocomplete="off" required maxlength="'+(register?'10':'6')+'"></label><button class="primary">Continue</button></form><p id="outcome" role="status"></p><button class="primary" id="confirm" hidden>Continue with passkey</button><a href="/status">Return to status</a><script src="/status/webauthn.js" defer></script></section>');
+  const result=statusResponse(html,200,'text/html; charset=utf-8');result.headers.set('Content-Security-Policy',"default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");return result;
  }
  try{
   if(request.headers.get('Origin')!==env.STATUS_ORIGIN||![null,'same-origin'].includes(request.headers.get('Sec-Fetch-Site'))||!request.headers.get('Content-Type')?.startsWith('application/json')||Number(request.headers.get('Content-Length')??0)>65536)throw Error();

@@ -3,9 +3,9 @@ import { bytes,hex,sha,unhex,exact } from './encoding.js';
 import { policy,secretWindow } from './registry.js';
 import { tunnel,claim } from './gateway.js';
 import { ERROR_CODES,STATUS_APP,hour,statusShape,countError } from './status-metrics.js';
-const headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",'X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
+import { escape,statusPage,statusDashboard } from './status-ui.js';
+const headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",'X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
 export const statusResponse=(body,status=200,type='text/plain; charset=utf-8')=>new Response(body,{status,headers:{...headers,'Content-Type':type}});
-const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // Each gateway instance caches only public signing keys, never assertions or claims.
 export function accessVerifier(fetcher) {
  let cache={issuer:null,until:0,keys:[]};
@@ -108,19 +108,20 @@ export async function statusAction(request,env,identity,applyAdmin,fetcher) {
    if(result.action!==action||result.payload?.[field]!==args[field])throw Error();
    const response=await applyAdmin(result,action);if(!response.ok)throw Error();
   }
-  return statusResponse('<!doctype html><meta charset="utf-8"><title>AgentMesh status</title><p>Action completed.</p><a href="/status">Return to status</a>',200,'text/html; charset=utf-8');
+  return statusResponse(statusPage('Action completed','<section class="panel"><h2>Action completed.</h2><a class="button" href="/status">Return to status</a></section>'),200,'text/html; charset=utf-8');
  }catch{return statusResponse('Forbidden',403);}
 }
 export async function serveStatus(request,env,api,fetcher,identity) {
  try{const data=await statusData(env,api,fetcher);if(new URL(request.url).pathname==='/status.json')return statusResponse(JSON.stringify(data),200,'application/json');
-  const pending=await pendingRequests(env);let forms='';
+  const pending=await pendingRequests(env);let form=()=>'';
   if(typeof identity?.sub==='string'&&identity.sub){
    const token=hex(crypto.getRandomValues(new Uint8Array(32)));
    await env.OAUTH_KV.put('status:csrf:'+await sha(bytes(token)),JSON.stringify({...identity,exp:Date.now()+900000}),{expirationTtl:900});
-   const form=(action,field,value,label)=>`<form method="post" action="/status/action"><input type="hidden" name="csrf" value="${token}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="${field}" value="${escape(value)}"><button>${escape(label)}</button></form>`;
-   forms='<section><h2>Actions</h2>'+pending.rows.map(p=>form('reject','code_hash',p.code_hash,'Reject '+p.client_name)).join('')+data.apps.filter(p=>p.state==='active').map(p=>form('revoke','app_id',p.app_id,'Revoke '+p.app_id)).join('')+data.secret_windows.map(w=>form('close_secret','app_id',w.app_id,'Close secret window '+w.app_id)).join('')+(pending.capped?'<p>Pending requests are partial.</p>':'')+'</section>';
+   form=(action,field,value,label)=>{
+    const html=`<form method="post" action="/status/action"><input type="hidden" name="csrf" value="${token}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="${field}" value="${escape(value)}"><button class="danger">${escape(action==='revoke'?'Confirm revoke':label)}</button></form>`;
+    return action==='revoke'?'<details><summary class="danger">Revoke</summary><p>Revoke access for this app?</p>'+html+'</details>':html;
+   };
   }
-  const sections=[['Bridges',data.bridges],['Outbox',data.outbox],['Apps',{items:data.apps,capped:data.apps_capped}],['Secret windows',data.secret_windows],['Gateway errors',data.gateway_errors],['R2 sync',data.r2_sync]];
-  return statusResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AgentMesh status</title><body><h1>AgentMesh status</h1><p><a href="/status/passkeys">Enrol a passkey</a> · <a href="/status/approve">Approve a connector</a></p><p>Metadata and access-reducing actions. Reload for one live bridge probe. Error counts are approximate, over the current and previous 23 UTC hours.</p>'+sections.map(([title,value])=>`<section><h2>${title}</h2><pre>${escape(JSON.stringify(value,null,2))}</pre></section>`).join('')+forms+'</body></html>',200,'text/html; charset=utf-8');
+  return statusResponse(statusDashboard(data,pending,form),200,'text/html; charset=utf-8');
  }catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
 }

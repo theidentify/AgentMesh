@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { makeEnv,writePolicy,approved,register,start,finish,admin } from './fakes.mjs';
 import { bytes,wire,sign,sha } from '../src/encoding.js';
+import { duration,timestamp } from '../src/status-ui.js';
 import { callTool,ulid } from '../src/gateway.js';
 const {createGateway}=await import('../src/worker.js');
 const rsa=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
@@ -30,7 +31,8 @@ test('P6-S1 valid Access JWT renders only metadata with expected sections and he
  assert.equal(data.bridges.probe.state,'online');assert.equal(data.bridges.devices[0].device_id,h.deviceId);assert.equal(data.bridges.devices[0].live,true);
  assert.equal(data.outbox.count,1);assert.ok(data.outbox.oldest_age_ms>=0);assert.equal(data.apps[0].has_oauth_grants,true);assert.deepEqual(data.apps[0].client_names,['Claude']);assert.equal(data.secret_windows[0].app_id,a.p.app_id);
  const html=await h.get('/status');assert.equal(html.status,200);const text=await html.text();
- for(const title of ['Bridges','Outbox','Apps','Secret windows','Gateway errors','R2 sync'])assert.ok(text.includes(title));
+ assertStatusHtml(html,text);
+ for(const title of ['Bridges','Outbox','Apps','Pending requests','Secret windows','Gateway errors','R2 sync'])assert.ok(text.includes('<h2>'+title+'</h2>'));
  assert.doesNotMatch(text,/ciphertext-marker|remembered-body-marker/);assert.equal(h.probes,2);assert.equal(h.jwks,1);
  for(const r of [response,html]){assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('X-Frame-Options'),'DENY');assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);assert.match(r.headers.get('Content-Security-Policy'),/default-src 'none'/);}
 });
@@ -43,7 +45,7 @@ test('P6-S2 Access rejects invalid assertions uniformly before probing',async()=
 test('P6-S3 host separation covers methods, preflight and disabled feature',async()=>{
  const h=await harness();
  for(const path of ['/status','/status.json'])assert.equal((await h.get(path,await jwt(),h.env.ORIGIN)).status,404);
- for(const path of ['/','/mcp','/authorize','/token','/register','/admin/pending','/.well-known/oauth-authorization-server','/.well-known/oauth-protected-resource'])for(const method of ['GET','POST','OPTIONS']){const r=await h.get(path,await jwt(),h.env.STATUS_ORIGIN,method);assert.equal(r.status,404);assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);}
+ for(const path of ['/mcp','/authorize','/token','/register','/admin/pending','/.well-known/oauth-authorization-server','/.well-known/oauth-protected-resource'])for(const method of ['GET','POST','OPTIONS']){const r=await h.get(path,await jwt(),h.env.STATUS_ORIGIN,method);assert.equal(r.status,404);assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);}
  assert.equal((await h.get('/status',await jwt(),h.env.STATUS_ORIGIN,'POST')).status,404);
  delete h.env.STATUS_ORIGIN;assert.equal((await h.get('/status',await jwt(),'https://status.example')).status,404);
 });
@@ -114,7 +116,7 @@ test('P6-S10 actions bind CSRF to JWT identity and reject bad requests before br
   assert.equal((await actionPost(h,values,headers)).status,403);assert.equal(h.actions.length,0);
  }
  assert.equal((await actionPost(h,fields,{},h.env.ORIGIN)).status,404);
- assert.equal((await actionPost(h,fields)).status,200);assert.equal(h.actions.length,1);
+ const completed=await actionPost(h,fields);assert.equal(completed.status,200);assertStatusHtml(completed,await completed.text());assert.equal(h.actions.length,1);
  assert.deepEqual(h.actions[0],{tool:'admin',arguments:{action:'reject',code_hash:'cd'.repeat(32)}});
  assert.equal(await h.env.OAUTH_KV.get('pending:'+'cd'.repeat(32)),null);
  assert.equal((await actionPost(h,fields)).status,403);assert.equal(h.actions.length,1);
@@ -203,7 +205,7 @@ test('P6-P6 passkey pages and script are status-only and require JWT',async()=>{
   assert.equal((await h.get(path,await jwt(),h.env.ORIGIN)).status,404);
   const r=await h.get(path,await jwt({sub:'owner'}));assert.equal(r.status,200);
   assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);
-  if(!path.endsWith('.js')){const html=await r.text();assert.match(html,/name="csrf"/);assert.match(html,/\/status\/webauthn.js/);}
+  if(!path.endsWith('.js')){const html=await r.text();assertStatusHtml(r,html,true);assert.match(html,/name="csrf"/);assert.match(html,/\/status\/webauthn.js/);}
  }
  assert.equal(h.probes,0);
 });
@@ -254,4 +256,57 @@ test('P6-P6 offline and wrong-device outcomes are fixed and never grant',async()
   assert.deepEqual(await r.json(),{error:expected});
   for(const row of h.env.OAUTH_KV.data.values())assert.doesNotMatch(JSON.stringify(row),/ABCDEFGHJK|private-error-marker/);
  }
+});
+
+const htmlCsp="default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+function assertStatusHtml(response,html,passkey=false){
+ assert.equal(response.headers.get('Content-Security-Policy'),passkey?htmlCsp.replace("style-src 'self';", "style-src 'self'; script-src 'self'; connect-src 'self';"):htmlCsp);
+ assert.match(html,/<link rel="stylesheet" href="\/status\/style.css">/);
+ assert.match(html,/<small>STATUS<\/small>/);assert.match(html,/name="viewport"/);
+ assert.doesNotMatch(html,/<pre|<style| style=| on[a-z]+=|data:|<script(?! src="\/status\/webauthn.js" defer><\/script>)/);
+ if(!passkey)assert.doesNotMatch(html,/<script/);
+}
+test('Insight stylesheet and root redirect require Access and remain status-host only',async()=>{
+ const h=await harness(),token=await jwt({sub:'owner'});
+ for(const path of ['/','/status/style.css']){
+  for(const bad of ['',await jwt({aud:['wrong']})])assert.equal((await h.get(path,bad)).status,403);
+  assert.equal((await h.get(path,token,h.env.ORIGIN)).status,404);
+  for(const method of ['POST','OPTIONS','HEAD'])assert.equal((await h.get(path,token,h.env.STATUS_ORIGIN,method)).status,404);
+ }
+ const redirect=await h.get('/',token);assert.equal(redirect.status,302);assert.equal(redirect.headers.get('Location'),'/status');
+ const css=await h.get('/status/style.css',token);assert.equal(css.status,200);assert.equal(css.headers.get('Content-Type'),'text/css; charset=utf-8');assert.equal(css.headers.get('Cache-Control'),'no-store');assert.equal(css.headers.get('Access-Control-Allow-Origin'),null);
+ const style=await css.text();assert.match(style,/@media\(prefers-color-scheme:dark\)/);assert.match(style,/@media\(max-width:650px\)/);assert.match(style,/overflow-x:auto/);assert.doesNotMatch(style,/@import|url\(/);
+ for(const path of ['/status/unknown','/status/style.css/','/status/action'])assert.equal((await h.get(path,token)).status,404);
+ assert.equal(h.probes,0);
+});
+test('Insight empty states and native revoke confirmation preserve action fields',async()=>{
+ const h=await harness();let html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
+ for(const text of ['No apps','No pending requests','No active secret windows'])assert.ok(html.includes(text));
+ await writePolicy(h,'client');html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
+ assert.match(html,/<details><summary class="danger">Revoke<\/summary>/);assert.match(html,/>Confirm revoke<\/button>/);assert.match(html,/method="post" action="\/status\/action"/);
+});
+// Fixture captured with statusData from 902bab2 (the passkey parent), with a fixed clock.
+test('status.json remains deep-equal and byte-equal to the pre-Insight metadata fixture',async()=>{
+ const realNow=Date.now;Date.now=()=>1792627200000;
+ try{
+  const h=await harness();await writePolicy(h,'client',{app_id:'ab'.repeat(16)});
+  await h.env.STORAGE.put('outbox/01K7ZHHH0000000000000000000.json',bytes('not read'));
+  await h.env.STORAGE.put('events/test',bytes('not read'));
+  await h.env.STORAGE.put('connectors/'+'ab'.repeat(16)+'/secret/test.json',wire(await sign({format:'agentmesh-connector-secret-window-v1',app_id:'ab'.repeat(16),not_before:Date.now()-100,not_after:Date.now()+60000,issuer_device:h.deviceId},h.device,'connector-secret-window')));
+  h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>({items:[{clientId:'client'}]}),lookupClient:async()=>({clientName:'Claude'})})})});
+  const {readFile}=await import('node:fs/promises'),previous=await readFile(new URL('./fixtures/status-before-insight.json',import.meta.url),'utf8');
+  const response=await h.get(),text=await response.text();assert.equal(response.status,200);assert.deepEqual(JSON.parse(text),JSON.parse(previous));assert.equal(text,previous.trim());
+ }finally{Date.now=realNow;}
+});
+
+test('duration and timestamp use singular units for one and plural units otherwise',()=>{
+ const now=1792627200000;
+ for(const [ms,unit]of [[1000,'sec'],[60000,'min'],[3600000,'hr'],[86400000,'day']]){
+  assert.equal(duration(ms),'1 '+unit);assert.equal(duration(ms*1.5),'1 '+unit);assert.equal(duration(ms*2),'2 '+unit+'s');
+  assert.ok(timestamp(now-ms,now).includes('>1 '+unit+' ago</time>'));
+  assert.ok(timestamp(now+ms,now).includes('>in 1 '+unit+'</time>'));
+  assert.ok(timestamp(now-ms,now,true).includes('title="'+new Date(now-ms).toISOString()+'"'));
+ }
+ assert.equal(duration(0),'0 ms');assert.equal(duration(null),'Unknown');assert.equal(timestamp(null,now),'Unknown');
+ assert.ok(timestamp(now,now).includes('>just now</time>'));
 });

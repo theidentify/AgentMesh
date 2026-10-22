@@ -1,3 +1,4 @@
+import { statusStyle } from './status-ui.js';
 import { passkeyPage } from './passkeys.js';
 import { accessVerifier,serveStatus,statusResponse,statusAction } from './status.js';
 import { countError } from './status-metrics.js';
@@ -136,9 +137,11 @@ export function createGateway({fetcher=fetch,jwksFetcher=fetch,authorizationServ
   env={...env,STATUS_WAIT_UNTIL:task=>ctx.waitUntil(task)};
   const url=new URL(request.url),path=url.pathname;
   if(env.STATUS_ORIGIN&&url.origin===env.STATUS_ORIGIN&&env.STATUS_ORIGIN!==env.ORIGIN){
-   if(!(request.method==='GET'&&['/status','/status.json','/status/passkeys','/status/approve','/status/webauthn.js'].includes(path))&&!(request.method==='POST'&&['/status/action','/status/passkeys','/status/approve'].includes(path)))return statusResponse('Not found',404);
+   if(!(request.method==='GET'&&['/','/status/style.css','/status','/status.json','/status/passkeys','/status/approve','/status/webauthn.js'].includes(path))&&!(request.method==='POST'&&['/status/action','/status/passkeys','/status/approve'].includes(path)))return statusResponse('Not found',404);
    const identity=await verifyAccess(request,env);
    if(!identity){countError(env,'denied');return statusResponse('Forbidden',403);}
+   if(path==='/'){const response=statusResponse(null,302);response.headers.set('Location','/status');return response;}
+   if(path==='/status/style.css')return statusResponse(statusStyle,200,'text/css; charset=utf-8');
    try{
     const bound=namespaced(env),as=authorizationServer(env);
     if(['/status/passkeys','/status/approve','/status/webauthn.js'].includes(path))return await passkeyPage(request,bound,identity,(record,action)=>admin(new Request(env.ORIGIN+'/admin/'+action,{method:'POST',body:wire(record)}),bound,as,action),fetcher);

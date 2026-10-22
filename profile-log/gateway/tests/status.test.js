@@ -307,7 +307,7 @@ test('status.json remains deep-equal and byte-equal to the pre-Insight metadata 
   await h.env.STORAGE.put('connectors/'+'ab'.repeat(16)+'/secret/test.json',wire(await sign({format:'agentmesh-connector-secret-window-v1',app_id:'ab'.repeat(16),not_before:Date.now()-100,not_after:Date.now()+60000,issuer_device:h.deviceId},h.device,'connector-secret-window')));
   h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>({items:[{clientId:'client'}]}),lookupClient:async()=>({clientName:'Claude'})})})});
   const {readFile}=await import('node:fs/promises'),previous=await readFile(new URL('./fixtures/status-before-insight.json',import.meta.url),'utf8');
-  const response=await h.get(),text=await response.text();assert.equal(response.status,200);assert.deepEqual(JSON.parse(text),JSON.parse(previous));assert.equal(text,previous.trim());
+  for(let i=0;i<2;i++){const response=await h.get(),text=await response.text();assert.equal(response.status,200);assert.deepEqual(JSON.parse(text),JSON.parse(previous));assert.equal(text,previous.trim());}
  }finally{Date.now=realNow;}
 });
 
@@ -395,4 +395,30 @@ test('truncated inventory without a cursor stays partial on cache hits',async()=
  const h=await harness();await writePolicy(h,'client');const list=h.env.STORAGE.list.bind(h.env.STORAGE);
  h.env.STORAGE.list=async args=>args.prefix==='registry/'?{objects:[],truncated:true}:list(args);
  for(let i=0;i<2;i++){const data=await (await h.get()).json();assert.equal(data.r2_sync.capped,true);assert.equal(data.apps_capped,true);assert.deepEqual(data.apps,[]);h.env.STORAGE.list=async()=>assert.fail('cache hit must retain partial flag');}
+});
+
+test('app snapshot skips policy, window and OAuth reads on hits and filters expired windows',async()=>{
+ const realNow=Date.now;let now=realNow();Date.now=()=>now;
+ try{
+  const h=await harness(),{p}=await writePolicy(h,'client');
+  const window={app_id:p.app_id,not_before:now-100,not_after:now+1000};
+  await h.env.STORAGE.put(`connectors/${p.app_id}/secret/test.json`,wire(await sign({format:'agentmesh-connector-secret-window-v1',...window,issuer_device:h.deviceId},h.device,'connector-secret-window')));
+  // Count the policy/window resolvers' backing reads through FakeR2 and OAuth calls through fakes.
+  const calls={policy:0,secretWindow:0,listUserGrants:0,lookupClient:0},get=h.env.STORAGE.get.bind(h.env.STORAGE);
+  h.env.STORAGE.get=async key=>{if(key.includes('/policy/'))calls.policy++;if(key.includes('/secret/'))calls.secretWindow++;return get(key);};
+  h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>{calls.listUserGrants++;return {items:[{clientId:'client'}]};},lookupClient:async()=>{calls.lookupClient++;return {clientName:'Claude'};}})})});
+  const first=await (await h.get()).json();assert.equal(first.secret_windows.length,1);
+  assert.deepEqual(calls,{policy:1,secretWindow:1,listUserGrants:1,lookupClient:1});
+  now+=1000;
+  const hit=await (await h.get()).json();assert.deepEqual(hit.apps,first.apps);assert.deepEqual(hit.secret_windows,[]);
+  assert.deepEqual(calls,{policy:1,secretWindow:1,listUserGrants:1,lookupClient:1});
+  const cached=await h.env.OAUTH_KV.get('status:inventory','json');assert.deepEqual(cached.secret_windows,[window]);assert.deepEqual(cached.apps,first.apps);
+  now+=44000;await h.get();assert.deepEqual(calls,{policy:2,secretWindow:2,listUserGrants:2,lookupClient:2});
+ }finally{Date.now=realNow;}
+});
+test('grant pagination partial flag survives an app snapshot hit',async()=>{
+ const h=await harness();await writePolicy(h,'client');let calls=0;
+ h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>{calls++;return {items:[],cursor:'more'};}})})});
+ for(let i=0;i<2;i++){const data=await (await h.get()).json();assert.equal(data.apps_capped,true);assert.equal(data.r2_sync.capped,false);assert.equal(data.apps.length,1);}
+ assert.equal(calls,10);
 });

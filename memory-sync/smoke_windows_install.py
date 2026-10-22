@@ -88,6 +88,10 @@ def main():
         assert adapter.read(name)['task'] is None
         env = dict(os.environ)
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
+        # Legacy packet lifecycle smoke: opt in, since Phase 7a defaults packet sync off.
+        packet_home = root / 'agentmesh-home'; packet_home.mkdir()
+        (packet_home / 'settings.local.json').write_text(json.dumps({'packet_sync': {'enabled': True}}))
+        env['AGENTMESH_HOME'] = str(packet_home)
         common = ['--runtime', str(runtime), '--program-root', str(programs), '--task-name', name]
         def call(action, extra=(), answer='', expected=0):
             result = subprocess.run([str(binary), 'windows-' + action, *common, *extra], input=answer,

@@ -36,6 +36,17 @@ test('P6-S1 valid Access JWT renders only metadata with expected sections and he
  assert.doesNotMatch(text,/ciphertext-marker|remembered-body-marker/);assert.equal(h.probes,2);assert.equal(h.jwks,1);
  for(const r of [response,html]){assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(r.headers.get('X-Frame-Options'),'DENY');assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Access-Control-Allow-Origin'),null);assert.match(r.headers.get('Content-Security-Policy'),/default-src 'none'/);}
 });
+test('status routes expose only numeric Server-Timing durations',async()=>{
+ const h=await harness();await approved(h);
+ for(const path of ['/status','/status.json']){
+  const response=await h.get(path);assert.equal(response.status,200);
+  const timing=response.headers.get('Server-Timing');assert.ok(timing);
+  const entries=timing.split(/,\s*/);
+  assert.deepEqual(entries.map(entry=>entry.split(';')[0]),['probe','inventory','apps','errors','devices','pending','render','total']);
+  for(const entry of entries)assert.match(entry,/^[a-z]+;dur=\d+(?:\.\d+)?$/);
+  if(path==='/status.json')for(const name of ['pending','render'])assert.ok(entries.includes(name+';dur=0'));
+ }
+});
 test('P6-S2 Access rejects invalid assertions uniformly before probing',async()=>{
  const h=await harness();const other=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
  const tokens=['',await jwt({}, {},other.privateKey),await jwt({aud:['wrong']}),await jwt({iss:'https://wrong.example'}),await jwt({iat:Math.floor(Date.now()/1000)-600,nbf:Math.floor(Date.now()/1000)-600,exp:Math.floor(Date.now()/1000)-120}),await jwt({exp:1}),await jwt({email:'stranger@example.com'}),await jwt({}, {kid:'unknown'}),await jwt({nbf:9999999999}),await jwt({iat:9999999999}),await jwt({exp:'9999999999'}),await jwt({}, {alg:'HS256'})];
@@ -53,7 +64,7 @@ test('P6-S4 denied tool and HTTP errors increment bounded hourly counters',async
  const h=await harness();assert.deepEqual(await callTool(h.env,{props:{app_id:'ab'.repeat(16)},clientId:'missing'},'whoami',{}),{error:'denied'});
  await h.worker.fetch(new Request(h.env.ORIGIN+'/mcp'),h.env);
  const data=await (await h.get()).json();assert.equal(data.gateway_errors.denied,1);assert.equal(data.gateway_errors.invalid_token,1);
- for(const [key,row]of h.env.OAUTH_KV.data)if(key.startsWith('status:err:')){assert.match(key,/status:err:[a-z_]+:\d{10}$/);assert.ok(row.expires<=Date.now()+172800000);}
+ for(const [key,row]of h.env.OAUTH_KV.data)if(key.startsWith('status:err:')){assert.match(key,/status:err:\d{10}$/);assert.ok(row.expires<=Date.now()+172800000);}
 });
 test('P6-S5 probe failures expose only fixed reasons; tool calls write no bridge record',async()=>{
  const h=await harness(),{p}=await writePolicy(h,'client');
@@ -116,7 +127,7 @@ test('P6-S10 actions bind CSRF to JWT identity and reject bad requests before br
   assert.equal((await actionPost(h,values,headers)).status,403);assert.equal(h.actions.length,0);
  }
  assert.equal((await actionPost(h,fields,{},h.env.ORIGIN)).status,404);
- const completed=await actionPost(h,fields);assert.equal(completed.status,200);assertStatusHtml(completed,await completed.text());assert.equal(h.actions.length,1);
+ const completed=await actionPost(h,fields);assert.equal(completed.status,200);assertStatusHtml(completed,await completed.text());assert.equal(h.actions.length,1);assert.equal(await h.env.OAUTH_KV.get('status:inventory'),null);
  assert.deepEqual(h.actions[0],{tool:'admin',arguments:{action:'reject',code_hash:'cd'.repeat(32)}});
  assert.equal(await h.env.OAUTH_KV.get('pending:'+'cd'.repeat(32)),null);
  assert.equal((await actionPost(h,fields)).status,403);assert.equal(h.actions.length,1);
@@ -182,7 +193,7 @@ test('P6-S21 revoke and close relay only exact reductions; mismatched envelope i
   const {ref}=await writePolicy(h,'client',{...p,state:'revoked',issued_at:Date.now()});
   return Response.json(await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:crypto.randomUUID().replaceAll('-',''),action:'revoke',payload:{app_id:p.app_id,policy_ref:ref}},h.device,'connector-admin'));
  }});
- for(const action of ['close_secret','revoke']){const csrf=await actionToken(h);assert.equal((await actionPost(h,{csrf,action,app_id:p.app_id})).status,200);}
+ for(const action of ['close_secret','revoke']){const csrf=await actionToken(h);assert.ok(await h.env.OAUTH_KV.get('status:inventory'));assert.equal((await actionPost(h,{csrf,action,app_id:p.app_id})).status,200);assert.equal(await h.env.OAUTH_KV.get('status:inventory'),null);}
  assert.deepEqual(seen.map(r=>r.arguments),[{action:'close_secret',app_id:p.app_id},{action:'revoke',app_id:p.app_id}]);
  const csrf=await actionToken(h);
  assert.equal((await actionPost(h,{csrf,action:'reject',code_hash:'cd'.repeat(32)})).status,403);
@@ -241,7 +252,8 @@ test('P6-P6 approval begin relays hashes and returns transient names; finish app
  assert.deepEqual(seen.arguments,{step:'approve_begin',code_hash:codeHash,client_id_hash:await sha(bytes(client.client_id)),client_name:'Claude'});
  assert.deepEqual(result.profile_names,['private-profile-marker']);assert.equal(result.client_name,'Claude');
  const finishArgs={step:'approve_finish',code_hash:codeHash,device_id:h.deviceId,challenge_id:result.challenge_id,assertion:{id:'assertion-marker'},csrf:result.csrf};
- assert.equal((await post(finishArgs)).status,200);
+ await h.env.OAUTH_KV.put('status:inventory','cached');
+ assert.equal((await post(finishArgs)).status,200);assert.equal(await h.env.OAUTH_KV.get('status:inventory'),null);
  assert.ok((await h.env.OAUTH_KV.get('pending:'+codeHash,'json')).approval);
  assert.equal((await finish(h,flow)).status,302);
  for(const row of h.env.OAUTH_KV.data.values())assert.doesNotMatch(JSON.stringify(row),/assertion-marker|private-profile-marker/);
@@ -282,7 +294,7 @@ test('Insight stylesheet and root redirect require Access and remain status-host
 test('Insight empty states and native revoke confirmation preserve action fields',async()=>{
  const h=await harness();let html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
  for(const text of ['No apps','No pending requests','No active secret windows'])assert.ok(html.includes(text));
- await writePolicy(h,'client');html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
+ await writePolicy(h,'client');await h.env.OAUTH_KV.delete('status:inventory');html=await (await h.get('/status',await jwt({sub:'owner'}))).text();
  assert.match(html,/<details><summary class="danger">Revoke<\/summary>/);assert.match(html,/>Confirm revoke<\/button>/);assert.match(html,/method="post" action="\/status\/action"/);
 });
 // Fixture captured with statusData from 902bab2 (the passkey parent), with a fixed clock.
@@ -309,4 +321,78 @@ test('duration and timestamp use singular units for one and plural units otherwi
  }
  assert.equal(duration(0),'0 ms');assert.equal(duration(null),'Unknown');assert.equal(timestamp(null,now),'Unknown');
  assert.ok(timestamp(now,now).includes('>just now</time>'));
+});
+
+ test('merged hourly counters preserve fixed codes and legacy history',async()=>{
+ const {countError,hour}=await import('../src/status-metrics.js'),h=await harness(),tasks=[];
+ h.env.STATUS_WAIT_UNTIL=p=>tasks.push(p);
+ const key='status:err:'+hour(Date.now());
+ await h.env.OAUTH_KV.put(key,JSON.stringify({denied:2,unknown:99}));
+ countError(h.env,'denied');await Promise.all(tasks);
+ assert.deepEqual(await h.env.OAUTH_KV.get(key,'json'),{denied:3});
+ await h.env.OAUTH_KV.put('status:err:denied:'+hour(Date.now()-3600000),'4');
+ await h.env.OAUTH_KV.put('status:err:'+hour(Date.now()-23*3600000),JSON.stringify({denied:5,invalid_token:2}));
+ await h.env.OAUTH_KV.put('status:err:'+hour(Date.now()-24*3600000),JSON.stringify({denied:100}));
+ const data=await (await h.get()).json();assert.equal(data.gateway_errors.denied,12);assert.equal(data.gateway_errors.invalid_token,2);assert.equal(data.gateway_errors.unknown,undefined);
+ });
+ test('inventory cache avoids lists for 45 seconds while live observations and errors stay fresh',async()=>{
+ const h=await harness(),list=h.env.STORAGE.list.bind(h.env.STORAGE);let calls=0;
+ h.env.STORAGE.list=async args=>{calls++;return list(args);};
+ await h.get();const initial=calls;assert.equal(initial,7);
+ await h.env.STORAGE.put('events/new',bytes('not read'));
+ const {hour}=await import('../src/status-metrics.js');await h.env.OAUTH_KV.put('status:err:'+hour(Date.now()),JSON.stringify({denied:7}));
+ await h.env.OAUTH_KV.put('status:bridge:'+'ab'.repeat(16),JSON.stringify({device_id:'ab'.repeat(16),last_seen_ms:1,latency_ms:2}));
+ const data=await (await h.get()).json();assert.equal(calls,initial);assert.equal(h.probes,2);assert.equal(data.gateway_errors.denied,7);assert.ok(data.bridges.devices.some(d=>d.device_id==='ab'.repeat(16)));assert.equal(data.r2_sync.counts['events/'],0);
+ const realNow=Date.now;try{Date.now=()=>realNow()+45000;const fresh=await (await h.get()).json();assert.equal(fresh.r2_sync.counts['events/'],1);assert.equal(calls,initial*2);}finally{Date.now=realNow;}
+ });
+ test('parallel inventory retains fixed prefix order, exact cap and cached partial authority',{timeout:2000},async()=>{
+ const h=await harness();let starts=[],release;const barrier=new Promise(r=>release=r);
+ const prefixes=['registry/','keyring/','keys/','events/','connectors/','outbox/'];
+ h.env.STORAGE.list=async({prefix,cursor,limit})=>{
+ if(!cursor){starts.push(prefix);if(starts.length===6)release();await barrier;}
+ const start=Number(cursor??0),end=Math.min(start+limit,2500);
+ return {objects:Array.from({length:end-start},(_,i)=>({key:prefix+String(start+i).padStart(5,'0'),uploaded:new Date(0)})),truncated:end<2500,cursor:String(end)};
+ };
+ const response=await h.get();assert.equal(response.status,200);const data=await response.json();
+ assert.deepEqual(starts,prefixes);assert.deepEqual(Object.values(data.r2_sync.counts),[2500,2500,2500,2500,0,0]);assert.equal(data.apps_capped,true);
+ const cached=await h.env.OAUTH_KV.get('status:inventory','json');assert.equal(cached.objects.length,10000);assert.equal(cached.objects[9999].key,'events/02499');
+ h.env.STORAGE.list=async()=>assert.fail('cached');h.env.STORAGE.get=async()=>assert.fail('partial controls must never resolve');
+ const again=await (await h.get()).json();assert.equal(again.r2_sync.capped,true);assert.equal(again.apps_capped,true);assert.deepEqual(again.apps,[]);
+ });
+
+test('HTML starts probe, inventory, error, device and pending work concurrently', {timeout:2000},async()=>{
+ const h=await harness(),started=new Set();let release;const barrier=new Promise(r=>release=r);
+ const arrive=async name=>{started.add(name);if(started.size===5)release();await barrier;};
+ const list=h.env.STORAGE.list.bind(h.env.STORAGE),get=h.env.OAUTH_KV.get.bind(h.env.OAUTH_KV),kvlist=h.env.OAUTH_KV.list.bind(h.env.OAUTH_KV);
+ h.env.STORAGE.list=async args=>{await arrive('inventory');return list(args);};
+ h.env.OAUTH_KV.get=async(key,type)=>{if(/^status:err:\d/.test(key))await arrive('errors');return get(key,type);};
+ h.env.OAUTH_KV.list=async args=>{await arrive(args.prefix==='pending:'?'pending':'devices');return kvlist(args);};
+ h.worker=createGateway({...h.options,fetcher:async(...args)=>{await arrive('probe');return h.options.fetcher(...args);}});
+ assert.equal((await h.get('/status')).status,200);assert.equal(started.size,5);
+});
+test('apps resolve grants concurrently and retain inventory order', {timeout:2000},async()=>{
+ const h=await harness();await writePolicy(h,'one',{app_id:'aa'.repeat(16)});await writePolicy(h,'two',{app_id:'bb'.repeat(16)});
+ let calls=0,release;const barrier=new Promise(r=>release=r);
+ h.worker=createGateway({...h.options,authorizationServer:()=>({getOAuthApi:()=>({listUserGrants:async()=>{if(++calls===2)release();await barrier;return {items:[]};}})})});
+ const data=await (await h.get()).json();assert.deepEqual(data.apps.map(a=>a.app_id),['aa'.repeat(16),'bb'.repeat(16)]);
+});
+test('all 24 merged hour reads start together and invalid counts are ignored', {timeout:2000},async()=>{
+ const {errorCounts}=await import('../src/status-metrics.js');let release;const barrier=new Promise(r=>release=r),merged=[],legacy=[];
+ const env={OAUTH_KV:{get:async(key,type)=>{
+  if(type==='json'){merged.push(key);if(merged.length===24)release();await barrier;return {denied:1,unavailable:-1,invalid_token:'2',unknown:99};}
+  legacy.push(key);return '0';
+ }}};
+ const result=await errorCounts(env,1792627200000);assert.equal(new Set(merged).size,24);assert.equal(legacy.length,144);assert.equal(result.denied,24);assert.equal(result.unavailable,0);assert.equal(result.invalid_token,0);assert.equal(result.unknown,undefined);
+});
+test('app cap stays at 100 and registry verification is shared within the request',async()=>{
+ const h=await harness();
+ for(let i=1;i<=101;i++)await writePolicy(h,'client',{app_id:i.toString(16).padStart(32,'0')});
+ const verify=crypto.subtle.verify;let certificates=0;
+ crypto.subtle.verify=async function(...args){if(new TextDecoder().decode(args[3]).startsWith('AgentMesh/device-cert/'))certificates++;return verify.apply(this,args);};
+ try{const data=await (await h.get()).json();assert.equal(data.apps.length,100);assert.equal(data.apps_capped,true);assert.equal(data.apps[99].app_id,(100).toString(16).padStart(32,'0'));assert.equal(certificates,2);}finally{crypto.subtle.verify=verify;}
+});
+test('truncated inventory without a cursor stays partial on cache hits',async()=>{
+ const h=await harness();await writePolicy(h,'client');const list=h.env.STORAGE.list.bind(h.env.STORAGE);
+ h.env.STORAGE.list=async args=>args.prefix==='registry/'?{objects:[],truncated:true}:list(args);
+ for(let i=0;i<2;i++){const data=await (await h.get()).json();assert.equal(data.r2_sync.capped,true);assert.equal(data.apps_capped,true);assert.deepEqual(data.apps,[]);h.env.STORAGE.list=async()=>assert.fail('cache hit must retain partial flag');}
 });

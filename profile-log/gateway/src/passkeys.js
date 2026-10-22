@@ -58,7 +58,7 @@ ${register?`<section id="kind" tabindex="-1" hidden><h2>2. Choose your passkey k
   if(result.error)return response({error:['agentmesh_offline','wrong_device'].includes(result.error)?result.error:'denied'},result.error==='agentmesh_offline'?503:403);
   if(args.step==='approve_finish'){
    if(result.action!=='approve'||result.payload?.code_hash!==codeHash||result.device_id!==args.device_id)throw Error();
-   if(!(await applyAdmin(result,'approve')).ok)throw Error();return response({status:'ok'});
+   if(!(await applyAdmin(result,'approve')).ok)throw Error();await env.OAUTH_KV.delete('status:inventory');return response({status:'ok'});
   }
   if(args.step==='register_finish'){exact(result,['status']);if(result.status!=='ok')throw Error();return response({status:'ok'});}
   // Options are ephemeral metadata. Never persist bridge response, credential or assertion.

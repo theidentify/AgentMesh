@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { bytes,hex,sha,unhex,exact } from './encoding.js';
-import { policy,secretWindow } from './registry.js';
+import { registry,policy,secretWindow } from './registry.js';
 import { tunnel,claim } from './gateway.js';
-import { ERROR_CODES,STATUS_APP,hour,statusShape,countError } from './status-metrics.js';
+import { STATUS_APP,statusShape,countError,errorCounts } from './status-metrics.js';
 import { escape,statusPage,statusDashboard } from './status-ui.js';
 const headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",'X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
 export const statusResponse=(body,status=200,type='text/plain; charset=utf-8')=>new Response(body,{status,headers:{...headers,'Content-Type':type}});
@@ -33,51 +33,77 @@ export function accessVerifier(fetcher) {
 }
 const PREFIXES=['registry/','keyring/','keys/','events/','connectors/','outbox/'];
 async function inventory(bucket) {
- const objects=[],counts=Object.fromEntries(PREFIXES.map(p=>[p,0]));let capped=false,pages=0;
- outer:for(const prefix of PREFIXES){let cursor;
-  do{const page=await bucket.list({prefix,cursor,limit:Math.min(1000,10000-objects.length)});pages++;
-   for(const o of page.objects){if(objects.length===10000){capped=true;break outer;}objects.push(o);counts[prefix]++;}
-   cursor=page.truncated?page.cursor:undefined;
-   if(objects.length>=10000||pages>=10000){capped=true;break outer;}
-   if(page.truncated&&!cursor){capped=true;break outer;}
-  }while(cursor);
+ const scans=await Promise.all(PREFIXES.map(async prefix=>{
+  const objects=[];let cursor,pages=0,capped=false;
+  do{const page=await bucket.list({prefix,cursor,limit:Math.min(1000,10000-objects.length)});
+   objects.push(...page.objects.slice(0,10000-objects.length).map(o=>({key:o.key,...(o.uploaded!==undefined?{uploaded:o.uploaded}:{})})));cursor=page.truncated?page.cursor:undefined;
+   if(objects.length>=10000||++pages>=10000||(page.truncated&&!cursor)){capped=true;break;}
+  }while(cursor);return {objects,capped};
+ }));
+ const objects=[],counts=Object.fromEntries(PREFIXES.map(p=>[p,0]));let capped=false;
+ for(const [i,scan]of scans.entries()){
+  const selected=scan.objects.slice(0,10000-objects.length);objects.push(...selected);counts[PREFIXES[i]]=selected.length;
+  capped||=scan.capped||selected.length<scan.objects.length||objects.length===10000;
  }
  return {objects,counts,capped};
 }
+async function inventorySnapshot(env) {
+ const at=Date.now();
+ try{const cached=await env.OAUTH_KV.get('status:inventory','json');if(cached&&Number.isSafeInteger(cached.generated_at_ms)&&at>=cached.generated_at_ms&&at-cached.generated_at_ms<45000&&Array.isArray(cached.objects)&&cached.objects.length<=10000&&typeof cached.capped==='boolean'&&cached.counts)return cached;}catch{}
+ const snapshot={...await inventory(env.STORAGE),generated_at_ms:at};
+ try{await env.OAUTH_KV.put('status:inventory',JSON.stringify(snapshot),{expirationTtl:60});}catch{}
+ return snapshot;
+}
+async function timedStage(timings,name,operation) {
+ const started=Date.now();try{return await operation();}finally{timings[name]=Date.now()-started;}
+}
+
 function itemTime(o) {
  const id=/^outbox\/([0-7][0-9A-HJKMNP-TV-Z]{25})\.json$/.exec(o.key)?.[1];
  if(id){let n=0;for(const c of id.slice(0,10))n=n*32+'0123456789ABCDEFGHJKMNPQRSTVWXYZ'.indexOf(c);return n;}
  const at=new Date(o.uploaded).getTime();return Number.isFinite(at)?at:null;
 }
-async function devices(env,live) {
+async function devices(env) {
  const rows=[];let cursor,pages=0,capped=false;
  do{const page=await env.OAUTH_KV.list({prefix:'status:bridge:',cursor,limit:1000});
-  for(const key of page.keys){if(rows.length===1000){capped=true;break;}try{const r=await env.OAUTH_KV.get(key.name,'json');if(r&&((r.device_id===null&&key.name==='status:bridge:unattributed')||(/^[0-9a-f]{32}$/.test(r.device_id)&&key.name==='status:bridge:'+r.device_id))&&Number.isSafeInteger(r.last_seen_ms)&&Number.isSafeInteger(r.latency_ms))rows.push({device_id:r.device_id,last_seen_ms:r.last_seen_ms,latency_ms:r.latency_ms,live:r.device_id!==null&&r.device_id===live?.device_id});}catch{}}
+  for(const key of page.keys){if(rows.length===1000){capped=true;break;}try{const r=await env.OAUTH_KV.get(key.name,'json');if(r&&((r.device_id===null&&key.name==='status:bridge:unattributed')||(/^[0-9a-f]{32}$/.test(r.device_id)&&key.name==='status:bridge:'+r.device_id))&&Number.isSafeInteger(r.last_seen_ms)&&Number.isSafeInteger(r.latency_ms))rows.push({device_id:r.device_id,last_seen_ms:r.last_seen_ms,latency_ms:r.latency_ms,live:false});}catch{}}
   cursor=page.list_complete?undefined:page.cursor;if(++pages>=10||rows.length>=1000){capped||=!!cursor;break;}
  }while(cursor);
- if(live){const row={device_id:live.device_id,last_seen_ms:Date.now(),latency_ms:live.latency_ms,live:true},index=rows.findIndex(r=>r.device_id===live.device_id);if(index<0)rows.push(row);else rows[index]=row;}
  return {rows,capped};
 }
-export async function statusData(env,api,fetcher) {
- const started=Date.now(),result=await tunnel(env,STATUS_APP,'status',{},fetcher);let live=null;
- try{if(!result.error)live={...statusShape(result),latency_ms:Date.now()-started};}catch{}
- const probe=live?{state:'online',...live}:{state:'offline',reason:result.error==='denied'?'denied':result.error==='agentmesh_offline'?'offline':'unavailable'};
- const inv=await inventory(env.STORAGE),at=Date.now(),outbox=inv.objects.filter(o=>o.key.startsWith('outbox/')),times=outbox.map(itemTime).filter(n=>n!==null);
+export async function statusData(env,api,fetcher,timings={}) {
+ const started=Date.now();
+ const [result,inv,errors,known]=await Promise.all([
+  timedStage(timings,'probe',()=>tunnel(env,STATUS_APP,'status',{},fetcher)),
+  timedStage(timings,'inventory',()=>inventorySnapshot(env)),
+  timedStage(timings,'errors',()=>errorCounts(env,started)),
+  timedStage(timings,'devices',()=>devices(env))
+ ]);
+ let live=null;try{if(!result.error)live={...statusShape(result),latency_ms:timings.probe};}catch{}
+ const at=Date.now(),probe=live?{state:'online',...live}:{state:'offline',reason:result.error==='denied'?'denied':result.error==='agentmesh_offline'?'offline':'unavailable'};
+ if(live){const row={device_id:live.device_id,last_seen_ms:at,latency_ms:live.latency_ms,live:true},index=known.rows.findIndex(r=>r.device_id===live.device_id);if(index<0)known.rows.push(row);else known.rows[index]=row;}
+ const outbox=inv.objects.filter(o=>o.key.startsWith('outbox/')),times=outbox.map(itemTime).filter(n=>n!==null);
  // Resolve controls through the bounded snapshot; never read data objects.
  const reads=new Map();
  const bounded={...env,STORAGE:{get:async key=>{if(!reads.has(key))reads.set(key,(async()=>{const object=await env.STORAGE.get(key);return object?await object.arrayBuffer():null;})());const data=await reads.get(key);return data?{arrayBuffer:async()=>data.slice(0)}:null;},list:async({prefix=''})=>({objects:inv.objects.filter(o=>o.key.startsWith(prefix)),truncated:false})}};
  const ids=[...new Set(inv.objects.map(o=>/^connectors\/([0-9a-f]{32})\/policy\//.exec(o.key)?.[1]).filter(Boolean))];
  const apps=[],windows=[];let appsCapped=inv.capped||ids.length>100;
  // A partial control inventory may omit revocations: do not resolve it as authoritative.
- if(!inv.capped)for(const app of ids.slice(0,100)){
-  const p=await policy(bounded,app,at);if(!p)continue;const names=new Set();let cursor,has=false,pages=0;
-  do{const page=await api.listUserGrants(app,{cursor,limit:100});const active=page.items.filter(g=>g.expiresAt===undefined||g.expiresAt>at/1000);has||=active.length>0;for(const grant of active){const client=await api.lookupClient(grant.clientId);if(typeof client?.clientName==='string')names.add(client.clientName.slice(0,256));}cursor=page.cursor;if(++pages===10&&cursor){appsCapped=true;break;}}while(cursor);
-  apps.push({app_id:p.app_id,state:p.state,max_label:p.max_label,read:p.read,remember:p.remember,limits:p.limits,has_oauth_grants:has,client_names:[...names],issued_at:p.issued_at});
-  const w=await secretWindow(bounded,app,at);if(w)windows.push({app_id:app,not_after:w.not_after});
- }
- const errors=Object.fromEntries(ERROR_CODES.map(c=>[c,0]));
- for(const code of ERROR_CODES)for(let i=0;i<24;i++){const n=Number(await env.OAUTH_KV.get(`status:err:${code}:${hour(at-i*3600000)}`)??0);if(Number.isSafeInteger(n)&&n>=0)errors[code]+=n;}
- const known=await devices(env,live),uploaded=inv.objects.filter(o=>o.key.startsWith('events/')).map(o=>new Date(o.uploaded).getTime()).filter(Number.isFinite);
+ await timedStage(timings,'apps',async()=>{
+  if(inv.capped||!ids.length)return;
+  const reg=await registry(bounded);
+  const rows=await Promise.all(ids.slice(0,100).map(async app=>{
+   const [p,w]=await Promise.all([policy(bounded,app,at,reg),secretWindow(bounded,app,at,reg)]);if(!p)return null;
+   const names=new Set();let cursor,has=false,pages=0;
+   do{const page=await api.listUserGrants(app,{cursor,limit:100}),active=page.items.filter(g=>g.expiresAt===undefined||g.expiresAt>at/1000);has||=active.length>0;
+    const clients=await Promise.all(active.map(grant=>api.lookupClient(grant.clientId)));for(const client of clients)if(typeof client?.clientName==='string')names.add(client.clientName.slice(0,256));
+    cursor=page.cursor;if(++pages===10&&cursor){appsCapped=true;break;}
+   }while(cursor);
+   return {app:{app_id:p.app_id,state:p.state,max_label:p.max_label,read:p.read,remember:p.remember,limits:p.limits,has_oauth_grants:has,client_names:[...names],issued_at:p.issued_at},window:w?{app_id:app,not_after:w.not_after}:null};
+  }));
+  for(const row of rows)if(row){apps.push(row.app);if(row.window)windows.push(row.window);}
+ });
+ const uploaded=inv.objects.filter(o=>o.key.startsWith('events/')).map(o=>new Date(o.uploaded).getTime()).filter(Number.isFinite);
  return {generated_at_ms:at,bridges:{probe,devices:known.rows,capped:known.capped,note:'The Tunnel routes to any healthy connector; this is observed history, not device enumeration. Unattributed responses cannot identify a device.'},outbox:{count:outbox.length,oldest_age_ms:times.length?Math.max(0,at-Math.min(...times)):null,newest_age_ms:times.length?Math.max(0,at-Math.max(...times)):null,unknown_age_count:outbox.length-times.length,capped:inv.capped,last_drain_ms:live?.last_drain_ms??null,last_drain_result:live?.last_drain_result??null,outbox_cursor_ms:live?.outbox_cursor_ms??null,note:'Object count is not a pending count: the Worker cannot determine which items were drained.'},apps,apps_capped:appsCapped,secret_windows:windows,gateway_errors:errors,r2_sync:{counts:inv.counts,latest_event_uploaded_ms:uploaded.length?Math.max(...uploaded):null,capped:inv.capped,object_limit:10000,note:'Counts and latest upload cover the scanned objects only; capped results are partial. Upload time does not prove convergence.'}};
 }
 async function pendingRequests(env) {
@@ -108,12 +134,16 @@ export async function statusAction(request,env,identity,applyAdmin,fetcher) {
    if(result.action!==action||result.payload?.[field]!==args[field])throw Error();
    const response=await applyAdmin(result,action);if(!response.ok)throw Error();
   }
+  await env.OAUTH_KV.delete('status:inventory');
   return statusResponse(statusPage('Action completed','<section class="panel"><h2>Action completed.</h2><a class="button" href="/status">Return to status</a></section>'),200,'text/html; charset=utf-8');
  }catch{return statusResponse('Forbidden',403);}
 }
 export async function serveStatus(request,env,api,fetcher,identity) {
- try{const data=await statusData(env,api,fetcher);if(new URL(request.url).pathname==='/status.json')return statusResponse(JSON.stringify(data),200,'application/json');
-  const pending=await pendingRequests(env);let form=()=>'';
+ const started=Date.now(),timings={probe:0,inventory:0,apps:0,errors:0,devices:0,pending:0,render:0,total:0};
+ const timed=response=>{timings.total=Date.now()-started;response.headers.set('Server-Timing',Object.entries(timings).map(([name,duration])=>`${name};dur=${duration}`).join(', '));return response;};
+ try{const json=new URL(request.url).pathname==='/status.json';
+  const [data,pending]=await Promise.all([statusData(env,api,fetcher,timings),json?null:timedStage(timings,'pending',()=>pendingRequests(env))]);if(json)return timed(statusResponse(JSON.stringify(data),200,'application/json'));
+  let stage,form=()=>'';
   if(typeof identity?.sub==='string'&&identity.sub){
    const token=hex(crypto.getRandomValues(new Uint8Array(32)));
    await env.OAUTH_KV.put('status:csrf:'+await sha(bytes(token)),JSON.stringify({...identity,exp:Date.now()+900000}),{expirationTtl:900});
@@ -122,6 +152,7 @@ export async function serveStatus(request,env,api,fetcher,identity) {
     return action==='revoke'?'<details><summary class="danger">Revoke</summary><p>Revoke access for this app?</p>'+html+'</details>':html;
    };
   }
-  return statusResponse(statusDashboard(data,pending,form),200,'text/html; charset=utf-8');
- }catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
+  stage=Date.now();const html=statusDashboard(data,pending,form);timings.render=Date.now()-stage;
+  return timed(statusResponse(html,200,'text/html; charset=utf-8'));
+ }catch{countError(env,'unavailable');return timed(statusResponse('Unavailable',503));}
 }

@@ -662,3 +662,31 @@ recipient and path before decrypting, then accepts only the bound profile/scope,
 direct root parent, project kind and inbox name. It never replaces existing scope
 metadata or creates a duplicate local name. Normal authenticated root wraps and
 epoch records supply keys; the metadata alone grants no decryption capability.
+
+
+### Connector secret close (Phase 6 status de-escalation)
+
+`connectors/{app_id}/secret-close/{ulid}.json` is additive and contains exactly
+`format="agentmesh-connector-secret-close-v1"`, `app_id` (16-byte lowercase hex),
+`closed_at` (nonnegative integer UTC milliseconds), `issuer_device` (16-byte hex)
+and `signature` (64-byte Ed25519 hex). Its domain is
+`b"AgentMesh/connector-secret-close/Ed25519/v1\x00"` with the existing typed signed
+encoding. The path app ID must match and the leaf must be a canonical ULID.
+
+Verify the signature and account device chain at `closed_at`, honouring device
+revocations effective at that time. No reader, write-only or scope-ancestry check
+applies: write-only account devices may close windows. This is intentional
+narrowing-only authority, like revocation, and cannot grant scope access.
+Ignore forged, revoked-at-closure, future or malformed closes. Ignore each active
+window whose `not_before <= closed_at < not_after`; the end is exclusive. A later
+revocation of the close signer does not undo a valid past close and reopen access.
+A close does not alter or delete the signed window, extend its expiry, authorize
+a new window, or affect later windows starting after closed_at. Both Python and
+the Worker apply this same registry-only issuer rule.
+
+The existing connector-admin envelope additionally permits action `reject` with
+exact payload `{code_hash}` (32-byte SHA-256 hex). It uses the existing admin
+signature domain, device_id/ts/nonce checks and replay claim. A successful reject
+claims the pending browser completion slot and deletes the pending KV entry;
+it cannot complete or approve authorization. Revoke retains exact payload
+`{app_id,policy_ref}` and requires the referenced device-signed revoked policy.

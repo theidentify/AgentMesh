@@ -67,10 +67,18 @@ export async function policy(env,app,at=Date.now()) {
   return current;
 }
 export async function secretWindow(env,app,at=Date.now()) {
-  const reg=await registry(env);
+  unhex(app,16);const reg=await registry(env),closed=[];
+  for(const [path,c]of await records(env.STORAGE,`connectors/${app}/secret-close/`)){try{
+    exact(c,['format','signature','app_id','closed_at','issuer_device']);
+    if(c.format!=='agentmesh-connector-secret-close-v1'||c.app_id!==app||!Number.isSafeInteger(c.closed_at)||c.closed_at<0||c.closed_at>at||!new RegExp(`^connectors/${app}/secret-close/[0-7][0-9A-HJKMNP-TV-Z]{25}\\.json$`).test(path))continue;
+    // A later revocation must not undo a valid reduction; no scope authority is needed.
+    await verify(c,await reg.publicKey(c.issuer_device,c.closed_at),'connector-secret-close');
+    closed.push(c.closed_at);
+  }catch{}}
   for(const [path,w]of await records(env.STORAGE,`connectors/${app}/secret/`)){try{
     exact(w,['format','signature','app_id','not_before','not_after','issuer_device']);
     if(w.format!=='agentmesh-connector-secret-window-v1'||w.app_id!==app||!Number.isSafeInteger(w.not_before)||!Number.isSafeInteger(w.not_after)||w.not_after-w.not_before>3600000||!(w.not_before<=at&&at<w.not_after))continue;
-    await verify(w,await reg.publicKey(w.issuer_device,at),'connector-secret-window');return w;
+    await verify(w,await reg.publicKey(w.issuer_device,at),'connector-secret-window');
+    if(closed.some(t=>w.not_before<=t&&t<w.not_after))continue;return w;
   }catch{}}return null;
 }

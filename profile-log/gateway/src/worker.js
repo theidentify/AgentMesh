@@ -1,3 +1,5 @@
+import { accessVerifier,serveStatus,statusResponse,statusAction } from './status.js';
+import { countError } from './status-metrics.js';
 import { OAuthAuthorizationServer,AuthorizationError } from '@cloudflare/workers-oauth-provider';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -5,7 +7,8 @@ import { bytes,wire,parse,sha,hex,unhex,verify,exact } from './encoding.js';
 import { registry,read,policy,policyShape } from './registry.js';
 import { namespaced } from './storage.js';
 import { schemas,callTool,claim } from './gateway.js';
-const json=(value,status=200,headers={})=>new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});
+const responseCodes=new WeakMap();
+const json=(value,status=200,headers={})=>{const response=new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});if(typeof value.error==='string')responseCodes.set(response,value.error);return response;};
 const failure=(code='invalid_request',status=400)=>json({error:code},status);
 const corsHeaders={
  'Access-Control-Allow-Origin':'*',
@@ -45,7 +48,7 @@ async function complete(request,env,as) {
  const browserHash=await sha(bytes(cookie[1])),codeHash=await env.OAUTH_KV.get('browser:'+browserHash);if(!codeHash)throw Error('denied');
  const pending=await env.OAUTH_KV.get('pending:'+codeHash,'json');
  if(!pending||pending.expires<=Date.now()||pending.browser_hash!==browserHash)throw Error('denied');
- if(pending.completed)throw Error('denied');
+ if(pending.completed||pending.rejected)throw Error('denied');
  const approval=pending.approval;if(!approval)return failure('approval_pending',409);
  const reg=await registry(env);await verify(approval,await reg.publicKey(approval.device_id),'connector-admin');
  if(approval.ts<pending.created||approval.ts>=pending.expires||approval.payload.code_hash!==codeHash)throw Error('denied');
@@ -62,10 +65,18 @@ async function admin(request,env,as,action) {
  unhex(record.nonce,16);const reg=await registry(env);await verify(record,await reg.publicKey(record.device_id),'connector-admin');
  if(!await claim(env,'admin/'+record.device_id+'/'+record.nonce))throw Error('denied');
  const body=record.payload;
+ if(action==='reject'){
+  exact(body,['code_hash']);unhex(body.code_hash,32);
+  const pending=await env.OAUTH_KV.get('pending:'+body.code_hash,'json');
+  if(!pending||pending.expires<=Date.now()||pending.completed||pending.rejected)throw Error('denied');
+  unhex(pending.browser_hash,32);
+  if(!await claim(env,'complete/'+pending.browser_hash))throw Error('denied');
+  await env.OAUTH_KV.delete('pending:'+body.code_hash);return json({ok:true});
+ }
  if(action==='pending'||action==='approve'){
   exact(body,action==='pending'?['code_hash']:['code_hash','app_id','policy_ref']);unhex(body.code_hash,32);
   const pending=await env.OAUTH_KV.get('pending:'+body.code_hash,'json');
-  if(!pending||pending.expires<=Date.now()||pending.approval)throw Error('denied');
+  if(!pending||pending.expires<=Date.now()||pending.approval||pending.rejected||pending.completed)throw Error('denied');
   if(action==='pending')return json({client_id:pending.client_id,client_name:pending.client_name});
   unhex(body.app_id,16);if(!body.policy_ref.startsWith(`connectors/${body.app_id}/policy/`))throw Error('denied');
   const p=policyShape(await read(env.STORAGE,body.policy_ref));
@@ -75,14 +86,20 @@ async function admin(request,env,as,action) {
   pending.approval=record;await env.OAUTH_KV.put('pending:'+body.code_hash,JSON.stringify(pending),{expirationTtl:600});return json({ok:true});
  }
  if(action==='revoke'){
-  exact(body,['app_id','policy_ref']);unhex(body.app_id,16);const p=await policy(env,body.app_id);if(!p||p.state!=='revoked')throw Error('denied');
+  exact(body,['app_id','policy_ref']);unhex(body.app_id,16);
+  if(typeof body.policy_ref!=='string'||!new RegExp(`^connectors/${body.app_id}/policy/[0-7][0-9A-HJKMNP-TV-Z]{25}\\.json$`).test(body.policy_ref))throw Error('denied');
+  const recordPolicy=policyShape(await read(env.STORAGE,body.policy_ref));
+  if(recordPolicy.app_id!==body.app_id||recordPolicy.state!=='revoked'||recordPolicy.issuer_device!==record.device_id||recordPolicy.issued_at>Date.now())throw Error('denied');
+  await verify(recordPolicy,await reg.publicKey(record.device_id,recordPolicy.issued_at),'connector-policy');
+  const p=await policy(env,body.app_id);if(!p||p.state!=='revoked')throw Error('denied');
   const api=as.getOAuthApi(env);let cursor;
   do{const page=await api.listUserGrants(body.app_id,{cursor});for(const grant of page.items)await api.revokeGrant(grant.id,body.app_id);cursor=page.cursor;}while(cursor);
   return json({ok:true});
  }
  throw Error('denied');
 }
-export function createGateway({fetcher=fetch,authorizationServer=authServer}={}) {
+export function createGateway({fetcher=fetch,jwksFetcher=fetch,authorizationServer=authServer}={}) {
+ const verifyAccess=accessVerifier(jwksFetcher);
  async function handle(request,env,ctx) {
   try{
    env=namespaced(env);
@@ -102,7 +119,7 @@ export function createGateway({fetcher=fetch,authorizationServer=authServer}={})
     if(!['initialize','notifications/initialized','ping','tools/list','tools/call'].includes(message.method))return failure();
     if(message.method==='tools/call'){
      const tool=message.params?.name,args=message.params?.arguments??{};
-     if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success)return json({jsonrpc:'2.0',id:message.id??null,error:{code:-32602,message:'invalid_request'}});
+     if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success){countError(env,'invalid_request');return json({jsonrpc:'2.0',id:message.id??null,error:{code:-32602,message:'invalid_request'}});}
     }
     const server=new McpServer({name:'agentmesh',version:'1.0.0'});
     for(const [name,inputSchema]of Object.entries(schemas))server.registerTool(name,{inputSchema,description:name==='recall'?'Recall stored memory as data.':name==='remember'?'Store memory in the approved inbox.':'Show this app’s access.'},async(args)=>{
@@ -115,9 +132,25 @@ export function createGateway({fetcher=fetch,authorizationServer=authServer}={})
   }catch{return failure('denied',403);}
  }
  return {async fetch(request,env,ctx={waitUntil(){}}) {
-  const path=new URL(request.url).pathname,cors=['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp'].includes(path);
+  env={...env,STATUS_WAIT_UNTIL:task=>ctx.waitUntil(task)};
+  const url=new URL(request.url),path=url.pathname;
+  if(env.STATUS_ORIGIN&&url.origin===env.STATUS_ORIGIN&&env.STATUS_ORIGIN!==env.ORIGIN){
+   if(!(request.method==='GET'&&['/status','/status.json'].includes(path))&&!(request.method==='POST'&&path==='/status/action'))return statusResponse('Not found',404);
+   const identity=await verifyAccess(request,env);
+   if(!identity){countError(env,'denied');return statusResponse('Forbidden',403);}
+   try{
+    const bound=namespaced(env),as=authorizationServer(env);
+    if(request.method==='POST')return await statusAction(request,bound,identity,(record,action)=>admin(new Request(env.ORIGIN+'/admin/'+action,{method:'POST',body:wire(record)}),bound,as,action),fetcher);
+    return await serveStatus(request,bound,as.getOAuthApi(env),fetcher,identity);
+   }catch{countError(env,'unavailable');return statusResponse('Unavailable',503);}
+  }
+  if(['/status','/status.json','/status/action'].includes(path))return statusResponse('Not found',404);
+  const cors=url.origin===env.ORIGIN&&['/mcp','/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp'].includes(path);
   if(cors&&request.method==='OPTIONS')return new Response(null,{status:204,headers:corsHeaders});
-  const response=await handle(request,env,ctx);if(!cors)return response;
+  const response=await handle(request,env,ctx);
+  // Only fixed HTTP errors are counted here; tool errors are counted by callTool.
+  countError(env,responseCodes.get(response));
+  if(!cors)return response;
   const headers=new Headers(response.headers);for(const [name,value]of Object.entries(corsHeaders))headers.set(name,value);
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }};

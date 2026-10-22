@@ -25,7 +25,7 @@ from .transport import UnixServer, PipeServer
 
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
-    'connector_window': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
+    'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
 
 
 COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
@@ -256,6 +256,9 @@ class Broker:
 
     def dispatch(self, session, grant, req, pending, audit):
         op=req['op']; scope_names=names(self.state); allowed=readable(self.state,grant)
+        if op=='connector_close_secret':
+            from .connectors import close_secret
+            return close_secret(self,session,req)
         if op=='connector_window':
             from .connectors import window
             return window(self,session,req)

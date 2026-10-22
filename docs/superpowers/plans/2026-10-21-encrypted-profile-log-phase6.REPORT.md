@@ -410,3 +410,118 @@ binding: `test_p3_1_processes`, `test_connections_offline`,
 IDs; those were fixed and the full rerun passes the portability gate.
 Gateway `node --test` (TAP reporter): **21 passed, 0 failed, 0 skipped**.
 `git diff --check` passes. Changes remain uncommitted.
+
+
+## Status page (2026-10-22)
+
+Implemented locally on `claude/phase6-status-page` from main `630ad11`.
+`GET /status` and `GET /status.json` are isolated to `STATUS_ORIGIN`, a separate
+Workers Custom Domain on the same Worker. Other routes there return 404;
+status paths return 404 on the OAuth/MCP origin. The feature is disabled when
+`STATUS_ORIGIN` is unset. Access login is owner-email one-time PIN; the Worker
+independently verifies RS256 assertions using WebCrypto, cached team JWKS,
+issuer/audience/time claims and the email allowlist. Failures are fixed 403s,
+with no cookie fallback. Status responses have no-store, default-deny CSP,
+frame denial, no-referrer and no CORS.
+
+A signed reserved-app bridge status operation returns only device/sync/drain/
+cursor metadata after the existing signature, timestamp and nonce gates. Tests
+prove it never resolves policies or creates broker clients. One probe per load
+uses the existing nine-second deadline. Successful status probes record
+seven-day KV observations; ordinary tool responses write nothing, because
+Tunnel routing cannot identify their responding device and KV writes are budgeted.
+
+HTML and JSON expose the same metadata: known bridge history and live responder,
+outbox counts/ages with explicit drained-state limits, verified app policy IDs,
+OAuth grant presence/client names, active secret windows, approximate fixed-code
+error totals, and bounded R2 prefix inventory/latest event upload. R2 scans cap
+at 10,000 objects and mark partial results; incomplete control inventories are
+not used to resolve policies. Reused control reads buffer bytes once rather than
+re-consuming R2 response streams. No encrypted event/outbox content is read for
+status. HTML escapes dynamic values. Error telemetry is best-effort background
+KV work with 48-hour TTL, never a dependency of a tool or HTTP response.
+
+TDD: the initial five Node gates failed before implementation, and two new Python
+status gates failed while five misuse-denial cases already passed. Follow-up
+gates cover JWKS rotation/cache expiry/fetch failure, bounded scans, HTML escaping,
+nonblocking telemetry, expired grants, and single-consumption R2 streams. The
+first full Python run caught overly long new test IDs; those were shortened and
+the final full rerun passes the portability gate. Existing tests were untouched.
+
+Final validation:
+
+- `~/.cache/agentmesh-logvenv/bin/python -m pytest -q -p no:cacheprovider profile-log/tests`:
+  **682 passed, 8 skipped, 5 failed** in 88.62 seconds. All seven new bridge cases
+  pass. The five failures are the already documented sandbox socket-binding gates:
+  `test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+  `test_p5_4_concurrent_processes`, and `test_s3_custom_http_endpoint`. Their errors
+  explicitly report denied socket/127.0.0.1 binding; no tests were weakened or skipped
+  to conceal them. A clean full Python result still requires an environment that
+  allows those local sockets.
+- `node --test` in `profile-log/gateway`: **31 passed, 0 failed, 0 skipped**,
+  including 10 new status tests and all 21 existing tests.
+- `git diff --check` passes. Package manifests, lockfile and existing tests are
+  unchanged. No npm dependencies or secrets were added. Temporary scratch files
+  were removed. Changes remain uncommitted; no deployment or external network
+  operation was performed.
+
+The spec's “Mobile and external AI apps” section, profile-log README's “Using
+AgentMesh from AI apps”, and wrangler example now document the setup. The
+[status plan](2026-10-22-phase6-status-page.md) supplies owner steps and threat notes.
+Live Custom Domain routing, Access policies/PIN delivery, production JWKS/KV/Tunnel
+behavior, and the Mac app swap were not verified or performed.
+
+### Status de-escalation, Part 1 (uncommitted follow-up)
+
+Working tree remains on `claude/phase6-status-page` at `9c7236f`. Added status-only
+reject, revoke and close-secret forms; each POST repeats Access JWT validation,
+checks Origin/Fetch-Site, consumes an identity-bound 15-minute CSRF token, and
+relays an exact signed admin request under STATUS_APP. Conditional R2 claims
+handle concurrent CSRF replay and rejected-request completion races. Reject and
+revoke reuse the common pinned-device admin verifier. Revoke also checks the
+referenced signed revoked policy before dropping OAuth grants.
+
+The bridge rechecks device controls and narrowing, signs records/envelopes with
+the device key, and appends existing-format audit lines without request content.
+Secret closure is additive; it clears the local broker grant before remote
+publication, so a remote failure cannot preserve the local secret allowance.
+The broker reset operation is bridge-only. FORMAT, the plan's actions/threat
+section and the status spec amendment were updated.
+
+The reviewer settled the close-issuer rule: both Python and Worker accept a
+signature from an account device non-revoked at `closed_at`, with registry chain
+and revocation verification only. Write-only devices may close; reader status,
+scope authority and ancestry are irrelevant to this narrowing-only operation.
+The Worker ancestry implementation was removed, resolving the prior compatibility
+gap without a new public evidence format. A later revocation cannot undo a valid
+past close and reopen access. The bridge also permits write-only close signers.
+`GATES.md` was deleted as instructed and must not be committed.
+
+TDD: the revised shared vector first failed on a write-only close, then passed
+with the new issuer rule. Shared Python-to-Node vectors cover write-only closes,
+revoked-at-closure rejection, later revocation preserving a valid close, interval
+boundaries, future closes, later independent windows, and inability to create,
+reopen or extend a window. A bridge test uses a certified write-only device with
+no read grants to close an active window. The existing action tests cover CSRF,
+JWT/host isolation, device envelopes, replay, strict narrowing, broker reset,
+audit and partial publication failure.
+
+Final full-suite counts follow. No npm dependency or lockfile changes, commits,
+or deployment were performed.
+
+Final validation after the settled issuer-rule change:
+
+- `node --test` in `profile-log/gateway`: **39 passed, 0 failed, 0 skipped**.
+- `~/.cache/agentmesh-logvenv/bin/python -m pytest -q` in `profile-log`:
+  **693 passed, 8 skipped, 5 failed**, 94.82 seconds. All five failures are the
+  previously documented sandbox socket-binding gates: `test_p3_1_processes`,
+  `test_connections_offline`, `test_real_transport`, `test_p5_4_concurrent_processes`
+  and `test_s3_custom_http_endpoint`. Each reports denied local binding.
+- Targeted action suite: **11 passed**, including the shared cross-implementation
+  vector and the write-only bridge close. No tests were weakened or skipped to
+  conceal the socket failures.
+- An initial repository-root pytest invocation hit two unrelated profile-memory
+  module-name collection collisions; the complete profile-log suite above was
+  then run from its proper directory.
+- `git diff --check` passes. `GATES.md` is absent. Package manifest and lockfile
+  diffs are empty. HEAD remains `9c7236f`; no commit or deploy occurred.

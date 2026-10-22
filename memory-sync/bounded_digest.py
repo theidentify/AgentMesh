@@ -249,8 +249,14 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
             metric['submitted_chars'] = len(task['request']['instructions']) + len(task['request']['input'][0]['content']) + len(encode(task['request']['text']))
             metric['context_max_chars'] = metric['submitted_chars']
             metric['llm_api_calls'] = None  # unknown until the boundary reports
-            def call(chosen):
-                result = extractor(task['request'], model=chosen) if extractor else extract_command(task['request'], model=chosen, command=command)
+            def call(chosen, feedback=None):
+                request = task['request']
+                if feedback:
+                    # Tell the retry which fixed protocol check failed; resending the
+                    # identical request tends to reproduce the identical mistake.
+                    request = dict(request, instructions=request['instructions'] + '\n\nYour previous output was rejected by validation: '
+                                   + feedback + '. Return corrected output that satisfies every rule above.')
+                result = extractor(request, model=chosen) if extractor else extract_command(request, model=chosen, command=command)
                 results.append(result)
                 metric['provider'], metric['model'] = result['provider'], result['model']
                 metric['llm_api_calls'] = sum(r['api_calls'] for r in results) if all(type(r.get('api_calls')) is int for r in results) else None
@@ -271,9 +277,9 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                     validate(copy.deepcopy(result['payload']), task['events'], task['related'])
                 except ConflictError:
                     raise
-                except ValidationError:
+                except ValidationError as exc:
                     metric['retries'] += 1
-                    result = call(chosen)
+                    result = call(chosen, error_detail(exc))
                     validate(copy.deepcopy(result['payload']), task['events'], task['related'])
                 return result
             try:

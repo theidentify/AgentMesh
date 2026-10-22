@@ -241,9 +241,10 @@ class BoundedTests(unittest.TestCase):
     def test_invalid_output_is_retried_once_with_same_model(self):
         api = self.api()
         metrics = self.db.with_suffix('.retry.jsonl')
-        calls = []
+        calls, requests = [], []
         def extractor(request, *, model):
             calls.append(model)
+            requests.append(request)
             payload = self.payload(api.prepare(self.db))
             if len(calls) == 1:
                 payload['items'][0]['evidence'][0]['event_id'] = 99  # evidence/source mismatch
@@ -252,6 +253,8 @@ class BoundedTests(unittest.TestCase):
         result = api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
         self.assertEqual(result['status'], 'committed')
         self.assertEqual(calls, ['gpt-6-luna', 'gpt-6-luna'])
+        self.assertNotIn('rejected by validation', requests[0]['instructions'])
+        self.assertIn('rejected by validation: evidence coverage mismatch', requests[1]['instructions'])
         row = json.loads(metrics.read_text())
         self.assertEqual((row['retries'], row['fallbacks'], row['llm_api_calls'], row['actual_cost_usd']), (1, 0, 2, 0.002))
 

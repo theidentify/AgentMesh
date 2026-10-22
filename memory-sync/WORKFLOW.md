@@ -202,3 +202,51 @@ for a nondefault runtime. With bridge recall enabled, `--backend sqlite` require
 `recall_fallback: true`; otherwise it returns `sqlite_recall_disabled`. Broker row
 IDs and evidence `source_id` are opaque event ULIDs; `source_ref.id` and evidence
 `memory_id`/`summary_id` are staging integers usable only after local ownership checks.
+
+## Staging retention
+
+Explicit only; no timer or service is installed. Review counts before applying:
+
+```sh
+python agentmesh.py --database /path/to/staging.db staging retention --json
+python agentmesh.py --database /path/to/staging.db staging retention --apply --json
+```
+
+Without `--database`, use `AGENTMESH_DATABASE` or the database in
+`$AGENTMESH_HOME/memory-sync/data/runtime.json`. `--older-than-days N` overrides
+`staging.retention.older_than_days` in the `AGENTMESH_HOME` settings.json /
+settings.local.json pair (local wins). Default 30; minimum 7 days. Setting the
+age does not schedule retention. Dry-runs write nothing and are not recorded.
+Reports contain counts only; keep counts are exclusive, in evidence, pending,
+age, active-session order. No physical space-reclaimed estimate is claimed.
+
+Only old, explicitly covered, unreferenced events from completed sessions are
+deleted. Missing/bad event timestamps or cursors are kept. Cursor updates and
+transcript mtimes must be old; file identity and size must still match. Missing
+or unreadable transcripts are kept. The latest cursor and most recently modified
+transcript (including ties) are protected. Coverage is required for every known
+SQLite consumer: default, receipts/metadata, digest/worker state, workflow config,
+and the matching `AGENTMESH_HOME/jobs/agentmesh-production.json`. The retired
+`hermes` scalar checkpoint is not deletion authority. Legacy summarize accepts
+all event kinds, so tool/system events also need receipts; none are assumed
+unsummarizable. Metadata evidence (including native source IDs and evidence
+history) and unfinished digest-window manifests stay protected.
+
+Parser `event_key` values are SHA-256 hashes of agent/path/native ID/kind, not
+transcript text. Tombstones store SHA-256(event_key) as an additional safeguard
+for imported legacy keys. These content-free tombstones preserve deduplication even after cursor
+reset or rotation at the same path. Renaming/copying a transcript produces a new
+source identity, as before; retention never changes paths or cursors. Receipts
+are preserved. Export reads remaining staging rows, never transcripts; digest
+reads staging coverage, never exported prose. Existing historical export notes
+remain on disk. A partially retained session keeps empty retired anchors for
+historical links, without regenerating the deleted text. This is staging DB
+retention, not export/transcript cleanup.
+
+Apply requires `packet_sync.enabled=false` and uses one `BEGIN IMMEDIATE`
+transaction for tombstones, event/FTS deletion and the content-free run record.
+Re-enabling packet sync afterward would publish the deletions. `_sync_shadow`
+may still hold row copies until Phase 7b. No backup, VACUUM, sync/PG table cleanup,
+or durable-memory/cursor change is performed. `retention_audit.audit` reports
+configured/applied retention and the last applied run; Insight's ingest pane
+shows applied-run status and counts without reading private settings.

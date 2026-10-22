@@ -140,6 +140,17 @@ def publish(database, root):
                 raise ValidationError('symlink export target refused')
             if dest.exists() and not dest.read_text(encoding='utf-8').startswith('---\ngenerated: true\ngenerator: agentmesh-sqlite-v1\n'):
                 raise ValidationError('manual projection note collision')
+        # Historical generated notes are retained and may still link to retired
+        # observations in a session that remains. Preserve anchors, never bodies.
+        for path in notes:
+            if not path.startswith('Sessions/'): continue
+            dest = root / path
+            if not dest.exists(): continue
+            old = set(re.findall(r'(?m)^\^(event-\d+)$', dest.read_text(encoding='utf-8')))
+            current = set(re.findall(r'(?m)^\^(event-\d+)$', notes[path]))
+            if old - current:
+                notes[path] += '\n## Retired observations\n\n' + '\n\n'.join('Raw observation retired.\n^' + anchor for anchor in sorted(old - current)) + '\n'
+                (staged / path).write_text(notes[path], encoding='utf-8')
         for path in notes:
             dest = root / path
             dest.parent.mkdir(parents=True, exist_ok=True)

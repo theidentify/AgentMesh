@@ -92,16 +92,21 @@ class Bridge:
             pin=controls.gateway(headers['x-agentmesh-key'],at=self.clock())
             payload=dict(method=method,path=path,body_sha256=hashlib.sha256(raw).hexdigest(),ts=ts,nonce=nonce,app_id=app,signature=headers['x-agentmesh-signature'])
             verify_signature(payload,bytes.fromhex(pin['gateway_public_key']),REQUEST_DOMAIN)
-            # HTTP handler serializes verification through the bridge lock.
-            self.nonces={n:until for n,until in self.nonces.items() if self.clock()<until}
-            if nonce in self.nonces: raise ValueError('denied')
-            self.nonces[nonce]=self.clock()+600000
+            with self.lock:
+                self.nonces={n:until for n,until in self.nonces.items() if self.clock()<until}
+                if nonce in self.nonces: raise ValueError('denied')
+                self.nonces[nonce]=self.clock()+600000
             body=parse(raw); exact(body,{'tool','arguments'})
-            if body['tool']!='admin': validate_tool(body['tool'],body['arguments'])
-            return self.invoke(app,body,controls=controls)
+            if body['tool'] not in ('admin','passkey'): validate_tool(body['tool'],body['arguments'])
+            if body['tool']=='passkey': return self.invoke(app,body,controls=controls)
+            with self.lock: return self.invoke(app,body,controls=controls)
         except Exception: return {'error':'denied'}
 
     def invoke(self,app,body,*,policy=None,outbox_id=None,controls=None):
+        if body['tool']=='passkey':
+            if app!=STATUS_APP: return {'error':'denied'}
+            from ..passkeys import Passkeys
+            return Passkeys(self.home,self.store,self.storage,clock=self.clock,update=self.local_update).handle(body['arguments'])
         if body['tool']=='admin': return self.admin(app,body['arguments'])
         if app==STATUS_APP or body['tool']=='status':
             if app!=STATUS_APP or body['tool']!='status' or body['arguments']!={}: return {'error':'denied'}
@@ -281,7 +286,7 @@ def bind_server(bridge,host,port):
                 if any(len(self.headers.get_all(k,[]))!=1 for k in ('X-Agentmesh-Key','X-Agentmesh-App','X-Agentmesh-Ts','X-Agentmesh-Nonce','X-Agentmesh-Signature')): raise ValueError('denied')
                 raw=self.rfile.read(size)
                 if len(raw)!=size: raise ValueError('denied')
-                with bridge.lock: response=bridge.handle(raw,dict(self.headers),self.path)
+                response=bridge.handle(raw,dict(self.headers),self.path)
             except Exception: response={'error':'denied'}
             data=wire(response); self.send_response(200 if 'error' not in response else 403)
             self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)

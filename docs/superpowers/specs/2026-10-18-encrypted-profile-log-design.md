@@ -261,9 +261,10 @@ cache and refresh on unknown kid, exact issuer, audience containing
 case-insensitive membership in comma-separated `STATUS_ALLOWED_EMAILS`. No cookie
 fallback; any verification failure is a fixed 403. These four new settings are
 public vars, with no new secrets. Unset `STATUS_ORIGIN` disables status (404).
-Only `GET /status`, `GET /status.json` and `POST /status/action` exist on the status origin; OAuth, MCP,
+The status origin supports `GET /status`, `GET /status.json`, `POST /status/action`,
+passkey enrolment/approval pages and their POSTs, and `/status/webauthn.js`; OAuth, MCP,
 admin and well-known routes are 404 there. Status paths are 404 on `ORIGIN`.
-Responses have no CORS, `no-store`, a script-free default-deny CSP with
+Responses have no CORS, `no-store`, a default-deny CSP (the passkey pages allow only their same-origin script) with
 `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and no-referrer.
 
 Each load sends one signed `{"tool":"status","arguments":{}}` bridge request
@@ -292,7 +293,8 @@ queries or bodies are logged or rendered. See the
 
 The cloud relays, it never grants. Access email-OTP may request rejection of a
 pending OAuth request, revocation of an existing app, or early closure of an
-active secret window. It can never approve, create/widen policy or open a window.
+active secret window. Email login alone can never approve, create/widen policy or open a window;
+the separate passkey ceremony below requires device verification.
 The status-only forms require exact same Origin, same-origin Sec-Fetch-Site when
 present, and a single-use 32-byte random CSRF value stored by SHA-256 in OAUTH_KV
 as `status:csrf:<hash> -> {sub,email,exp}` for 15 minutes. The verified Access JWT
@@ -320,6 +322,89 @@ allow_secret and secret_until through a bridge-only operation. Failure cannot
 raise access. Plain confirmation
 pages contain only fixed outcomes. See the status plan for races and partial
 publication limits.
+
+#### Passkey approval amendment (Part 2, 2026-10-22)
+
+The cloud relays, it never grants. Owner-approved defaults: RP ID is the status
+hostname itself (`status.krisb8.com` in production), not the registrable domain.
+Device `connector passkey` settings configure `rp_id` and `origin`; origin must
+be `https://<rp_id>` and match STATUS_ORIGIN exactly. Any authenticator is allowed,
+including synced Bitwarden/iCloud/Google passkeys and hardware keys. Multiple
+credentials per owner, attestation `none`, resident key preferred, and user
+verification required in both options and registration/authentication verification.
+Use Duo Labs py_webauthn `webauthn==3.0.1`, never handwritten WebAuthn/CBOR parsing.
+Resolved pins (uv --exclude-newer 2026-10-08): cbor2 6.1.5, pyOpenSSL 26.4.0,
+pyasn1 0.6.4, pyasn1-modules 0.4.2; cryptography remains 50.0.2.
+
+Device-signed additive `agentmesh-passkey-v1` records live at
+`registry/passkeys/{credential_id_sha256}.json`: credential_id (base64url),
+public_key (base64url COSE), label, rp_id, created_at, issuer_device.
+Signed `agentmesh-passkey-removal-v1` records live at
+`registry/passkey-removals/{credential_id_sha256}.json`: credential_id_sha256,
+removed_at, issuer_device. These are public metadata, valid only from a
+non-revoked, non-write-only account device. Invalid records are ignored.
+Counters are device-local protected control state keyed by credential hash;
+credentials and counters are never stored in the Worker.
+
+Enrolment starts with presence on a trusted device:
+`connector passkey add --label NAME` prints once a random ten-character
+unambiguous enrolment code, retaining only its hash, label and ten-minute expiry
+in protected state. Codes are single-use. `connector passkey list` exposes only
+label, hash prefix, creation time and issuer. `connector passkey remove PREFIX`
+requires presence and publishes a removal; ambiguous prefixes fail with
+`ambiguous_passkey`.
+
+`/status/passkeys` requires Access login, independently verified Worker JWT and
+single-use CSRF protection. The Worker relays STATUS_APP/tool `passkey`, step
+`register_begin` with the supplied code. The device compares its hash in constant
+time, then stores a single-use challenge bound to purpose register, code_hash,
+nonce, expiry and device_id. Browser navigator.credentials.create produces the
+response relayed by register_finish. Device verification checks RP ID, exact
+origin, challenge and UV, publishes the signed record, consumes the enrolment
+code and writes a fixed audit outcome. Email login alone cannot enrol.
+
+`/status/approve` accepts the six-digit pending OAuth code and looks up only
+`pending:<sha256(code)>`. The Worker relays approve_begin with code_hash,
+client_id_hash and client_name. The device proposes its configured default policy:
+D2 reads personal/work at general/internal and remembers personal/inbox. Profile
+names transit the Worker only in this owner-only response and are never stored
+there: this is accepted exposure. The page displays client name and exact proposed
+policy before navigator.credentials.get. Device-generated challenges bind purpose
+approve, code_hash, client_id_hash, display_name_hash, exact policy digest, nonce,
+two-minute expiry and device_id. allowCredentials contains all valid credentials.
+
+approve_finish carries code_hash, assertion and issuing device_id. Device checks
+the stored unexpired unused challenge and exact client/policy binding, enrolled
+non-removed credential, library-verified RP ID/origin/signature/UV, and strictly
+increasing counter unless both counters are zero. CLI and passkey approval share
+one function for inbox creation, scope-authority checks, policy publication and
+signed admin approve envelope creation. Only this path replaces console presence
+with the verified assertion. The Worker verifies and applies the envelope through
+its existing /admin approve logic, including chain, revocations, code/client hash
+and single-use checks. The app's existing Continue after approval remains required.
+No responder returns agentmesh_offline and grants nothing.
+
+Challenges remain local to the issuing device. Both finish requests include its
+ID; another device behind the shared Tunnel returns fixed `wrong_device`, asking
+the page to retry. No shared stateless challenge mechanism is introduced. All
+passkey request reads use the local replica maintained by background control sync,
+including credential/removal registry records. Remote publication and WebAuthn
+verification run outside bridge/home locks. Finish reloads and rechecks protected
+state under the lock before consuming the challenge and writing local records;
+remote writes follow after releasing it. Slow remote writes may still exceed the
+Worker deadline, but must not block concurrent recall.
+Allow-secret and opening secret windows stay device-only. Web approval can widen
+access only for a pending OAuth request through a trusted device.
+
+One small handwritten script, `/status/webauthn.js`, is served only on the status
+host with CSP script-src 'self', no third-party code, and base64url/ArrayBuffer
+conversion. Forms retain CSRF protection. Codes, assertions, tokens, secrets,
+memory content and ciphertext are never logged or echoed in pages.
+Email or Cloudflare compromise cannot enrol without a device code or approve
+without a passkey assertion verified by a device against its own challenge.
+Compromise of a synced-passkey provider account is accepted as passkey compromise;
+mitigate with passkey remove and connector revoke. Cloudflare sees client/profile
+names and policy summaries in transit on this owner-only page (accepted exposure).
 
 ## Local-first variants
 

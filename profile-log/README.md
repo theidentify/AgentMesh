@@ -801,7 +801,8 @@ Leaving `STATUS_ORIGIN` unset disables the feature. The Worker also verifies eac
 `Cf-Access-Jwt-Assertion` with WebCrypto RS256 and team JWKS (five-minute cache,
 refresh on unknown kid), issuer, audience, times with 30-second skew and allowed
 email. It never falls back to `CF_Authorization`; failures return a fixed 403.
-Only GET `/status` and `/status.json` are available on that hostname; OAuth, MCP,
+The status hostname serves `/status`, `/status.json`, `/status/action`,
+`/status/passkeys`, `/status/approve` and `/status/webauthn.js`; OAuth, MCP,
 admin and well-known routes return 404. Status paths return 404 on `ORIGIN`.
 All status responses are no-store with default-deny CSP, frame denial,
 no-referrer and no CORS.
@@ -815,6 +816,64 @@ update the Mac app so its bridge supports it. Tunnel routing cannot enumerate
 devices. Outbox objects can already be drained; counts are not queue depth.
 Partial scans are marked, and KV history/error counts are approximate. See the
 [owner setup plan](../docs/superpowers/plans/2026-10-22-phase6-status-page.md).
+
+### Passkey enrolment and approval
+
+The cloud relays, it never grants. On a trusted device, issue a one-use enrolment
+code with console presence (add your configured remote storage flags when needed):
+
+```sh
+agentmesh-log connector passkey add --home "$AGENTMESH_HOME/profile-log" --label "Owner passkey"
+```
+
+The code is printed once, expires after ten minutes, and only its hash is kept
+in protected local state. Open `/status/passkeys`, sign in through Access, enter
+the device-issued code, then click Create passkey. Email login alone cannot enrol.
+Synced passkeys (including Bitwarden, iCloud and Google) and hardware keys are
+supported; user verification is required. Multiple credentials may be enrolled.
+
+For an app's pending OAuth request, open `/status/approve` and enter its six-digit
+code. Review the client name and the device-proposed policy, then click Approve
+with passkey. Return to the app and click Continue after approval. The default
+reads personal/work at general/internal and remembers personal/inbox. The device
+checks scope authority, creates an inbox only after approval if needed, and signs
+the policy and admin envelope. The Worker verifies that envelope before applying
+it. `allow-secret` and opening secret windows remain device-only CLI operations.
+
+```sh
+agentmesh-log connector passkey list --home "$AGENTMESH_HOME/profile-log"
+agentmesh-log connector passkey remove HASH_PREFIX --home "$AGENTMESH_HOME/profile-log"
+agentmesh-log connector passkey settings --home "$AGENTMESH_HOME/profile-log"
+agentmesh-log connector passkey settings --home "$AGENTMESH_HOME/profile-log" --rp-id status.krisb8.com --origin https://status.krisb8.com --profiles personal,work --remember personal/inbox --max-label internal
+```
+
+Add/remove/settings changes require console presence. List shows only label,
+credential hash prefix, creation time and issuer; ambiguous removal prefixes fail
+with `ambiguous_passkey`. RP ID defaults to `status.krisb8.com`, the status hostname
+itself, and origin must be exactly `https://<rp_id>` and match `STATUS_ORIGIN`.
+Configure the same settings on each trusted bridge device. Passkey requests read
+only the local replica, refreshed by background control sync. Remote publication
+and WebAuthn verification do not hold the bridge/home lock, so slow R2 writes do
+not block recall (they can still exceed the Worker deadline). Credentials/removals
+sync as signed public registry metadata; counters and single-use challenges stay
+in protected device-local control state. No credentials are stored in Worker KV.
+
+No online responder produces `agentmesh_offline` and grants nothing. With two
+Tunnel connectors, a finish may reach a different device and return `wrong_device`;
+reload and retry. A failed or interrupted publication may consume the ceremony
+without completing approval; start again (issue a new enrolment code if needed).
+
+Cloudflare sees client/profile names and policy summaries transiently on the
+owner-only approval page; this is accepted exposure, and those profile names are
+not stored in Worker KV. Codes/assertions are neither logged nor echoed. Compromise
+of a synced-passkey provider account is a passkey compromise: remove the credential
+and revoke affected connectors. Email/Cloudflare compromise alone cannot enrol
+without a device code or approve without a device-verified passkey assertion.
+The small same-origin browser script uses no third-party code.
+
+See the [passkey plan](../docs/superpowers/plans/2026-10-22-phase6-passkey-approval.md).
+Real browser/authenticator ceremonies, including Bitwarden, iCloud and YubiKey,
+remain unverified by the software-authenticator tests.
 
 ### Connecting AI apps
 

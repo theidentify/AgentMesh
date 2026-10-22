@@ -690,3 +690,41 @@ signature domain, device_id/ts/nonce checks and replay claim. A successful rejec
 claims the pending browser completion slot and deletes the pending KV entry;
 it cannot complete or approve authorization. Revoke retains exact payload
 `{app_id,policy_ref}` and requires the referenced device-signed revoked policy.
+
+
+### Passkeys (Phase 6 approval, 2026-10-22)
+
+`registry/passkeys/{credential_id_sha256}.json` is an additive signed record with
+exact fields `format="agentmesh-passkey-v1"`, `credential_id` (unpadded canonical
+base64url), `public_key` (unpadded base64url COSE), `label` (1–100 characters, no
+control characters), `rp_id`, `created_at` (UTC milliseconds), `issuer_device`
+(16-byte hex) and `signature` (64-byte Ed25519 hex). The filename is the SHA-256
+hex digest of the decoded credential ID. Signature domain:
+`b"AgentMesh/passkey/Ed25519/v1\x00"`, using the existing typed signed encoding.
+COSE validation and WebAuthn verification use py_webauthn, not handwritten parsing.
+
+`registry/passkey-removals/{credential_id_sha256}.json` has exact fields
+`format="agentmesh-passkey-removal-v1"`, `credential_id_sha256` (32-byte hex),
+`removed_at` (UTC milliseconds), `issuer_device` and `signature`. Its domain is
+`b"AgentMesh/passkey-removal/Ed25519/v1\x00"`. A valid removal suppresses that
+credential ID; reenrolment of a removed ID is refused. Both kinds require a valid
+account chain, non-revoked issuer at load time and current read authority (a
+write-only device cannot enrol or remove). Reject future timestamps, invalid
+signatures/schema/path/COSE and wrong RP records. Ignore invalid registry records.
+These records are public metadata; the Worker neither stores nor resolves them
+for authentication. They replicate through the existing registry control sync.
+
+Protected local `control` contains `passkey_settings` (rp_id, origin, profiles,
+remember, max_label), `passkey_codes` keyed by code SHA-256 with label/exp only,
+`passkey_counters` keyed by credential hash, and `passkey_challenges` keyed by
+challenge hash. Registration binds purpose/code hash/nonce/expiry/device ID and
+RP/origin; approval additionally binds client ID hash, display-name hash, exact
+policy digest, proposed policy and display names. Challenge bytes are SHA-256 of
+the typed binding including a 32-byte random nonce. Challenges expire after two
+minutes; codes after ten minutes. Successful verification consumes local state
+before publication, so a publication failure cannot permit assertion replay.
+Counters must increase unless both old/new are zero. Finish messages carry the
+issuing device ID and challenge ID; other devices refuse `wrong_device`.
+The reserved STATUS_APP tool `passkey` has only register_begin/register_finish/
+approve_begin/approve_finish. Approval returns the existing signed connector-admin
+approve envelope and uses the same Worker verification/replay claims as CLI.

@@ -12,7 +12,7 @@ export const schemas={
  recall:z.object({query:z.string().min(1).max(2048).refine(s=>s.trim().length>0),profile:z.string().max(2048).optional(),project:z.string().max(2048).optional(),task:z.string().max(2048).optional(),limit:z.number().int().min(1).max(20).optional()}).strict(),
  remember:z.object({body:z.string().refine(s=>bytes(s).length<=32768),tags:z.array(z.string().max(256)).max(100).optional(),task:z.string().max(2048).nullable().optional(),label:z.enum(['general','internal','secret']).nullable().optional()}).strict(),
 };
-const fixed=new Set(['denied','invalid_request','unavailable','agentmesh_offline','rate_limited','presence_required']);
+const fixed=new Set(['denied','invalid_request','unavailable','agentmesh_offline','rate_limited','presence_required','wrong_device']);
 export async function claim(env,key) {return !!await env.STORAGE.put(`connectors/gateway-state/${key}`,bytes('{}'),{onlyIf:{etagDoesNotMatch:'*'}});}
 export async function signingKey(env) {return crypto.subtle.importKey('pkcs8',Buffer.from(env.GATEWAY_SIGNING_KEY,'base64'),'Ed25519',false,['sign']);}
 export async function tunnel(env,app,tool,args,fetcher=fetch) {
@@ -27,6 +27,7 @@ export async function tunnel(env,app,tool,args,fetcher=fetch) {
   if(response.status!==200)console.warn(JSON.stringify({bridge_status:response.status}));
   if([502,530].includes(response.status))return {error:'agentmesh_offline'};
   if(response.status>=300&&response.status<400)return {error:'unavailable'};
+  if(response.status===403&&tool==='passkey'){const result=await response.json();return {error:result.error==='wrong_device'?'wrong_device':'denied'};}
   if(!response.ok)return {error:response.status===403?'denied':'unavailable'};
   const result=await response.json();if(result.error)return {error:fixed.has(result.error)?result.error:'unavailable'};
   // Only the status probe identifies its responder; tool calls write nothing (KV write budget).

@@ -525,3 +525,114 @@ Final validation after the settled issuer-rule change:
   then run from its proper directory.
 - `git diff --check` passes. `GATES.md` is absent. Package manifest and lockfile
   diffs are empty. HEAD remains `9c7236f`; no commit or deploy occurred.
+
+### Passkey approval (2026-10-22)
+
+Implemented on `claude/phase6-passkey-approval`, stacked on the local
+`claude/phase6-status-page` tip (PR #73, including de-escalation). The status spec
+was amended and the passkey plan added before implementation. No commits,
+deployment, external network operations or npm dependency changes were made.
+
+Duo Labs py_webauthn is pinned and locally verified at `webauthn==3.0.1`, with
+`cbor2==6.1.5`, `pyOpenSSL==26.4.0`, `pyasn1==0.6.4`,
+`pyasn1-modules==0.4.2`; `cryptography==50.0.2` is unchanged. Resolution provenance
+is uv `--exclude-newer 2026-10-08`. Production calls the library's four registration
+and authentication option/verification APIs; only the test software authenticator
+builds CBOR/authenticator data and P-256 signatures.
+
+Owner decisions implemented: hostname-scoped RP (default status.krisb8.com),
+exact HTTPS origin, attestation none, resident key preferred, required UV on both
+ceremonies, multiple credentials and synced-passkey 0/0 counters. Signed additive
+credential/removal records are validated against current non-revoked reader
+authority. Protected local state holds hashed ten-minute enrolment codes,
+two-minute single-use challenge bindings and counters. CLI add/remove/settings
+changes require presence; list exposes metadata only. Invalid registry records
+are ignored. Provider-account compromise is accepted as passkey compromise;
+remove credentials and revoke connectors to mitigate it.
+
+The cloud relays, it never grants. Owner-only status routes independently verify
+Access JWT, exact Origin/Fetch-Site and single-use identity-bound CSRF. The small
+handwritten same-origin script performs browser ceremonies and buffer conversion.
+The device binds approval to the code/client/display-name/policy digest and checks
+library verification, UV, counter and live credential authority. It shares policy
+publication, inbox creation and scope checks with CLI approval, then returns the
+signed envelope for existing Worker /admin verification. A missing inbox ID is
+reserved in the proposed policy, with no creation before verification. Profile
+names pass through the Worker transiently as the documented accepted exposure.
+No assertions, codes or profile summaries are persisted in Worker KV.
+
+Challenges stay on their issuing device: finish includes device_id; another
+Tunnel responder refuses wrong_device and the page asks to retry. Offline is a
+fixed agentmesh_offline outcome and cannot grant. A verified ceremony is consumed
+before publication; partial storage failure requires restarting it. CLI connector
+operations and broker requests now share the home lock with the bridge so stale
+saves cannot restore consumed challenges or roll counters backwards. Broker lock
+contention returns busy. Secret-window opening remains device-only.
+
+TDD evidence: the new Python suite initially failed on the missing module; Node
+route tests failed with 404 before implementation; CLI and broker contention tests
+both failed before the shared-lock fixes. Coverage includes real software-authenticator
+registration/authentication, wrong/missing/expired/reused enrolment codes,
+UV/origin/RP/signature/challenge/client/policy binding failures, expiry, replay,
+removed/unknown/revoked/write-only credentials, nonzero counter rollback, 0/0,
+exact proposed policy and valid admin signature, missing inbox, scope-authority
+loss, CLI presence/settings/list/removal/ambiguity, and reserved bridge authority.
+Node covers JWT/host/CSRF, forged bridge approval, successful signed approval and
+OAuth continuation, offline/wrong-device, transient metadata, and browser buffer
+conversion with explicit confirmation before the ceremony.
+
+Final verification:
+
+- Full Python suite, `~/.cache/agentmesh-logvenv/bin/python -m pytest -q --tb=short`
+  from `profile-log`: **721 passed, 8 skipped, 5 failed**, 104.27 seconds.
+  All 28 new passkey tests pass. The only failures are the same five previously
+  documented sandbox denials of local sockets: `test_p3_1_processes`,
+  `test_connections_offline`, `test_real_transport`, `test_p5_4_concurrent_processes`
+  and `test_s3_custom_http_endpoint`. No test was weakened or skipped to conceal
+  these failures. A fully green Python result requires rerunning where local
+  socket binding is permitted; this acceptance gate remains a handoff.
+- Gateway `node --test`: **45 passed, 0 failed, 0 skipped** (six new tests).
+- Installed versions match all six requested library/dependency pins.
+- `git diff --check` passes; npm manifest/lockfile diffs are empty.
+- Acceptance ledger: three aggregate gates met; one full-Python green gate cannot
+  be satisfied in this sandbox and is explicitly recorded as a required handoff.
+  This is not an all-tests-passing report.
+
+Not verified: real browsers/authenticators, Bitwarden, iCloud, Google passkeys,
+YubiKey, deployed Cloudflare Access/JWKS/Tunnel routing, or production storage.
+The software authenticator does not certify those integrations.
+
+
+#### Reviewer follow-up: local reads and unlocked publication
+
+Passkey requests now resolve all control/credential authority from the local
+replica. Remote storage is used only for publication, after local state and
+records are durable. Missing-inbox controls and the exact approved policy are
+published through the existing approval primitive using local storage; configured
+CLI approval semantics are unchanged. Background control sync already mirrors
+both registry/passkeys and registry/passkey-removals, now explicitly tested.
+
+The HTTP handler's outer whole-request lock was removed for passkey steps. Nonce
+claims and protected-state transitions remain serialized. Library verification
+and remote writes occur without bridge/home locks; finish reloads and rechecks
+challenge, expiry, credential, authority and counter before consumption. Tests
+cover two simultaneous finishes and recall through the real HTTP handler while
+verification or a remote write is Event-gated. No network sockets are needed for
+these regression tests. `GATES.md` is deleted, as requested.
+
+Six new regressions plus strengthened existing tests pass in the focused run
+(34 passkey tests and the test-identifier check). Remote publication latency itself
+can still exceed the Worker deadline; IPv6 repair/live deployment was not performed.
+Follow-up full-suite verification:
+
+- `~/.cache/agentmesh-logvenv/bin/python -m pytest -q --tb=short` in `profile-log`:
+  **727 passed, 8 skipped, 5 failed**, 116.23 seconds. All 34 passkey tests pass.
+  The five failures remain the previously documented sandbox socket denials:
+  `test_p3_1_processes`, `test_connections_offline`, `test_real_transport`,
+  `test_p5_4_concurrent_processes`, `test_s3_custom_http_endpoint`.
+- `node --test` in `profile-log/gateway`: **45 passed, 0 failed, 0 skipped**.
+- Moving nonce locking into `handle()` required initializing the real RLock in
+  the existing transport fixture, which bypasses `Bridge.__init__`; assertions
+  were not changed or weakened. Its targeted suite passes all five tests.
+- `git diff --check` passes. `GATES.md` is absent. npm manifest/lockfile diffs
+  remain empty. No commit, deployment or external network access was performed.

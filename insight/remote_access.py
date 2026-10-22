@@ -16,7 +16,8 @@ except ImportError:
     rsa = None
 
 
-ALLOWED_PATHS = frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections'))
+# Operations is counts/timestamps/states only; memory items, summaries and search stay local-only.
+ALLOWED_PATHS = frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections', '/api/operations'))
 DOMAIN = re.compile(r'(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}', re.I)
 MAX_RESPONSE = 1024 * 1024
 

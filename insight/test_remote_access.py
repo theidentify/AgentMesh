@@ -126,7 +126,7 @@ def test_INS_R3_no_assertion(app, headers, local):
     assert app(headers=headers, local=local) == (403, b'{"error": "Forbidden"}')
 
 
-@pytest.mark.parametrize('path', ['/api/memory', '/api/memory/items/1', '/api/memory/summaries/1', '/api/operations', '/unknown'])
+@pytest.mark.parametrize('path', ['/api/memory', '/api/memory/items/1', '/api/memory/summaries/1', '/unknown'])
 def test_INS_R4_content_denied(app, signing, path):
     assert app(path, signing[1]())[0] == 404
 
@@ -293,7 +293,7 @@ vm.runInContext(SCRIPT,context);
 vm.runInContext('renderOperations=()=>{};renderProfileLog=()=>{};',context);
 setImmediate(()=>{try{
 assert.equal(calls[0],'/health');
-if(REMOTE){assert.deepEqual(calls,['/health','/api/profile-log']);assert.equal(element('memory').hidden,true);assert.equal(element('memory').disabled,true);assert.equal(element('connection').disabled,true);vm.runInContext("navigate('memory');loadMemory();",context);assert.equal(context.location.hash,'profile-log');assert.deepEqual(calls,['/health','/api/profile-log']);}
+if(REMOTE){assert(calls.includes('/api/operations?backend=sqlite'));assert(!calls.some(c=>c.startsWith('/api/memory')));assert.equal(element('memory').hidden,true);assert.equal(element('memory').disabled,true);assert.equal(element('connection').disabled,true);vm.runInContext("navigate('memory');loadMemory();",context);assert.equal(context.location.hash,'overview');assert(!calls.some(c=>c.startsWith('/api/memory')));}
 else{assert(calls.includes('/api/operations?backend=sqlite'));assert.equal(element('connection').disabled,false);}
 }catch(error){console.error(error.message);process.exitCode=1;}});
 '''

@@ -9,6 +9,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 import adapters
+import remote_access
 
 
 class Cache:
@@ -62,6 +63,7 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
 
     connection_cache = Cache(connections)
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
+    access = remote_access.Verifier()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -82,15 +84,20 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
 
         def do_GET(self):
             host = self.headers.get('Host','')
-            if host not in ('127.0.0.1:'+str(self.server.server_port), 'localhost:'+str(self.server.server_port)):
+            remote = remote_access.is_remote(self.headers)
+            if remote and not access.allowed(self.headers):
+                return self.send(403, {'error':'Forbidden'})
+            if not remote and host not in ('127.0.0.1:'+str(self.server.server_port), 'localhost:'+str(self.server.server_port)):
                 return self.send(403, {'error':'Loopback host required'})
             origin = self.headers.get('Origin')
-            if origin and origin != 'http://'+host:
+            if not remote and origin and origin != 'http://'+host:
                 return self.send(403, {'error':'Same origin required'})
             if len(self.path) > 2048:
                 return self.send(400, {'error':'Request too long'})
             parsed = urlsplit(self.path)
             path = parsed.path
+            if remote and path not in remote_access.ALLOWED_PATHS:
+                return self.send(404, {'error':'Not found'})
             try:
                 multi = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=12)
                 if any(len(v) != 1 for v in multi.values()):
@@ -101,7 +108,7 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
                         raise ValueError('No page parameters')
                     return self.send(200, Path(__file__).with_name('index.html' if path=='/' else 'metrics.html').read_bytes(), 'text/html; charset=utf-8')
                 if path == '/health':
-                    return self.send(200, {'status':'ok','pid':os.getpid(),'readonly':True})
+                    return self.send(200, {'status':'ok','pid':os.getpid(),'readonly':True,'remote':remote})
                 if path == '/api/profile-log':
                     if args:
                         raise ValueError('Unknown parameter')
@@ -142,6 +149,11 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
                 return self.send(400, {'error':'Invalid parameters'})
             except Exception:
                 return self.send(503, adapters.unavailable('Requested read-only source'))
+
+        def __getattr__(self, name):
+            if name.startswith('do_') and remote_access.is_remote(self.headers):
+                return self.do_POST
+            raise AttributeError(name)
 
         def do_POST(self):
             self.send(405, {'error':'Read-only; GET only'})

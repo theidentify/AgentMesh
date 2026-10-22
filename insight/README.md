@@ -223,8 +223,8 @@ refetches every 20 seconds and displays the actual transport observation timesta
   their overflow inside their panel. Filters use explicit Search and Clear actions.
 - No middle-dot separators are used. Information is separated with layout and labels.
 
-Insight is not an authenticated network service. Do not expose it through a tunnel
-or bind it to a public interface. Background operation is not launch-at-login
+Remote access requires the Cloudflare Access configuration below. Never bind
+Insight to a public interface. Background operation is not launch-at-login
 persistence. Stop the server process to stop Insight. Existing standalone dashboard
 instances can remain running until a user deliberately switches to this workspace.
 
@@ -277,3 +277,63 @@ operational and memory information and must not be committed.
 
 No database schema, sync algorithm, ingest parser, production cron, provider
 configuration or memory is changed by this subproject.
+
+## Remote access via Cloudflare Tunnel
+
+Owner setup (not performed by this change):
+
+1. On the existing tunnel, add public hostname `insight.krisb8.com` pointing to
+   `http://127.0.0.1:51877`. Leave `bridge.krisb8.com` and its routing untouched.
+2. Create a Cloudflare Access self-hosted application for `insight.krisb8.com`.
+   Require an owner-only email OTP policy. Copy the application's AUD.
+3. In `~/Library/LaunchAgents/org.agentmesh.insight.plist`, set these entries in
+   `EnvironmentVariables` (configuration only, no tokens or secrets):
+
+   ```text
+   INSIGHT_REMOTE_HOST=insight.krisb8.com
+   INSIGHT_ACCESS_TEAM_DOMAIN=royal-poetry-211d.cloudflareaccess.com
+   INSIGHT_ACCESS_AUD=<copied application AUD>
+   INSIGHT_ALLOWED_EMAILS=<owner email>
+   ```
+
+   Allowed emails are comma-separated and case-insensitive. Use bare hostnames,
+   without a scheme, port or path. Set `ProgramArguments[0]` to the absolute,
+   expanded path for `~/.agentmesh/venv/bin/python`, which must already have
+   `cryptography`. Keep the existing arguments, including port `51877`.
+   `/opt/homebrew/bin/python3` currently lacks that package: local access still
+   works there, but remote authentication fails closed. No package is installed
+   by Insight.
+4. Restart the existing launch agent after reviewing the plist:
+
+   ```sh
+   launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.agentmesh.insight.plist"
+   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.agentmesh.insight.plist"
+   ```
+
+Access at the edge and Insight's own RS256 JWT signature, issuer, audience, time
+and email checks are both required. Insight accepts only the assertion header,
+never an Access cookie. Missing/invalid configuration or unavailable verification
+returns a fixed 403 without authentication details. Tokens/JWTs are never logged
+or rendered. Public signing keys are cached in memory for ten minutes; unknown
+key IDs trigger at most one rotation refresh per minute. JWKS uses verified HTTPS,
+IPv4 before IPv6, a three-second network budget and a 1 MiB response cap; redirects
+are refused. System DNS resolution may exceed the socket timeout.
+
+Remote detection includes the configured Host and **any** `Cf-` or `X-Forwarded-`
+header, even on a loopback Host. Local loopback requests without these headers
+retain local access. Forwarding a request with a loopback Host and stripping all
+forwarding headers would erase this distinction: retain the public Host and
+Cloudflare headers in the tunnel configuration. The listener remains loopback.
+
+Remote access is metadata-only: GET `/`, `/metrics.html`, `/health`,
+`/api/profile-log`, `/api/metrics` and `/api/connections` are allowed after
+verification. All other paths return 404; HEAD and write methods return 405.
+Remote Origin, when supplied, must exactly match `https://insight.krisb8.com`.
+The UI hides content/operations tabs and search controls and does not fetch their
+APIs remotely. Metadata can still reveal operational counts and names; keep the
+Access policy owner-only. The UI is not the authorization boundary.
+
+Not verified by this change: live tunnel routing, DNS/TLS deployment, the owner's
+Access policy/OTP flow, the launch-agent interpreter/restart, or remote browser
+connectivity. Local tests use generated RSA keys and injected JWKS, not production
+assertions. Snapshot metadata does not prove worker liveness or convergence.

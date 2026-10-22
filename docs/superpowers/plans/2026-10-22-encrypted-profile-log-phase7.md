@@ -125,6 +125,22 @@ is switched off and then deleted.
   - a staging-DB migration that drops `_pg_mirror_state` and `_pg_shadow`. It runs inside a transaction, makes
     no copy of the database, and runs at most once (idempotent).
   - The live Insight plist no longer sets `INSIGHT_PG_DSN` (removed 2026-10-22).
+- **Shrink the staging DB** (owner, 2026-10-22). On the Mac 2026-10-22, the packet-sync tables used about 200 MB
+  of the 417 MB `mac.db` and `_pg_shadow` used 66 MB.
+  - **Drop.** The same one-time migration also drops every packet-sync table: `_sync_shadow`, `_sync_outbox`,
+    `_sync_history`, `_sync_receipts`, `_sync_counters`, `_sync_diagnostics`, `_sync_file_marks` and their
+    indexes.
+  - **Keep.** It keeps `_sync_config`, because it is the staging-node identity the 7a binding guard checks.
+  - **Precondition.** It refuses unless `packet_sync.enabled` is false.
+  - **Ordering.** It runs only after the packet code is deleted, so nothing writes these tables again. Every
+    remaining reader must tolerate their absence.
+- **VACUUM after the drops.**
+  - **How it runs.** An explicit, owner-run `agentmesh.py staging vacuum` command:
+    - it stops ingest, summary and catch-up first (or requires them stopped);
+    - it checks free disk space, at least the DB size;
+    - it runs `VACUUM` in place, never `VACUUM INTO` or any copy kept afterwards;
+    - it prints the size before and after.
+  - **Gate.** After VACUUM, `migrate verify` reports `missing 0`. Recall works. Insight pipeline panes load.
 - **Keep:** anything the spec lists under "Reuse", including the Ed25519 signing helpers, `key_rotation.py`,
   `identity_backup.py`, `os_unlock`, ingest and Insight. Keep a module if a remaining module still imports it.
   Prove this with an import graph in the REPORT.

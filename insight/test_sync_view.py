@@ -62,6 +62,49 @@ def test_launchd_jobs_replace_retired_cron(tmp_path):
     assert [row['name'] for row in adapters.launchd_jobs(tmp_path, agents)] == ['Summary']
 
 
+@pytest.mark.parametrize('missing', [None, 'retention-state', 'retention-plist', 'retention-both', 'summary-both'])
+def test_operations_launchd_jobs(tmp_path, monkeypatch, missing):
+    import plistlib
+    import adapters
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    status = tmp_path/'status'
+    status.mkdir()
+    agents = tmp_path/'Library/LaunchAgents'
+    agents.mkdir(parents=True)
+    (tmp_path/'cron').mkdir()
+    (tmp_path/'cron/jobs.json').write_text('{"jobs":[]}')
+    for name in ('ingest', 'summary', 'retention'):
+        if missing not in (name+'-state', name+'-both'):
+            (status/('job-'+name+'.json')).write_text(json.dumps({'ok':True,'at':'2026-10-22T09:00:00+00:00'}))
+        if missing not in (name+'-plist', name+'-both'):
+            (agents/('org.agentmesh.'+name+'.plist')).write_bytes(plistlib.dumps({'StartInterval':300}))
+    pipeline = adapters.operations(tmp_path, adapters.MemoryReader(), None, agentmesh_home=tmp_path)['pipeline']
+    assert pipeline['available']
+    jobs = pipeline['jobs']
+    if missing == 'summary-both':
+        assert all(row['source'] == 'hermes-cron' for row in jobs)
+        return
+    names = ['Ingest', 'Summary'] if missing in ('retention-state', 'retention-both') else ['Ingest', 'Summary', 'Retention']
+    assert [row['name'] for row in jobs] == names
+    assert all(row['source'] == 'launchd' and row['available'] for row in jobs)
+    assert jobs[-1]['enabled'] is (missing != 'retention-plist')
+
+
+@pytest.mark.parametrize('mid_line', [False, True])
+def test_job_failures_log_tail(tmp_path, mid_line):
+    from datetime import datetime, timezone
+    import adapters
+    (tmp_path/'status').mkdir()
+    line = json.dumps({'at':'2026-10-22T11:00:00+00:00','exit':1})+'\n'
+    # Seeking past the spaces leaves valid JSON, but it is still a partial line.
+    log = (' '*4096+line if mid_line else '')+line
+    (tmp_path/'status/launchd-retention.log').write_text(log)
+    tail = 2*len(line) if mid_line else 1024*1024
+    data = adapters.job_failures(tmp_path, datetime(2026,10,22,12,tzinfo=timezone.utc), tail=tail)
+    assert data['counts']['retention'] == {'day':1,'day_failed':1,'week_failed':1}
+    assert len(data['rows']) == 1
+
+
 def test_job_failures_from_wrapper_log(tmp_path):
     """Whole-run failures come from the job wrapper log; unsafe text never passes through."""
     from datetime import datetime, timezone

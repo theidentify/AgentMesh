@@ -41,6 +41,158 @@ class BoundedTests(unittest.TestCase):
             item.update(kind='constraint', scope='project', scope_key='demo', project='demo')
         return dict(items=[item], reviewed_event_ids=[e['id'] for e in task['events']], conflicts=[])
 
+    # Replays of the 2026-10-22 production failures (F1 and F3).
+    def two_event_replay(self):
+        self.event(2, 'Deployment must remain manual.')
+        task = self.api().prepare(self.db)
+        payload = self.payload(task)
+        item = payload['items'][0]
+        del item['source_event_ids']
+        # Repeated quotes and reverse order exercise unique, sorted derivation.
+        item['evidence'] = [dict(event_id=e['id'], quote=e['content'])
+                            for e in reversed(task['events'])]
+        item['evidence'].append(dict(item['evidence'][0]))
+        return task, payload
+
+    def test_production_20261022_f1_derived_sources_commit(self):
+        from bounded_protocol import validate
+        import copy
+        task, payload = self.two_event_replay()
+        normalized = validate(copy.deepcopy(payload), task['events'], task['related'])
+        self.assertEqual(normalized['items'][0]['source_event_ids'], [1, 2])
+        self.assertEqual(self.api().apply(self.db, task, payload)['status'], 'committed')
+        with memory_sync.connect(self.db) as c:
+            self.assertEqual([r[0] for r in c.execute('SELECT event_id FROM memory_sources ORDER BY event_id')], [1, 2])
+
+    def test_production_20261022_f1_legacy_mismatch_rejected(self):
+        task, payload = self.two_event_replay()
+        payload['items'][0]['source_event_ids'] = [1]
+        with self.assertRaisesRegex(ValueError, '^evidence coverage mismatch$'):
+            self.api().apply(self.db, task, payload)
+
+    def test_production_20261022_f1_empty_evidence_rejected(self):
+        task, payload = self.two_event_replay()
+        payload['items'][0]['evidence'] = []
+        with self.assertRaisesRegex(ValueError, 'unsupported evidence ids'):
+            self.api().apply(self.db, task, payload)
+
+    def test_production_20261022_f1_schema_and_instructions(self):
+        from bounded_protocol import build_request, INSTRUCTIONS
+        task = self.api().prepare(self.db)
+        event = dict(task['events'][0], task_ref='DEMO-1')
+        related = [self.payload(task)['items'][0]]
+        request = build_request([event], related)
+        schema = request['text']['format']['schema']
+        variants = schema['properties']['items']['items']['anyOf']
+        self.assertEqual(len(variants), 5)  # Update plus all four new scopes.
+        self.assertNotIn('source_event_ids', json.dumps(schema))
+        self.assertNotIn('source_event_ids', INSTRUCTIONS)
+
+    def identity_replay(self, changes, *, update=False):
+        api = self.api()
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task))
+        self.event(2, 'Keep deployment manual after review.')
+        task = api.prepare(self.db)
+        payload = self.payload(task, update=update)
+        del payload['items'][0]['source_event_ids']
+        payload['items'][0].update(changes)
+        self.assertEqual(api.apply(self.db, task, payload)['status'], 'committed')
+        with memory_sync.connect(self.db) as c:
+            rows = c.execute('SELECT * FROM memory_items').fetchall()
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(tuple(row[f] for f in ('kind', 'scope', 'scope_key', 'project')),
+                             ('constraint', 'project', 'demo', 'demo'))
+            self.assertEqual(row['content'], 'Keep deployment manual after review.')
+            metadata = json.loads(row['metadata'])
+            if changes:
+                self.assertEqual(metadata['identity_from_existing'], sorted(changes))
+            else:
+                self.assertNotIn('identity_from_existing', metadata)
+        return api
+
+    def test_production_20261022_f3_kind_override(self):
+        self.identity_replay({'kind': 'decision'})
+
+    def test_production_20261022_f3_scope_override(self):
+        self.identity_replay({'scope': 'session', 'scope_key': 'other-session'})
+
+    def test_production_20261022_f3_project_override(self):
+        self.identity_replay({'project': 'other-project'})
+
+    def test_production_20261022_f3_update_shape_has_no_override_metadata(self):
+        self.identity_replay({}, update=True)
+
+    def test_production_20261022_f3_matching_identity_has_no_override_metadata(self):
+        self.identity_replay({})
+
+    def test_production_20261022_f3_audit_describes_current_update(self):
+        api = self.identity_replay({'kind': 'decision'})
+        with memory_sync.connect(self.db) as c:
+            previous = json.loads(c.execute('SELECT metadata FROM memory_items').fetchone()[0])
+        self.event(3, 'Deployment is still manual.')
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task, update=True))
+        with memory_sync.connect(self.db) as c:
+            metadata = json.loads(c.execute('SELECT metadata FROM memory_items').fetchone()[0])
+            self.assertNotIn('identity_from_existing', metadata)
+            self.assertEqual(metadata['evidence_history'][-1], {
+                'evidence': previous['evidence'],
+                'batch_id': previous['batch_id'],
+                'identity_from_existing': ['kind'],
+            })
+            self.assertNotIn('identity_from_existing', metadata['evidence_history'][0])
+
+    def new_key_with_related(self):
+        api = self.api()
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task))
+        with memory_sync.connect(self.db) as c:
+            original = dict(c.execute('SELECT * FROM memory_items').fetchone())
+        self.event(2, 'Prefer concise answers.')
+        task = api.prepare(self.db)
+        self.assertEqual([item['memory_key'] for item in task['related']], [original['memory_key']])
+        payload = self.payload(task)
+        item = payload['items'][0]
+        item.update(memory_key='global.preference.concise-answers', kind='preference',
+                    scope='global', scope_key=None, project=None)
+        del item['source_event_ids']
+        return api, task, payload, original
+
+    def test_new_key_with_related_preserves_own_identity(self):
+        api, task, payload, original = self.new_key_with_related()
+        self.assertEqual(api.apply(self.db, task, payload)['status'], 'committed')
+        with memory_sync.connect(self.db) as c:
+            rows = {row['memory_key']: dict(row) for row in c.execute('SELECT * FROM memory_items')}
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[original['memory_key']], original)
+            new = rows[payload['items'][0]['memory_key']]
+            self.assertEqual(tuple(new[f] for f in ('kind', 'scope', 'scope_key', 'project')),
+                             ('preference', 'global', None, None))
+            self.assertNotIn('identity_from_existing', json.loads(new['metadata']))
+            self.assertEqual([tuple(row) for row in c.execute(
+                'SELECT memory_id,event_id FROM memory_sources ORDER BY event_id')],
+                [(original['id'], 1), (new['id'], 2)])
+
+    def test_new_key_with_related_rejects_wrong_namespace(self):
+        api, task, payload, original = self.new_key_with_related()
+        payload['items'][0]['memory_key'] = 'project.demo.preference.concise-answers'
+        with self.assertRaisesRegex(ValueError, '^new stable key namespace mismatch$'):
+            api.apply(self.db, task, payload)
+        with memory_sync.connect(self.db) as c:
+            self.assertEqual([dict(row) for row in c.execute('SELECT * FROM memory_items')], [original])
+
+    def test_production_20261022_audit_cannot_be_injected_by_producer(self):
+        api = self.api()
+        task = api.prepare(self.db)
+        for target in ('payload', 'item'):
+            payload = self.payload(task)
+            obj = payload if target == 'payload' else payload['items'][0]
+            obj['identity_from_existing'] = ['kind']
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'invalid .* schema'):
+                api.apply(self.db, task, payload)
+
     def test_stable_key_correction_preserves_identity_sources_and_summary(self):
         api = self.api()
         task = api.prepare(self.db)

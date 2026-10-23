@@ -64,6 +64,7 @@ def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, 
     connection_cache = Cache(connections)
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
     storage_cache = storage.Cache(storage.Observer(agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
+    storage_cache.warm()
     access = remote_access.Verifier()
 
     class Handler(BaseHTTPRequestHandler):

@@ -31,6 +31,28 @@ def test_st1_cache():
     cache.compute=fail; clock[0]=600; cache.get(); cache.thread.join(2)
     assert cache.get()=={'available':True,'n':1,'error':'ValueError'}
 
+def test_cache_warm_without_request():
+    entered=threading.Event(); release=threading.Event(); calls=[]
+    def compute():
+        calls.append(threading.current_thread()); entered.set()
+        assert release.wait(2)
+        return {'available':True,'n':len(calls)}
+    cache=storage.Cache(compute)
+    try:
+        cache.warm()
+        assert entered.wait(1)
+        assert calls[0] is not threading.current_thread()
+        thread=cache.thread
+        cache.warm()
+        assert cache.thread is thread and len(calls)==1
+    finally:
+        release.set()
+        cache.thread.join(2)
+    assert not cache.thread.is_alive()
+    assert cache.get()=={'available':True,'n':1}
+    cache.warm()
+    assert cache.thread is thread and cache.ttl==600
+
 def test_st2_sqlite(tmp_path,monkeypatch):
     db=tmp_path/'mac.db'
     with sqlite3.connect(db) as c:
@@ -293,6 +315,10 @@ def test_st14_request(tmp_path,monkeypatch):
         def sendall(self,value): self.output.write(value)
     client=Client()
     try:
+        # Construction must start compute before the first HTTP request and return
+        # while compute is still blocked on release.
+        assert entered.wait(1) and not release.is_set()
+        assert threads[0] is not caller
         app.handler(client,('127.0.0.1',1),app)
         assert entered.wait(1) and threads[0] is not caller
         assert json.loads(client.output.getvalue().split(b'\r\n\r\n')[1])=={'available':False,'pending':True}

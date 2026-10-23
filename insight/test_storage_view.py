@@ -21,3 +21,34 @@ vm.runInContext("remote=true;navigate('storage')",context);assert.equal(context.
 '''
     result=subprocess.run(['node','-e','const SCRIPT='+json.dumps(script)+';'+harness],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
+
+
+def test_storage_pending_polling():
+    script=Path(__file__).with_name('index.html').read_text().split('<script>')[1].split('</script>')[0]
+    harness=HARNESS.split('const peer=')[0]+r'''
+const timers=new Map();let nextTimer=0,calls=0,reply={available:false,pending:true};
+context.setTimeout=(fn,ms)=>{assert.equal(ms,2000);timers.set(++nextTimer,fn);return nextTimer};
+context.clearTimeout=id=>timers.delete(id);
+context.fetch=async url=>{assert.equal(url,'/api/storage');calls++;return {ok:true,json:async()=>reply}};
+async function refresh(){await vm.runInContext('refreshStorage()',context)}
+async function tick(){assert.equal(timers.size,1);const [id,fn]=[...timers][0];timers.delete(id);fn();await new Promise(r=>setImmediate(r));}
+(async()=>{
+  vm.runInContext("remote=false;view='storage'",context);
+  await Promise.all([refresh(),refresh()]);
+  assert.equal(calls,1);assert.equal(timers.size,1);
+  assert.equal(element('storage-note').textContent,'Computing… (first load)');
+  await tick();assert.equal(calls,2);assert.equal(timers.size,1);
+  await refresh();assert.equal(timers.size,1);
+  reply={available:true};await tick();assert.equal(timers.size,0);
+  reply={available:false,pending:true};await refresh();assert.equal(timers.size,1);
+  vm.runInContext("navigate('overview')",context);assert.equal(timers.size,0);
+  const before=calls;await refresh();assert.equal(calls,before);
+  let resolve;
+  context.fetch=()=>new Promise(r=>{resolve=r});
+  vm.runInContext("navigate('storage');navigate('overview')",context);
+  resolve({ok:true,json:async()=>reply});
+  await new Promise(r=>setImmediate(r));assert.equal(timers.size,0);
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    result=subprocess.run(['node','-e','const SCRIPT='+json.dumps(script)+';'+harness],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr

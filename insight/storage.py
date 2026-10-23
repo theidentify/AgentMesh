@@ -66,6 +66,10 @@ class Cache:
         self.compute,self.ttl,self.clock=compute,ttl,clock
         self.value=None; self.expires=0; self.lock=threading.Lock(); self.thread=None; self.running=False; self.error=None
 
+    def warm(self):
+        """Start the usual background refresh without an HTTP request."""
+        self.get()
+
     def get(self):
         with self.lock:
             value=dict(self.value) if self.value is not None else {'available':False,'pending':True}

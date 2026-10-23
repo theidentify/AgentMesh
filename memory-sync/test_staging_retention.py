@@ -1,6 +1,6 @@
 """Retention gates on disposable staging files only."""
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import os
@@ -13,6 +13,7 @@ import agentmesh
 import bounded_digest
 import digest_scheduler
 import memory_sync
+import ingest_sessions
 import retention_audit
 import sqlite_memory
 import staging_retention as retention
@@ -99,11 +100,12 @@ def test_keeps_native_summary_evidence_and_evidence_history(staging):
     assert ids(staging) == [2, 3]
 
 
-@pytest.mark.parametrize('kind', ['user_request', 'assistant_response', 'tool_result', 'system'])
-def test_keeps_pending_all_legacy_kinds(staging, kind):
+@pytest.mark.parametrize('kind', ['user_request', 'assistant_response'])
+def test_keeps_pending_conversation_rows(staging, kind):
     add(staging, 2, covered=False, kind=kind)
-    assert run(staging, apply=True)['kept_pending'] == 1
-    assert ids(staging) == [2]
+    result = run(staging, apply=True)
+    assert 2 in ids(staging)
+    assert result['kept_pending'] == (2 if kind == 'assistant_response' else 1)
 
 
 def test_requires_every_known_consumer(staging):
@@ -122,22 +124,27 @@ def test_requires_configured_consumer_before_first_receipt(staging):
 @pytest.mark.parametrize('stamp', ['2026-10-01T00:00:00Z', '2026-09-22T00:00:00Z', 'invalid', None])
 def test_keeps_new_or_invalid_timestamp(staging, stamp):
     add(staging, 2, stamp=stamp)
-    assert run(staging, apply=True)['kept_too_new'] == 1
-    assert ids(staging) == [2]
+    result = run(staging, apply=True)
+    if stamp in ('invalid', None):
+        assert result['kept_pending'] == 2
+        assert ids(staging) == [1, 2]
+    else:
+        assert result['kept_too_new'] == 1
+        assert ids(staging) == [2]
 
 
-@pytest.mark.parametrize('mode', ['latest', 'recent_cursor', 'bad_cursor', 'missing_cursor', 'missing_file', 'advanced_file', 'identity', 'recent_mtime'])
+@pytest.mark.parametrize('mode', ['latest', 'recent_cursor', 'bad_cursor', 'missing_cursor', 'advanced_file', 'recent_mtime', 'newest_mtime', 'recent_growing'])
 def test_keeps_active_or_unverifiable_session(staging, mode):
     path = staging.parent/'old.jsonl'
     with closing(sqlite3.connect(staging)) as c, c:
-        if mode == 'latest': c.execute('DELETE FROM ingestion_cursors WHERE source_path!=?', (str(path),))
+        if mode == 'latest': c.execute("UPDATE ingestion_cursors SET updated_at='2020-03-01T00:00:00Z' WHERE source_path=?", (str(path),))
         elif mode == 'recent_cursor': c.execute('UPDATE ingestion_cursors SET updated_at=? WHERE source_path=?', (NOW.isoformat(),str(path)))
         elif mode == 'bad_cursor': c.execute("UPDATE ingestion_cursors SET updated_at='bad' WHERE source_path=?", (str(path),))
         elif mode == 'missing_cursor': c.execute('DELETE FROM ingestion_cursors WHERE source_path=?', (str(path),))
-        elif mode == 'identity': c.execute("UPDATE ingestion_cursors SET file_identity='changed' WHERE source_path=?", (str(path),))
-    if mode == 'missing_file': path.unlink()
-    elif mode == 'advanced_file':
+    if mode == 'advanced_file':
         path.write_text('new line\n'); os.utime(path, (1577836800, 1577836800))
+    elif mode == 'newest_mtime': os.utime(path, (1583020800,1583020800))
+    elif mode == 'recent_growing': path.write_text('new line\n')
     elif mode == 'recent_mtime': os.utime(path, (NOW.timestamp(),NOW.timestamp()))
     assert run(staging, apply=True)['kept_active_session'] == 1
     assert ids(staging) == [1]
@@ -339,3 +346,138 @@ def test_cli_apply_and_minimum_age(staging, capsys):
     assert agentmesh.main(argv) == 0
     assert json.loads(capsys.readouterr().out)['deleted'] == 1
     assert ids(staging) == []
+
+
+@pytest.mark.parametrize('kind', ['tool_call', 'tool_result', 'system'])
+def test_covered_turn_releases_tools_without_receipts(staging, kind):
+    add(staging, 2, kind=kind, covered=False)
+    add(staging, 3, kind='assistant_response')
+    with closing(sqlite3.connect(staging)) as c, c:
+        for ident in (1, 3):
+            c.execute('INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?)',
+                      ('agentmesh/other:event:'+str(ident), ident))
+    assert run(staging, apply=True)['deleted'] == 3
+    assert ids(staging) == []
+
+
+@pytest.mark.parametrize('uncovered', ['anchor', 'assistant', 'second_consumer'])
+def test_uncovered_turn_keeps_anchor_and_tools(staging, uncovered):
+    add(staging, 2, kind='tool_call', covered=False)
+    add(staging, 3, kind='assistant_response', covered=uncovered != 'assistant')
+    with closing(sqlite3.connect(staging)) as c, c:
+        if uncovered == 'anchor':
+            c.execute('DELETE FROM summary_state WHERE last_event_id=1')
+        elif uncovered == 'second_consumer':
+            c.execute("INSERT INTO summary_state(consumer,last_event_id) VALUES('agentmesh/other:event:1',1)")
+    result = run(staging, apply=True)
+    assert result['kept_pending'] == (2 if uncovered == 'anchor' else 3)
+    assert ids(staging) == ([1, 2] if uncovered == 'anchor' else [1, 2, 3])
+
+
+@pytest.mark.parametrize('anchor', [False, True])
+def test_tools_before_first_anchor_stay_pending(staging, anchor):
+    with closing(sqlite3.connect(staging)) as c, c:
+        c.execute('DELETE FROM observation_events')
+    add(staging, 2, kind='tool_result')
+    if anchor: add(staging, 3)
+    assert run(staging, apply=True)['kept_pending'] == 1
+    assert ids(staging) == [2]
+
+
+@pytest.mark.parametrize('kind', ['user_request', 'assistant_response', 'tool_call'])
+@pytest.mark.parametrize('stamp', [None, 'bad'])
+def test_unorderable_rows_keep_turns_pending(staging, kind, stamp):
+    add(staging, 2, kind=kind, stamp=stamp)
+    add(staging, 3, kind='tool_result', covered=False)
+    assert run(staging, apply=True)['kept_pending'] == 3
+    assert ids(staging) == [1, 2, 3]
+
+
+def test_turn_order_uses_timestamp_then_id(staging):
+    # Higher ID precedes the anchor in time; tied rows use ID order.
+    add(staging, 20, kind='tool_call', stamp='2019-12-31T23:59:59Z')
+    add(staging, 2, kind='tool_result', covered=False)
+    add(staging, 3, covered=False)
+    add(staging, 4, kind='tool_call')
+    add(staging, 5)
+    assert run(staging, apply=True)['deleted'] == 3
+    assert ids(staging) == [3, 4, 20]
+
+
+def test_deleted_anchor_leftover_attaches_to_uncovered_turn(staging):
+    with closing(sqlite3.connect(staging)) as c, c:
+        c.execute('DELETE FROM summary_state')
+    add(staging, 2, stamp='2020-01-02T00:00:00Z')
+    add(staging, 3, kind='tool_call', covered=False, stamp='2026-10-01T00:00:00Z')
+    assert run(staging, apply=True)['deleted'] == 1
+    assert ids(staging) == [1, 3]
+    later = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    result = retention.retain(staging, now=later, apply=True)
+    assert result['kept_pending'] == 2
+    assert result['deleted'] == 0
+    assert ids(staging) == [1, 3]
+
+
+@pytest.mark.parametrize('mode', ['quiet', 'gone', 'moved', 'replaced'])
+def test_inactive_transcript_is_eligible(staging, mode):
+    path = staging.parent/'old.jsonl'
+    if mode == 'gone': path.unlink()
+    elif mode == 'moved': path.rename(staging.parent/'moved.jsonl')
+    elif mode == 'replaced':
+        replacement = staging.parent/'replacement'
+        replacement.write_text('replacement content')
+        os.utime(replacement, (1577836800,1577836800))
+        replacement.replace(path)
+    assert run(staging, apply=True)['deleted'] == 1
+    assert ids(staging) == []
+
+
+def test_recent_replaced_transcript_stays_active(staging):
+    # Not the newest file, cursor quiet, identity changed, but touched inside the window.
+    path = staging.parent/'old.jsonl'
+    replacement = staging.parent/'replacement'; replacement.write_text('replacement content')
+    recent = (NOW - timedelta(days=1)).timestamp()
+    os.utime(replacement, (recent, recent)); replacement.replace(path)
+    os.utime(staging.parent/'newest.jsonl', (NOW.timestamp(), NOW.timestamp()))
+    result = run(staging, apply=True)
+    assert result['deleted'] == 0 and result['kept_active_session'] == 1
+    assert ids(staging) == [1]
+
+
+@pytest.mark.parametrize('mode', ['gone', 'rotation', 'moved'])
+def test_retired_transcript_ingest_after_file_change(staging, mode):
+    memory_sync.initialize(staging, 'mac', '9a95369f-97c5-4b0e-bf41-f110ab1450a9')
+    path = staging.parent/'old.jsonl'
+    content = json.dumps({'type':'message','id':'old','timestamp':OLD,
+                         'message':{'role':'user','content':[{'type':'text','text':'old transcript'}]}})+'\n'
+    path.write_text(content)
+    assert sqlite_memory.ingest_file(staging, path)['inserted'] == 1
+    os.utime(path, (1577836800,1577836800))
+    with closing(sqlite3.connect(staging)) as c, c:
+        c.execute('UPDATE ingestion_cursors SET updated_at=? WHERE source_path=?', (OLD,str(path)))
+        ident, key = c.execute("SELECT id,event_key FROM observation_events WHERE content='old transcript'").fetchone()
+        c.execute('INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?)', (CONSUMER+':event:'+str(ident),ident))
+    if mode == 'gone': path.unlink()
+    assert run(staging, apply=True)['deleted'] == 2
+    if mode == 'rotation':
+        replacement = staging.parent/'replacement'
+        replacement.write_text(content)
+        replacement.replace(path)
+    elif mode == 'moved': path.rename(staging.parent/'moved.jsonl')
+    report = ingest_sessions.ingest(staging, roots={'omp': staging.parent})
+    assert report['errors'] == 0
+    assert report['inserted'] == (1 if mode == 'moved' else 0)
+    with closing(sqlite3.connect(staging)) as c:
+        assert c.execute('SELECT 1 FROM observation_events WHERE event_key=?', (key,)).fetchone() is None
+    if mode == 'moved':
+        # Pre-existing path-dependent keys: a move creates a new pending event.
+        with sqlite_memory._connect(staging) as c:
+            assert len(retention.pending_ids(c)) == 1
+    else:
+        assert ids(staging) == []
+        with patch.object(summarize_memory, 'invoke_command') as invoke:
+            assert summarize_memory.summarize_once(staging)['status'] == 'idle'
+            invoke.assert_not_called()
+        def unexpected(*args, **kwargs):
+            pytest.fail('retired event reached summarizer')
+        assert digest_scheduler.tick(staging, root=staging.parent/'export', extractor=unexpected, force=True)['batches'] == 0

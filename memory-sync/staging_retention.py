@@ -81,6 +81,40 @@ def references(value, ids, native):
         for child in value: references(child, ids, native)
 
 
+def turn_pending(c, pending):
+    # IDs span allocation ranges, and parsers store no line numbers. Within each
+    # source_path, turns run from a user_request to the next by (UTC timestamp,
+    # id). An unorderable row stays pending; without its position, conservatively
+    # keep all anchors/tools in that transcript. Assistants use own coverage.
+    # Delete an anchor only when it AND every assistant in its turn are covered
+    # for every consumer. Leftovers (e.g. too-new tools) were therefore covered
+    # when their anchor went: reattachment to an earlier anchor can only keep
+    # them or delete already-covered rows. Before-first rows stay pending.
+    sources = {}
+    for row in c.execute('SELECT id,source_path,kind,occurred_at FROM observation_events'):
+        sources.setdefault(row['source_path'], []).append((timestamp(row['occurred_at']), row))
+    result = set(pending)
+    for rows in sources.values():
+        if any(stamp is None for stamp, _ in rows):
+            result.update(row['id'] for stamp, row in rows
+                          if stamp is None or row['kind'] != 'assistant_response')
+            continue
+        turn = []
+        def finish():
+            covered = turn and turn[0]['kind'] == 'user_request' and not any(
+                row['id'] in pending for row in turn
+                if row['kind'] in ('user_request', 'assistant_response'))
+            if not covered:
+                result.update(row['id'] for row in turn if row['kind'] != 'assistant_response')
+        for _, row in sorted(rows, key=lambda pair: (pair[0], pair[1]['id'])):
+            if row['kind'] == 'user_request':
+                finish()
+                turn = []
+            turn.append(row)
+        finish()
+    return result
+
+
 def classify(c, cutoff, configurations=()):
     consumers = {DEFAULT_CONSUMER}
     for row in c.execute('SELECT consumer FROM summary_state'):
@@ -108,11 +142,7 @@ def classify(c, cutoff, configurations=()):
     pending = set()
     for consumer in consumers:
         pending.update(pending_ids(c, consumer))
-        # Legacy summarize accepts ALL kinds. Require explicit receipts even for
-        # tool/system rows; scalar legacy checkpoints are not deletion authority.
-        pending.update(r[0] for r in c.execute('''SELECT e.id FROM observation_events e
-            WHERE e.kind NOT IN ('user_request','assistant_response') AND NOT EXISTS(
-            SELECT 1 FROM summary_state s WHERE s.consumer=? || ':event:' || CAST(e.id AS TEXT))''', (consumer,)))
+    pending = turn_pending(c, pending)
     cursors = {r['source_path']: dict(r) for r in c.execute('SELECT * FROM ingestion_cursors')}
     stamps = {path: timestamp(row['updated_at']) for path, row in cursors.items()}
     latest = max((stamp for stamp in stamps.values() if stamp), default=None)
@@ -123,9 +153,11 @@ def classify(c, cutoff, configurations=()):
         try:
             info = Path(path).stat()
             mtimes[path] = info.st_mtime_ns
-            if (f'{info.st_dev}:{info.st_ino}' != row['file_identity'] or info.st_size != row['byte_offset']
+            if ((f'{info.st_dev}:{info.st_ino}' == row['file_identity'] and info.st_size != row['byte_offset'])
                     or info.st_mtime >= cutoff.timestamp()): active.add(path)
-        except (OSError, ValueError):
+        except OSError:
+            pass
+        except ValueError:
             active.add(path)
     newest = max(mtimes.values(), default=None)
     active.update(path for path, mtime in mtimes.items() if mtime == newest)

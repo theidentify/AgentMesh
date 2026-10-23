@@ -85,7 +85,8 @@ def prepare(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac', max_events=24,
 
 
 def apply(db, task, payload, *, provider=None, model=None):
-    payload = validate(copy.deepcopy(payload), task['events'], task['related'])
+    identity_changes = {}
+    payload = validate(copy.deepcopy(payload), task['events'], task['related'], identity_changes=identity_changes)
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         current = _prepare(c, task['consumer'], task['primary_node'], highwater=task['highwater'], eligible_ids=task.get('eligible_ids'), **task['limits'])
@@ -106,7 +107,13 @@ def apply(db, task, payload, *, provider=None, model=None):
             # Preserve previous provenance/quotes and full source links on corrections.
             history = md.get('evidence_history', [])
             if md.get('evidence'):
-                history = history + [dict(evidence=md['evidence'], batch_id=md.get('batch_id'))]
+                revision = dict(evidence=md['evidence'], batch_id=md.get('batch_id'))
+                if 'identity_from_existing' in md:
+                    revision['identity_from_existing'] = md['identity_from_existing']
+                history = history + [revision]
+            md.pop('identity_from_existing', None)
+            if item['memory_key'] in identity_changes:
+                md['identity_from_existing'] = identity_changes[item['memory_key']]
             prior_ids = md.get('batch_event_ids', []) if md.get('consumer') == task['consumer'] else []
             md.update(provenance, evidence=item['evidence'], evidence_history=history, through_event_id=after)
             md['batch_event_ids'] = sorted(set(prior_ids) | set(ids))

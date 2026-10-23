@@ -14,3 +14,7 @@ def test_registry_matches_installed_labels():
 def test_get():
     assert get('broker').kind=='service'
     with pytest.raises(KeyError): get('sync')
+
+
+def test_native_capable_units():
+    assert {u.name for u in UNITS if u.native_ok}=={'ingest','summary','retention','catch-up'}

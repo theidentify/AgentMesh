@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import re
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -18,11 +20,59 @@ import retention_audit
 import sqlite_memory
 import staging_retention as retention
 import summarize_memory
+import timestamps
 from sqlite_export import publish, check_links, name
 
 NOW = datetime(2026, 10, 22, tzinfo=timezone.utc)
 OLD = '2020-01-01T00:00:00+00:00'
 CONSUMER = summarize_memory.DEFAULT_CONSUMER
+
+
+@pytest.fixture
+def strict_iso(monkeypatch):
+    class StrictDatetime(datetime):
+        @classmethod
+        def fromisoformat(cls, value):
+            if value.endswith('Z') or any(len(part) not in (3, 6) for part in re.findall(r'\.([0-9]+)', value)):
+                raise ValueError('Python 3.10 timestamp')
+            return datetime.fromisoformat(value)
+    monkeypatch.setattr(timestamps, 'datetime', StrictDatetime)
+
+
+@pytest.mark.parametrize('fraction', ['', '1', '12', '123', '1234', '12345', '123456', '1234567', '12345678', '123456789'])
+@pytest.mark.parametrize('suffix,hour', [('Z', 4), ('+00:00', 4), ('+07:00', 11)])
+def test_parse_utc_fractions(strict_iso, fraction, suffix, hour):
+    value = f'2026-10-01T{hour:02}:06:38' + ('.'+fraction if fraction else '') + suffix
+    expected = datetime(2026, 10, 1, 4, 6, 38, int(fraction[:6].ljust(6, '0')), tzinfo=timezone.utc)
+    assert timestamps.parse_utc(value) == expected
+    assert retention.timestamp(value) == expected
+
+
+def test_naive_timestamp_semantics(strict_iso):
+    value = '2026-10-01 04:06:38.44'
+    expected = datetime(2026, 10, 1, 4, 6, 38, 440000, tzinfo=timezone.utc)
+    assert timestamps.parse_utc(value, naive_as_utc=True) == retention.timestamp(value) == expected
+    with pytest.raises(ValueError): timestamps.parse_utc(value)
+    with pytest.raises(ValueError, match='valid event timestamps'):
+        sqlite_memory._after_start(SimpleNamespace(occurred_at=value), expected)
+
+
+@pytest.mark.parametrize('value', ['garbage', '2026-10-01', '2026-10-01Z', '2026-10-01T', '2026-10-01TT04:06:38Z', None, 123, b'2026-10-01T04:06:38Z'])
+def test_invalid_timestamp_semantics(value):
+    with pytest.raises((TypeError, ValueError)): timestamps.parse_utc(value)
+    assert retention.timestamp(value) is None
+    with pytest.raises(ValueError, match='valid event timestamps'):
+        sqlite_memory._after_start(SimpleNamespace(occurred_at=value), NOW)
+
+
+def test_after_start_fraction(strict_iso, tmp_path):
+    db = tmp_path/'cutoff.db'
+    sqlite_memory.init_database(db)
+    sqlite_memory.configure_ingestion(db, start_at='2026-10-01T04:06:38.44Z')
+    with closing(sqlite3.connect(db)) as c:
+        cutoff = timestamps.parse_utc(c.execute('SELECT start_at FROM agentmesh_ingestion_start').fetchone()[0])
+    for fraction, expected in [('43', False), ('44', True), ('45', True)]:
+        assert sqlite_memory._after_start(SimpleNamespace(occurred_at=f'2026-10-01T04:06:38.{fraction}+00:00'), cutoff) is expected
 
 
 @pytest.fixture
@@ -402,6 +452,19 @@ def test_turn_order_uses_timestamp_then_id(staging):
     add(staging, 5)
     assert run(staging, apply=True)['deleted'] == 3
     assert ids(staging) == [3, 4, 20]
+
+
+def test_short_fractions_order_and_release_covered_turn(staging, strict_iso):
+    with closing(sqlite3.connect(staging)) as c, c:
+        c.execute("UPDATE observation_events SET occurred_at='2020-01-01T00:00:00.44Z' WHERE id=1")
+    add(staging, 20, kind='tool_call', covered=False, stamp='2020-01-01T00:00:00.43+00:00')
+    add(staging, 2, kind='tool_result', covered=False, stamp='2020-01-01T00:00:00.45Z')
+    add(staging, 3, kind='assistant_response', stamp='2020-01-01T00:00:00.46+00:00')
+    add(staging, 4, covered=False, stamp='2020-01-01T00:00:00.47Z')
+    add(staging, 5, kind='tool_call', covered=False, stamp='2020-01-01T00:00:00.48Z')
+    result = run(staging, apply=True)
+    assert result['deleted'] == result['kept_pending'] == 3
+    assert ids(staging) == [4, 5, 20]
 
 
 def test_deleted_anchor_leftover_attaches_to_uncovered_turn(staging):

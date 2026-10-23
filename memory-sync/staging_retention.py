@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 
 import packet_sync
+from timestamps import parse_utc
 from recall_memory import open_readonly
 from shared_memory_context import pending_ids
 from summarize_memory import DEFAULT_CONSUMER
@@ -54,9 +55,8 @@ def run_status(c, *, configured=False):
 
 def timestamp(value):
     try:
-        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
         # SQLite CURRENT_TIMESTAMP (cursor updates) is UTC without an offset.
-        return stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+        return parse_utc(value, naive_as_utc=True)
     except (ValueError, TypeError, AttributeError, OverflowError):
         return None
 

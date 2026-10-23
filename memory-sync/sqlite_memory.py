@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from timestamps import parse_utc
 
 TABLES = ('ingestion_cursors', 'ingestion_errors', 'observation_events',
           'memory_summaries', 'memory_items', 'source_sessions', 'memory_sources', 'summary_state')
@@ -145,10 +146,8 @@ def configure_ingestion(path, start_at=None):
     from uuid import uuid4
     cutoff = None
     if start_at is not None:
-        cutoff = datetime.now(timezone.utc) if start_at == 'now' else datetime.fromisoformat(start_at.replace('Z', '+00:00'))
-        if cutoff.tzinfo is None:
-            raise ValueError('start-at requires an offset ISO timestamp')
-        cutoff = cutoff.astimezone(timezone.utc).isoformat()
+        cutoff = datetime.now(timezone.utc) if start_at == 'now' else parse_utc(start_at)
+        cutoff = cutoff.isoformat()
     with _connect(path) as c, c:
         c.execute('BEGIN IMMEDIATE')
         if cutoff is not None:
@@ -164,14 +163,11 @@ def configure_ingestion(path, start_at=None):
 
 
 def _after_start(event, cutoff):
-    from datetime import datetime, timezone
     try:
-        stamp = datetime.fromisoformat(event.occurred_at.replace('Z', '+00:00'))
-        if stamp.tzinfo is None:
-            raise ValueError('offset required')
+        stamp = parse_utc(event.occurred_at)
     except (AttributeError, TypeError, ValueError) as exc:
         raise ValueError('start-at requires valid event timestamps; repair the transcript and retry') from exc
-    return stamp.astimezone(timezone.utc) >= cutoff
+    return stamp >= cutoff
 
 
 def ingest_file(path, transcript, project=None, agent='omp'):
@@ -239,10 +235,9 @@ def ingest_file(path, transcript, project=None, agent='omp'):
             events = parse_omp_lines(lines, str(transcript), project=project)
         configured = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentmesh_ingestion_start'").fetchone()
         if configured:
-            from datetime import datetime
             cutoff = c.execute('SELECT start_at FROM agentmesh_ingestion_start').fetchone()
             if cutoff:
-                cutoff = datetime.fromisoformat(cutoff[0])
+                cutoff = parse_utc(cutoff[0])
                 events = [event for event in events if _after_start(event, cutoff)]
         inserted = 0
         synced = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sync_config'").fetchone() is not None

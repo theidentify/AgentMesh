@@ -8,22 +8,29 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-def layout(home, agentmesh_home=None):
-    """Resolve each relocated item independently; paths stay inside the adapters."""
-    home = Path(home).expanduser()
-    base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+def agentmesh_root(agentmesh_home=None):
+    return Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+
+
+def layout(agentmesh_home=None):
+    """AgentMesh-home paths only; filesystem paths stay inside the adapters."""
+    base = agentmesh_root(agentmesh_home)
     result = {}
-    for key, new, old in (('status','exchange/status','omp-memory/sync/status'),
-                          ('exchange','exchange','omp-memory/sync'),
-                          ('coordinator','jobs/.bounded_digest_state.json','omp-memory/.bounded_digest_state.json'),
-                          ('summary','jobs/summary-metrics.jsonl','omp-memory/summary-metrics.jsonl'),
-                          ('smoke','jobs/summary-smoke-test-metrics.jsonl','omp-memory/summary-smoke-test-metrics.jsonl')):
-        fresh, legacy = base/new, home/old
-        path, source = (fresh, 'agentmesh') if fresh.exists() or fresh.is_symlink() else (legacy, 'legacy') if legacy.exists() or legacy.is_symlink() else (fresh, 'missing')
-        result[key] = dict(path=path, source=source, home=home if source=='legacy' else base)
+    for key, name in (('status','exchange/status'), ('exchange','exchange'),
+                      ('coordinator','jobs/.bounded_digest_state.json'),
+                      ('summary','jobs/summary-metrics.jsonl'),
+                      ('smoke','jobs/summary-smoke-test-metrics.jsonl')):
+        path = base/name
+        result[key] = dict(path=path, source='agentmesh' if path.exists() or path.is_symlink() else 'missing', home=base)
         if key in ('summary', 'smoke'):
-            result[key]['paths'] = sorted((base/'backups/archive').glob(fresh.name+'.pre-relocate-*')) + [p for p in (legacy, fresh) if p.exists()]
+            # Frozen history moved in from older locations, oldest first, then the live log.
+            result[key]['paths'] = sorted((base/'backups/archive').glob(path.name+'.pre-relocate-*')) + [path]*path.exists()
     return result
+
+
+def cron_archive(agentmesh_home=None):
+    """Frozen history of the retired cron digest (cron/usage_audit.jsonl, state.db)."""
+    return agentmesh_root(agentmesh_home)/'backups/archive/digest-cron'
 
 
 def redact(value):
@@ -132,7 +139,30 @@ class MemoryReader:
             evidence = []
             if ids:
                 evidence = self.query(c, 'SELECT id,source_agent,occurred_at,project,kind,substr(content,1,4000) AS content FROM ' + self.prefix + 'observation_events WHERE id IN (' + ','.join('?' for _ in ids[:20]) + ') ORDER BY id', ids[:20])
-        return redact({'available':True,'backend':self.label,'row':row,'evidence':evidence,'evidence_truncated':len(ids)>20,'note':'Explicit evidence excerpts, maximum 20 references. Redaction is best-effort; treat text as untrusted.'})
+        result = {'available':True,'backend':self.label,'row':row,'evidence':evidence,'evidence_truncated':len(ids)>20,'note':'Explicit evidence excerpts, maximum 20 references. Redaction is best-effort; treat text as untrusted.'}
+        if kind == 'items':
+            result['identity'] = identity_projection(metadata)
+        return redact(result)
+
+
+IDENTITY_FIELDS = ('kind', 'scope', 'scope_key', 'project')
+BATCH_ID = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
+
+
+def identity_projection(metadata):
+    """Fields the digest took from the stored row instead of the model, now and in earlier revisions."""
+    metadata = metadata if isinstance(metadata, dict) else {}
+    def fields(value):
+        return [f for f in IDENTITY_FIELDS if f in value] if isinstance(value, list) else None
+    def batch(value):
+        return value if isinstance(value, str) and BATCH_ID.match(value) else None
+    history = metadata.get('evidence_history')
+    rows = []
+    for n, entry in enumerate(history if isinstance(history, list) else [], 1):
+        if isinstance(entry, dict) and fields(entry.get('identity_from_existing')):
+            rows.append({'revision':n, 'batch_id':batch(entry.get('batch_id')), 'identity_from_existing':fields(entry['identity_from_existing'])})
+    return {'identity_from_existing':fields(metadata.get('identity_from_existing')) or None,
+            'batch_id':batch(metadata.get('batch_id')), 'history':rows[-50:]}
 
 def observed_state(stamp):
     from datetime import datetime, timezone
@@ -230,14 +260,14 @@ def packet_sync_enabled(agentmesh_home=None):
     except (OSError,ValueError,TypeError): return False
 
 
-def peer_status(home, now=None, agentmesh_home=None):
+def peer_status(now=None, agentmesh_home=None):
     """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
     from datetime import datetime, timezone
     if not packet_sync_enabled(agentmesh_home):
         return {'rows':[], 'transport':'packet sync retired', 'freshness_threshold_seconds':300,
                 'packet_sync':'retired', 'note':'packet sync retired; see profile-log devices and sync status.'}
     now = now or datetime.now(timezone.utc)
-    item = layout(home, agentmesh_home)['status']
+    item = layout(agentmesh_home)['status']
     root = item['path']
     rows = []
     for node, label in (('mac', 'Mac'), ('windows', 'Windows')):
@@ -320,7 +350,7 @@ def peer_status(home, now=None, agentmesh_home=None):
 
 
 def launchd_jobs(agentmesh_home=None, agents=None):
-    """Wrapper status for launchd jobs; Hermes cron is the fallback.
+    """Wrapper status for the launchd jobs.
 
     All jobs, including Retention, omit missing/invalid state files. A missing
     plist keeps the state row with enabled=False, including before installation.
@@ -402,7 +432,60 @@ def job_failures(agentmesh_home=None, now=None, tail=1024*1024):
     return {'available':bool(counts),'counts':counts,'rows':rows[:50]}
 
 
-def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
+def path_platform(path):
+    """(platform, home key) from an ingested session path; the path itself never leaves."""
+    path = path if isinstance(path, str) else ''
+    if re.match(r'^[A-Za-z]:[\\/]', path) or path.startswith('\\\\'):
+        parts = re.split(r'[\\/]+', path)
+        return 'windows', '\\'.join(parts[:3]).lower()
+    for prefix, name in (('/Users/', 'macos'), ('/home/', 'linux'), ('/root/', 'linux')):
+        if path.startswith(prefix):
+            return name, '/'.join(path.split('/')[:3])
+    return 'unknown', ''
+
+
+PLATFORM_LABELS = {'macos':'macOS', 'windows':'Windows', 'linux':'Linux', 'unknown':'Unknown origin'}
+
+
+def devices_seen(reader, now=None):
+    """Machines whose sessions reached memory, grouped by OS and user home; activity, not liveness."""
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    with reader.connect() as c:
+        rows = reader.query(c, 'SELECT source_agent,substr(source_path,1,96) AS prefix,COUNT(*) AS events,MAX(occurred_at) AS latest FROM ' + reader.prefix + 'observation_events GROUP BY source_agent,substr(source_path,1,96)')
+    groups = {}
+    for r in rows:
+        platform, key = path_platform(r['prefix'])
+        g = groups.setdefault((platform, key), {'platform':platform, 'events':0, 'agents':set(), 'last_seen_at':None})
+        g['events'] += r['events'] or 0
+        if r['source_agent']: g['agents'].add(str(r['source_agent'])[:32])
+        latest = r['latest'] if isinstance(r['latest'], str) else r['latest'].isoformat() if r['latest'] is not None else None
+        if latest and (g['last_seen_at'] is None or parse_instant(latest) > parse_instant(g['last_seen_at'])):
+            g['last_seen_at'] = latest
+    out = []
+    per_platform = {}
+    for (platform, key), g in groups.items(): per_platform[platform] = per_platform.get(platform, 0) + 1
+    for (platform, key), g in groups.items():
+        when = parse_instant(g['last_seen_at'])
+        label = PLATFORM_LABELS[platform] + (' · ' + hashlib.sha256(key.encode()).hexdigest()[:6] if per_platform[platform] > 1 and key else '')
+        out.append(dict(g, agents=sorted(g['agents']), label=label,
+                        state='unknown' if when is None else 'recent' if now - when <= timedelta(days=1) else 'stale'))
+    out.sort(key=lambda r: parse_instant(r['last_seen_at']) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {'available':True, 'backend':reader.label, 'rows':out[:20],
+            'note':'Grouped by the OS and user folder of ingested session paths. Last activity is the newest ingested event, not a heartbeat.'}
+
+
+def parse_instant(value):
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(str(value).replace('Z', '+00:00').replace(' ', 'T'))
+        return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def operations(reader, sync_db, transport=None, agentmesh_home=None):
     from datetime import datetime, timezone
     result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
     try:
@@ -414,28 +497,14 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     except Exception:
         result['agents'] = unavailable('Agent source metadata')
     try:
-        with sqlite_ro(home/'state.db') as c:
-            rows = [dict(r) for r in c.execute('SELECT source,COUNT(*) AS sessions,MAX(last_activity_at) AS observed_epoch,MAX(ended_at) AS latest_ended_epoch FROM sessions GROUP BY source ORDER BY source')]
-        # Do not label open-ended historical sessions as live agents.
-        result['hermes_sessions'] = {'available':True,'rows':rows,'note':'Session observations only, not process liveness.'}
+        result['devices_seen'] = devices_seen(reader)
     except Exception:
-        result['hermes_sessions'] = unavailable('Hermes session metadata')
+        result['devices_seen'] = unavailable('Device activity')
     try:
         selected = launchd_jobs(agentmesh_home)
         note = 'Launchd jobs: last result and time from the job wrapper; next run is last run plus the interval.'
-        if not {'Ingest', 'Summary'}.issubset(row['name'] for row in selected):
-            selected, note = [], 'Hermes cron jobs: configuration and last run. Prompts, commands and error text are not shown.'
-            jobs = json.loads((home/'cron/jobs.json').read_text())['jobs']
-            for label, job_id in (('Ingest','eabd6e41c22d'),('Summary','6fcf5646d34d')):
-                job = next((j for j in jobs if j.get('id') == job_id), None)
-                row = {'name':label,'id':job_id,'available':job is not None,'source':'hermes-cron'}
-                if job:
-                    row.update({k:job.get(k) for k in ('enabled','state','no_agent','last_status','last_run_at','next_run_at')})
-                    row['has_error'] = bool(job.get('last_error'))
-                    row['observation_state'] = observed_state(job.get('last_run_at'))
-                selected.append(row)
         pipeline = {'available':True,'jobs':selected,'note':note}
-        item = layout(home, agentmesh_home)['coordinator']
+        item = layout(agentmesh_home)['coordinator']
         state_path = item['path']
         pipeline['coordinator'] = dict(available=False, source=item['source'], pending=None, phase=None, success_day=None)
         if state_path.exists():
@@ -472,7 +541,7 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
         result['sync']['security'] = security
     except Exception:
         result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
-    result['sync']['peers'] = peer_status(home, agentmesh_home=agentmesh_home)
+    result['sync']['peers'] = peer_status(agentmesh_home=agentmesh_home)
     if 'security' not in result['sync']: result['sync']['security'] = security_projection(None)
     if not packet_sync_enabled(agentmesh_home):
         result['sync'].update(available=False, packet_sync='retired', error='packet sync retired',
@@ -481,7 +550,7 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
         transport = {'available':False, 'status':'packet sync retired', 'note':'packet sync retired', 'rows':[]}
     if transport is None:
         from syncthing_transport import observe
-        transport = observe(home, exchange=layout(home, agentmesh_home)['exchange']['path'])
+        transport = observe(agentmesh_root(agentmesh_home), exchange=layout(agentmesh_home)['exchange']['path'])
     result['sync']['transport_status'] = transport
     result['sync']['transport'] = transport['status']
     result['sync']['peers']['transport'] = transport['status']
@@ -493,27 +562,71 @@ LABELS = ('run_id','status','trigger','model','provider','start','end')
 def safe_run(row):
     out = {key: row.get(key) for key in LABELS + METRICS}
     out['error_count'] = len(row.get('errors') or [])
+    out['error_detail'] = failure_reason(row) if row.get('status') in ('failed', 'error') else None
     return out
+
+
+def failure_reason(row):
+    detail = row.get('error_detail')
+    if detail is None or detail == '':
+        return 'no detail recorded'
+    return detail if isinstance(detail, str) and JOB_DETAIL.match(detail) else 'other (unrecognised detail)'
+
+
+def failure_reasons(runs, now=None):
+    """Failed summary runs per error_detail; quota (429) stays its own visible reason."""
+    from datetime import datetime, timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    groups = {}
+    for r in runs:
+        if r.get('status') not in ('failed', 'error'):
+            continue
+        reason = failure_reason(r)
+        g = groups.setdefault(reason, {'reason':reason, 'count':0, 'cost_usd':0.0, 'cost_known':0, 'first_at':None, 'latest_at':None, 'last_24h':0,
+                                       'quota':bool(re.search(r'\b429\b|quota|rate.?limit', reason, re.I))})
+        g['count'] += 1
+        cost = r.get('actual_cost_usd')
+        if type(cost) in (int, float):
+            g['cost_usd'] += cost; g['cost_known'] += 1
+        at = r.get('start') or r.get('end')
+        when = parse_instant(at)
+        if when is None:
+            continue
+        if g['first_at'] is None or when < parse_instant(g['first_at']): g['first_at'] = at
+        if g['latest_at'] is None or when > parse_instant(g['latest_at']): g['latest_at'] = at
+        g['last_24h'] += now - when <= timedelta(days=1)
+    rows = list(groups.values())
+    for g in rows:
+        g['cost_usd'] = round(g['cost_usd'], 6) if g['cost_known'] else None
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    rows.sort(key=lambda g: parse_instant(g['latest_at']) or epoch, reverse=True)
+    return {'total':sum(g['count'] for g in rows), 'latest_at':rows[0]['latest_at'] if rows else None, 'rows':rows}
 
 JOB='6fcf5646d34d'
 
-def metrics(home, agentmesh_home=None, metrics_logs=None):
+def metrics(agentmesh_home=None, metrics_logs=None, archive=None):
     from datetime import datetime, timezone
     from metrics import report, read_jsonl, aggregate
-    paths=layout(home, agentmesh_home)
+    paths=layout(agentmesh_home)
     logs=paths['summary']['paths'] if metrics_logs is None else metrics_logs
-    result=report(home/'cron/usage_audit.jsonl',home/'state.db',logs)
+    archive=Path(archive) if archive else cron_archive(agentmesh_home)
+    result=report(archive/'cron/usage_audit.jsonl',archive/'state.db',logs)
     for key in ('new_latest','new_latest_llm','baseline_latest'):
         result[key]=safe_run(result[key]) if result[key] else None
+    def raw(path):
+        return list({r['run_id']:r for r in read_jsonl(path) if r.get('record_type')=='run'}.values())
     def runs(path):
-        return list({r['run_id']:safe_run(r) for r in read_jsonl(path) if r.get('record_type')=='run'}.values())
-    bounded=runs(logs)
+        return [safe_run(r) for r in raw(path)]
+    raw_bounded=raw(logs)
+    bounded=[safe_run(r) for r in raw_bounded]
     isolated=runs(paths['smoke']['paths'])
     historical=[]
-    audits=list({r.get('fire_id') or str(n):r for n,r in enumerate(read_jsonl(home/'cron/usage_audit.jsonl')) if r.get('job_id')==JOB}.values())
+    audits=list({r.get('fire_id') or str(n):r for n,r in enumerate(read_jsonl(archive/'cron/usage_audit.jsonl')) if r.get('job_id')==JOB}.values())
     for r in audits:
         historical.append(safe_run(dict(run_id=r.get('fire_id'),end=r.get('ts'),start=r.get('ts'),trigger='historical-cron',model=r.get('model'),status='error' if r.get('error') else 'success',input_total_tokens=r.get('prompt_tokens'),output_tokens=r.get('completion_tokens'),duration_seconds=r['duration_ms']/1000 if r.get('duration_ms') is not None else None,errors=[True] if r.get('error') else [])))
-    jobs=json.loads((home/'cron/jobs.json').read_text())['jobs']
+    jobs_path=archive/'cron/jobs.json'
+    # The retired cron's job record is optional; the frozen archive keeps only its run history.
+    jobs=json.loads(jobs_path.read_text())['jobs'] if jobs_path.exists() else []
     job=next((j for j in jobs if j['id']==JOB),{})
     cron={k:job.get(k) for k in ('id','enabled','state','no_agent','last_run_at','last_status','next_run_at')}
     cron['has_error']=bool(job.get('last_error'))
@@ -527,7 +640,7 @@ def metrics(home, agentmesh_home=None, metrics_logs=None):
     cron['last_success_day']=(state.get('success') or {}).get('day')
     cron['idle_inferred']=bool(state_path.exists() and job.get('no_agent') and job.get('last_status')=='ok' and pending is None)
     cron['job']=next((row for row in launchd_jobs(agentmesh_home) if row['name']=='Summary'),None)
-    return {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'report':result,'cron':cron,'runs':{'historical':historical,'bounded':bounded,'isolated':isolated},'isolated_aggregate':aggregate(isolated),'matched_workload_savings_percent':None,'notes':['Dollar cost is not recorded, and these totals do not show savings: the old and new jobs did different amounts of work.','"Waiting events" comes from the last run\'s log, not a live database count.','"Test runs" used a separate copy of the database and never touched real memory.']}
+    return {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'report':result,'cron':cron,'runs':{'historical':historical,'bounded':bounded,'isolated':isolated},'isolated_aggregate':aggregate(isolated),'failure_reasons':failure_reasons(raw_bounded),'matched_workload_savings_percent':None,'notes':['Dollar cost is not recorded, and these totals do not show savings: the old and new jobs did different amounts of work.','"Waiting events" comes from the last run\'s log, not a live database count.','"Test runs" used a separate copy of the database and never touched real memory.']}
 
 
 def profile_log_status(agentmesh_home, now=None):

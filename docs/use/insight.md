@@ -27,18 +27,18 @@ JSON containing `url` on `127.0.0.1`, `pid` and `readonly: true`. The server cho
 
 ## Point it at your data
 
-Use `--sqlite` for an existing database and `--home` for the Hermes profile containing metrics/job files; this selects metrics/job data, whereas the runtime identifies the worker installation. Choose each path for its role; they are not required to be different directories. If you use only Codex, omit `--home` and supply just `--sqlite`; missing Hermes metrics/jobs may remain unavailable:
+Use `--sqlite` for an existing database. Insight reads everything else (job status, summary metrics, profile-log status, the frozen history of the retired cron digest) from the AgentMesh home, `--agentmesh-home` (default `$AGENTMESH_HOME`, otherwise `~/.agentmesh`). Missing files show as unavailable or empty:
 
 ```sh
 python3 -u insight/server.py --port 0 \
-  --sqlite "/path/to/node.db" --home "/absolute/path/to/profile"
+  --sqlite "/path/to/node.db" --agentmesh-home "/absolute/path/to/agentmesh"
 ```
 
 Output (example from code)
 
 The local URL/PID/`readonly` startup JSON, then a read-only dashboard. Inspect Memory Browser connection availability; an absent database is not created or repaired.
 
-`--home` defaults to `HERMES_HOME`, or `~/.hermes` if unset. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. To label a backend authoritative in Insight, configure its role explicitly; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
+Insight reads nothing from a Hermes profile. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. To label a backend authoritative in Insight, configure its role explicitly; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
 
 ::: tip
 Optional PostgreSQL access takes its DSN only from the `INSIGHT_PG_DSN` environment variable, never a CLI flag or a file in Git. See the [connection instructions](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#run-from-the-repository-root) for the required format and read-only setup.

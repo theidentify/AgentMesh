@@ -19,8 +19,9 @@ class TransportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)/'hermes'
-        (self.home/'omp-memory/sync').mkdir(parents=True)
+        self.home = Path(self.tmp.name).resolve()/'agentmesh'
+        (self.home/'exchange').mkdir(parents=True)
+        (self.home/'packet-sync-status.json').write_text(json.dumps({'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}),encoding='utf-8')
         self.config = Path(self.tmp.name)/'config.xml'
         self.responses = {
             '/rest/system/status': {'myID':'LOCAL'},
@@ -83,7 +84,7 @@ class TransportTests(unittest.TestCase):
         gui = ET.SubElement(root,'gui',enabled='true',tls='false')
         ET.SubElement(gui,'address').text = address or self.address
         ET.SubElement(gui,'apikey').text = 'FIXTURE_SECRET'
-        f = ET.SubElement(root,'folder',id='PRIVATE_FOLDER',path=str(folder or self.home/'omp-memory/sync'))
+        f = ET.SubElement(root,'folder',id='PRIVATE_FOLDER',path=str(folder or self.home/'exchange'))
         ET.SubElement(f,'paused').text = paused
         ET.SubElement(f,'device',id='LOCAL')
         ET.SubElement(f,'device',id='REMOTE')
@@ -211,7 +212,7 @@ class TransportTests(unittest.TestCase):
 
     def test_transport_survives_missing_sqlite_and_updates_all_consumers(self):
         import adapters
-        value = adapters.operations(self.home, adapters.MemoryReader(), None)
+        value = adapters.operations(adapters.MemoryReader(), None, agentmesh_home=self.home)
         self.assertFalse(value['sync']['available'])
         self.assertEqual(value['sync']['transport'],'connected')
         self.assertEqual(value['sync']['peers']['transport'],'connected')
@@ -221,12 +222,12 @@ class TransportTests(unittest.TestCase):
         import adapters
         am=Path(self.tmp.name).resolve()/'am'; (am/'exchange').mkdir(parents=True)
         (am/'packet-sync-status.json').write_text(json.dumps({'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}),encoding='utf-8')
-        exchange=adapters.layout(self.home,am)['exchange']['path']
+        exchange=adapters.layout(am)['exchange']['path']
         self.assertEqual(transport.observe(self.home,exchange)['availability'],'exchange folder not configured')
         self.assertEqual(self.paths,[])
         self.write_config(folder=exchange)
         self.assertEqual(transport.observe(self.home,exchange)['status'],'connected')
-        value=adapters.operations(self.home,adapters.MemoryReader(),None,agentmesh_home=am)
+        value=adapters.operations(adapters.MemoryReader(),None,agentmesh_home=am)
         self.assertEqual(value['sync']['transport'],'connected')
 
     def test_partial_local_failure(self):

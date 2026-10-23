@@ -71,23 +71,19 @@ def test_operations_launchd_jobs(tmp_path, monkeypatch, missing):
     status.mkdir()
     agents = tmp_path/'Library/LaunchAgents'
     agents.mkdir(parents=True)
-    (tmp_path/'cron').mkdir()
-    (tmp_path/'cron/jobs.json').write_text('{"jobs":[]}')
     for name in ('ingest', 'summary', 'retention'):
         if missing not in (name+'-state', name+'-both'):
             (status/('job-'+name+'.json')).write_text(json.dumps({'ok':True,'at':'2026-10-22T09:00:00+00:00'}))
         if missing not in (name+'-plist', name+'-both'):
             (agents/('org.agentmesh.'+name+'.plist')).write_bytes(plistlib.dumps({'StartInterval':300}))
-    pipeline = adapters.operations(tmp_path, adapters.MemoryReader(), None, agentmesh_home=tmp_path)['pipeline']
+    pipeline = adapters.operations(adapters.MemoryReader(), None, agentmesh_home=tmp_path)['pipeline']
     assert pipeline['available']
     jobs = pipeline['jobs']
-    if missing == 'summary-both':
-        assert all(row['source'] == 'hermes-cron' for row in jobs)
-        return
-    names = ['Ingest', 'Summary'] if missing in ('retention-state', 'retention-both') else ['Ingest', 'Summary', 'Retention']
+    names = ['Ingest', 'Retention'] if missing == 'summary-both' else ['Ingest', 'Summary'] if missing in ('retention-state', 'retention-both') else ['Ingest', 'Summary', 'Retention']
     assert [row['name'] for row in jobs] == names
     assert all(row['source'] == 'launchd' and row['available'] for row in jobs)
     assert jobs[-1]['enabled'] is (missing != 'retention-plist')
+    # No retired cron fallback: a missing Summary state leaves the row out.
 
 
 @pytest.mark.parametrize('mid_line', [False, True])

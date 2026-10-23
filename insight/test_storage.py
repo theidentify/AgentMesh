@@ -159,7 +159,7 @@ def test_st14_background(tmp_path,monkeypatch):
     def runner(*a,**kw):
         assert threading.current_thread() is not threading.main_thread(); calls.append(a)
         return SimpleNamespace(returncode=1,stdout='')
-    observer=storage.Observer(tmp_path,tmp_path,None,runner=runner,fetcher=lambda url: '')
+    observer=storage.Observer(tmp_path,None,runner=runner,fetcher=lambda url: '')
     cache=storage.Cache(observer.compute)
     assert cache.get()['pending']; cache.thread.join(3)
     assert calls and cache.get()['available']
@@ -167,7 +167,7 @@ def test_st14_background(tmp_path,monkeypatch):
 def test_st15_buffers(tmp_path):
     put(tmp_path,'profile-log/sync-status.json',dict(outbox=2,at='2026-10-22T11:00:00Z',interval_s=60))
     put(tmp_path,'jobs/.bounded_digest_state.json',dict(pending={'pending_ids':[1,2]}))
-    obs=storage.Observer(tmp_path,tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:NOW)
+    obs=storage.Observer(tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:NOW)
     data=obs.compute(); rows={r['category']:r for r in data['buffers']}
     assert rows['R2 upload outbox']['warning'] and rows['Summary backlog']['count']==2
     assert rows['Gateway remember outbox']['count'] is None
@@ -222,7 +222,7 @@ def test_st18_deadline_and_redirect():
 
 
 def test_st15_audit_and_unknown(tmp_path):
-    now=[NOW]; obs=storage.Observer(tmp_path,tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:now[0])
+    now=[NOW]; obs=storage.Observer(tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:now[0])
     value=obs.compute(); rows={r['category']:r for r in value['buffers']}
     assert rows['Broker audit log']['bytes'] is None
     raw={'ts':int(NOW.timestamp()*1000)-86400000,'query_hmac':'PRIVATE'}
@@ -235,7 +235,7 @@ def test_st15_audit_and_unknown(tmp_path):
 def test_st18_two_samples(tmp_path):
     from datetime import timedelta
     now=[NOW]; values=[20]
-    obs=storage.Observer(tmp_path,tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'cloudflared_tunnel_total_requests '+str(values[0]),clock=lambda:now[0])
+    obs=storage.Observer(tmp_path,None,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'cloudflared_tunnel_total_requests '+str(values[0]),clock=lambda:now[0])
     assert obs.compute()['network']['tunnel']['per_day'] is None
     now[0]+=timedelta(days=1); values[0]=50
     tunnel=obs.compute()['network']['tunnel']
@@ -265,7 +265,7 @@ def test_st15_ingest(tmp_path):
         c.execute("INSERT INTO source_sessions(source_path,source_agent) VALUES('PRIVATE','codex')")
         c.execute("INSERT INTO ingestion_cursors(source_path,updated_at) VALUES('PRIVATE','2026-10-20T12:00:00Z')")
         c.execute("INSERT INTO observation_events(event_key,source_path,source_agent,kind,content,source_hash,occurred_at) VALUES('a','PRIVATE','codex','user','SECRET','x','2026-10-20T12:00:00Z')")
-    obs=storage.Observer(tmp_path,tmp_path,db,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:NOW)
+    obs=storage.Observer(tmp_path,db,runner=lambda *a,**k:SimpleNamespace(returncode=1,stdout=''),fetcher=lambda u:'',clock=lambda:NOW)
     rows={r['category']:r for r in obs.compute()['buffers']}
     assert rows['Ingest codex']['warning'] and rows['Ingest cursor codex']['age_s']==2*86400
     assert 'PRIVATE' not in json.dumps(rows) and 'SECRET' not in json.dumps(rows)
@@ -286,7 +286,7 @@ def test_st14_request(tmp_path,monkeypatch):
         return {'available':True}
     monkeypatch.setattr(storage.Observer,'compute',compute)
     monkeypatch.setattr(server,'ThreadingHTTPServer',lambda address,handler:SimpleNamespace(server_port=51877,handler=handler))
-    app=server.make_server(tmp_path,0,agentmesh_home=tmp_path)
+    app=server.make_server(0,agentmesh_home=tmp_path)
     class Client:
         def __init__(self): self.output=io.BytesIO()
         def makefile(self,*a): return io.BytesIO(b'GET /api/storage HTTP/1.0\r\nHost: 127.0.0.1:51877\r\n\r\n')

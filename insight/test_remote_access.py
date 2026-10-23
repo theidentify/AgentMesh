@@ -58,7 +58,7 @@ def app(tmp_path, monkeypatch, signing, configured, request):
         monkeypatch.setattr(server, 'ThreadingHTTPServer', lambda address, handler:
             SimpleNamespace(server_port=51877, handler=handler))
     try:
-        httpd = server.make_server(tmp_path, 0, agentmesh_home=tmp_path)
+        httpd = server.make_server(0, agentmesh_home=tmp_path)
     except PermissionError:
         pytest.skip('Loopback binding denied')
     if not in_memory:

@@ -101,7 +101,7 @@ class ProfileLogTests(unittest.TestCase):
     def test_g11_endpoint_cache_guards_and_metrics_override(self):
         self.read(fixture()); explicit=self.root/'explicit.jsonl'
         with patch('adapters.metrics',return_value={'fixture':True}) as load_metrics:
-            app=server.make_server(self.root,0,agentmesh_home=self.root,metrics_logs=[explicit])
+            app=server.make_server(0,agentmesh_home=self.root,metrics_logs=[explicit])
             thread=threading.Thread(target=app.serve_forever,daemon=True); thread.start()
             try:
                 url='http://127.0.0.1:'+str(app.server_port)
@@ -117,7 +117,7 @@ class ProfileLogTests(unittest.TestCase):
                 self.assertEqual(request('/api/profile-log',headers={'Host':'evil.test'})[0],403)
                 self.assertEqual(request('/api/profile-log',headers={'Origin':'https://evil.test'})[0],403)
                 self.assertEqual(request('/api/metrics')[0],200)
-                load_metrics.assert_called_once_with(self.root,self.root,[explicit])
+                load_metrics.assert_called_once_with(self.root,[explicit],None)
             finally: app.shutdown(); app.server_close(); thread.join()
 
     def test_g13_render_fixture_escaped(self):
@@ -130,9 +130,10 @@ class ProfileLogTests(unittest.TestCase):
         import io
         from unittest.mock import MagicMock
         app=MagicMock(); app.server_port=12345
-        argv=['server.py','--home',str(self.root/'hermes'),'--agentmesh-home',str(self.root/'am'),'--metrics-log',str(self.root/'one'),'--metrics-log',str(self.root/'two')]
+        argv=['server.py','--cron-archive',str(self.root/'archive'),'--agentmesh-home',str(self.root/'am'),'--metrics-log',str(self.root/'one'),'--metrics-log',str(self.root/'two')]
         with patch('sys.argv',argv),patch('server.make_server',return_value=app) as make,patch('sys.stdout',new_callable=io.StringIO):
             server.main()
         self.assertEqual(make.call_args.kwargs['agentmesh_home'],self.root/'am')
         self.assertEqual(make.call_args.kwargs['metrics_logs'],[self.root/'one',self.root/'two'])
+        self.assertEqual(make.call_args.kwargs['cron_archive'],self.root/'archive')
         app.serve_forever.assert_called_once(); app.server_close.assert_called_once()

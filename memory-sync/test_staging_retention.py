@@ -544,3 +544,24 @@ def test_retired_transcript_ingest_after_file_change(staging, mode):
         def unexpected(*args, **kwargs):
             pytest.fail('retired event reached summarizer')
         assert digest_scheduler.tick(staging, root=staging.parent/'export', extractor=unexpected, force=True)['batches'] == 0
+
+
+def test_scheduled_retention_packet_refusal_alerts(staging, tmp_path):
+    import sys
+    import job_notify
+    root = Path(os.environ['AGENTMESH_HOME'])
+    (root/'settings.local.json').write_text('{"packet_sync":{"enabled":true}}')
+    runtime = root/'memory-sync/data/runtime.json'
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text(json.dumps({'database': str(staging)}))
+    hook = tmp_path/'webhook'
+    hook.write_text('https://discord.com/api/webhooks/123/test')
+    hook.chmod(0o600)
+    sent = []
+    before = snapshot(staging)
+    command = [sys.executable, str(Path(agentmesh.__file__)), 'staging', 'retention', '--apply', '--json']
+    assert job_notify.run('retention', command, root/'status', hook, sender=lambda u,c: sent.append(c)) == 1
+    state = json.loads((root/'status/job-retention.json').read_text())
+    assert state['ok'] is False and state['exit'] == 1 and state['alerted']
+    assert len(sent) == 1 and '`retention` failing' in sent[0]
+    assert snapshot(staging) == before

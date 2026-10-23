@@ -326,7 +326,7 @@ def launchd_jobs(agentmesh_home=None, agents=None):
     base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
     agents = Path(agents or Path.home()/'Library/LaunchAgents')
     rows = []
-    for label, name in (('Ingest','ingest'),('Summary','summary')):
+    for label, name in (('Ingest','ingest'),('Summary','summary'),('Retention','retention')):
         try:
             state = json.loads((base/'status'/('job-'+name+'.json')).read_text())
             if not isinstance(state, dict):
@@ -362,7 +362,7 @@ def job_failures(agentmesh_home=None, now=None, tail=1024*1024):
     base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
     now = now or datetime.now(timezone.utc)
     rows, counts = [], {}
-    for name in ('ingest', 'summary'):
+    for name in ('ingest', 'summary', 'retention'):
         runs = {'day':0,'day_failed':0,'week_failed':0}
         try:
             with open(base/'status'/('launchd-'+name+'.log'), 'rb') as f:

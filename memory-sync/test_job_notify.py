@@ -111,3 +111,21 @@ def test_resource_fields(tmp_path,monkeypatch,capsys):
     row=json.loads(capsys.readouterr().out)
     assert (row['wall_s'],row['cpu_s'],row['maxrss_mb'])==(4,1.5,8)
     assert row['job']=='summary' and row['at']=='fixed' and row['exit']==0
+
+
+@pytest.mark.parametrize('code', [0, 1])
+def test_retention_summary_and_exit(tmp_path, webhook, code, capsys):
+    sent = []
+    payload = json.dumps(dict(deleted=2, candidates=3, content='SECRET-EVIDENCE'))
+    argv = [sys.executable, '-c', f'import sys; print({payload!r}); sys.exit({code})']
+    assert job_notify.run('retention', argv, tmp_path, webhook, sender=lambda u,c: sent.append(c)) == code
+    state = json.loads((tmp_path/'job-retention.json').read_text())
+    assert state['ok'] is (code == 0) and state['exit'] == code
+    assert state['fields'] == {'summary': 'deleted=2 candidates=3'}
+    assert len(sent) == code
+    assert 'SECRET-EVIDENCE' not in capsys.readouterr().out + ''.join(sent)
+
+
+def test_retention_summary_rejects_non_counts():
+    for value in ('secret', True, -1, 1.5, None):
+        assert job_notify.summary_fields(json.dumps(dict(deleted=value, candidates=2))) == {}

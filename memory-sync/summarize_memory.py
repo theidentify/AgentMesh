@@ -13,6 +13,10 @@ from memory_sync import RANGES, canonical, config, connect, digest
 TASK_FORMAT = 'omp-sqlite-summary-task-v1'
 RESPONSE_FORMAT = 'omp-sqlite-summary-response-v1'
 DEFAULT_CONSUMER = 'agentmesh/sqlite-summary-v1'
+# Retired PostgreSQL scalar checkpoint. Outside the agentmesh/ consumer
+# namespace, so neither summarizers nor staging retention treat it as a consumer.
+LEGACY_CHECKPOINT = 'agentmesh:legacy-pg-checkpoint'
+LEGACY_CHECKPOINT_OLD = 'hermes'
 KINDS = ('fact', 'decision', 'constraint', 'preference', 'procedure', 'open_loop', 'summary')
 SCOPES = ('global', 'project', 'task', 'session')
 
@@ -24,14 +28,40 @@ class SummaryError(ValueError):
 def _options(consumer, primary_node, max_events, max_chars):
     if not isinstance(consumer, str) or not re.fullmatch(r'agentmesh/[A-Za-z0-9_/-]{1,70}', consumer):
         raise SummaryError('consumer must use the agentmesh/ namespace (up to 80 characters)')
-    if consumer == 'hermes':
-        raise SummaryError('the production hermes consumer is reserved')
     if primary_node not in RANGES:
         raise SummaryError('primary node must be mac, windows or linux')
     if type(max_events) is not int or not 1 <= max_events <= 1000:
         raise SummaryError('max_events must be between 1 and 1000')
     if type(max_chars) is not int or not 1 <= max_chars <= 2000000:
         raise SummaryError('max_chars must be between 1 and 2000000')
+
+
+def legacy_checkpoint(c):
+    """Legacy PostgreSQL checkpoint row, preferring the AgentMesh name."""
+    for key in (LEGACY_CHECKPOINT, LEGACY_CHECKPOINT_OLD):
+        row = c.execute('SELECT last_event_id FROM summary_state WHERE consumer=?', (key,)).fetchone()
+        if row:
+            return row
+    return None
+
+
+def migrate_legacy_checkpoint(db):
+    """One-time rename of the Hermes-era checkpoint row; value and time kept."""
+    with connect(db) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        old = c.execute('SELECT last_event_id,updated_at FROM summary_state WHERE consumer=?',
+                        (LEGACY_CHECKPOINT_OLD,)).fetchone()
+        new = c.execute('SELECT last_event_id FROM summary_state WHERE consumer=?',
+                        (LEGACY_CHECKPOINT,)).fetchone()
+        if old is None:
+            return dict(status='already-migrated' if new else 'absent')
+        if new is not None and new[0] != old[0]:
+            raise SummaryError('conflicting legacy checkpoint rows')
+        if new is None:
+            c.execute('INSERT INTO summary_state(consumer,last_event_id,updated_at) VALUES(?,?,?)',
+                      (LEGACY_CHECKPOINT, old[0], old[1]))
+        c.execute('DELETE FROM summary_state WHERE consumer=?', (LEGACY_CHECKPOINT_OLD,))
+        return dict(status='migrated', checkpoint=old[0])
 
 
 def seed_legacy_coverage(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac'):
@@ -52,7 +82,7 @@ def seed_legacy_coverage(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac'):
             return row[0]
         if c.execute('SELECT 1 FROM summary_state WHERE consumer=?', (consumer,)).fetchone():
             raise SummaryError('cannot seed legacy coverage after this consumer started')
-        legacy = c.execute("SELECT last_event_id FROM summary_state WHERE consumer='hermes'").fetchone()
+        legacy = legacy_checkpoint(c)
         cutoff = legacy[0] if legacy else 0
         if type(cutoff) is not int or not 0 <= cutoff < LIMIT:
             raise SummaryError('invalid legacy PostgreSQL coverage checkpoint')
@@ -347,7 +377,8 @@ def summarize_once(db, *, command=None, timeout=300, consumer=DEFAULT_CONSUMER,
 
 
 def main(argv=None):
-    """CLI: once DB --config PRIVATE.json | preview DB | export DB --output FILE.
+    """CLI: once DB --config PRIVATE.json | preview DB | export DB --output FILE |
+    migrate-legacy-checkpoint DB.
 
     Config fields: command (JSON argv array), primary_node, consumer, timeout,
     max_events, max_chars. Explicit CLI flags override config. No model command,
@@ -376,8 +407,12 @@ def main(argv=None):
         if name == 'export':
             command.add_argument('--output', type=Path, required=True,
                                  help='new private task file; refuses to overwrite existing files')
+    sub.add_parser('migrate-legacy-checkpoint').add_argument('database')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'migrate-legacy-checkpoint':
+            print(canonical(migrate_legacy_checkpoint(args.database)), flush=True)
+            return 0
         settings = {}
         if args.config:
             try:

@@ -68,6 +68,31 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(api.seed_legacy_coverage(self.db), 1)
         self.assertEqual([e['id'] for e in api.prepare_task(self.db)['events']], [2, memory_sync.RANGES['windows'][0]])
 
+    def test_legacy_checkpoint_migrates_from_hermes_and_seeds_from_new_name(self):
+        api = self.api()
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("INSERT INTO summary_state(consumer,last_event_id,updated_at) VALUES('hermes',1,'2026-10-08T01:24:43+00:00')")
+        self.assertEqual(api.main(['migrate-legacy-checkpoint', str(self.db)]), 0)
+        with memory_sync.connect(self.db) as c:
+            rows = [tuple(r) for r in c.execute("SELECT consumer,last_event_id,updated_at FROM summary_state")]
+        self.assertEqual(rows, [(api.LEGACY_CHECKPOINT, 1, '2026-10-08T01:24:43+00:00')])
+        self.assertEqual(api.migrate_legacy_checkpoint(self.db), {'status': 'already-migrated'})
+        self.assertEqual(api.seed_legacy_coverage(self.db), 1)
+        self.assertEqual(api.prepare_task(self.db)['events'], [])
+        with self.assertRaises(api.SummaryError):
+            api.prepare_task(self.db, consumer=api.LEGACY_CHECKPOINT)
+
+    def test_legacy_checkpoint_migration_refuses_conflicting_rows(self):
+        api = self.api()
+        self.assertEqual(api.migrate_legacy_checkpoint(self.db), {'status': 'absent'})
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("INSERT INTO summary_state(consumer,last_event_id) VALUES('hermes',1)")
+            c.execute("INSERT INTO summary_state(consumer,last_event_id) VALUES(?,2)", (api.LEGACY_CHECKPOINT,))
+        before = self.snapshot()
+        with self.assertRaises(api.SummaryError):
+            api.migrate_legacy_checkpoint(self.db)
+        self.assertEqual(self.snapshot(), before)
+
     def test_preview_exports_grounded_task_without_database_writes(self):
         before = self.snapshot()
         task = self.api().prepare_task(self.db, max_events=1)

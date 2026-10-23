@@ -24,12 +24,22 @@ def add_parsers(commands):
 
 def serve(layout):
     if sys.platform!='darwin': return {'error':'unsupported_platform'}
+    import signal
     from .launchd import LaunchdBackend
+    from .native import NativeBackend
+    from .notify import notifier
     from .ops import Control
+    from .router import Router
     from .server import Supervisor
-    supervisor=Supervisor(Control(layout,LaunchdBackend()),layout)
+    from .store import Store
+    from .units import UNITS
+    layout.ensure(); store=Store(layout.state)
+    native=NativeBackend(store,UNITS,notify=notifier(layout))
+    native.reconcile()
+    supervisor=Supervisor(Control(layout,Router(store,LaunchdBackend(),native)),layout,ticker=native.tick,on_close=native.shutdown)
+    signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()
-    finally: supervisor.close()
+    finally: supervisor.close(); store.close()
     return {'ok':True}
 
 

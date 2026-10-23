@@ -229,9 +229,10 @@ separately: synthetic tests do not satisfy R-8.
 
 The Mac was relocated on 2026-10-20 with the Hermes names kept
 (`~/.agentmesh/jobs/omp_memory_ingest.py`, `omp_memory_summary_cron.py`).
-The tracked shims in `jobs/` now use AgentMesh names: `agentmesh_ingest.py`,
-`agentmesh_summary.py` and `agentmesh_retention.py`, each a four-line call to
-`agentmesh_production.execute`. The two Hermes names remain as compatibility
-shims so a rollback or a manual run of the old path still works; the other
-deployed `omp_*` files (PostgreSQL-era `blocked` writers, the Hermes metrics and
-watch scripts, duplicate export/retention names) are left untouched.
+Since 2026-10-23 the jobs run the tracked AgentMesh shims in `jobs/`:
+`agentmesh_ingest.py`, `agentmesh_summary.py` and `agentmesh_retention.py`,
+each a four-line call to `agentmesh_production.execute`. The Hermes-era `omp_*`
+files, including the PostgreSQL-era `blocked` writers and the Hermes metrics and
+watch scripts, were removed from `~/.agentmesh/jobs` after the switch.
+The relocation manifest still names the Hermes paths as sources, because those
+are what a Hermes host has.

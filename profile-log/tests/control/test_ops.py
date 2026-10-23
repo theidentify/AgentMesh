@@ -24,7 +24,8 @@ def test_status_is_tier0_and_not_audited(tmp_path):
 
 @pytest.mark.parametrize('bad',[None,[],dict(v=1,id='r',op='status'),dict(v=True,id='r',op='status',args={}),
     dict(v=2,id='r',op='status',args={}),dict(v=1,id='',op='status',args={}),dict(v=1,id='x'*65,op='status',args={}),
-    dict(v=1,id='r',op='status',args={},extra=1),dict(v=1,id='r',op='status',args=[])])
+    dict(v=1,id='r',op='status',args={},extra=1),dict(v=1,id='r',op='status',args=[])],
+    ids=['none','list','no-args','v-bool','v-2','id-empty','id-long','extra-key','args-list'])
 def test_envelope_refused(tmp_path, bad):
     assert Control(Layout(tmp_path),FakeBackend()).handle(bad,CALLER)['error']['code']=='bad_args'
 
@@ -98,7 +99,7 @@ def test_stop_only_jobs(tmp_path):
     assert control.handle(request('unit.stop',{'unit':'ingest'}),CALLER)['ok'] and backend.calls==[('stop','ingest')]
 
 
-def test_backend_failure_is_failed_and_audited(tmp_path):
+def test_backend_failure_audited(tmp_path):
     control=Control(Layout(tmp_path),FakeBackend(fail=True))
     assert control.handle(request('unit.restart',{'unit':'ingest'}),CALLER)['error']==dict(code='failed',message='')
     assert [row['outcome'] for row in audit_rows(tmp_path)]==['requested','failed']

@@ -21,7 +21,7 @@ def test_json_roundtrip_owner_only(tmp_path):
         assert stat.S_IMODE(layout.control.stat().st_mode)==0o700
 
 
-def test_read_json_missing_or_invalid_is_none(tmp_path):
+def test_read_json_bad_is_none(tmp_path):
     layout=Layout(tmp_path).ensure()
     assert read_json(layout.quota) is None
     layout.quota.write_text('[1]'); assert read_json(layout.quota) is None

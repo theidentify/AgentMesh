@@ -15,7 +15,7 @@ def test_on_is_idempotent_then_off(tmp_path):
     assert maintenance.turn_off(layout)==dict(on=False,since=None,reason=None)
 
 
-@pytest.mark.parametrize('reason',['',None,'x'*121,'line\nbreak',7])
+@pytest.mark.parametrize('reason',['',None,'x'*121,'line\nbreak',7],ids=['empty','none','too-long','newline','int'])
 def test_reason_validated(tmp_path, reason):
     with pytest.raises(ValueError): maintenance.turn_on(Layout(tmp_path),reason)
     assert not Layout(tmp_path).maintenance.exists()

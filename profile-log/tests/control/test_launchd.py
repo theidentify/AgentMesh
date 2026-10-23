@@ -46,3 +46,10 @@ def test_controls_use_exact_argv():
 
 def test_control_failure_raises():
     with pytest.raises(RuntimeError): LaunchdBackend(lambda argv:(3,''),uid=501).start(get('ingest'))
+
+
+def test_bootout_and_bootstrap_argv():
+    calls=[]; backend=LaunchdBackend(lambda argv:(calls.append(argv) or (0,'')),uid=501); unit=get('ingest')
+    backend.bootout(unit); backend.bootstrap(unit,'/x/org.agentmesh.ingest.plist')
+    assert calls==[['/bin/launchctl','bootout','gui/501/org.agentmesh.ingest'],
+                   ['/bin/launchctl','bootstrap','gui/501','/x/org.agentmesh.ingest.plist']]

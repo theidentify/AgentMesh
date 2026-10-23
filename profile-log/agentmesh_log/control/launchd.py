@@ -51,6 +51,8 @@ class LaunchdBackend:
     def start(self, unit): return self._ok(['/bin/launchctl','kickstart',self.target(unit)])
     def restart(self, unit): return self._ok(['/bin/launchctl','kickstart','-k',self.target(unit)])
     def stop(self, unit): return self._ok(['/bin/launchctl','kill','SIGTERM',self.target(unit)])
+    def bootout(self, unit): return self._ok(['/bin/launchctl','bootout',self.target(unit)])
+    def bootstrap(self, unit, plist): return self._ok(['/bin/launchctl','bootstrap',self.domain,str(plist)])
 
     def _ok(self, argv):
         code,_=self.runner(argv)

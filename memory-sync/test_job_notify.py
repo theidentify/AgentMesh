@@ -147,3 +147,85 @@ def test_retention_summary_and_exit(tmp_path, webhook, code, capsys):
 def test_retention_summary_rejects_non_counts():
     for value in ('secret', True, -1, 1.5, None):
         assert job_notify.summary_fields(json.dumps(dict(deleted=value, candidates=2))) == {}
+
+
+NOW = '2026-10-23T10:00:00+00:00'
+
+
+def control_home(tmp_path):
+    (tmp_path / 'status').mkdir(); (tmp_path / 'control').mkdir()
+    return tmp_path / 'status', tmp_path / 'control'
+
+
+def touch(path):
+    return [sys.executable, '-c', 'open(%r, "w").close()' % str(path)]
+
+
+def test_maintenance_holds_wrapped_job(tmp_path, capsys):
+    status, control = control_home(tmp_path)
+    (control / 'maintenance.json').write_text('{"on": true, "reason": "upgrade"}')
+    assert job_notify.run('ingest', touch(tmp_path / 'ran'), status, now=NOW) == 0
+    assert not (tmp_path / 'ran').exists() and not (status / 'job-ingest.json').exists()
+    assert json.loads(capsys.readouterr().out) == {'at': NOW, 'held': 'maintenance', 'job': 'ingest'}
+
+
+def test_maintenance_off_runs(tmp_path):
+    status, control = control_home(tmp_path)
+    (control / 'maintenance.json').write_text('{"on": "yes"}')
+    job_notify.run('ingest', touch(tmp_path / 'ran'), status, now=NOW)
+    assert (tmp_path / 'ran').exists()
+
+
+def test_without_control_dir_nothing_changes(tmp_path):
+    status = tmp_path / 'status'; status.mkdir()
+    assert job_notify.run('summary', job(tmp_path, 0), status, now=NOW) == 0
+    assert not (tmp_path / 'control').exists()
+
+
+QUOTA_FAIL = '{"status": "blocked", "error_class": "RateLimitError", "detail": "HTTP 429 quota"}'
+
+
+def quota(control):
+    return json.loads((control / 'quota.json').read_text())
+
+
+def test_quota_failure_backs_off_and_doubles(tmp_path):
+    status, control = control_home(tmp_path)
+    fail = job(tmp_path, 1, QUOTA_FAIL)
+    assert job_notify.run('summary', fail, status, now=NOW) == 1
+    assert quota(control) == {'backoff_s': 600, 'backoff_until': '2026-10-23T10:10:00+00:00', 'calls': 0, 'day': '2026-10-23'}
+    assert job_notify.run('summary', fail, status, now='2026-10-23T10:05:00+00:00') == 0  # held
+    assert quota(control)['backoff_s'] == 600
+    assert job_notify.run('summary', fail, status, now='2026-10-23T10:11:00+00:00') == 1
+    assert quota(control)['backoff_s'] == 1200
+
+
+def test_success_resets_backoff(tmp_path):
+    status, control = control_home(tmp_path)
+    job_notify.run('summary', job(tmp_path, 1, QUOTA_FAIL), status, now=NOW)
+    job_notify.run('summary', job(tmp_path, 0), status, now='2026-10-23T10:11:00+00:00')
+    assert quota(control)['backoff_s'] == 0 and quota(control)['backoff_until'] is None
+
+
+def test_other_failures_do_not_back_off(tmp_path):
+    status, control = control_home(tmp_path)
+    job_notify.run('summary', job(tmp_path, 1, '{"error_class": "ValidationError"}'), status, now=NOW)
+    assert quota(control)['backoff_s'] == 0
+
+
+def test_daily_call_cap(tmp_path):
+    status, control = control_home(tmp_path)
+    (control / 'quota-policy.json').write_text('{"daily_llm_calls": 5}')
+    report = '{"observed_at": "2026-10-23T10:00:30+00:00", "llm_api_calls": 5}'
+    writer = [sys.executable, '-c', 'open(%r, "w").write(%r)' % (str(status / 'last-summary.json'), report)]
+    assert job_notify.run('summary', writer, status, now=NOW) == 0
+    assert quota(control)['calls'] == 5
+    assert job_notify.run('summary', job(tmp_path, 1), status, now='2026-10-23T10:05:00+00:00') == 0  # held
+    assert job_notify.run('summary', job(tmp_path, 0), status, now='2026-10-24T00:01:00+00:00') == 0  # new day runs
+    assert quota(control)['day'] == '2026-10-24' and quota(control)['calls'] == 0  # old report not counted
+
+
+def test_quota_only_for_summary(tmp_path):
+    status, control = control_home(tmp_path)
+    job_notify.run('ingest', job(tmp_path, 1, QUOTA_FAIL), status, now=NOW)
+    assert not (control / 'quota.json').exists()

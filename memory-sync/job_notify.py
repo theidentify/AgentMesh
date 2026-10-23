@@ -9,7 +9,7 @@ contain source evidence. Without a webhook file the run is logged only.
       --webhook-file ~/.config/agentmesh/discord-webhook -- python job.py
 """
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -29,6 +29,9 @@ SAFE = re.compile(r'^[A-Za-z0-9_.:-]{1,80}$')
 # Fixed protocol messages such as "unsupported evidence quote" or "oversize event 7; ...".
 DETAIL = re.compile(r'^[A-Za-z0-9 _.,:;/()=-]{1,200}$')
 SYSTEM_CA = ('/etc/ssl/cert.pem', '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
+QUOTA_JOBS = ('summary',)
+QUOTA = re.compile(r'\b429\b|quota|rate.?limit', re.I)
+BACKOFF_START, BACKOFF_MAX = 600, 21600
 
 
 def control_dir(state_dir):
@@ -45,6 +48,35 @@ def read_object(path):
     return value if isinstance(value, dict) else None
 
 
+def write_object(path, value):
+    path = Path(path)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(value, sort_keys=True))
+    if os.name != 'nt':
+        os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def update_quota(control, state_dir, ok, fields, started, now):
+    """Count today's LLM calls and start, double or clear the quota backoff."""
+    quota = read_object(control / 'quota.json') or {}
+    day = now.date().isoformat()
+    calls = quota['calls'] if quota.get('day') == day and type(quota.get('calls')) is int else 0
+    report = read_object(Path(state_dir) / 'last-summary.json') or {}
+    observed, used = parse_time(report.get('observed_at')), report.get('llm_api_calls')
+    if observed and observed >= started and type(used) is int and used >= 0:
+        calls += used
+    backoff = quota['backoff_s'] if type(quota.get('backoff_s')) is int else 0
+    until = quota.get('backoff_until')
+    reason = ' '.join(str(fields.get(key, '')) for key in ('error_class', 'status', 'detail'))
+    if ok:
+        backoff, until = 0, None
+    elif QUOTA.search(reason):
+        backoff = min(BACKOFF_MAX, backoff * 2 if backoff else BACKOFF_START)
+        until = (now + timedelta(seconds=backoff)).isoformat(timespec='seconds')
+    write_object(control / 'quota.json', dict(day=day, calls=calls, backoff_s=backoff, backoff_until=until))
+
+
 def parse_time(text):
     try:
         value = datetime.fromisoformat(text.replace('Z', '+00:00'))
@@ -54,12 +86,22 @@ def parse_time(text):
 
 
 def hold_reason(name, control, now):
-    """'maintenance' when the run must be skipped, else None."""
+    """'maintenance' or 'quota' when the run must be skipped, else None."""
     if control is None:
         return None
     maintenance = read_object(control / 'maintenance.json')
     if maintenance and maintenance.get('on') is True:
         return 'maintenance'
+    if name not in QUOTA_JOBS:
+        return None
+    quota = read_object(control / 'quota.json') or {}
+    until = parse_time(quota.get('backoff_until'))
+    if until and until > now:
+        return 'quota'
+    cap = (read_object(control / 'quota-policy.json') or {}).get('daily_llm_calls')
+    calls = quota.get('calls')
+    if type(cap) is int and cap >= 0 and quota.get('day') == now.date().isoformat() and type(calls) is int and calls >= cap:
+        return 'quota'
     return None
 
 
@@ -164,6 +206,11 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
     ok = code == 0
     fields = summary_fields(out + '\n' + err)
     event, since, alerted = transition(previous, ok, now)
+    if control is not None and name in QUOTA_JOBS:
+        try:
+            update_quota(control, state_dir, ok, fields, current, parse_time(now) or datetime.now(timezone.utc))
+        except OSError as exc:
+            print(json.dumps({'job': name, 'quota_error': type(exc).__name__}), file=sys.stderr)
     state = dict(ok=ok, exit=code, at=now, fields=fields, since=since, alerted=alerted)
     notified = None
     if event:

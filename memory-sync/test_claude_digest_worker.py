@@ -4,6 +4,12 @@ import pytest
 
 from bounded_protocol import build_request
 
+AUTH_EXPIRED_RESULT = {
+    'is_error': True, 'subtype': 'success', 'terminal_reason': 'api_error',
+    'api_error_status': None,
+    'result': 'Failed to authenticate: OAuth session expired and could not be refreshed',
+}
+
 
 def request():
     batch = [{'id': 7, 'kind': 'user_request', 'project': 'demo', 'content': 'use sqlite',
@@ -81,6 +87,14 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
 
 
 @pytest.mark.parametrize('stdout, code, reason', [
+    (AUTH_EXPIRED_RESULT, 1, 'claude login expired'),
+    (AUTH_EXPIRED_RESULT, 0, 'claude login expired'),
+    ({'is_error': True, 'api_error_status': 401}, 1, 'claude auth failed'),
+    ({'is_error': True, 'api_error_status': 403, 'result': 'OAuth expired'}, 1, 'claude auth failed'),
+    ({'is_error': True, 'result': 'FAILED TO AUTHENTICATE: SECRET'}, 1, 'claude auth failed'),
+    ({'is_error': True, 'result': 'Invalid API Key: SECRET'}, 1, 'claude auth failed'),
+    ({'is_error': True, 'result': 'Use /LOGIN: SECRET'}, 1, 'claude auth failed'),
+    ({'is_error': True, 'api_error_status': 429, 'result': {'oauth': 'expired'}}, 1, 'api_error 429'),
     ({'type': 'result', 'is_error': True, 'subtype': 'success', 'api_error_status': 529,
       'terminal_reason': 'api_error', 'result': 'SECRET provider text'}, 1, 'api_error 529'),
     ({'type': 'result', 'is_error': True, 'subtype': 'success', 'terminal_reason': 'api_error',
@@ -98,3 +112,25 @@ def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypa
     out = capsys.readouterr().out
     expected = {'error_class': 'ValueError'} if reason is None else {'error_class': 'ValueError', 'reason': reason}
     assert 'SECRET' not in out and json.loads(out) == expected
+    if isinstance(stdout.get('result'), str):
+        assert stdout['result'] not in out
+
+
+def test_expired_login_detail_end_to_end(tmp_path):
+    import sys
+    from pathlib import Path
+    import bounded_digest
+    import claude_digest_worker
+    from bounded_protocol import ValidationError, error_detail
+
+    fake = tmp_path / 'claude'
+    fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(AUTH_EXPIRED_RESULT) + "'\nexit 1\n")
+    fake.chmod(0o755)
+    with pytest.raises(ValidationError) as caught:
+        bounded_digest.extract_command(
+            request(), model='claude-haiku-5-5',
+            command=[sys.executable, str(Path(claude_digest_worker.__file__)), '--claude', str(fake)],
+        )
+    detail = error_detail(caught.value)
+    assert detail == 'model worker failed: claude login expired; coverage unchanged'
+    assert AUTH_EXPIRED_RESULT['result'] not in detail

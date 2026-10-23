@@ -99,7 +99,10 @@ def message(name, event, code, fields, since, now):
         detail = ', '.join('%s=%s' % kv for kv in sorted(fields.items()) if kv[0] != 'detail') or 'no status'
         if fields.get('detail'):
             detail += ': ' + fields['detail']
-        return '🔴 AgentMesh `%s` failing (exit %d, %s) since %s' % (name, code, detail, since)
+        text = '🔴 AgentMesh `%s` failing (exit %d, %s) since %s' % (name, code, detail, since)
+        if any(reason in fields.get('detail', '') for reason in ('claude login expired', 'claude auth failed')):
+            text += " — run `claude /login` in a terminal and choose the Claude subscription"
+        return text
     return '🟢 AgentMesh `%s` recovered at %s (failing since %s)' % (name, now, since)
 
 

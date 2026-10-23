@@ -31,6 +31,38 @@ DETAIL = re.compile(r'^[A-Za-z0-9 _.,:;/()=-]{1,200}$')
 SYSTEM_CA = ('/etc/ssl/cert.pem', '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
 
 
+def control_dir(state_dir):
+    """AGENTMESH_HOME/control beside the job status directory; None when the control plane is absent."""
+    path = Path(state_dir).resolve().parent / 'control'
+    return path if path.is_dir() else None
+
+
+def read_object(path):
+    try:
+        value = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def parse_time(text):
+    try:
+        value = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if value.tzinfo else None
+
+
+def hold_reason(name, control, now):
+    """'maintenance' when the run must be skipped, else None."""
+    if control is None:
+        return None
+    maintenance = read_object(control / 'maintenance.json')
+    if maintenance and maintenance.get('on') is True:
+        return 'maintenance'
+    return None
+
+
 def summary_fields(text):
     """Only allow-listed short identifiers from the job's JSON status lines."""
     fields = {}
@@ -104,6 +136,12 @@ def message(name, event, code, fields, since, now):
 
 
 def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now=None):
+    current = parse_time(now) or datetime.now(timezone.utc)
+    control = control_dir(state_dir)
+    held = hold_reason(name, control, current)
+    if held:
+        print(json.dumps(dict(job=name, at=current.isoformat(timespec='seconds'), held=held), sort_keys=True))
+        return 0
     state_path = Path(state_dir) / ('job-%s.json' % name)
     try:
         previous = json.loads(state_path.read_text())

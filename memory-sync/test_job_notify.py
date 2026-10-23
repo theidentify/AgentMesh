@@ -129,3 +129,36 @@ def test_retention_summary_and_exit(tmp_path, webhook, code, capsys):
 def test_retention_summary_rejects_non_counts():
     for value in ('secret', True, -1, 1.5, None):
         assert job_notify.summary_fields(json.dumps(dict(deleted=value, candidates=2))) == {}
+
+
+NOW = '2026-10-23T10:00:00+00:00'
+
+
+def control_home(tmp_path):
+    (tmp_path / 'status').mkdir(); (tmp_path / 'control').mkdir()
+    return tmp_path / 'status', tmp_path / 'control'
+
+
+def touch(path):
+    return [sys.executable, '-c', 'open(%r, "w").close()' % str(path)]
+
+
+def test_maintenance_holds_wrapped_job(tmp_path, capsys):
+    status, control = control_home(tmp_path)
+    (control / 'maintenance.json').write_text('{"on": true, "reason": "upgrade"}')
+    assert job_notify.run('ingest', touch(tmp_path / 'ran'), status, now=NOW) == 0
+    assert not (tmp_path / 'ran').exists() and not (status / 'job-ingest.json').exists()
+    assert json.loads(capsys.readouterr().out) == {'at': NOW, 'held': 'maintenance', 'job': 'ingest'}
+
+
+def test_maintenance_off_runs(tmp_path):
+    status, control = control_home(tmp_path)
+    (control / 'maintenance.json').write_text('{"on": "yes"}')
+    job_notify.run('ingest', touch(tmp_path / 'ran'), status, now=NOW)
+    assert (tmp_path / 'ran').exists()
+
+
+def test_without_control_dir_nothing_changes(tmp_path):
+    status = tmp_path / 'status'; status.mkdir()
+    assert job_notify.run('summary', job(tmp_path, 0), status, now=NOW) == 0
+    assert not (tmp_path / 'control').exists()

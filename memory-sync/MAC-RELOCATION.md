@@ -43,9 +43,8 @@ job entrypoint, rule and historical source-root entry before use.
     ],
     "files": {
       "/Users/OWNER/.hermes/scripts/agentmesh_production.py": "agentmesh_production.py",
-      "/Users/OWNER/.hermes/scripts/omp_memory_ingest.py": "omp_memory_ingest.py",
-      "/Users/OWNER/.hermes/scripts/omp_memory_summary.py": "omp_memory_summary.py",
-      "/Users/OWNER/.hermes/scripts/omp_memory_insight.py": "omp_memory_insight.py"
+      "/Users/OWNER/.hermes/scripts/omp_memory_ingest.py": "agentmesh_ingest.py",
+      "/Users/OWNER/.hermes/scripts/omp_memory_summary_cron.py": "agentmesh_summary.py"
     },
     "production_config": "/Users/OWNER/.hermes/omp-memory/agentmesh-production.json",
     "status_dir": "/Users/OWNER/.hermes/omp-memory/production-status",
@@ -95,8 +94,9 @@ For the real Mac ingest/summary layout, the script immediately after the outer
 interpreter is `<app_root>/job_notify.py`. Its `--name`, `--state-dir`, optional
 `--webhook-file` and optional positive integer `--timeout` are validated, and
 `--` must separate the inner interpreter/script command. List the inner
-`omp_memory_ingest.py` and `omp_memory_summary_cron.py` scripts in `jobs.files`,
-not `job_notify.py`; the selected release must include that wrapper. Both
+Hermes `omp_memory_ingest.py` and `omp_memory_summary_cron.py` scripts in
+`jobs.files`, not `job_notify.py`; each value is the installed name under
+`<to_root>/jobs`, so map them to `agentmesh_ingest.py` and `agentmesh_summary.py`; the selected release must include that wrapper. Both
 interpreter positions and `--state-dir` are rewritten, while the webhook path
 stays unchanged. The inner script must be in `jobs.files`.
 
@@ -224,3 +224,14 @@ read-only archived old tree. Run apply as above and check all three rule files
 and all job plists. Windows delivery is now `~/.agentmesh/exchange/installers/`;
 peer folder IDs and device IDs are unchanged. Record these host results
 separately: synthetic tests do not satisfy R-8.
+
+## Job script names
+
+The Mac was relocated on 2026-10-20 with the Hermes names kept
+(`~/.agentmesh/jobs/omp_memory_ingest.py`, `omp_memory_summary_cron.py`).
+The tracked shims in `jobs/` now use AgentMesh names: `agentmesh_ingest.py`,
+`agentmesh_summary.py` and `agentmesh_retention.py`, each a four-line call to
+`agentmesh_production.execute`. The two Hermes names remain as compatibility
+shims so a rollback or a manual run of the old path still works; the other
+deployed `omp_*` files (PostgreSQL-era `blocked` writers, the Hermes metrics and
+watch scripts, duplicate export/retention names) are left untouched.

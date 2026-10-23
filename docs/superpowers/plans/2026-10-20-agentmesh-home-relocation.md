@@ -246,6 +246,8 @@ directory written as `H`:
   `[H/.hermes/omp-memory/.venv/bin/python, H/.hermes/omp-memory/sqlite-sync/job_notify.py, --name, ingest|summary,
   --state-dir, H/.hermes/omp-memory/production-status, --webhook-file, H/.config/agentmesh/discord-webhook, --,
   H/.hermes/omp-memory/.venv/bin/python, H/.hermes/scripts/omp_memory_ingest.py|omp_memory_summary_cron.py]`.
+  (Later renamed in the installed jobs to `agentmesh_ingest.py` / `agentmesh_summary.py`;
+  see `memory-sync/MAC-RELOCATION.md`, "Job script names".)
   - `job_notify.py` lives in the app root, which is already relocated as app files.
   - The real entrypoint follows `--`, and must be in `jobs.files`.
   - The `--state-dir` value is the status dir; `--webhook-file` stays unchanged.

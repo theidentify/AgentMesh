@@ -53,10 +53,13 @@ def real_jobs(full_install, tmp_path, monkeypatch):
     scripts.mkdir(mode=0o700)
     jobs = config['jobs']
     jobs['files'] = {}
-    for name in ('omp_memory_ingest.py', 'omp_memory_summary_cron.py', 'agentmesh_production.py'):
+    # Real Hermes source names; relocation installs them under their AgentMesh names.
+    for name, target in (('omp_memory_ingest.py', 'agentmesh_ingest.py'),
+                         ('omp_memory_summary_cron.py', 'agentmesh_summary.py'),
+                         ('agentmesh_production.py', 'agentmesh_production.py')):
         p = scripts / name
         p.write_text('# synthetic standard-library job\n', encoding='utf-8')
-        jobs['files'][str(p)] = name
+        jobs['files'][str(p)] = target
     Path(jobs['production_config']).rename(memory / 'agentmesh-production.json')
     jobs['production_config'] = str(memory / 'agentmesh-production.json')
     Path(jobs['status_dir']).rename(memory / 'production-status')
@@ -141,7 +144,7 @@ def test_wrapper_flags_status_and_both_interpreters_rewritten(real_jobs, monkeyp
                             '--sqlite', str(root / 'memory-sync/data/mac.db'), '--port', '51877']
         else:
             role = job['label'].rsplit('.', 1)[-1]
-            name = 'omp_memory_ingest.py' if role == 'ingest' else 'omp_memory_summary_cron.py'
+            name = 'agentmesh_ingest.py' if role == 'ingest' else 'agentmesh_summary.py'
             assert argv == [str(root / 'jobs/.venv/bin/python'), str(root / 'memory-sync/job_notify.py'),
                             '--name', role, '--state-dir', str(root / 'status'),
                             '--webhook-file', str(paths['webhook']), '--',

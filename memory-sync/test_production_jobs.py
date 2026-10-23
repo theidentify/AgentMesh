@@ -61,3 +61,20 @@ def test_clean_ingest_still_succeeds(production, capsys):
     module, tmp_path = production
     assert module.execute('ingest', []) == 0
     assert json.loads((tmp_path / 'status/last-ingest.json').read_text())['errors'] == 0
+
+
+@pytest.mark.parametrize('name,action', [
+    ('agentmesh_ingest.py', 'ingest'), ('agentmesh_summary.py', 'summary'),
+    ('agentmesh_retention.py', 'retention'),
+    # Hermes-era names stay as compatibility shims for rollback and manual runs.
+    ('omp_memory_ingest.py', 'ingest'), ('omp_memory_summary_cron.py', 'summary')])
+def test_job_shims_dispatch_their_action(name, action, monkeypatch):
+    import runpy
+    import types
+    calls = []
+    fake = types.ModuleType('agentmesh_production')
+    fake.execute = lambda value: calls.append(value) or 0
+    monkeypatch.setitem(sys.modules, 'agentmesh_production', fake)
+    with pytest.raises(SystemExit) as exit_:
+        runpy.run_path(str(HERE / 'jobs' / name), run_name='__main__')
+    assert exit_.value.code == 0 and calls == [action]

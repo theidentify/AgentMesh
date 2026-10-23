@@ -244,3 +244,12 @@ a temporary `AGENTMESH_HOME`. They cover the backend switch, rollback and
   scoped to pairing and policy today.
 - The heartbeat coverage of each unit, to decide which units start with
   `watchdog: off`.
+
+## Amendments from milestone 1 planning (2026-10-23)
+
+- The #92 heartbeats are device telemetry, not service liveness. The M1 watchdog is observe-only and uses `launchctl print` plus `ps` runtime: jobs past `max_runtime_s` are `stuck`, and KeepAlive services that are not running are `down`. Service liveness pings move to M2.
+- `org.agentmesh.sync` was retired in Phase 7a, so the registry has 8 units and `sync.retry` is dropped.
+- In M1 launchd still starts jobs, so maintenance and quota holds are enforced in `memory-sync/job_notify.py` (ingest, summary, retention). They apply only when `AGENTMESH_HOME/control` exists.
+- The M1 quota cap counts `llm_api_calls` from `status/last-summary.json`. A cost cap and `quota.set` come later.
+- M1 rate-limit counters live in memory. `state.db` arrives with native units in M2.
+- The M1 CLI is `agentmesh-log control …`. An audit write failure returns `failed` / `audit_unavailable`.

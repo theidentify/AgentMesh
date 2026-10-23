@@ -172,10 +172,16 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
     return ThreadingHTTPServer(('127.0.0.1', port), Handler)
 
 
+def legacy_home_default():
+    """Hermes-era cron files are optional; HERMES_HOME still selects them when set."""
+    base = os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))
+    return Path(os.environ.get('HERMES_HOME', base)).expanduser()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=0)
-    parser.add_argument('--home', type=Path, default=Path(os.environ.get('HERMES_HOME', str(Path.home()/'.hermes'))))
+    parser.add_argument('--home', type=Path, default=legacy_home_default(), help='Legacy Hermes cron home (cron/jobs.json, state.db); defaults to the AgentMesh home')
     parser.add_argument('--agentmesh-home', type=Path, default=Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))))
     parser.add_argument('--metrics-log', type=Path, action='append')
     parser.add_argument('--sqlite', type=Path, help='Existing AgentMesh staging database, never created')

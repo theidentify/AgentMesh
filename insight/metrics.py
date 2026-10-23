@@ -1,4 +1,4 @@
-"""Read-only before/after accounting for the OMP digest."""
+"""Read-only before/after accounting for the memory digest."""
 import json
 import sqlite3
 from contextlib import closing
@@ -27,14 +27,17 @@ def render_table(data):
 def main(argv=None):
     import argparse
     import os
-    home = Path(os.environ.get('HERMES_HOME', str(Path.home()/'.hermes')))
+    from adapters import layout
+    # Legacy Hermes cron files are read only when HERMES_HOME points at them.
+    base = Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+    home = Path(os.environ.get('HERMES_HOME', str(base))).expanduser()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--audit',type=Path,default=home/'cron/usage_audit.jsonl')
     p.add_argument('--state',type=Path,default=home/'state.db')
     p.add_argument('--metrics-log',type=Path,action='append')
     p.add_argument('--json',action='store_true')
     args = p.parse_args(argv)
-    data = report(args.audit,args.state,args.metrics_log if args.metrics_log is not None else home/'omp-memory/summary-metrics.jsonl')
+    data = report(args.audit,args.state,args.metrics_log if args.metrics_log is not None else layout(home, base)['summary']['paths'])
     print(json.dumps(data,ensure_ascii=False,indent=2) if args.json else render_table(data)+'\n\n'+'\n'.join(data['notes']))
 
 
@@ -67,14 +70,17 @@ def report(audit_path, state_path, metrics_path, job_id='6fcf5646d34d'):
     audits = [r for r in read_jsonl(audit_path) if r.get('job_id') == job_id]
     # Retries may log a fire more than once: count distinct audit records explicitly.
     audits = list({r.get('fire_id') or str(n):r for n,r in enumerate(audits)}.values())
-    with closing(sqlite3.connect(Path(state_path).resolve().as_uri() + '?mode=ro', uri=True)) as c:
-        c.row_factory = sqlite3.Row
-        c.execute('PRAGMA query_only=ON')
-        c.execute('BEGIN')
-        allowed = ('id','started_at','input_tokens','cache_read_tokens','reasoning_tokens','api_call_count','actual_cost_usd','model')
-        available = {r['name'] for r in c.execute('PRAGMA table_info(sessions)')}
-        columns = ','.join(name for name in allowed if name in available)
-        sessions = [dict(r) for r in c.execute('SELECT ' + columns + ' FROM sessions WHERE id LIKE ? ORDER BY started_at', ('cron_'+job_id+'_%',))]
+    sessions = []
+    # The retired Hermes cron state is optional; the ~/.agentmesh layout has none.
+    if Path(state_path).exists():
+        with closing(sqlite3.connect(Path(state_path).resolve().as_uri() + '?mode=ro', uri=True)) as c:
+            c.row_factory = sqlite3.Row
+            c.execute('PRAGMA query_only=ON')
+            c.execute('BEGIN')
+            allowed = ('id','started_at','input_tokens','cache_read_tokens','reasoning_tokens','api_call_count','actual_cost_usd','model')
+            available = {r['name'] for r in c.execute('PRAGMA table_info(sessions)')}
+            columns = ','.join(name for name in allowed if name in available)
+            sessions = [dict(r) for r in c.execute('SELECT ' + columns + ' FROM sessions WHERE id LIKE ? ORDER BY started_at', ('cron_'+job_id+'_%',))]
     baseline, matched = [], set()
     for a in audits:
         end = datetime.fromisoformat(a['ts'].replace('Z','+00:00')).timestamp()

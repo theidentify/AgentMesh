@@ -23,9 +23,8 @@ For an existing staging database and an optional authoritative PostgreSQL source
 
 ```sh
 # Runtime sources must remain outside this repository.
-export HERMES_HOME="/private/runtime/hermes"
 export INSIGHT_PG_DSN="host=127.0.0.1 port=5432 dbname=memory user=readonly"
-python3 -u insight/server.py --home "$HERMES_HOME" \
+python3 -u insight/server.py --agentmesh-home "/private/runtime/agentmesh" \
   --sqlite "/private/runtime/agentmesh/node.db" --port 0
 ```
 
@@ -35,7 +34,10 @@ Use the operating system's password mechanism if authentication is needed.
 `INSIGHT_LIBPQ` can point to an installed libpq shared library if automatic
 library discovery is insufficient. Connection and SQL timeouts are three seconds.
 
-`--home` defaults to `HERMES_HOME`, otherwise `~/.hermes`. No SQLite database is
+`--home` is the optional legacy Hermes cron home (`cron/jobs.json`,
+`cron/usage_audit.jsonl`, `state.db`). It defaults to `HERMES_HOME` when set,
+otherwise to the AgentMesh home, where those files are simply absent and the
+historical cron views stay empty. `metrics.py` uses the same defaults. No SQLite database is
 created when an optional path is absent or invalid. The connection picker keeps
 **authority** separate from **comparison/staging**. Set
 `INSIGHT_PRIMARY_BACKEND=sqlite` explicitly only after a verified local writer and
@@ -50,11 +52,12 @@ database supplies sync metadata independently of the memory browser selection.
 | View | Read-only source and interpretation |
 | --- | --- |
 | Overview | Connection read checks, item/summary counts, observed agents and cron executions. |
-| Metrics | Existing summary accounting ported into `metrics.py`; separate historical, production-source bounded and isolated smoke histories, charts and coverage. |
+| Metrics | Existing summary accounting ported into `metrics.py`; separate historical, production-source bounded and isolated smoke histories, charts and coverage. Failed runs are grouped by `error_detail` with count, last 24 h, cost and first/latest failure; quota (429) reasons are flagged, never hidden. Details outside a safe character allowlist show as `other (unrecognised detail)`. |
+| Memory detail | For items, `metadata.identity_from_existing` (field names only, from kind/scope/scope_key/project) and earlier revisions carrying it in `metadata.evidence_history`, with their batch IDs. Evidence quotes in the history are not shown. |
 | Memory Browser | Paginated `memory_items` and `memory_summaries` from the selected backend. Search content, exact project/scope key, kind, status and scope filters. |
 | Agents | Aggregated `source_sessions` and `observation_events` metadata, plus content-free Hermes session metadata. Zero source-session rows do not hide agents with recorded events. |
 | Pipeline | Exact known OMP ingest and summary cron job IDs, last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
-| Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up/remote sync outcomes. |
+| Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up/remote sync outcomes. Machines whose sessions reached memory (grouped by OS and user folder of `observation_events.source_path`, never exposed) but with no profile-log device of that OS are listed as "not in the profile log" with their last activity, so a PC from the retired packet sync stays visible; a stale one is raised on the Sync headline. |
 | Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata, plus fixed Mac/Windows completed-cycle ACK projections. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
 
 `--agentmesh-home` defaults to `$AGENTMESH_HOME`, otherwise `~/.agentmesh`.

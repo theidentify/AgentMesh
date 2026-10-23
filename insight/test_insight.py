@@ -151,7 +151,8 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(request('/api/memory?backend=bad')[0], 400)
             self.assertEqual(request('/api/memory?sql=select')[0], 400)
             self.assertEqual(request('/api/memory')[0], 503)
-            self.assertEqual(request('/api/metrics')[0], 503)
+            # Hermes cron files are optional now; absent logs give empty, not unavailable, metrics.
+            self.assertEqual(request('/api/metrics')[0], 200)
             self.assertNotIn(folder.encode(), request('/api/metrics')[1])
             self.assertEqual(request('/api/operations')[0], 200)
             self.assertEqual(request('/../README.md')[0], 404)

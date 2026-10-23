@@ -253,3 +253,12 @@ a temporary `AGENTMESH_HOME`. They cover the backend switch, rollback and
 - The M1 quota cap counts `llm_api_calls` from `status/last-summary.json`. A cost cap and `quota.set` come later.
 - M1 rate-limit counters live in memory. `state.db` arrives with native units in M2.
 - The M1 CLI is `agentmesh-log control …`. An audit write failure returns `failed` / `audit_unavailable`.
+
+## Amendments from milestone 2 planning (2026-10-24)
+
+- Backend moves are owner-run CLI commands, `agentmesh-log control adopt|release <unit>`, gated by typed console presence (`Type migrate:`), until Touch ID arrives in M3. They are not socket ops. The supervisor only reads `state.db`.
+- M2's native backend runs scheduled jobs only (retention, catch-up, ingest, summary). KeepAlive services move in M5.
+- A native run reproduces the plist's argv, cwd, logs, umask and schedule (`StartInterval`, or `StartCalendarInterval` with Minute/Hour/Weekday). Its environment is launchd's base keys plus the plist's `EnvironmentVariables`, without the supervisor's `AGENTMESH_HOME`. `ProcessType=Background` is not reproduced.
+- The storm guard counts watchdog kills: more than 3 within 1 h puts the unit in `failed` until `control reset`. It alerts once through job_notify's Discord webhook.
+- At start, orphans are sent SIGTERM only when pid plus `ps lstart` match, and their runs are marked `orphaned`.
+- `panic-revert` needs no presence.

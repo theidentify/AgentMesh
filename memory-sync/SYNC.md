@@ -211,7 +211,7 @@ rejection, explicit allocation after high peer IDs, crash/publication recovery,
 reversed ancestry and FK dependency chains, duplicate files, offline edits,
 whole-packet conflicts, unrelated continuation, invalid/partial/foreign packets,
 unique-key conflicts, retained tombstones, and all four CLI commands including a
-live watch subprocess. Tests use disposable databases under Hermes scratch; they
+live watch subprocess. Tests use disposable databases in temporary directories; they
 do not touch production databases or the actual Syncthing folder. Real-data clone
 and actual Windows/deployment verification must be reported separately.
 

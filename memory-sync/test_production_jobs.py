@@ -76,3 +76,12 @@ def test_job_shims_dispatch_their_action(name, action, monkeypatch):
     with pytest.raises(SystemExit) as exit_:
         runpy.run_path(str(HERE / 'jobs' / name), run_name='__main__')
     assert exit_.value.code == 0 and calls == [action]
+
+
+def test_config_defaults_under_agentmesh_home_not_hermes(tmp_path, monkeypatch):
+    monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path / 'home'))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes'))
+    spec = importlib.util.spec_from_file_location('agentmesh_production_config_default', HERE / 'jobs/agentmesh_production.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CONFIG == tmp_path / 'home/jobs/agentmesh-production.json'

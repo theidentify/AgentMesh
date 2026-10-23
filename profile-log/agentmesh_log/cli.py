@@ -91,6 +91,8 @@ def parser():
     project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
     apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
     settings_cmd=commands.add_parser('settings'); settings_cmd.add_argument('action',choices=['show','validate'])
+    from .control.cli import add_parsers as add_control_parsers
+    add_control_parsers(commands)
     from .connector_cli import add_parsers
     add_parsers(commands)
     return p
@@ -122,6 +124,9 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command in ('connector','bridge'):
         from .connector_cli import execute as execute_connector
         return execute_connector(args,backend=backend,console=console)
+    if args.command=='control':
+        from .control.cli import execute as execute_control
+        return execute_control(args)
     if args.command=='admin':
         from .tui import run_admin
         return run_admin(menu=args.menu,backend=backend,console=console,input_fn=input_fn,filesystem=args.filesystem)

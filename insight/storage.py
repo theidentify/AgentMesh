@@ -354,15 +354,15 @@ def fetch_tunnel(url,connection=None,clock=time.monotonic):
 
 
 class Observer:
-    def __init__(self,home,root,sqlite,metrics_logs=None,*,runner=None,fetcher=None,clock=None,running=None):
-        self.home,self.root,self.sqlite=Path(home),Path(root),sqlite
+    def __init__(self,root,sqlite,metrics_logs=None,*,runner=None,fetcher=None,clock=None,running=None):
+        self.root,self.sqlite=Path(root),sqlite
         self.metrics_logs=metrics_logs; self.runner=runner; self.fetcher=fetcher or fetch_tunnel
         self.clock=clock or (lambda:datetime.now(timezone.utc)); self.running=running
         self.previous={}; self.tunnel=None
 
     def runs(self):
         from metrics import read_jsonl
-        paths=adapters.layout(self.home,self.root)['summary']['paths'] if self.metrics_logs is None else self.metrics_logs
+        paths=adapters.layout(self.root)['summary']['paths'] if self.metrics_logs is None else self.metrics_logs
         try:
             if any(not safe_path(p) for p in paths): raise ValueError('symlink')
             return list({r['run_id']:r for r in read_jsonl(paths) if r.get('record_type')=='run'}.values()),bool(paths)
@@ -380,7 +380,7 @@ class Observer:
             return rows[-1]
         add('R2 upload outbox',number(sync.get('outbox')),at=sync.get('at'),threshold=3*(number(sync.get('interval_s')) or 60))
         add('Gateway remember outbox',note='unknown; bridge writes drain status')
-        state=read_json(adapters.layout(self.home,self.root)['coordinator']['path']); pending=state.get('pending')
+        state=read_json(adapters.layout(self.root)['coordinator']['path']); pending=state.get('pending')
         ids=(pending or {}).get('pending_ids') if type(pending) is dict else state.get('pending_ids')
         count=len(ids) if type(ids) is list else 0 if 'pending' in state and pending is None else next((number(r.get('events_pending_after')) for r in reversed(runs) if number(r.get('events_pending_after')) is not None),None)
         oldest=None; ingest=[]; cursor=None; cursors=[]

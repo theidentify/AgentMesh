@@ -26,18 +26,15 @@ def render_table(data):
 
 def main(argv=None):
     import argparse
-    import os
-    from adapters import layout
-    # Legacy Hermes cron files are read only when HERMES_HOME points at them.
-    base = Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
-    home = Path(os.environ.get('HERMES_HOME', str(base))).expanduser()
+    from adapters import layout, cron_archive
+    archive = cron_archive()
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--audit',type=Path,default=home/'cron/usage_audit.jsonl')
-    p.add_argument('--state',type=Path,default=home/'state.db')
+    p.add_argument('--audit',type=Path,default=archive/'cron/usage_audit.jsonl')
+    p.add_argument('--state',type=Path,default=archive/'state.db')
     p.add_argument('--metrics-log',type=Path,action='append')
     p.add_argument('--json',action='store_true')
     args = p.parse_args(argv)
-    data = report(args.audit,args.state,args.metrics_log if args.metrics_log is not None else layout(home, base)['summary']['paths'])
+    data = report(args.audit,args.state,args.metrics_log if args.metrics_log is not None else layout()['summary']['paths'])
     print(json.dumps(data,ensure_ascii=False,indent=2) if args.json else render_table(data)+'\n\n'+'\n'.join(data['notes']))
 
 
@@ -71,7 +68,7 @@ def report(audit_path, state_path, metrics_path, job_id='6fcf5646d34d'):
     # Retries may log a fire more than once: count distinct audit records explicitly.
     audits = list({r.get('fire_id') or str(n):r for n,r in enumerate(audits)}.values())
     sessions = []
-    # The retired Hermes cron state is optional; the ~/.agentmesh layout has none.
+    # The retired cron digest's session table is optional history.
     if Path(state_path).exists():
         with closing(sqlite3.connect(Path(state_path).resolve().as_uri() + '?mode=ro', uri=True)) as c:
             c.row_factory = sqlite3.Row

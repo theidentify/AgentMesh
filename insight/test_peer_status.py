@@ -1,5 +1,6 @@
 """Read-only completed-cycle ACK projection fixtures."""
 import json
+import os
 import tempfile
 import unittest
 from test_isolation import setUpModule, tearDownModule
@@ -11,8 +12,7 @@ import adapters
 class PeerStatusTests(unittest.TestCase):
     def test_completed_ack_projection_without_private_payloads(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            root = home/'omp-memory/sync/status'
+            root = Path(os.environ['AGENTMESH_HOME'])/'exchange/status'
             root.mkdir(parents=True)
             (root/'windows.json').write_text(json.dumps({
                 'format':'agentmesh-status-v1','node':'windows','group':'PRIVATE',
@@ -22,7 +22,7 @@ class PeerStatusTests(unittest.TestCase):
                 'cycle':{'receive':{'applied':2,'unavailable':False},'publish':{'published':3,'unavailable':False}},
                 'workflow':{'ingestion':{'error':'PRIVATE/path/password'},'summary':{'status':'blocked','error':'PRIVATE'}},
                 'postgres_mirror':None}))
-            result = adapters.peer_status(home, now=datetime(2026,10,8,11,34,20,tzinfo=timezone.utc))
+            result = adapters.peer_status(now=datetime(2026,10,8,11,34,20,tzinfo=timezone.utc))
             mac, windows = result['rows']
             self.assertEqual(mac['availability'], 'missing')
             self.assertTrue(windows['available'])
@@ -39,13 +39,12 @@ class PeerStatusTests(unittest.TestCase):
 
     def test_malformed_stale_future_and_bounded_inputs(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            root = home/'omp-memory/sync/status'
+            root = Path(os.environ['AGENTMESH_HOME'])/'exchange/status'
             root.mkdir(parents=True)
             path = root/'windows.json'
             now = datetime(2026,10,8,12,tzinfo=timezone.utc)
             def read():
-                return adapters.peer_status(home, now=now)['rows'][1]
+                return adapters.peer_status(now=now)['rows'][1]
             base = {'format':'agentmesh-status-v1','node':'windows',
                     'updated_at':'2026-10-08T11:00:00Z',
                     'sync':{'received':78,'pending':False,'invalid':-1,'conflict':'PRIVATE','outbox':2**54},
@@ -74,15 +73,14 @@ class PeerStatusTests(unittest.TestCase):
                 self.assertEqual(read()['availability'],'unavailable or malformed')
                 self.assertNotIn('PRIVATE',json.dumps(read()))
             path.unlink()
-            outside = home/'outside.json'
+            outside = Path(folder)/'outside.json'
             outside.write_text(json.dumps(base))
             path.symlink_to(outside)
             self.assertFalse(read()['available'])
 
     def test_error_counts_and_malformed_workflow_remain_visible(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            root = home/'omp-memory/sync/status'
+            root = Path(os.environ['AGENTMESH_HOME'])/'exchange/status'
             root.mkdir(parents=True)
             path = root/'windows.json'
             report = {'format':'agentmesh-status-v1','node':'windows',
@@ -94,7 +92,7 @@ class PeerStatusTests(unittest.TestCase):
                       'workflow':None,'postgres_mirror':None}
             def read():
                 path.write_text(json.dumps(report))
-                return adapters.peer_status(home, now=datetime(2026,10,8,11,1,tzinfo=timezone.utc))['rows'][1]
+                return adapters.peer_status(now=datetime(2026,10,8,11,1,tzinfo=timezone.utc))['rows'][1]
             self.assertFalse(read()['has_error'])
             report['counts']['ingestion_errors'] = 3
             self.assertTrue(read()['has_error'])
@@ -109,8 +107,7 @@ class PeerStatusTests(unittest.TestCase):
 
     def test_peer_status_survives_absent_sqlite(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            result = adapters.operations(home,adapters.MemoryReader(),None)
+            result = adapters.operations(adapters.MemoryReader(),None)
             self.assertFalse(result['sync']['available'])
             self.assertEqual([r['peer'] for r in result['sync']['peers']['rows']],['Mac','Windows'])
 

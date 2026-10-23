@@ -18,22 +18,23 @@ class InsightTests(unittest.TestCase):
     def test_metrics_corruption_is_fail_visible(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
-            (home/'cron').mkdir()
-            (home/'cron/usage_audit.jsonl').write_text('{invalid}')
+            (home/'jobs').mkdir()
+            (home/'jobs/summary-metrics.jsonl').write_text('{invalid}')
             with self.assertRaises(json.JSONDecodeError):
                 adapters.metrics(home)
 
     def test_metrics_are_standalone_and_sources_stay_separate(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
-            (home / 'cron').mkdir()
-            (home / 'omp-memory').mkdir()
-            with sqlite3.connect(home / 'state.db') as c:
+            archive = adapters.cron_archive(home)
+            (archive / 'cron').mkdir(parents=True)
+            (home / 'jobs').mkdir()
+            with sqlite3.connect(archive / 'state.db') as c:
                 c.execute('CREATE TABLE sessions(id TEXT, started_at REAL)')
-            (home / 'cron/usage_audit.jsonl').write_text('')
-            (home / 'cron/jobs.json').write_text(json.dumps({'jobs':[{'id':'6fcf5646d34d','enabled':True,'no_agent':True,'last_status':'ok'}]}))
-            (home / 'omp-memory/summary-metrics.jsonl').write_text(json.dumps({'record_type':'run','run_id':'production','status':'no_work','content':'PRIVATE','errors':['secret']})+'\n')
-            (home / 'omp-memory/summary-smoke-test-metrics.jsonl').write_text(json.dumps({'record_type':'run','run_id':'isolated','status':'applied'})+'\n')
+            (archive / 'cron/usage_audit.jsonl').write_text('')
+            (archive / 'cron/jobs.json').write_text(json.dumps({'jobs':[{'id':'6fcf5646d34d','enabled':True,'no_agent':True,'last_status':'ok'}]}))
+            (home / 'jobs/summary-metrics.jsonl').write_text(json.dumps({'record_type':'run','run_id':'production','status':'no_work','content':'PRIVATE','errors':['secret']})+'\n')
+            (home / 'jobs/summary-smoke-test-metrics.jsonl').write_text(json.dumps({'record_type':'run','run_id':'isolated','status':'applied'})+'\n')
             data = adapters.metrics(home)
             self.assertEqual([r['run_id'] for r in data['runs']['bounded']], ['production'])
             self.assertEqual([r['run_id'] for r in data['runs']['isolated']], ['isolated'])
@@ -44,7 +45,7 @@ class InsightTests(unittest.TestCase):
             self.assertFalse(data['cron']['idle_inferred'])
             sqlite_run = dict(record_type='run',run_id='sqlite-committed',status='committed',llm_api_calls=1,
                               input_total_tokens=100,input_uncached_tokens=None,actual_cost_usd=None)
-            (home/'omp-memory/summary-metrics.jsonl').write_text(json.dumps(sqlite_run)+'\n')
+            (home/'jobs/summary-metrics.jsonl').write_text(json.dumps(sqlite_run)+'\n')
             data = adapters.metrics(home)
             self.assertEqual(data['report']['new_successful_llm']['sample_count'], 1)
             self.assertEqual(data['report']['new_successful_llm']['input_total_tokens']['total'], 100)
@@ -99,24 +100,26 @@ class MemoryTests(unittest.TestCase):
 class OperationsTests(unittest.TestCase):
     def test_missing_sources_are_visible_and_never_online(self):
         with tempfile.TemporaryDirectory() as folder:
-            data = adapters.operations(Path(folder), adapters.MemoryReader(), None)
+            data = adapters.operations(adapters.MemoryReader(), None)
             self.assertFalse(data['agents']['available'])
-            self.assertFalse(data['pipeline']['available'])
+            self.assertEqual(data['pipeline']['jobs'], [])
             self.assertFalse(data['sync']['available'])
             self.assertEqual(data['sync']['transport'], 'unknown')
             self.assertNotIn('online', json.dumps(data))
 
     def test_operational_projection_hides_payloads_and_distinguishes_observations(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            (root/'cron').mkdir()
-            (root/'cron/jobs.json').write_text(json.dumps({'jobs':[{'id':'6fcf5646d34d','enabled':True,'last_status':'ok','last_run_at':'2026-01-01T00:00:00Z','prompt':'secret-token','last_error':'private'}]}))
+            root = Path(folder).resolve()
+            (root/'status').mkdir()
+            for name in ('ingest','summary'):
+                (root/'status'/('job-'+name+'.json')).write_text(json.dumps({'ok':True,'at':'2026-01-01T00:00:00Z','prompt':'secret-token','detail':'private'}))
+            (root/'packet-sync-status.json').write_text(json.dumps({'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}))
             db = root/'staged.db'
             with sqlite3.connect(db) as c:
                 c.executescript((Path(__file__).parent.parent/'memory-sync/schema.sql').read_text())
                 c.execute("INSERT INTO source_sessions(source_agent,source_path,last_seen_at) VALUES ('codex','secret-path','2026-01-01T00:00:00Z')")
                 c.executescript("CREATE TABLE _sync_config(node TEXT, group_id TEXT); INSERT INTO _sync_config VALUES ('mac','SECRET'); CREATE TABLE _sync_receipts(uuid TEXT,checksum TEXT); CREATE TABLE _sync_outbox(uuid TEXT,published INTEGER,packet TEXT); CREATE TABLE _sync_diagnostics(path TEXT,kind TEXT,message TEXT); CREATE TABLE _agentmesh_worker_state(consumer TEXT,last_run REAL,lease_until REAL,owner TEXT);")
-            data = adapters.operations(root, adapters.MemoryReader(sqlite=db), db)
+            data = adapters.operations(adapters.MemoryReader(sqlite=db), db, agentmesh_home=root)
             self.assertEqual(data['agents']['rows'][0]['state'], 'stale')
             self.assertEqual(data['pipeline']['jobs'][1]['last_status'], 'ok')
             self.assertEqual(data['sync']['node'], 'mac')
@@ -133,7 +136,7 @@ class HTTPTests(unittest.TestCase):
         import urllib.request
         import urllib.error
         with tempfile.TemporaryDirectory() as folder:
-            app = server.make_server(Path(folder), 0)
+            app = server.make_server(0, agentmesh_home=Path(folder))
             thread = threading.Thread(target=app.serve_forever, daemon=True)
             thread.start()
             self.addCleanup(app.server_close)
@@ -167,7 +170,7 @@ class HTTPTests(unittest.TestCase):
         import urllib.request
         with tempfile.TemporaryDirectory() as folder:
             for primary, expected in ((None, 'PostgreSQL authority'), ('sqlite', 'SQLite authority')):
-                app = server.make_server(Path(folder), 0, sqlite=Path(folder)/'absent.db', primary=primary)
+                app = server.make_server(0, agentmesh_home=Path(folder), sqlite=Path(folder)/'absent.db', primary=primary)
                 thread = threading.Thread(target=app.serve_forever, daemon=True)
                 thread.start()
                 try:
@@ -178,7 +181,7 @@ class HTTPTests(unittest.TestCase):
                     app.shutdown()
                     app.server_close()
             with self.assertRaises(ValueError):
-                server.make_server(Path(folder), 0, primary='invalid')
+                server.make_server(0, agentmesh_home=Path(folder), primary='invalid')
 
     def test_cache_expiry_and_sanitized_failure(self):
         import server

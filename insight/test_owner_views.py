@@ -23,12 +23,12 @@ def metrics_home(tmp_path, rows):
     am = tmp_path/'agentmesh'
     (am/'jobs').mkdir(parents=True)
     (am/'jobs/summary-metrics.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
-    return tmp_path/'legacy', am
+    return am
 
 
 def test_failure_reasons_counts_cost_and_latest(tmp_path):
     quota = 'model worker failed: api_error 429; coverage unchanged'
-    home, am = metrics_home(tmp_path, [
+    am = metrics_home(tmp_path, [
         run('2026-10-22T01:49:17+00:00', 'failed', 'stable key identity changed', 0.02),
         run('2026-10-22T03:47:03+00:00', 'failed', 'evidence coverage mismatch', None),
         run('2026-10-22T04:00:00+00:00', 'failed', 'stable key identity changed', 0.03),
@@ -38,7 +38,7 @@ def test_failure_reasons_counts_cost_and_latest(tmp_path):
         run('2026-10-23T06:12:00+00:00', 'failed', None, None),
         run('2026-10-23T06:20:00+00:00'),
     ])
-    data = adapters.metrics(home, am)
+    data = adapters.metrics(am)
     rows = {r['reason']:r for r in data['failure_reasons']['rows']}
     assert set(rows) == {'stable key identity changed', 'evidence coverage mismatch', quota, 'other (unrecognised detail)', 'no detail recorded'}
     stable = rows['stable key identity changed']
@@ -55,10 +55,10 @@ def test_failure_reasons_counts_cost_and_latest(tmp_path):
     assert 'PRIVATE' not in text and '<script>' not in text
 
 
-def test_metrics_without_legacy_cron_home(tmp_path):
-    """The ~/.agentmesh layout alone is enough: no Hermes cron files are required."""
-    home, am = metrics_home(tmp_path, [run('2026-10-23T06:20:00+00:00', llm_api_calls=1)])
-    data = adapters.metrics(home, am)
+def test_metrics_without_cron_archive(tmp_path):
+    """The ~/.agentmesh layout alone is enough: the frozen cron archive is optional."""
+    am = metrics_home(tmp_path, [run('2026-10-23T06:20:00+00:00', llm_api_calls=1)])
+    data = adapters.metrics(am)
     assert [r['run_id'] for r in data['runs']['bounded']] == ['r-2026-10-23T06:20:00+00:00']
     assert data['runs']['historical'] == [] and data['report']['baseline']['sample_count'] == 0
     assert data['failure_reasons'] == {'total':0, 'latest_at':None, 'rows':[]}
@@ -66,7 +66,7 @@ def test_metrics_without_legacy_cron_home(tmp_path):
 
 def test_metrics_cli_defaults_to_agentmesh_layout(tmp_path, monkeypatch, capsys):
     import metrics
-    _, am = metrics_home(tmp_path, [run('2026-10-23T06:20:00+00:00', llm_api_calls=1)])
+    am = metrics_home(tmp_path, [run('2026-10-23T06:20:00+00:00', llm_api_calls=1)])
     monkeypatch.delenv('HERMES_HOME', raising=False)
     monkeypatch.setenv('AGENTMESH_HOME', str(am))
     monkeypatch.setattr(Path, 'home', lambda: tmp_path/'nohome')
@@ -74,13 +74,18 @@ def test_metrics_cli_defaults_to_agentmesh_layout(tmp_path, monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out)['new']['sample_count'] == 1
 
 
-def test_server_home_default_is_agentmesh(monkeypatch):
-    import server
-    monkeypatch.delenv('HERMES_HOME', raising=False)
-    monkeypatch.setenv('AGENTMESH_HOME', '/fixture/agentmesh')
-    assert server.legacy_home_default() == Path('/fixture/agentmesh')
-    monkeypatch.setenv('HERMES_HOME', '/fixture/legacy')
-    assert server.legacy_home_default() == Path('/fixture/legacy')
+def test_cron_archive_lives_in_agentmesh_home(tmp_path, monkeypatch):
+    """The retired cron's history is read from the AgentMesh archive, never a Hermes home."""
+    am = metrics_home(tmp_path, [])
+    archive = am/'backups/archive/digest-cron'
+    (archive/'cron').mkdir(parents=True)
+    (archive/'cron/usage_audit.jsonl').write_text(json.dumps({'job_id':adapters.JOB,'fire_id':'f1','ts':'2026-10-01T00:00:00Z','prompt_tokens':5,'completion_tokens':1,'duration_ms':1000})+'\n')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path/'hermes'))
+    assert adapters.cron_archive(am) == archive
+    data = adapters.metrics(am)
+    assert [r['run_id'] for r in data['runs']['historical']] == ['f1']
+    assert data['report']['baseline']['input_total_tokens']['total'] == 5
+    assert 'hermes_sessions' not in adapters.operations(adapters.MemoryReader(), None, {'status':'unknown','rows':[]}, am)
 
 
 @pytest.fixture
@@ -133,7 +138,7 @@ def test_devices_seen_in_ingested_memory(memory_db):
 def test_operations_include_devices_seen(memory_db, tmp_path):
     with sqlite3.connect(memory_db) as c:
         c.execute("INSERT INTO observation_events(event_key,source_agent,source_path,occurred_at,kind,content,source_hash) VALUES ('k','claude','C:\\x\\y','2026-10-16T05:51:54Z','user','x','h')")
-    value = adapters.operations(tmp_path, adapters.MemoryReader(sqlite=memory_db), None, {'status':'unknown','rows':[]}, tmp_path/'am')
+    value = adapters.operations(adapters.MemoryReader(sqlite=memory_db), None, {'status':'unknown','rows':[]}, tmp_path/'am')
     assert [r['platform'] for r in value['devices_seen']['rows']] == ['windows']
 
 

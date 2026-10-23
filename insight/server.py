@@ -30,9 +30,8 @@ class Cache:
             return self.value
 
 
-def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None):
-    home = Path(home).expanduser()
-    agentmesh_home = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
+def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None, cron_archive=None):
+    agentmesh_home = adapters.agentmesh_root(agentmesh_home)
     readers = {'sqlite':adapters.MemoryReader(sqlite=sqlite), 'postgres':adapters.MemoryReader(dsn=dsn, backend='postgres')}
     primary = primary or os.environ.get('INSIGHT_PRIMARY_BACKEND', 'postgres')
     primary = 'postgres' if primary == 'pg' else primary
@@ -41,10 +40,10 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
     default = primary if (dsn if primary == 'postgres' else sqlite) else ('postgres' if dsn else 'sqlite')
     readers['postgres'].label = 'PostgreSQL authority' if primary == 'postgres' else 'PostgreSQL read-only comparison'
     readers['sqlite'].label = 'SQLite authority' if primary == 'sqlite' else 'SQLite staging'
-    metrics_cache = Cache(lambda: adapters.metrics(home, agentmesh_home, metrics_logs))
+    metrics_cache = Cache(lambda: adapters.metrics(agentmesh_home, metrics_logs, cron_archive))
     from syncthing_transport import observe
-    transport_cache = Cache(lambda: observe(home, exchange=adapters.layout(home, agentmesh_home)['exchange']['path']))
-    ops_cache = {key:Cache(lambda key=key: adapters.operations(home, readers[key], sqlite, transport_cache.get(), agentmesh_home)) for key in readers}
+    transport_cache = Cache(lambda: observe(agentmesh_home, exchange=adapters.layout(agentmesh_home)['exchange']['path']))
+    ops_cache = {key:Cache(lambda key=key: adapters.operations(readers[key], sqlite, transport_cache.get(), agentmesh_home)) for key in readers}
 
     def connections():
         rows = []
@@ -64,7 +63,7 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
 
     connection_cache = Cache(connections)
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
-    storage_cache = storage.Cache(storage.Observer(home, agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
+    storage_cache = storage.Cache(storage.Observer(agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
     access = remote_access.Verifier()
 
     class Handler(BaseHTTPRequestHandler):
@@ -172,22 +171,16 @@ def make_server(home, port, sqlite=None, dsn=None, primary=None, agentmesh_home=
     return ThreadingHTTPServer(('127.0.0.1', port), Handler)
 
 
-def legacy_home_default():
-    """Hermes-era cron files are optional; HERMES_HOME still selects them when set."""
-    base = os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))
-    return Path(os.environ.get('HERMES_HOME', base)).expanduser()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=0)
-    parser.add_argument('--home', type=Path, default=legacy_home_default(), help='Legacy Hermes cron home (cron/jobs.json, state.db); defaults to the AgentMesh home')
+    parser.add_argument('--cron-archive', type=Path, help='Frozen history of the retired cron digest; defaults to backups/archive/digest-cron under the AgentMesh home')
     parser.add_argument('--agentmesh-home', type=Path, default=Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))))
     parser.add_argument('--metrics-log', type=Path, action='append')
     parser.add_argument('--sqlite', type=Path, help='Existing AgentMesh staging database, never created')
     # DSN only via environment, not CLI/process list or a web form.
     args = parser.parse_args()
-    server = make_server(args.home, args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log)
+    server = make_server(args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log, cron_archive=args.cron_archive)
     print(json.dumps({'url':'http://127.0.0.1:'+str(server.server_port),'pid':os.getpid(),'readonly':True}), flush=True)
     try:
         server.serve_forever()

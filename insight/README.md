@@ -34,10 +34,7 @@ Use the operating system's password mechanism if authentication is needed.
 `INSIGHT_LIBPQ` can point to an installed libpq shared library if automatic
 library discovery is insufficient. Connection and SQL timeouts are three seconds.
 
-`--home` is the optional legacy Hermes cron home (`cron/jobs.json`,
-`cron/usage_audit.jsonl`, `state.db`). It defaults to `HERMES_HOME` when set,
-otherwise to the AgentMesh home, where those files are simply absent and the
-historical cron views stay empty. `metrics.py` uses the same defaults. No SQLite database is
+Insight reads nothing outside the AgentMesh home. No SQLite database is
 created when an optional path is absent or invalid. The connection picker keeps
 **authority** separate from **comparison/staging**. Set
 `INSIGHT_PRIMARY_BACKEND=sqlite` explicitly only after a verified local writer and
@@ -55,28 +52,25 @@ database supplies sync metadata independently of the memory browser selection.
 | Metrics | Existing summary accounting ported into `metrics.py`; separate historical, production-source bounded and isolated smoke histories, charts and coverage. Failed runs are grouped by `error_detail` with count, last 24 h, cost and first/latest failure; quota (429) reasons are flagged, never hidden. Details outside a safe character allowlist show as `other (unrecognised detail)`. |
 | Memory detail | For items, `metadata.identity_from_existing` (field names only, from kind/scope/scope_key/project) and earlier revisions carrying it in `metadata.evidence_history`, with their batch IDs. Evidence quotes in the history are not shown. |
 | Memory Browser | Paginated `memory_items` and `memory_summaries` from the selected backend. Search content, exact project/scope key, kind, status and scope filters. |
-| Agents | Aggregated `source_sessions` and `observation_events` metadata, plus content-free Hermes session metadata. Zero source-session rows do not hide agents with recorded events. |
-| Pipeline | Exact known OMP ingest and summary cron job IDs, last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
+| Agents | Aggregated `source_sessions` and `observation_events` metadata. Zero source-session rows do not hide agents with recorded events. |
+| Pipeline | The org.agentmesh ingest, summary and retention launchd jobs (wrapper state and plist interval): last execution and next scheduled time, coordinator window state, ingest counters/errors and summary checkpoints. |
 | Profile log | Content-free `profile-log-status.json` under `--agentmesh-home`: profiles/scopes, agent R/W, devices, migration targets/counts and last apply/catch-up/remote sync outcomes. Machines whose sessions reached memory (grouped by OS and user folder of `observation_events.source_path`, never exposed) but with no profile-log device of that OS are listed as "not in the profile log" with their last activity, so a PC from the retired packet sync stays visible; a stale one is raised on the Sync headline. |
 | Sync | Existing AgentMesh `_sync_config`, `_sync_outbox`, `_sync_receipts`, `_sync_diagnostics` and optional `_agentmesh_worker_state` metadata, plus fixed Mac/Windows completed-cycle ACK projections. No packet payloads, group IDs, source paths, owners or diagnostic messages. |
 
 `--agentmesh-home` defaults to `$AGENTMESH_HOME`, otherwise `~/.agentmesh`.
-Each relocated item independently prefers its new path when present, falls back
-to the legacy path beneath `--home`, and otherwise reports `missing`. API source
-labels are `agentmesh`, `legacy`, or `missing`; filesystem paths are not exposed.
+Each item is read from its path under the AgentMesh home and otherwise reported
+`missing` (API source labels `agentmesh` or `missing`; filesystem paths are not
+exposed). The pre-relocation `omp-memory` locations are no longer read.
 
-| Item | Under `--agentmesh-home` | Legacy under `--home` |
-| --- | --- | --- |
-| Peer ACKs | `exchange/status/{mac,windows}.json` | `omp-memory/sync/status/{mac,windows}.json` |
-| Syncthing exchange | `exchange` | `omp-memory/sync` |
-| Coordinator | `jobs/.bounded_digest_state.json` | `omp-memory/.bounded_digest_state.json` |
-
-Hermes `cron/jobs.json`, `cron/usage_audit.jsonl` and `state.db` always stay under
-`--home`, even if similarly named files exist under `--agentmesh-home`.
+| Item | Under `--agentmesh-home` |
+| --- | --- |
+| Peer ACKs | `exchange/status/{mac,windows}.json` |
+| Syncthing exchange | `exchange` |
+| Coordinator | `jobs/.bounded_digest_state.json` |
+| Retired cron digest history | `backups/archive/digest-cron/{cron/usage_audit.jsonl,cron/jobs.json,state.db}` (override with `--cron-archive`; all optional) |
 
 Metrics reads in place: sorted `backups/archive/summary-metrics.jsonl.pre-relocate-*`
-history under `--agentmesh-home`, then legacy `omp-memory/summary-metrics.jsonl`
-under `--home`, then new `jobs/summary-metrics.jsonl` under `--agentmesh-home`.
+history, then `jobs/summary-metrics.jsonl`, both under `--agentmesh-home`.
 Every existing live file participates. Records are de-duplicated by `run_id`,
 with the later file winning. The same merge applies separately to
 `summary-smoke-test-metrics.jsonl`. Archives are only read; nothing is copied,

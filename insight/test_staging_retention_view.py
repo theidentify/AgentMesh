@@ -14,7 +14,7 @@ def test_staging_retention_counters_in_ingest_pane(tmp_path):
             kept_active_session INTEGER, applied INTEGER)''')
         c.execute("INSERT INTO agentmesh_retention_runs VALUES('2026-10-22T00:00:00+00:00',30,5,5,1,2,3,4,1)")
         c.execute("INSERT INTO agentmesh_retention_runs VALUES('2026-10-23T00:00:00+00:00',30,2,2,1,2,3,4,1)")
-    result = adapters.operations(tmp_path, adapters.MemoryReader(sqlite=db), db, agentmesh_home=tmp_path)['ingest']['retention']
+    result = adapters.operations(adapters.MemoryReader(sqlite=db), db, agentmesh_home=tmp_path)['ingest']['retention']
     assert result['retention_enabled'] is True
     assert result['last_run_at'] == '2026-10-23T00:00:00+00:00'
     assert result['rows_deleted_total'] == 7

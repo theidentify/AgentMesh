@@ -1,5 +1,6 @@
 """Public security telemetry is not a management or trust API."""
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -11,9 +12,9 @@ import adapters
 class SecurityStatusTests(unittest.TestCase):
     def test_legacy_ack_has_no_invented_signature_success_or_zero_failures(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder); status = home / 'omp-memory/sync/status'; status.mkdir(parents=True)
+            status = Path(os.environ['AGENTMESH_HOME'])/'exchange/status'; status.mkdir(parents=True)
             (status / 'mac.json').write_text(json.dumps({'format':'agentmesh-status-v1','node':'mac','updated_at':'2026-10-08T12:00:00Z','counts':{},'sync':{},'cycle':{}}))
-            rows = adapters.peer_status(home)['rows']
+            rows = adapters.peer_status()['rows']
             self.assertEqual(rows[0]['security']['policy'], 'legacy')
             self.assertIsNone(rows[0]['security']['verification']['failed_attempts'])
             self.assertIsNone(rows[0]['security']['verification']['last_success_at'])

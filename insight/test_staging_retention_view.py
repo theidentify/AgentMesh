@@ -30,3 +30,19 @@ def test_staging_retention_absent_before_first_run(tmp_path):
     db = tmp_path/'staging.db'
     with closing(sqlite3.connect(db)): pass
     assert adapters.retention_status(db) == dict(retention_enabled=False, last_run_at=None, rows_deleted_total=0, last_run=None)
+
+
+def test_retention_job_status_and_failures(tmp_path):
+    import json
+    from datetime import datetime, timezone
+    status = tmp_path/'status'
+    status.mkdir()
+    at = '2026-10-23T04:00:00+00:00'
+    (status/'job-retention.json').write_text(json.dumps(dict(ok=False, at=at, since=at)))
+    row, = adapters.launchd_jobs(tmp_path, tmp_path/'agents')
+    assert row['name'] == 'Retention' and row['id'] == 'org.agentmesh.retention'
+    assert row['last_run_at'] == at and row['last_status'] == 'error' and row['has_error']
+    (status/'launchd-retention.log').write_text('\n'+json.dumps(dict(job='retention', at=at, exit=1, error_class='ValueError'))+'\n')
+    failures = adapters.job_failures(tmp_path, now=datetime(2026,10,23,5,tzinfo=timezone.utc))
+    assert failures['counts']['retention'] == dict(day=1, day_failed=1, week_failed=1)
+    assert failures['rows'][0]['job'] == 'Retention'

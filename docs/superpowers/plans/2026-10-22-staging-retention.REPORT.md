@@ -53,7 +53,7 @@ An anchor is deletable only when its whole turn is covered, in addition to the u
 - `retention_audit` now reports `retention_enabled`, `last_run_at`, `rows_deleted_total` and the last run's counts. Its warning drops peer delivery, since packet sync is retired.
 - Insight's ingest pane shows the same fields. No other Insight code changed.
 
-**Scheduling.** No unit is added. The owner decides after a dry-run.
+**Scheduling.** The owner approved weekly retention using the settings window. Generation is render-only; installation remains an owner step.
 
 ## What the live DB looks like (read-only count query, 2026-10-22)
 | Item | Count |
@@ -200,4 +200,38 @@ cd / && ~/.agentmesh/jobs/.venv/bin/python ~/.agentmesh/memory-sync/retention_au
 - add `"staging": {"retention": {"older_than_days": 45}}` to `~/.agentmesh/settings.json`, then run `~/.agentmesh/bin/agentmesh-log settings validate`;
 - or pass `--older-than-days 45` for one run.
 
-**5. Scheduling.** None is installed. Run it by hand whenever you want, or ask for a unit after you have seen a few runs.
+**5. Scheduling.** Follow the weekly schedule below.
+
+
+## Weekly schedule
+The owner approved Sunday at 04:00 local time. Live settings will contain
+`staging.retention.older_than_days: 14`; the unit passes no age override.
+Generation never registers or starts a job. Run after deploying the updated code.
+
+Generate into a new directory (the parent exists; `units` must not):
+```sh
+RETENTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentmesh-retention.XXXXXX")/units"
+~/.agentmesh/jobs/.venv/bin/python ~/.agentmesh/memory-sync/platform_service.py generate-retention \
+  --platform macos --python "$HOME/.agentmesh/jobs/.venv/bin/python" \
+  --app-dir "$HOME/.agentmesh/memory-sync" --state-dir "$HOME/.agentmesh/status" \
+  --webhook-file "$HOME/.config/agentmesh/discord-webhook" \
+  --weekday 0 --hour 4 --minute 0 --output "$RETENTION_DIR"
+plutil -p "$RETENTION_DIR/org.agentmesh.retention.plist"
+mkdir -p "$HOME/Library/LaunchAgents"
+cp "$RETENTION_DIR/org.agentmesh.retention.plist" "$HOME/Library/LaunchAgents/org.agentmesh.retention.plist"
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/org.agentmesh.retention.plist"
+```
+`RunAtLoad` is false. To apply once now, then check the wrapper status and audit:
+```sh
+launchctl kickstart -p gui/$(id -u)/org.agentmesh.retention
+cat "$HOME/.agentmesh/status/job-retention.json"
+~/.agentmesh/jobs/.venv/bin/python ~/.agentmesh/memory-sync/retention_audit.py "$HOME/.agentmesh/memory-sync/data/mac.db"
+```
+Kickstart returns before completion; check `job-retention.json` after the run finishes.
+A packet-sync-on refusal exits non-zero and follows the existing failure-alert policy.
+
+Rollback the schedule (does not undo deletions):
+```sh
+launchctl bootout gui/$(id -u) "$HOME/Library/LaunchAgents/org.agentmesh.retention.plist"
+rm "$HOME/Library/LaunchAgents/org.agentmesh.retention.plist"
+```

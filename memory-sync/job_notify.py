@@ -40,6 +40,8 @@ def summary_fields(text):
         except ValueError:
             continue
         if isinstance(value, dict):
+            if all(type(value.get(k)) is int and value[k] >= 0 for k in ('deleted', 'candidates')):
+                fields['summary'] = f'deleted={value["deleted"]} candidates={value["candidates"]}'
             for key in ('status', 'action', 'error_class'):
                 if isinstance(value.get(key), str) and SAFE.match(value[key]):
                     fields[key] = value[key]

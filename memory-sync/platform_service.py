@@ -49,6 +49,8 @@ def render_launchagent(python, app_dir, database, exchange, interval=60, postgre
 def main(argv=None):
     import sys
     actual = sys.argv[1:] if argv is None else argv
+    if actual and actual[0] == 'generate-retention':
+        return generate_retention_units(actual)
     if any(v == '--unit' or v.startswith('--unit=') for v in actual):
         return generate_profile_units(actual)
     import argparse
@@ -187,6 +189,85 @@ def generate_profile_units(argv):
     for name,data in files.items():
         fd=os.open(root/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'wb') as stream: stream.write(data)
+    return 0
+
+
+
+def render_retention_unit(platform, *, python, app_dir, state_dir, webhook_file=None,
+                          weekday=0, hour=4, minute=0, home=None):
+    """Render weekly staging retention; the settings file owns the age window."""
+    import subprocess
+    import xml.etree.ElementTree as ET
+    if platform not in ('macos', 'linux', 'windows'): raise ValueError('invalid platform')
+    for value in [python, app_dir, state_dir] + [v for v in (webhook_file, home) if v is not None]:
+        _validate(value, value, value, value, 1)
+    for value, maximum in ((weekday, 6), (hour, 23), (minute, 59)):
+        if type(value) is not int or not 0 <= value <= maximum: raise ValueError('invalid schedule')
+    argv = [str(python), str(Path(app_dir)/'job_notify.py'), '--name', 'retention', '--state-dir', str(state_dir)]
+    if webhook_file is not None: argv += ['--webhook-file', str(webhook_file)]
+    argv += ['--', str(python), str(Path(app_dir)/'agentmesh.py'), 'staging', 'retention', '--apply', '--json']
+    stem = 'org.agentmesh.retention'
+    if platform == 'macos':
+        value = dict(Label=stem, ProgramArguments=argv, RunAtLoad=False, Umask=0o077,
+                     ProcessType='Background', StartCalendarInterval=dict(Weekday=weekday, Hour=hour, Minute=minute),
+                     StandardOutPath=str(Path(state_dir)/'launchd-retention.log'),
+                     StandardErrorPath=str(Path(state_dir)/'launchd-retention.log'))
+        if home is not None: value['EnvironmentVariables'] = {'AGENTMESH_HOME': str(home)}
+        return {stem+'.plist': plistlib.dumps(value)}
+    if platform == 'linux':
+        quote = lambda value: json.dumps(value, ensure_ascii=False).replace('%', '%%')
+        service = '[Unit]\nDescription=AgentMesh staging retention\n\n[Service]\nType=oneshot\n'
+        service += 'ExecStart=:'+' '.join(quote(a) for a in argv)+'\nUMask=0077\n'
+        if home is not None: service += 'Environment='+quote('AGENTMESH_HOME='+str(home))+'\n'
+        day = ('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')[weekday]
+        timer = ('[Unit]\nDescription=AgentMesh weekly staging retention\n\n[Timer]\n'
+                 f'OnCalendar={day} *-*-* {hour:02d}:{minute:02d}:00\nPersistent=true\n'
+                 f'Unit={stem}.service\n\n[Install]\nWantedBy=timers.target\n')
+        return {stem+'.service': service.encode('utf-8'), stem+'.timer': timer.encode('utf-8')}
+    task = ET.Element('Task', version='1.4', xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task')
+    trigger = ET.SubElement(ET.SubElement(task, 'Triggers'), 'CalendarTrigger')
+    ET.SubElement(trigger, 'StartBoundary').text = f'2020-01-05T{hour:02d}:{minute:02d}:00'
+    ET.SubElement(trigger, 'Enabled').text = 'true'
+    schedule = ET.SubElement(trigger, 'ScheduleByWeek')
+    ET.SubElement(schedule, 'WeeksInterval').text = '1'
+    day = ('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')[weekday]
+    ET.SubElement(ET.SubElement(schedule, 'DaysOfWeek'), day)
+    settings = ET.SubElement(task, 'Settings')
+    ET.SubElement(settings, 'MultipleInstancesPolicy').text = 'IgnoreNew'
+    ET.SubElement(settings, 'ExecutionTimeLimit').text = 'PT2H'
+    # Task Scheduler has no per-action environment field. No shell expansion.
+    if home is not None:
+        argv = [str(python), '-c', 'import os,sys; os.environ["AGENTMESH_HOME"]=sys.argv[1]; os.execv(sys.argv[2],sys.argv[2:])', str(home), *argv]
+    action = ET.SubElement(ET.SubElement(task, 'Actions'), 'Exec')
+    ET.SubElement(action, 'Command').text = argv[0]
+    ET.SubElement(action, 'Arguments').text = subprocess.list2cmdline(argv[1:])
+    return {stem+'.xml': ET.tostring(task, encoding='utf-8', xml_declaration=True)}
+
+
+def generate_retention_units(argv):
+    import argparse
+    import os
+    p = argparse.ArgumentParser(description='Render weekly staging retention files only')
+    p.add_argument('command', choices=['generate-retention'])
+    p.add_argument('--platform', required=True, choices=['macos', 'linux', 'windows'])
+    for name in ('python', 'app-dir', 'state-dir', 'output'): p.add_argument('--'+name, required=True)
+    p.add_argument('--webhook-file'); p.add_argument('--home')
+    for name, default in (('weekday', 0), ('hour', 4), ('minute', 0)):
+        p.add_argument('--'+name, type=int, default=default)
+    args = vars(p.parse_args(argv))
+    args.pop('command')
+    root = Path(args.pop('output'))
+    try:
+        files = render_retention_unit(**args)
+        if not root.is_absolute() or any(unicodedata.category(c)=='Cc' for c in str(root)) or any(p.is_symlink() for p in (root, *root.parents)):
+            raise ValueError('invalid output')
+        root.mkdir(mode=0o700)
+        for name, data in files.items():
+            fd = os.open(root/name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as stream: stream.write(data)
+            print(root/name)
+    except (ValueError, OSError):
+        p.error('cannot generate retention units: invalid arguments or output already exists/unwritable')
     return 0
 
 

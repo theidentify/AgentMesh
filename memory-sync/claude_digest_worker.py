@@ -89,6 +89,13 @@ def failure_reason(stdout):
     if not isinstance(result, dict):
         return None
     status = result.get('api_error_status')
+    if type(status) is int and status in (401, 403):
+        return 'claude auth failed'
+    text = result.get('result')
+    if isinstance(text, str):
+        text = text.lower()
+        if any(marker in text for marker in ('oauth', 'failed to authenticate', 'invalid api key', '/login')):
+            return 'claude login expired' if 'expired' in text else 'claude auth failed'
     if type(status) is int and 100 <= status <= 599:
         return 'api_error %d' % status
     for key in ('terminal_reason', 'subtype'):

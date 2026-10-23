@@ -113,6 +113,24 @@ def test_resource_fields(tmp_path,monkeypatch,capsys):
     assert row['job']=='summary' and row['at']=='fixed' and row['exit']==0
 
 
+@pytest.mark.parametrize('reason, has_hint', [
+    ('claude login expired', True),
+    ('claude auth failed', True),
+    ('api_error 429', False),
+])
+def test_auth_failure_hint_and_unchanged_recovery(reason, has_hint):
+    detail = f'model worker failed: {reason}; coverage unchanged'
+    fields = job_notify.summary_fields(json.dumps({'detail': detail}))
+    assert fields == {'detail': detail}
+    hint = " — run `claude /login` in a terminal and choose the Claude subscription"
+    text = job_notify.message('summary', 'failed', 1, fields, 't0', 't1')
+    assert detail in text
+    assert (hint in text) is has_hint
+    assert job_notify.message('summary', 'recovered', 0, fields, 't0', 't1') == (
+        '🟢 AgentMesh `summary` recovered at t1 (failing since t0)'
+    )
+
+
 @pytest.mark.parametrize('code', [0, 1])
 def test_retention_summary_and_exit(tmp_path, webhook, code, capsys):
     sent = []

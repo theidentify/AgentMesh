@@ -320,7 +320,11 @@ def peer_status(home, now=None, agentmesh_home=None):
 
 
 def launchd_jobs(agentmesh_home=None, agents=None):
-    """Ingest/summary now run as launchd jobs whose wrapper writes status/job-<name>.json; Hermes cron is the fallback."""
+    """Wrapper status for launchd jobs; Hermes cron is the fallback.
+
+    All jobs, including Retention, omit missing/invalid state files. A missing
+    plist keeps the state row with enabled=False, including before installation.
+    """
     import plistlib
     from datetime import datetime, timedelta
     base = Path(agentmesh_home or os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))).expanduser()
@@ -367,8 +371,11 @@ def job_failures(agentmesh_home=None, now=None, tail=1024*1024):
         try:
             with open(base/'status'/('launchd-'+name+'.log'), 'rb') as f:
                 f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell()-tail))
-                lines = f.read().decode('utf-8', 'replace').splitlines()[1:]
+                offset = max(0, f.tell()-tail)
+                f.seek(offset)
+                lines = f.read().decode('utf-8', 'replace').splitlines()
+                if offset > 0:
+                    lines = lines[1:]
         except OSError:
             continue
         for line in lines:
@@ -416,7 +423,7 @@ def operations(home, reader, sync_db, transport=None, agentmesh_home=None):
     try:
         selected = launchd_jobs(agentmesh_home)
         note = 'Launchd jobs: last result and time from the job wrapper; next run is last run plus the interval.'
-        if len(selected) != 2:
+        if not {'Ingest', 'Summary'}.issubset(row['name'] for row in selected):
             selected, note = [], 'Hermes cron jobs: configuration and last run. Prompts, commands and error text are not shown.'
             jobs = json.loads((home/'cron/jobs.json').read_text())['jobs']
             for label, job_id in (('Ingest','eabd6e41c22d'),('Summary','6fcf5646d34d')):

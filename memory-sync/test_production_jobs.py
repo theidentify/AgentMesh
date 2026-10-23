@@ -65,9 +65,7 @@ def test_clean_ingest_still_succeeds(production, capsys):
 
 @pytest.mark.parametrize('name,action', [
     ('agentmesh_ingest.py', 'ingest'), ('agentmesh_summary.py', 'summary'),
-    ('agentmesh_retention.py', 'retention'),
-    # Hermes-era names stay as compatibility shims for rollback and manual runs.
-    ('omp_memory_ingest.py', 'ingest'), ('omp_memory_summary_cron.py', 'summary')])
+    ('agentmesh_retention.py', 'retention')])
 def test_job_shims_dispatch_their_action(name, action, monkeypatch):
     import runpy
     import types

@@ -121,3 +121,13 @@ def test_units_and_diagnose(tmp_path):
     assert [u['name'] for u in units][:2]==['ingest','summary'] and units[0]['wrapped'] is True
     report=control.handle(request('diagnose'),CALLER)['result']
     assert set(report)=={'status','units','python','platform'}
+
+
+def test_failed_blocks_until_reset(tmp_path):
+    backend=FakeBackend(); backend.failed.add('ingest'); control=Control(Layout(tmp_path),backend)
+    for op in ('unit.start','unit.restart'):
+        assert control.handle(request(op,{'unit':'ingest'}),CALLER)['error']==dict(code='failed',message='unit_failed')
+    assert control.handle(request('unit.reset',{'unit':'ingest'}),CALLER)['result']==dict(unit='ingest',cleared=True)
+    assert control.handle(request('unit.start',{'unit':'ingest'}),CALLER)['ok']
+    assert control.handle(request('unit.reset',{'unit':'ingest'}),CALLER)['result']['cleared'] is False
+    assert [u['native_ok'] for u in control.handle(request('units'),CALLER)['result']][:4]==[True]*4

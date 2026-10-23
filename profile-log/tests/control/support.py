@@ -3,9 +3,12 @@ IDLE=dict(loaded=True,running=False,pid=None,last_exit=0,runtime_s=None)
 
 class FakeBackend:
     def __init__(self, statuses=None, fail=False):
-        self.statuses,self.fail,self.calls=statuses or {},fail,[]
+        self.statuses,self.fail,self.calls,self.failed=statuses or {},fail,[],set()
 
-    def status(self, unit): return self.statuses.get(unit.name,IDLE)
+    def status(self, unit): return dict(self.statuses.get(unit.name,IDLE),failed=unit.name in self.failed)
+
+    def reset(self, unit):
+        cleared=unit.name in self.failed; self.failed.discard(unit.name); return cleared
 
     def _act(self, action, unit):
         if self.fail: raise RuntimeError('launchctl_failed')

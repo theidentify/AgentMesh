@@ -24,3 +24,10 @@ def test_observe_reads_job_state(tmp_path):
     assert len(rows)==8
     assert rows['summary']['health']=='failing' and rows['summary']['job']==dict(ok=False,at='a',since='s')
     assert rows['broker']['health']=='down' and rows['catch-up']['job'] is None
+
+
+def test_failed_wins():
+    job=get('ingest')
+    assert assess(job,dict(IDLE,failed=True),None)=='failed'
+    assert assess(job,dict(IDLE,running=True,pid=1,runtime_s=1,failed=True),None)=='failed'
+    assert assess(job,dict(IDLE,loaded=False,failed=True),None)=='missing'

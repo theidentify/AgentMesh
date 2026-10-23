@@ -50,8 +50,9 @@ Windows locking is implemented but requires verification on a real Windows host.
 Coverage is **not** `id > cursor`: late peer arrivals and late low IDs remain
 eligible. Existing consumer receipts and shared batch provenance are honored.
 Explicit one-time `seed_coverage()` snapshots only currently present legacy IDs
-through the legacy `hermes` checkpoint. It never covers peer ranges or future
-arrivals implicitly. Run this migration only after the source snapshot and
+through the legacy `agentmesh:legacy-pg-checkpoint` row (read as `hermes` until
+`summarize_memory.py migrate-legacy-checkpoint DB` renames it). It never covers
+peer ranges or future arrivals implicitly. Run this migration only after the source snapshot and
 legacy checkpoint are verified; do not reset production state for a smoke test.
 
 ## Explicit commands

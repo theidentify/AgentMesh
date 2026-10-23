@@ -230,6 +230,14 @@ class BoundedTests(unittest.TestCase):
         self.event(3, 'Late lower ID after peer highwater.')
         self.assertEqual([e['id'] for e in api.prepare(self.db)['events']], [3])
 
+    def test_legacy_coverage_reads_the_renamed_checkpoint(self):
+        api = self.api()
+        self.event(2, 'Covered by the legacy checkpoint.')
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("INSERT INTO summary_state(consumer,last_event_id) VALUES('agentmesh:legacy-pg-checkpoint',100)")
+        self.assertEqual(api.seed_coverage(self.db)['cutoff'], 100)
+        self.assertEqual(api.prepare(self.db)['events'], [])
+
     def test_tampered_quotes_secrets_conflicts_and_changed_evidence_fail_closed(self):
         api = self.api()
         task = api.prepare(self.db)

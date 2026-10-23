@@ -1,10 +1,10 @@
 """Private production selector and scheduler entrypoint. No PostgreSQL fallback."""
 import argparse,json,os,subprocess,sys
 from pathlib import Path
-HOME=Path(os.environ.get('HERMES_HOME',str(Path.home()/'.hermes')))
-# Prefer a config beside this script (relocated ~/.agentmesh/jobs); else the legacy Hermes path.
+HOME=Path(os.environ.get('AGENTMESH_HOME',str(Path.home()/'.agentmesh')))
+# Prefer a config beside this script (the deployed ~/.agentmesh/jobs); else AGENTMESH_HOME/jobs.
 _LOCAL=Path(__file__).resolve().with_name('agentmesh-production.json')
-CONFIG=_LOCAL if _LOCAL.is_file() else HOME/'omp-memory/agentmesh-production.json'
+CONFIG=_LOCAL if _LOCAL.is_file() else HOME/'jobs/agentmesh-production.json'
 def load():
  c=json.loads(CONFIG.read_text())
  if c['primary_backend']!='sqlite' or c['retention']!='disabled':raise ValueError('inactive SQLite authority or unsafe retention')

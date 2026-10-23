@@ -6,11 +6,11 @@ import json
 
 from bounded_protocol import ValidationError, collect, validate, build_request, encode, error_detail
 from memory_sync import connect, config, allocate_id, canonical, digest
-from summarize_memory import DEFAULT_CONSUMER, _options
+from summarize_memory import DEFAULT_CONSUMER, _options, legacy_checkpoint
 
 
 def seed_coverage(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac'):
-    """Explicit one-time migration: receipt only PRESENT legacy rows <= hermes.
+    """Explicit one-time migration: receipt only PRESENT rows <= the legacy checkpoint.
 
     Existing consumer receipts/provenance are preserved. No peer range is seeded,
     and no scalar exclusion is used on future arrivals, even low legacy IDs.
@@ -25,7 +25,7 @@ def seed_coverage(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac'):
         row = c.execute('SELECT last_event_id FROM summary_state WHERE consumer=?', (marker,)).fetchone()
         if row:
             return dict(status='already-seeded', legacy_events=0, cutoff=row[0])
-        legacy = c.execute("SELECT last_event_id FROM summary_state WHERE consumer='hermes'").fetchone()
+        legacy = legacy_checkpoint(c)
         cutoff = legacy[0] if legacy else 0
         if type(cutoff) is not int or not 0 <= cutoff < LIMIT:
             raise ValidationError('invalid legacy checkpoint')

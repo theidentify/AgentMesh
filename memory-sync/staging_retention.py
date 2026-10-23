@@ -118,7 +118,8 @@ def turn_pending(c, pending):
 def classify(c, cutoff, configurations=()):
     consumers = {DEFAULT_CONSUMER}
     for row in c.execute('SELECT consumer FROM summary_state'):
-        # hermes is the retired PostgreSQL scalar checkpoint, not a SQLite consumer.
+        # The retired PostgreSQL scalar checkpoint (agentmesh:legacy-pg-checkpoint,
+        # formerly hermes) is not a SQLite consumer.
         if row[0].startswith('agentmesh/'):
             consumers.add(row[0].split(':', 1)[0])
     evidence = {r[0] for r in c.execute('SELECT event_id FROM memory_sources')}

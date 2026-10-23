@@ -236,3 +236,14 @@ files, including the PostgreSQL-era `blocked` writers and the Hermes metrics and
 watch scripts, were removed from `~/.agentmesh/jobs` after the switch.
 The relocation manifest still names the Hermes paths as sources, because those
 are what a Hermes host has.
+
+Relocation rewrites job `ProgramArguments` but not `WorkingDirectory`, so the
+Mac ingest/summary plists kept `~/.hermes/omp-memory` as their working
+directory until 2026-10-23, when it became `~/.agentmesh/jobs`
+(`support/hermes-cleanup.zsh`). The same script moves the one-line notices in
+`~/.hermes/scripts`, the legacy `omp-*` Hermes skills and the stale
+pre-relocation catch-up render into
+`~/.agentmesh/backups/archive/hermes-remnants-20261023`; the Insight deploy
+handles `~/.hermes/omp-memory`. Nothing at runtime reads `~/.hermes` afterwards;
+`~/.hermes/skills/agentmesh-shared-memory` is the Hermes agent's recall skill
+and stays.

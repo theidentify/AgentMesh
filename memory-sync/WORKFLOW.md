@@ -227,7 +227,8 @@ or unreadable transcripts are kept. The latest cursor and most recently modified
 transcript (including ties) are protected. Coverage is required for every known
 SQLite consumer: default, receipts/metadata, digest/worker state, workflow config,
 and the matching `AGENTMESH_HOME/jobs/agentmesh-production.json`. The retired
-`hermes` scalar checkpoint is not deletion authority. Legacy summarize accepts
+`agentmesh:legacy-pg-checkpoint` scalar checkpoint (formerly `hermes`) is not
+deletion authority. Legacy summarize accepts
 all event kinds, so tool/system events also need receipts; none are assumed
 unsummarizable. Metadata evidence (including native source IDs and evidence
 history) and unfinished digest-window manifests stay protected.

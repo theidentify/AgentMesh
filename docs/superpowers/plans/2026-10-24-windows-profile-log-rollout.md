@@ -206,7 +206,7 @@ Code (W7a, one PR):
   a Windows boot id (boot time from `GetTickCount64`, minute-rounded).
 - Render Windows Task Scheduler units for the ingest (every 60 s) and summary (every
   300 s) jobs wrapped in `job_notify.py`, like `render_retention_unit`; catch-up already
-  renders via `render_profile_units`, but `generate` needs a non-SQLite-free path check.
+  renders via `platform_service generate --unit catch-up` once the Windows bridge config exists.
 - Check `claude_digest_worker.py` with a Windows `claude.exe`/`claude.cmd` path.
 
 Host (W7b, owner-run where persistent):

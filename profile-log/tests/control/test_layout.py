@@ -10,6 +10,8 @@ def test_layout_defaults_to_agentmesh_home(monkeypatch, tmp_path):
     assert layout.maintenance==tmp_path/'control'/'maintenance.json'
     assert layout.audit==tmp_path/'control'/'audit.jsonl'
     assert layout.status==tmp_path/'status'
+    assert layout.state==tmp_path/'control'/'state.db'
+    assert layout.webhook.name=='discord-webhook' and layout.webhook.parent.name=='agentmesh'
 
 
 def test_json_roundtrip_owner_only(tmp_path):

@@ -50,3 +50,23 @@ def test_plist_written_once(tmp_path):
     assert execute(args,layout=Layout(tmp_path))=={'ok':True,'path':str(out)}
     assert plistlib.loads(out.read_bytes())['Label']=='org.agentmesh.control'
     assert execute(args,layout=Layout(tmp_path))=={'error':'exists'}
+
+
+from .support import FakeLaunchd, Presence, ok_call, write_plists
+
+
+def test_reset_over_socket(tmp_path):
+    seen=[]
+    result=execute(parser().parse_args(['control','reset','ingest']),layout=Layout(tmp_path),
+        call=fake(dict(id='x',ok=True,result={'unit':'ingest','cleared':True}),seen))
+    assert result=={'unit':'ingest','cleared':True} and seen==[('unit.reset',{'unit':'ingest'})]
+
+
+def test_adopt_release_panic_locally(tmp_path):
+    agents=tmp_path/'agents'; agents.mkdir(); write_plists(agents); launchd=FakeLaunchd(); layout=Layout(tmp_path)
+    run=lambda *argv,answer=True: execute(parser().parse_args(['control',*argv]),layout=layout,call=ok_call,
+        console=Presence(answer),launchd=launchd,agents=agents)
+    assert run('adopt','ingest')=={'ok':True,'unit':'ingest','backend':'native'}
+    assert run('release','ingest',answer=False)=={'error':'presence_required'}
+    assert run('panic-revert')=={'ok':True,'reverted':['ingest'],'stopped':[],'errors':[]}
+    assert run('release','ingest')=={'error':'not_native'}

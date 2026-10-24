@@ -126,7 +126,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         return execute_connector(args,backend=backend,console=console)
     if args.command=='control':
         from .control.cli import execute as execute_control
-        return execute_control(args)
+        return execute_control(args,console=console)
     if args.command=='admin':
         from .tui import run_admin
         return run_admin(menu=args.menu,backend=backend,console=console,input_fn=input_fn,filesystem=args.filesystem)

@@ -35,3 +35,22 @@ def test_supervisor_round_trip():
     finally:
         supervisor.close(); thread.join(5); shutil.rmtree(root)
     assert not thread.is_alive()
+
+
+@pytest.mark.skipif(os.name=='nt',reason='Unix socket')
+def test_ticker_and_close_hooks():
+    root=tempfile.mkdtemp(prefix='amc',dir='/tmp'); layout=Layout(root); ticks,closed=[],[]
+    def ticker():
+        ticks.append(1)
+        if len(ticks)==1: raise RuntimeError('first tick fails')
+    supervisor=Supervisor(Control(layout,FakeBackend()),layout,ticker=ticker,on_close=lambda:closed.append(1),tick_s=0.01)
+    thread=threading.Thread(target=supervisor.serve,daemon=True); thread.start()
+    try:
+        assert call_when_ready(layout,'status',{})['ok']
+        for _ in range(200):
+            if len(ticks)>=3: break
+            time.sleep(0.01)
+        assert len(ticks)>=3
+    finally:
+        supervisor.close(); supervisor.close(); thread.join(5); shutil.rmtree(root)
+    assert closed==[1] and not thread.is_alive()

@@ -19,6 +19,7 @@ OPS={  # op: (tier, exact argument names)
     'status':(0,frozenset()),'units':(0,frozenset()),'quota.status':(0,frozenset()),
     'audit.tail':(0,frozenset({'limit'})),
     'unit.start':(1,frozenset({'unit'})),'unit.stop':(1,frozenset({'unit'})),'unit.restart':(1,frozenset({'unit'})),
+    'unit.reset':(1,frozenset({'unit'})),
     'maintenance.on':(1,frozenset({'reason'})),'maintenance.off':(1,frozenset()),'diagnose':(1,frozenset()),
 }
 
@@ -74,6 +75,7 @@ class Control:
 
     def runnable(self, unit):
         if unit.wrapped and maintenance.status(self.layout)['on']: raise OpError('maintenance')
+        if self.backend.status(unit).get('failed'): raise OpError('failed','unit_failed')
 
     def throttle(self, unit):
         with self.lock:
@@ -86,7 +88,7 @@ class Control:
             maintenance=maintenance.status(self.layout),quota=quota.status(self.layout))
 
     def op_units(self):
-        return [dict(name=u.name,label=u.label,kind=u.kind,wrapped=u.wrapped,max_runtime_s=u.max_runtime_s) for u in self.units]
+        return [dict(name=u.name,label=u.label,kind=u.kind,wrapped=u.wrapped,max_runtime_s=u.max_runtime_s,native_ok=u.native_ok) for u in self.units]
 
     def op_quota_status(self): return quota.status(self.layout)
 
@@ -109,6 +111,10 @@ class Control:
         if unit.kind!='job': raise OpError('bad_args','service_keepalive')
         self.backend.stop(unit)
         return dict(unit=unit.name,action='stop')
+
+    def op_unit_reset(self, unit):
+        unit=self.unit(unit); reset=getattr(self.backend,'reset',None)
+        return dict(unit=unit.name,cleared=bool(reset(unit)) if reset else False)
 
     def op_maintenance_on(self, reason):
         try: return maintenance.turn_on(self.layout,reason)

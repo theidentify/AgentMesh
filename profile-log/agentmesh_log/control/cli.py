@@ -8,6 +8,7 @@ CALLS={
     'diagnose':lambda a:('diagnose',{}),'audit':lambda a:('audit.tail',{'limit':a.limit}),
     'start':lambda a:('unit.start',{'unit':a.unit}),'stop':lambda a:('unit.stop',{'unit':a.unit}),
     'restart':lambda a:('unit.restart',{'unit':a.unit}),
+    'reset':lambda a:('unit.reset',{'unit':a.unit}),
     'maintenance':lambda a:('maintenance.on',{'reason':a.reason}) if a.state=='on' else ('maintenance.off',{}),
 }
 
@@ -15,21 +16,32 @@ CALLS={
 def add_parsers(commands):
     control=commands.add_parser('control'); sub=control.add_subparsers(dest='action',required=True)
     for action in ('serve','status','units','quota','diagnose'): sub.add_parser(action)
-    for action in ('start','stop','restart'): sub.add_parser(action).add_argument('unit')
+    for action in ('start','stop','restart','reset','adopt','release'): sub.add_parser(action).add_argument('unit')
     maintenance=sub.add_parser('maintenance'); maintenance.add_argument('state',choices=['on','off'])
     maintenance.add_argument('--reason',default='maintenance')
     sub.add_parser('audit').add_argument('--limit',type=int,default=20)
+    sub.add_parser('panic-revert')
     plist=sub.add_parser('plist'); plist.add_argument('--out',required=True); plist.add_argument('--python',default=sys.executable)
 
 
 def serve(layout):
     if sys.platform!='darwin': return {'error':'unsupported_platform'}
+    import signal
     from .launchd import LaunchdBackend
+    from .native import NativeBackend
+    from .notify import notifier
     from .ops import Control
+    from .router import Router
     from .server import Supervisor
-    supervisor=Supervisor(Control(layout,LaunchdBackend()),layout)
+    from .store import Store
+    from .units import UNITS
+    layout.ensure(); store=Store(layout.state)
+    native=NativeBackend(store,UNITS,notify=notifier(layout))
+    native.reconcile()
+    supervisor=Supervisor(Control(layout,Router(store,LaunchdBackend(),native)),layout,ticker=native.tick,on_close=native.shutdown)
+    signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()
-    finally: supervisor.close()
+    finally: supervisor.close(); store.close()
     return {'ok':True}
 
 
@@ -41,14 +53,31 @@ def write_plist(layout, out, python):
     return {'ok':True,'path':str(path)}
 
 
-def execute(args, *, layout=None, call=None):
+def execute(args, *, layout=None, call=None, console=None, launchd=None, agents=None):
     layout=layout or Layout()
     if args.action=='serve': return serve(layout)
     if args.action=='plist': return write_plist(layout,args.out,args.python)
     if call is None: from .client import call
+    if args.action in ('adopt','release','panic-revert'): return local(args,layout,call,console,launchd,agents)
     op,params=CALLS[args.action](args)
     try: response=call(layout,op,params)
     except OSError: return {'error':'supervisor_unavailable'}
     if not response.get('ok'): return {'error':response.get('error',{}).get('code','failed')}
     result=response.get('result')
     return result if isinstance(result,dict) else {'items':result}
+
+
+def local(args, layout, call, console, launchd, agents):
+    """Backend moves run here, in the owner's terminal, against state.db; never over the socket."""
+    from . import migrate
+    from .store import Store
+    if console is None:
+        from ..presence import ConsolePresence
+        console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
+    layout.ensure(); store=Store(layout.state)
+    try:
+        if args.action=='panic-revert': return migrate.panic_revert(layout,store,launchd=launchd,agents=agents)
+        if args.action=='adopt':
+            return migrate.adopt(layout,store,args.unit,console=console,call=call,launchd=launchd,agents=agents)
+        return migrate.release(layout,store,args.unit,console=console,launchd=launchd,agents=agents)
+    finally: store.close()

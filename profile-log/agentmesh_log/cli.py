@@ -356,7 +356,7 @@ def execute_phase4(args,backend,console,input_fn):
     if args.command=='profile':
         state=store.load(); profile=resolve(state,args.name)
         confirmation=args.confirm_name
-        if args.action=='delete' and confirmation is None and sys.stdin.isatty(): confirmation=input_fn('Type profile name: ')
+        if args.action=='delete' and confirmation is None and sys.stdin is not None and sys.stdin.isatty(): confirmation=input_fn('Type profile name: ')
         shares=profile_state(home,store,storage,profile,'deleted' if args.action=='delete' else 'archived',console=console,confirmation=confirmation,shares=lambda:read_shares(args,input_fn))
         return share_result(shares,args,home) if args.action=='delete' else {'ok':True}
     if args.command=='recovery':

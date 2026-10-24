@@ -18,7 +18,8 @@ class Presence(Protocol):
 class ConsolePresence:
     def __init__(self, *, input_fn=None, isatty=None, output=None):
         self.input=input if input_fn is None else input_fn
-        self.isatty=sys.stdin.isatty if isatty is None else isatty
+        # pythonw (a Windows logon task) has sys.stdin None: no console means no presence, not a crash.
+        self.isatty=(lambda: sys.stdin is not None and sys.stdin.isatty()) if isatty is None else isatty
         self.output=print if output is None else output
 
     def confirm(self,action,summary):

@@ -1,0 +1,43 @@
+name: insight tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'insight/**'
+      - '.github/workflows/insight.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'insight/**'
+      - '.github/workflows/insight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: insight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # test_deploy_insight deploys HEAD~1 as the previous release.
+          fetch-depth: 2
+      # View tests run index.html/metrics.html scripts through node harnesses.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned test dependencies
+        run: python -m pip install pytest==8.4.2 cryptography==50.0.2
+      - name: Test from the package directory
+        working-directory: insight
+        run: python -m pytest -q -rs -p no:cacheprovider --basetemp "${{ runner.temp }}/insight"

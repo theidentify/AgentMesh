@@ -33,7 +33,7 @@ def render(output,home,python,platform,port=8766,*,filesystem=None,s3_bucket=Non
         restart=ET.SubElement(settings,'RestartOnFailure'); ET.SubElement(restart,'Interval').text='PT1M'; ET.SubElement(restart,'Count').text='999'
         actions=ET.SubElement(root,'Actions',{'Context':'Author'}); command=ET.SubElement(actions,'Exec')
         ET.SubElement(command,'Command').text=argv[0]; ET.SubElement(command,'Arguments').text=subprocess.list2cmdline(argv[1:])
-        data=ET.tostring(root,encoding='utf-8',xml_declaration=True); filename='agentmesh-bridge.xml'
+        data=('<?xml version="1.0" encoding="UTF-16"?>\n'+ET.tostring(root,encoding='unicode')).encode('utf-16'); filename='agentmesh-bridge.xml'
     output.mkdir(mode=0o700,parents=True)
     atomic_write(output/filename,data)
     return {'rendered':str(output/filename)}

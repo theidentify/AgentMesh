@@ -8,6 +8,12 @@ from urllib.parse import urlsplit
 import unicodedata
 
 
+def task_xml(task):
+    # Task Scheduler refuses an encoding='utf-8' declaration ("unable to switch the encoding"); it reads UTF-16 with a BOM.
+    import xml.etree.ElementTree as ET
+    return ('<?xml version="1.0" encoding="UTF-16"?>\n'+ET.tostring(task,encoding='unicode')).encode('utf-16')
+
+
 def _validate(python, app_dir, database, exchange, interval):
     for value in [python, app_dir, database, exchange]:
         value = str(value)
@@ -160,7 +166,7 @@ def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=Non
     ET.SubElement(settings,'ExecutionTimeLimit').text='PT0S'
     action=ET.SubElement(ET.SubElement(task,'Actions',**({'Context':'AgentMesh'} if unit=='broker' else {})),'Exec')
     ET.SubElement(action,'Command').text=argv[0]; ET.SubElement(action,'Arguments').text=subprocess.list2cmdline(argv[1:])
-    return {stem+'.xml':ET.tostring(task,encoding='utf-8',xml_declaration=True)}
+    return {stem+'.xml':task_xml(task)}
 
 
 def generate_profile_units(argv):
@@ -246,7 +252,7 @@ def render_retention_unit(platform, *, python, app_dir, state_dir, webhook_file=
     action = ET.SubElement(ET.SubElement(task, 'Actions'), 'Exec')
     ET.SubElement(action, 'Command').text = argv[0]
     ET.SubElement(action, 'Arguments').text = subprocess.list2cmdline(argv[1:])
-    return {stem+'.xml': ET.tostring(task, encoding='utf-8', xml_declaration=True)}
+    return {stem+'.xml': task_xml(task)}
 
 
 def generate_retention_units(argv):

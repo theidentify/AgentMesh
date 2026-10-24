@@ -141,6 +141,53 @@ Steps:
   archive. Packet sync on the Mac is retired, so this only restores old,
   read-only recall.
 
+### W6 — Retire the `omp_memory` name on Windows (with W5 or right after it)
+
+Goal: after W5, nothing on the Windows host is still named `omp_memory`,
+`omp-memory`, `OMP_MEMORY_*` or `omp-shared-memory`. Everything active lives
+under `%USERPROFILE%\.agentmesh` and uses `agentmesh` names, as on the Mac
+since the 2026-10-20 relocation and the #101/#102/#103 renames.
+
+1. **Inventory (read-only)**, run by the Windows session, which reports the
+   results before anything is changed:
+   - folders: `C:\Users\krisb\.omp_memory` and any `*omp*memory*` folder under
+     `%USERPROFILE%`, `%LOCALAPPDATA%` or `%APPDATA%`;
+   - user and machine environment variables matching `OMP_MEMORY*`, and `PATH`
+     entries pointing into `.omp_memory`;
+   - scheduled tasks whose action or arguments reference `omp`;
+   - Syncthing folders with an `omp` label, ID or path (e.g. the old exchange
+     folder `omp-memory-exchange` and `sync\installers`);
+   - agent rules and skills: `%USERPROFILE%\.claude\rules\*omp*`,
+     `%USERPROFILE%\.agents\skills\*omp*`, Codex and Hermes configs that
+     mention `omp_memory` or `omp-shared-memory`;
+   - Start-menu or desktop shortcuts to `.omp_memory` programs.
+2. **Rename or remove**, one item at a time, with the owner's OK per item:
+   - The `.omp_memory` folder: it is already archived by W5 step 2 as
+     `%USERPROFILE%\.agentmesh\backups\archive\omp_memory-<date>` (encrypted
+     backup first), so it is not renamed in place.
+   - Environment variables and `PATH`: remove `OMP_MEMORY*`. Nothing in the
+     profile-log runtime reads them; `OMP_MEMORY_DSN` was only used by the
+     Mac Postgres mirror.
+   - Agent rules and skills: delete the legacy `omp-shared-memory` rule and
+     skill files. Only the `agentmesh-shared-memory` files rendered in W4 stay.
+   - Syncthing: unshare and remove the `omp` folders on this PC only. The Mac
+     side was already moved out on 2026-10-23.
+   - Shortcuts and tasks: delete the ones pointing at `.omp_memory`.
+3. **Re-scan**: repeat the step 1 inventory and expect zero hits outside
+   `%USERPROFILE%\.agentmesh\backups\archive\`.
+
+- **Check**: the re-scan is empty. After a reboot, the broker task runs,
+  `sync-status.json` is ok, and agent recall works from a fresh Claude Code
+  and Codex session.
+- **Rollback**: restore environment variables from the inventory report and
+  restore files from the archive. Packet sync stays retired either way.
+
+The repo side (the `src/omp_memory` parser package, `OMP_MEMORY_DSN`, the
+`omp-memory-changes-v2` packet format and other legacy packet-sync code under
+`memory-sync/`) is **not** in this plan. It goes with Phase 7b, the
+legacy-code drop after 7 green days (~2026-10-29). Mention it there so the
+Windows standalone build is retired in the same step.
+
 ## Out of scope
 
 - The control-plane supervisor on Windows (M1/M2 are Mac and launchd only).

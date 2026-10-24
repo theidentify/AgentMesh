@@ -100,7 +100,7 @@ def remote_flags(cmd):
 
 
 def storage_for(args,home):
-    # Same explicit Keychain credentials as the broker's remote sync; never the boto credential chain.
+    # Same explicit OS-stored credentials as the broker's remote sync; never the boto credential chain.
     from .cli import remote_storage
     return remote_storage(args) or FilesystemStorage(home.root/'replica')
 

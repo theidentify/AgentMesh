@@ -12,6 +12,12 @@ SECRET='fedc9876'*8
 SERVICE='org.agentmesh.profile-log.r2'
 
 
+@pytest.fixture(autouse=True)
+def macos_backend(monkeypatch):
+    from agentmesh_log.storage import r2creds
+    monkeypatch.setattr(r2creds,'sys',SimpleNamespace(platform='darwin'))
+
+
 def loader():
     from agentmesh_log.storage.r2creds import load_keychain_credentials
     return load_keychain_credentials
@@ -61,7 +67,7 @@ def args(tmp_path,action='sync',**kw):
     ('s3_endpoint','https://user:pass@example.test'),('s3_endpoint','https://example.test\n')],ids=['absent','raw','service','http','userinfo','control'])
 def test_remote_config_rejected(tmp_path,monkeypatch,field,value):
     import agentmesh_log.storage.r2creds as creds
-    monkeypatch.setattr(creds,'load_keychain_credentials',lambda *a: pytest.fail('invalid configuration reached keychain'))
+    monkeypatch.setattr(creds,'load_credentials',lambda *a: pytest.fail('invalid configuration reached keychain'))
     with pytest.raises(ValueError) as caught: cli.remote_storage(args(tmp_path,**{field:value}))
     assert SECRET not in repr(caught.value)
 
@@ -74,7 +80,7 @@ def test_moto_explicit_credentials(tmp_path,monkeypatch,caplog):
         (aws/'credentials').write_text('[default]\naws_access_key_id=bogus\naws_secret_access_key=bogus\n')
         monkeypatch.setenv('AWS_ACCESS_KEY_ID','bogus'); monkeypatch.setenv('AWS_SECRET_ACCESS_KEY','bogus')
         monkeypatch.setenv('AWS_SESSION_TOKEN','bogus')
-        monkeypatch.setattr(creds,'load_keychain_credentials',lambda service:(ID,SECRET))
+        monkeypatch.setattr(creds,'load_credentials',lambda service:(ID,SECRET))
         caplog.set_level(logging.DEBUG)
         remote=cli.remote_storage(args(tmp_path))
         frozen=remote.client._request_signer._credentials.get_frozen_credentials()
@@ -125,7 +131,7 @@ def test_cli_missing_one_shot(tmp_path,monkeypatch):
     import agentmesh_log.storage.r2creds as creds
     home,*_=setup_home(tmp_path)
     def missing(*a): raise StorageError('S3 credentials missing')
-    monkeypatch.setattr(creds,'load_keychain_credentials',missing)
+    monkeypatch.setattr(creds,'load_credentials',missing)
     result=invoke('broker','sync','--home',home.root,'--s3-bucket','profile-r2',
         '--s3-endpoint','https://s3.amazonaws.com','--s3-credentials','keychain:'+SERVICE)
     assert result.returncode!=0

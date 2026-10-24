@@ -100,7 +100,7 @@ def test_cli_retry_status(tmp_path,monkeypatch):
         if len(calls)==1: raise StorageError('S3 credentials missing')
         if len(calls)==2: raise StorageError('S3 credentials refused')
         return ('abcd0123'*4,SECRET)
-    monkeypatch.setattr(creds,'load_keychain_credentials',load)
+    monkeypatch.setattr(creds,'load_credentials',load)
     import agentmesh_log.storage.s3 as s3
     monkeypatch.setattr(s3,'S3Storage',lambda *a,**kw:remote)
     def serve(self,*,remote,sync_interval,on_sync=None,on_overview=None):

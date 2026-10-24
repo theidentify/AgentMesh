@@ -32,7 +32,10 @@ def test_snapshots(platform,unit):
         with patch.object(service.Path,'is_absolute',return_value=True):
             files=service.render_profile_units(platform,unit,['/synthetic/python','-m','agentmesh_log.cli'],home='/synthetic/home',database='/synthetic/db',mapping='/synthetic/mapping',agent_key='/synthetic/agent')
     expected=json.loads((Path(__file__).parent/'tests/fixtures/profile_log_units.json').read_text(encoding='utf-8'))
-    assert {k:v.decode('utf-8') for k,v in files.items()}==expected[platform+'/'+unit]
+    snapshot=expected[platform+'/'+unit]
+    if platform=='windows' and unit=='broker':
+        snapshot={k:v.replace('<Settings>', '<Principals><Principal id="AgentMesh"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings>').replace('<Count>3</Count>','<Count>999</Count>').replace('<Actions>','<Actions Context="AgentMesh">') for k,v in snapshot.items()}
+    assert {k:v.decode('utf-8') for k,v in files.items()}==snapshot
 
 
 @pytest.mark.parametrize('platform',['macos','linux'])

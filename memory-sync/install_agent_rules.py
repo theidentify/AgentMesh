@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import sys
 
@@ -90,7 +91,7 @@ def _replace_owned(path, block, skill=False):
     return text[:start] + block + text[end + len(END):]
 
 
-def install(app_dir=None, database=None, home=None, agents=None, hermes_home=None, *, python=None, broker_agent_key=None):
+def install(app_dir=None, database=None, home=None, agents=None, hermes_home=None, *, python=None, broker_agent_key=None, broker_profiles=None):
     """Install selected rules; return {agent: Path}. Preflight all before writes.
 
     python defaults to sys.executable; all configured paths must be absolute
@@ -100,6 +101,10 @@ def install(app_dir=None, database=None, home=None, agents=None, hermes_home=Non
         if app_dir is not None or database is not None or python is None:
             raise ValueError('broker mode requires --python and excludes --app-dir/--database')
         key = _absolute(broker_agent_key, 'broker_agent_key')
+        # The recall agent has no cross-profile grant, so each profile is its own request.
+        profiles = list(broker_profiles or ())
+        if not profiles or len(set(profiles)) != len(profiles) or any(type(p) is not str or not re.fullmatch('[A-Za-z0-9_-]+', p) for p in profiles):
+            raise ValueError('broker mode requires unique --broker-profile names')
     else:
         if app_dir is None or database is None: raise ValueError('--app-dir and --database are required')
         app = _absolute(app_dir, 'app_dir')
@@ -114,7 +119,8 @@ def install(app_dir=None, database=None, home=None, agents=None, hermes_home=Non
                'omp': home / '.agents' / 'skills' / NAME / 'SKILL.md',
                'codex': home / '.agents' / 'skills' / NAME / 'SKILL.md',
                'claude': home / '.claude' / 'rules' / (NAME + '.md')}
-    argv = ([str(executable), '-m', 'agentmesh_log.cli', 'recall', '--compat', '--agent-key', str(key)]
+    argv = ([str(executable), '-m', 'agentmesh_log.cli', 'recall', '--compat', '--per-profile',
+             *[a for p in profiles for a in ('--profile', p)], '--agent-key', str(key)]
             if broker_agent_key is not None else
             [str(executable), str(app / 'agentmesh.py'), '--database', str(db), 'recall'])
     manifest = {'managed_by': OWNER, 'version': 1, 'recall_argv': argv, 'default_limit': 12}
@@ -158,6 +164,7 @@ def main(argv=None):
     parser.add_argument('--app-dir')
     parser.add_argument('--database')
     parser.add_argument('--broker-agent-key')
+    parser.add_argument('--broker-profile', dest='broker_profiles', action='append', help='profile to search in broker mode (repeat)')
     parser.add_argument('--home')
     parser.add_argument('--hermes-home')
     parser.add_argument('--python', help='Absolute configured Python executable')

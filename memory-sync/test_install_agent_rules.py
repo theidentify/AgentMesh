@@ -213,8 +213,8 @@ class BrokerRulesTests(unittest.TestCase):
     setUp = RulesTests.setUp
     def test_broker_exact_argv_and_examples(self):
         key=self.root/"key's folder"/'agent.json'; python=self.root/'Python path'/'python.exe'
-        target=self.mod.install(home=self.home,agents=['claude'],python=python,broker_agent_key=key)['claude']
-        argv=[str(python),'-m','agentmesh_log.cli','recall','--compat','--agent-key',str(key)]
+        target=self.mod.install(home=self.home,agents=['claude'],python=python,broker_agent_key=key,broker_profiles=['work','personal'])['claude']
+        argv=[str(python),'-m','agentmesh_log.cli','recall','--compat','--per-profile','--profile','work','--profile','personal','--agent-key',str(key)]
         manifest=json.loads(target.with_name('agentmesh-shared-memory.command.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest['recall_argv'],argv)
         examples=self.mod.shell_examples(argv+['QUERY','--limit','12'])
@@ -225,19 +225,21 @@ class BrokerRulesTests(unittest.TestCase):
         with patch.object(sys,'path',[str(MODULE.parent.parent/'profile-log'),*sys.path]):
             from agentmesh_log.cli import parser
             args=parser().parse_args(argv[3:]+['query with spaces','--limit','12','--project','P'])
-        self.assertEqual((args.query,args.limit,args.project,args.agent_key,args.compat),('query with spaces',12,'P',str(key),True))
+        self.assertEqual((args.query,args.limit,args.project,args.agent_key,args.compat,args.per_profile,args.profile),('query with spaces',12,'P',str(key),True,True,['work','personal']))
 
     def test_broker_invalid_inputs(self):
-        for kwargs in [dict(broker_agent_key='relative',python=sys.executable),
-                       dict(broker_agent_key=self.root/'key'),
-                       dict(broker_agent_key=self.root/'key',python=sys.executable,database=self.db),
-                       dict(broker_agent_key=self.root/'key',python=sys.executable,app_dir=self.app)]:
+        ok=dict(broker_agent_key=self.root/'key',python=sys.executable)
+        for kwargs in [dict(broker_agent_key='relative',python=sys.executable,broker_profiles=['work']),
+                       dict(broker_agent_key=self.root/'key',broker_profiles=['work']),
+                       dict(ok), dict(ok,broker_profiles=[]), dict(ok,broker_profiles=['work','work']), dict(ok,broker_profiles=['work personal']),
+                       dict(ok,broker_profiles=['work'],database=self.db),
+                       dict(ok,broker_profiles=['work'],app_dir=self.app)]:
             with self.assertRaises(ValueError): self.mod.install(home=self.home,**kwargs)
         self.assertFalse(self.home.exists())
 
     def test_broker_cli_modes(self):
         base=[sys.executable,str(MODULE),'--home',str(self.home),'--agents','claude',
-              '--broker-agent-key',str(self.root/'key'),'--python',sys.executable]
+              '--broker-agent-key',str(self.root/'key'),'--python',sys.executable,'--broker-profile','work','--broker-profile','personal']
         for extra in (['--database',str(self.db)],['--app-dir',str(self.app)]):
             result=subprocess.run(base+extra,capture_output=True,text=True)
             self.assertEqual(result.returncode,2)
@@ -246,7 +248,7 @@ class BrokerRulesTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         target=Path(json.loads(result.stdout)['claude'])
         manifest=json.loads(target.with_name('agentmesh-shared-memory.command.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['recall_argv'],[sys.executable,'-m','agentmesh_log.cli','recall','--compat','--agent-key',str(self.root/'key')])
+        self.assertEqual(manifest['recall_argv'],[sys.executable,'-m','agentmesh_log.cli','recall','--compat','--per-profile','--profile','work','--profile','personal','--agent-key',str(self.root/'key')])
 
 
     def test_database_instructions_bytes_unchanged(self):

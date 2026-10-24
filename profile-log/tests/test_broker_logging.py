@@ -56,6 +56,8 @@ def test_invalid_log_dir(tmp_path,monkeypatch,capsys,kind):
 def test_pythonw_none_streams(tmp_path,monkeypatch):
     calls=fake_broker(monkeypatch)
     with monkeypatch.context() as patch:
-        patch.setattr(sys,'stdout',None); patch.setattr(sys,'stderr',None)
+        # pythonw.exe: all three standard streams are None.
+        patch.setattr(sys,'stdin',None); patch.setattr(sys,'stdout',None); patch.setattr(sys,'stderr',None)
         assert cli.main(['broker','run','--home',str(tmp_path)])==0
+        assert cli.ConsolePresence().confirm('access','x') is False
     assert calls==['home','serve','close']

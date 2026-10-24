@@ -26,6 +26,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # test_deploy_insight deploys HEAD~1 as the previous release.
+          fetch-depth: 2
       # View tests run index.html/metrics.html scripts through node harnesses.
       - uses: actions/setup-node@v4
         with:

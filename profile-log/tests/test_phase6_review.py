@@ -105,7 +105,8 @@ def test_p6_service_remote(tmp_path):
             assert value['StandardErrorPath']==str(tmp_path/'logs'/'bridge.err.log')
             assert argv[-8:]==['--s3-bucket','bucket','--s3-prefix','v1/','--s3-endpoint','https://s3.example','--s3-credentials','keychain:agentmesh-r2']
         else:
-            assert b'--s3-bucket bucket --s3-prefix v1/ --s3-endpoint https://s3.example --s3-credentials keychain:agentmesh-r2' in data
+            assert data.startswith(b'\xff\xfe') and data.decode('utf-16').startswith('<?xml version="1.0" encoding="UTF-16"?>')
+            assert '--s3-bucket bucket --s3-prefix v1/ --s3-endpoint https://s3.example --s3-credentials keychain:agentmesh-r2' in data.decode('utf-16')
 
 
 @pytest.mark.parametrize('tool', ['recall','whoami'],ids=['recall','whoami'])

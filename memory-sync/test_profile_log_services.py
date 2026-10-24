@@ -35,7 +35,11 @@ def test_snapshots(platform,unit):
     snapshot=expected[platform+'/'+unit]
     if platform=='windows' and unit=='broker':
         snapshot={k:v.replace('<Settings>', '<Principals><Principal id="AgentMesh"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings>').replace('<Count>3</Count>','<Count>999</Count>').replace('<Actions>','<Actions Context="AgentMesh">') for k,v in snapshot.items()}
-    assert {k:v.decode('utf-8') for k,v in files.items()}==snapshot
+    if platform=='windows':
+        # Task Scheduler rejects a utf-8 declaration; it needs UTF-16 with a BOM.
+        assert all(v.startswith(b'\xff\xfe') for v in files.values())
+        snapshot={k:v.replace("<?xml version='1.0' encoding='utf-8'?>\n",'<?xml version="1.0" encoding="UTF-16"?>\n') for k,v in snapshot.items()}
+    assert {k:v.decode('utf-16' if platform=='windows' else 'utf-8') for k,v in files.items()}==snapshot
 
 
 @pytest.mark.parametrize('platform',['macos','linux'])

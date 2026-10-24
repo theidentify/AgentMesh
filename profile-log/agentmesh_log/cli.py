@@ -18,7 +18,10 @@ from .presence import PresenceManager, ConsolePresence
 
 def emit(text):
     # UTF-8 bytes regardless of the console code page (Windows defaults to cp1252).
-    sys.stdout.buffer.write(text.encode('utf-8') + b'\n'); sys.stdout.flush()
+    if sys.stdout is not None:
+        if hasattr(sys.stdout,'buffer'): sys.stdout.buffer.write(text.encode('utf-8',errors='backslashreplace')+b'\n')
+        else: sys.stdout.write(text+'\n')
+        sys.stdout.flush()
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -30,6 +33,9 @@ class SafeParser(argparse.ArgumentParser):
 
 def parser():
     p=SafeParser(prog='agentmesh-log'); commands=p.add_subparsers(dest='command',required=True)
+    credentials=commands.add_parser('r2-credentials'); credential_sub=credentials.add_subparsers(dest='action',required=True)
+    for action in ('store','check'):
+        cmd=credential_sub.add_parser(action); cmd.add_argument('--ref',required=True)
     broker=commands.add_parser('broker'); admin=broker.add_subparsers(dest='action',required=True)
     def home(cmd): cmd.add_argument('--home',required=True)
     def remote(cmd,required=False):
@@ -43,7 +49,7 @@ def parser():
     grant.add_argument('--read',action='append',default=[]); grant.add_argument('--write',action='append',required=True)
     grant.add_argument('--default-write'); grant.add_argument('--allow-secret',action='store_true'); grant.add_argument('--allow-cross-profile',action='store_true')
     revoke=admin.add_parser('revoke'); home(revoke); revoke.add_argument('agent_id')
-    run=admin.add_parser('run'); home(run); run.add_argument('--sync-interval',type=float); remote(run)
+    run=admin.add_parser('run'); home(run); run.add_argument('--sync-interval',type=float); run.add_argument('--log-dir'); remote(run)
     sync=admin.add_parser('sync'); home(sync); remote(sync,True)
     recall=commands.add_parser('recall'); recall.add_argument('query'); recall.add_argument('--agent-key',required=True)
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
@@ -105,9 +111,9 @@ def remote_storage(args, *, filesystem_factory=None):
         return (filesystem_factory or FilesystemStorage)(args.filesystem)
     if args.s3_bucket:
         from .storage.s3 import S3Storage
-        from .storage.r2creds import validate_remote, load_keychain_credentials
+        from .storage.r2creds import validate_remote, load_credentials
         validate_remote(args.s3_credentials,args.s3_endpoint)
-        access,secret=load_keychain_credentials(args.s3_credentials.removeprefix('keychain:'))
+        access,secret=load_credentials(args.s3_credentials)
         def factory(service,**kwargs):
             import boto3
             from botocore.config import Config
@@ -119,6 +125,17 @@ def remote_storage(args, *, filesystem_factory=None):
 
 
 def execute(args,*,backend=None,console=None,input_fn=None):
+    if args.command=='broker' and args.action=='run' and args.log_dir is not None:
+        directory=Path(args.log_dir)
+        if not directory.is_absolute() or not directory.is_dir(): raise ValueError('invalid_request')
+        stdout=directory.joinpath('broker.out.log').open('a',encoding='utf-8',errors='backslashreplace',buffering=1)
+        try: stderr=directory.joinpath('broker.err.log').open('a',encoding='utf-8',errors='backslashreplace',buffering=1)
+        except Exception:
+            stdout.close(); raise
+        sys.stdout,sys.stderr=stdout,stderr
+    if args.command=='r2-credentials':
+        from .storage.r2creds import credentials_command
+        return credentials_command(args.action,args.ref)
     console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     input_fn=input if input_fn is None else input_fn
     if args.command in ('connector','bridge'):
@@ -371,10 +388,10 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
     try:
         result=execute(args,backend=backend,console=console,input_fn=input_fn)
         emit(json.dumps(result,ensure_ascii=False,sort_keys=True))
-        return 1 if 'error' in result or result.get('errors',0) else 0
+        return 1 if 'error' in result or result.get('errors',0) or (args.command=='r2-credentials' and result.get('ok') is False) else 0
     except KeyboardInterrupt: return 0
     except Exception as exc:
-        code={'S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused',
+        code={'invalid_request':'invalid_request','S3 credentials missing':'credentials_missing','S3 credentials refused':'credentials_refused',
               'staging binding missing or invalid; run apply':'staging_binding_missing',
               'staging binding device differs from broker':'staging_binding_device_mismatch',
               'staging node differs from binding':'staging_binding_node_mismatch',

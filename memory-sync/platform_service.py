@@ -122,12 +122,13 @@ def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=Non
         value=prefix[:-1] if prefix.endswith('/') else prefix
         if len(prefix)>1024 or (prefix and (not value or any(not re.fullmatch('[A-Za-z0-9_-][A-Za-z0-9._-]*',p) for p in value.split('/')))):
             raise ValueError('invalid prefix')
-        if not re.fullmatch(r'keychain:[A-Za-z0-9.-]+',credentials): raise ValueError('invalid credentials reference')
+        if not re.fullmatch(('wincred:' if platform=='windows' else 'keychain:')+r'[A-Za-z0-9.-]+',credentials): raise ValueError('invalid credentials reference')
         if type(seconds) not in (int,float) or not math.isfinite(seconds) or seconds<10: raise ValueError('invalid sync interval')
         argv+=['--s3-bucket',bucket,'--s3-prefix',prefix,'--s3-endpoint',endpoint,'--s3-credentials',credentials,'--sync-interval',format(seconds,'g')]
     if logs is not None:
         if unit!='broker': raise ValueError('invalid logs')
         _validate(cli_argv[0],logs,logs,logs,interval)
+        if platform=='windows': argv+=['--log-dir',logs]
     if platform=='macos':
         value=dict(Label=stem,ProgramArguments=argv,RunAtLoad=True,Umask=0o077)
         if logs is not None:
@@ -149,11 +150,15 @@ def render_profile_units(platform,unit,cli_argv,*,home,database=None,mapping=Non
         ET.SubElement(trigger,'StartBoundary').text='2020-01-01T00:00:00'
         repeat=ET.SubElement(trigger,'Repetition'); ET.SubElement(repeat,'Interval').text='PT'+str(int(interval))+'S'
     ET.SubElement(trigger,'Enabled').text='true'
+    if unit=='broker':
+        principal=ET.SubElement(ET.SubElement(task,'Principals'),'Principal',id='AgentMesh')
+        ET.SubElement(principal,'LogonType').text='InteractiveToken'
+        ET.SubElement(principal,'RunLevel').text='LeastPrivilege'
     settings=ET.SubElement(task,'Settings'); restart=ET.SubElement(settings,'RestartOnFailure')
-    ET.SubElement(restart,'Interval').text='PT1M'; ET.SubElement(restart,'Count').text='3'
+    ET.SubElement(restart,'Interval').text='PT1M'; ET.SubElement(restart,'Count').text='999' if unit=='broker' else '3'
     ET.SubElement(settings,'MultipleInstancesPolicy').text='IgnoreNew'
     ET.SubElement(settings,'ExecutionTimeLimit').text='PT0S'
-    action=ET.SubElement(ET.SubElement(task,'Actions'),'Exec')
+    action=ET.SubElement(ET.SubElement(task,'Actions',**({'Context':'AgentMesh'} if unit=='broker' else {})),'Exec')
     ET.SubElement(action,'Command').text=argv[0]; ET.SubElement(action,'Arguments').text=subprocess.list2cmdline(argv[1:])
     return {stem+'.xml':ET.tostring(task,encoding='utf-8',xml_declaration=True)}
 

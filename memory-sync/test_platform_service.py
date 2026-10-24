@@ -92,3 +92,56 @@ def test_shell_wrappers_forward_exact_paths(tmp_path):
             if positional:
                 assert forwarded[4] == positional[0] and forwarded[6] == positional[1]
         assert len(wrapper.read_text().splitlines()) <= 30
+
+
+def test_profile_windows_broker_and_catchup(tmp_path,monkeypatch):
+    import subprocess
+    import xml.etree.ElementTree as ET
+    monkeypatch.setattr(subprocess,'run',lambda *a,**kw:__import__('pytest').fail('renderer ran a command'))
+    cli=[str(tmp_path/'pythonw.exe'),'-m','agentmesh_log.cli']; logs=str(tmp_path/'logs with spaces')
+    ns={'t':'http://schemas.microsoft.com/windows/2004/02/mit/task'}
+    for unit in ('broker','catch-up'):
+        files=module().render_profile_units('windows',unit,cli,home=str(tmp_path/'home'),
+            database=str(tmp_path/'db'),mapping=str(tmp_path/'mapping'),agent_key=str(tmp_path/'key'),
+            logs=logs if unit=='broker' else None)
+        root=ET.fromstring(next(iter(files.values())))
+        assert root.find('t:Settings/t:RestartOnFailure/t:Count',ns).text==('999' if unit=='broker' else '3')
+        if unit=='broker':
+            principal=root.find('t:Principals/t:Principal',ns)
+            assert principal.find('t:LogonType',ns).text=='InteractiveToken'
+            assert principal.find('t:RunLevel',ns).text=='LeastPrivilege'
+            assert root.find('t:Actions',ns).attrib['Context']==principal.attrib['id']
+            assert root.find('t:Actions/t:Exec/t:Command',ns).text==cli[0]
+            argv=cli[1:]+['broker','run','--home',str(tmp_path/'home'),'--log-dir',logs]
+            assert root.find('t:Actions/t:Exec/t:Arguments',ns).text==subprocess.list2cmdline(argv)
+    assert not (tmp_path/'logs with spaces').exists()
+
+
+def test_profile_credentials_platform_and_macos_logs(tmp_path):
+    import pytest
+    cli=[str(tmp_path/'python'),'-m','agentmesh_log.cli']; logs=str(tmp_path/'logs')
+    for platform in ('windows','macos','linux'):
+        for kind in ('wincred','keychain'):
+            remote=dict(bucket='bucket',prefix='v1/',endpoint='https://example.test',credentials=kind+':test.r2',sync_interval=120)
+            kwargs=dict(home=str(tmp_path/'home'),remote=remote,logs=logs)
+            if (platform=='windows')!=(kind=='wincred'):
+                with pytest.raises(ValueError,match='credentials'): module().render_profile_units(platform,'broker',cli,**kwargs)
+            else:
+                files=module().render_profile_units(platform,'broker',cli,**kwargs)
+                if platform=='macos':
+                    value=plistlib.loads(next(iter(files.values())))
+                    assert '--log-dir' not in value['ProgramArguments']
+                    assert value['StandardOutPath']==str(tmp_path/'logs/broker.out.log')
+                    assert value['StandardErrorPath']==str(tmp_path/'logs/broker.err.log')
+
+
+def test_profile_posix_fixtures_unchanged():
+    import json
+    from unittest.mock import patch
+    expected=json.loads((Path(__file__).parent/'tests/fixtures/profile_log_units.json').read_text(encoding='utf-8'))
+    for platform in ('macos','linux'):
+        for unit in ('broker','catch-up'):
+            with patch.object(module().Path,'is_absolute',return_value=True):
+                files=module().render_profile_units(platform,unit,['/synthetic/python','-m','agentmesh_log.cli'],
+                    home='/synthetic/home',database='/synthetic/db',mapping='/synthetic/mapping',agent_key='/synthetic/agent')
+            assert {k:v.decode('utf-8') for k,v in files.items()}==expected[platform+'/'+unit]

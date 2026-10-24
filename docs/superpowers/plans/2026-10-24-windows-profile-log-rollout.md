@@ -1,6 +1,6 @@
 # Windows profile-log rollout (DESKTOP-DOJ622I)
 
-Date: 2026-10-24. Status: draft plan, nothing done beyond W0.
+Date: 2026-10-24. Status: W0 done; W1 implemented and reviewed (19/19 mutation gates killed); native Windows verification pending.
 
 Goal: make the Windows PC a second profile-log device, the same as the Mac.
 The steps are: install the runtime under `%USERPROFILE%\.agentmesh`, pair it
@@ -26,10 +26,10 @@ After that, retire the packet-sync worker (0.3.1).
 
 | # | Gap | Evidence | Fix |
 |---|---|---|---|
-| G1 | R2 credentials load only from the macOS Keychain. | `storage/r2creds.py` accepts only `keychain:<service>` and runs `/usr/bin/security`. | Add a Windows Credential Manager backend, e.g. a `wincred:<service>` reference (or `keychain:` resolved per OS) with two generic credentials, `<service>/access-key-id` and `<service>/secret-access-key`. Reuse the `WindowsCredential` ctypes pattern from `oskeystore.py`, with the same refusal and missing errors and the same size checks. It must never fall back to the boto credential chain. Needs tests with an injected fake and a Windows CI pass (the matrix already has `windows-2025`). |
-| G2 | There is no Windows service definition for the broker. | The Mac broker plist was rendered by hand (R2 sync plan). `bridge/services.py` renders a Task Scheduler XML only for the bridge. | Add `render` support for a broker task: a logon trigger, InteractiveToken, LeastPrivilege, restart on failure. Argv is `python -m agentmesh_log.cli broker run --home … --sync-interval 120 --s3-*`. Render only; the owner imports it with `schtasks /Create /XML`. Use `pythonw.exe` so no console window appears. |
-| G3 | The recall wiring for Windows agents is unverified (resolved: direct broker call, see decision 3). | `memory-sync/profile_log_bridge.py` reads `<db>.profile-log.json` next to a SQLite database, and agent rules call `agentmesh.py --database <db> recall`. | Rules call `agentmesh-log recall --compat` directly (existing flag, `cli.py:78`). Add a renderer for the Windows `agentmesh-shared-memory.command.json`. |
-| G4 | Windows text I/O. | Phase 4 note: CI failed on cp1252. | Any new file I/O uses `encoding="utf-8"`. Set `PYTHONUTF8=1` in the task environment as a guard. |
+| G1 | R2 credentials load only from the macOS Keychain. | `storage/r2creds.py` previously accepted only `keychain:<service>`. | W1 adds explicit OS dispatch: `keychain:` on macOS, `wincred:` on Windows, neither on other OSes. Windows uses two generic credentials, `<service>/access-key-id` and `<service>/secret-access-key`, storing exactly 32/64 lowercase ASCII hex characters. `r2-credentials store/check --ref wincred:<service>` prompts with getpass, validates before writes and verifies load-back. Native API is injectable; boto always receives explicit keys. Owner-only `smoke_r2_wincred.py` removes both disposable targets. Windows CI/native smoke remain owner/reviewer checks. |
+| G2 | The Windows broker task lacks interactive principals, persistent restart and log redirection. | `render_profile_units` already renders a broker task; its restart count was 3 and it lacked a Principals block. | W1 adds matching Principal/Actions IDs, InteractiveToken, LeastPrivilege and RestartOnFailure Count 999 for the broker. Windows `logs` appends `--log-dir`; broker run opens UTF-8 append logs before startup and tolerates absent pythonw streams. Catch-up settings and macOS/Linux output stay unchanged. Render only; the owner imports it with `schtasks /Create /XML` and supplies `pythonw.exe`. |
+| G3 | Windows agents need direct broker recall without a SQLite database. | Existing rules call `agentmesh.py --database <db> recall`. | W1 adds `install_agent_rules.py --broker-agent-key <absolute path> --python <absolute path>`, excluding `--database` and `--app-dir`. The command manifest contains `[python, -m, agentmesh_log.cli, recall, --compat, --agent-key, key]`; POSIX/PowerShell instructions append the query as one argument. Database-mode output is unchanged. The W1 report documents material differences in direct compat rows, evidence and backend metadata. |
+| G4 | Windows text I/O. | Phase 4 note: CI failed on cp1252. | Any new file I/O uses `encoding="utf-8"`. Task Scheduler has no per-action environment, so explicit encodings are the only guard. |
 
 G1, G2 and the G3 command renderer go in one small PR. Per the usual split, Codex implements them and Claude
 reviews them with mutation gates. 
@@ -56,9 +56,9 @@ the host are run by the owner in their own PowerShell window. The Windows
 Claude session's terminal sends Ctrl-C to interactive commands, and `apply`,
 `join` and presence prompts need console input with the keyboard set to English.
 
-### W1 — Code (G1, G2, G4)
+### W1 — Code (G1, G2, G3; UTF-8 I/O from G4)
 
-- Branch `claude/windows-profile-log`: PR with the Credential Manager R2
+- Branch `claude/windows-profile-log-w1`: PR with the Credential Manager R2
   backend, the broker task renderer, and tests on all three CI OSes.
 - **Check**: CI is green on `windows-2025`. On the real PC, a credential
   smoke (like `smoke_os_keystore.py`) stores and loads a disposable R2-style
@@ -118,7 +118,7 @@ Steps:
 4. `remember` a synthetic memory on Windows and confirm it reaches the Mac
    within two sync cycles. Do the same in the other direction.
 
-- **Check**: recall from Windows returns rows with backend `broker`. Insight
+- **Check**: direct `recall --compat` from Windows returns rows (it has no top-level `backend` field and `evidence` is always `[]`; see the W1 report). Insight
   on the Mac shows the Windows heartbeat (platform `windows`) and the R2 IO
   counters. The Mac's R2 class-A calls per cycle stay roughly flat.
 - **Rollback**: disable the broker task. Recall falls back to nothing (no

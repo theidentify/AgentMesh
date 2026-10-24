@@ -90,14 +90,20 @@ def _replace_owned(path, block, skill=False):
     return text[:start] + block + text[end + len(END):]
 
 
-def install(app_dir, database, home=None, agents=None, hermes_home=None, *, python=None):
+def install(app_dir=None, database=None, home=None, agents=None, hermes_home=None, *, python=None, broker_agent_key=None):
     """Install selected rules; return {agent: Path}. Preflight all before writes.
 
     python defaults to sys.executable; all configured paths must be absolute
     native-platform paths. No source data, credentials, or runtime calls.
     """
-    app = _absolute(app_dir, 'app_dir')
-    db = _absolute(database, 'database')
+    if broker_agent_key is not None:
+        if app_dir is not None or database is not None or python is None:
+            raise ValueError('broker mode requires --python and excludes --app-dir/--database')
+        key = _absolute(broker_agent_key, 'broker_agent_key')
+    else:
+        if app_dir is None or database is None: raise ValueError('--app-dir and --database are required')
+        app = _absolute(app_dir, 'app_dir')
+        db = _absolute(database, 'database')
     executable = _absolute(python or sys.executable, 'python')
     home = _absolute(home if home is not None else Path.home(), 'home')
     profile = _absolute(hermes_home or os.environ.get('HERMES_HOME') or home / '.hermes', 'hermes_home')
@@ -108,7 +114,9 @@ def install(app_dir, database, home=None, agents=None, hermes_home=None, *, pyth
                'omp': home / '.agents' / 'skills' / NAME / 'SKILL.md',
                'codex': home / '.agents' / 'skills' / NAME / 'SKILL.md',
                'claude': home / '.claude' / 'rules' / (NAME + '.md')}
-    argv = [str(executable), str(app / 'agentmesh.py'), '--database', str(db), 'recall']
+    argv = ([str(executable), '-m', 'agentmesh_log.cli', 'recall', '--compat', '--agent-key', str(key)]
+            if broker_agent_key is not None else
+            [str(executable), str(app / 'agentmesh.py'), '--database', str(db), 'recall'])
     manifest = {'managed_by': OWNER, 'version': 1, 'recall_argv': argv, 'default_limit': 12}
     body = BEGIN + '\n' + instructions(argv) + END
     writes = {}
@@ -147,8 +155,9 @@ def install(app_dir, database, home=None, agents=None, hermes_home=None, *, pyth
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__import__('brand').description(__doc__),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--app-dir', required=True)
-    parser.add_argument('--database', required=True)
+    parser.add_argument('--app-dir')
+    parser.add_argument('--database')
+    parser.add_argument('--broker-agent-key')
     parser.add_argument('--home')
     parser.add_argument('--hermes-home')
     parser.add_argument('--python', help='Absolute configured Python executable')

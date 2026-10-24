@@ -204,7 +204,7 @@ def test_s3(synced, monkeypatch, capsys):
     def credentials(service):
         calls.append(service)
         return 'a' * 32, 'b' * 64
-    monkeypatch.setattr(r2creds, 'load_keychain_credentials', credentials)
+    monkeypatch.setattr(r2creds, 'load_credentials', credentials)
     with moto.mock_aws():
         client = boto3.client('s3', region_name='us-east-1')
         client.create_bucket(Bucket='verify-test')
@@ -218,7 +218,7 @@ def test_s3(synced, monkeypatch, capsys):
         code, result = run(['--home', str(synced[0].root), '--markers', str(synced[3]),
             '--s3-bucket', 'verify-test', '--s3-prefix', 'v1/', '--s3-endpoint',
             'https://s3.amazonaws.com', '--s3-credentials', 'keychain:test'], capsys, synced[1])
-        assert code == 0 and result['ok'] and calls == ['test', 'test']
+        assert code == 0 and result['ok'] and calls == ['keychain:test', 'keychain:test']
         assert client.list_objects_v2(Bucket='verify-test')['Contents'] == before
 
 

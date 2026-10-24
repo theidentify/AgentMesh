@@ -54,6 +54,7 @@ def parser():
     recall=commands.add_parser('recall'); recall.add_argument('query'); recall.add_argument('--agent-key',required=True)
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
     recall.add_argument('--profile',action='append'); recall.add_argument('--scope',action='append')
+    recall.add_argument('--per-profile',action='store_true',help='one request per --profile, merged like the bridge (no cross-profile grant needed)')
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
     remember.add_argument('--task')
@@ -124,6 +125,21 @@ def remote_storage(args, *, filesystem_factory=None):
     return None
 
 
+def merge_profiles(answers,limit):
+    """Interleave per-profile ranks, deduplicate IDs and sum candidate counts, as memory-sync's broker_recall does."""
+    for answer in answers:
+        if 'error' in answer: return answer
+    merged=dict(answers[0]); merged['results']=[]; merged['evidence']=[]; merged['candidate_counts']={}; seen=set()
+    for rank in range(max(len(a['results']) for a in answers)):
+        for answer in answers:
+            if rank<len(answer['results']) and answer['results'][rank]['id'] not in seen:
+                merged['results'].append(answer['results'][rank]); seen.add(answer['results'][rank]['id'])
+    merged['results']=merged['results'][:limit]
+    for answer in answers:
+        for key,count in answer['candidate_counts'].items(): merged['candidate_counts'][key]=merged['candidate_counts'].get(key,0)+count
+    return merged
+
+
 def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command=='broker' and args.action=='run' and args.log_dir is not None:
         directory=Path(args.log_dir)
@@ -164,8 +180,11 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         client=BrokerClient.from_file(args.agent_key)
         try:
             if args.command=='recall':
-                return client.request(dict(op='recall',query=args.query,project=args.project,task=args.task,
-                    limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat))
+                request=dict(op='recall',query=args.query,project=args.project,task=args.task,
+                    limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat)
+                if not args.per_profile: return client.request(request)
+                if not args.profile or len(set(args.profile))!=len(args.profile) or args.scope: raise ValueError('invalid_request')
+                return merge_profiles([client.request({**request,'profiles':[p]}) for p in args.profile],args.limit)
             return client.write(dict(kind=args.kind,content=args.content),scope=args.scope,tags=args.tag,task=args.task)
         finally: client.close()
     home=BrokerHome(args.home); store=select_store(home,backend)

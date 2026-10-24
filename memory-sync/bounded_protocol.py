@@ -47,10 +47,25 @@ def collect(rows, max_chars=20000, max_events=24):
     return batch
 
 
-def validate(payload, batch, related, *, identity_changes=None):
+def quarantine_record(item, events, reason):
+    """Only identifiers and fixed messages may leave a rejected item."""
+    item = item if isinstance(item, dict) else {}
+    key = item.get('memory_key')
+    supplied = item.get('source_event_ids')
+    ids = list(supplied) if isinstance(supplied, list) else []
+    evidence = item.get('evidence')
+    if isinstance(evidence, list):
+        ids.extend(q.get('event_id') for q in evidence if isinstance(q, dict))
+    return dict(memory_key=key if isinstance(key, str) else None, reason=reason,
+                event_ids=sorted({i for i in ids if type(i) is int and i in events}))
+
+
+def validate(payload, batch, related, *, identity_changes=None, scope_changes=None, rejected=None):
     """Normalize validated items; optionally report identity overrides by stable key.
 
-    The audit mapping is separate from the strict producer payload schema.
+    Audit mappings are separate from the strict producer payload schema.
+    With a rejected collector, item errors are returned as safe quarantine records;
+    without it, strict validation remains available to existing protocol callers.
     """
     if not isinstance(payload, dict) or set(payload) != {'items', 'reviewed_event_ids', 'conflicts'}:
         raise ValidationError('invalid payload schema')
@@ -65,9 +80,16 @@ def validate(payload, batch, related, *, identity_changes=None):
     if any(type(i) is not int for i in reviewed) or len(reviewed) != len(events) or set(reviewed) != set(events):
         raise ValidationError('incomplete event coverage')
     existing = {i['memory_key']: i for i in related}
+    # Duplicates are a batch ambiguity, even when one of the items is invalid.
     seen = set()
-    required = {'memory_key', 'kind', 'scope', 'scope_key', 'project', 'content', 'status', 'confidence', 'evidence'}
     for item in payload['items']:
+        key = item.get('memory_key') if isinstance(item, dict) else None
+        if isinstance(key, str):
+            if key in seen:
+                raise ValidationError('invalid/duplicate stable key')
+            seen.add(key)
+    required = {'memory_key', 'kind', 'scope', 'scope_key', 'project', 'content', 'status', 'confidence', 'evidence'}
+    def validate_item(item):
         identity = {'kind', 'scope', 'scope_key', 'project'}
         if not isinstance(item, dict):
             raise ValidationError('invalid item schema')
@@ -82,11 +104,9 @@ def validate(payload, batch, related, *, identity_changes=None):
                 identity_changes[item['memory_key']] = differed
             item.update({field: stored[field] for field in identity})
         key = item['memory_key']
-        if (not isinstance(key, str) or key in seen
-                or (key not in existing and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}', key))):
+        if (not isinstance(key, str) or (key not in existing and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}', key))):
             raise ValidationError('invalid/duplicate stable key')
-        seen.add(key)
-        if item['kind'] not in {'fact', 'decision', 'constraint', 'preference', 'procedure', 'open_loop', 'summary'} or item['scope'] not in {'global', 'project', 'task', 'session'} or item['status'] not in {'active', 'superseded', 'resolved', 'deleted'}:
+        if item['kind'] not in ('fact', 'decision', 'constraint', 'preference', 'procedure', 'open_loop', 'summary') or item['scope'] not in ('global', 'project', 'task', 'session') or item['status'] not in ('active', 'superseded', 'resolved', 'deleted'):
             raise ValidationError('invalid kind/scope/status')
         if type(item['confidence']) not in (int, float) or not 0 <= item['confidence'] <= 1:
             raise ValidationError('invalid confidence')
@@ -98,7 +118,7 @@ def validate(payload, batch, related, *, identity_changes=None):
         if item['scope'] == 'global':
             if item['project'] is not None or item['scope_key'] is not None:
                 raise ValidationError('global scope mismatch')
-        elif item['project'] != batch[0]['project'] or not isinstance(item['scope_key'], str) or not item['scope_key']:
+        elif item['project'] != batch[0]['project'] or ((is_existing or item['scope'] != 'session') and (not isinstance(item['scope_key'], str) or not item['scope_key'])):
             raise ValidationError('project/scope mismatch')
         if key not in existing and item['scope'] == 'project' and item['scope_key'] != batch[0]['project']:
             raise ValidationError('project scope mismatch')
@@ -119,10 +139,28 @@ def validate(payload, batch, related, *, identity_changes=None):
                 raise ValidationError('unsupported evidence quote')
         if item['scope'] == 'task' and not any(item['scope_key'] == events[i].get('task_ref') or item['scope_key'] in events[i]['content'] for i in ids):
             raise ValidationError('unsupported task scope')
+        if item['scope'] == 'session' and not is_existing:
+            sessions = [events[i].get('source_session_id') for i in ids]
+            if not all(isinstance(v, str) and v for v in sessions) or len(set(sessions)) != 1:
+                raise ValidationError('session scope spans sessions')
+            if item['scope_key'] != sessions[0] and scope_changes is not None:
+                scope_changes.add(key)
+            item['scope_key'] = sessions[0]
         if item['scope'] == 'session' and not all(item['scope_key'] == events[i].get('source_session_id') for i in ids):
             raise ValidationError('unsupported session scope')
         if item['scope'] == 'global' and not any(events[i]['kind'] == 'user_request' for i in ids):
             raise ValidationError('global memory needs user evidence')
+    valid = []
+    for item in payload['items']:
+        try:
+            validate_item(item)
+        except ValidationError as exc:
+            if rejected is None:
+                raise
+            rejected.append(quarantine_record(item, events, str(exc)))
+        else:
+            valid.append(item)
+    payload['items'] = valid
     return payload
 
 

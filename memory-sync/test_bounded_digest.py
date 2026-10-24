@@ -41,6 +41,12 @@ class BoundedTests(unittest.TestCase):
             item.update(kind='constraint', scope='project', scope_key='demo', project='demo')
         return dict(items=[item], reviewed_event_ids=[e['id'] for e in task['events']], conflicts=[])
 
+    def assert_quarantined(self, task, payload, reason):
+        result = self.api().apply(self.db, task, payload)
+        self.assertEqual((result['status'], result['items'], result['rejected_items']), ('committed', 0, 1))
+        self.assertEqual(self.api().list_quarantine(self.db)[-1]['reason'], reason)
+        self.assertEqual(self.api().prepare(self.db)['events'], [])
+
     # Replays of the 2026-10-22 production failures (F1 and F3).
     def two_event_replay(self):
         self.event(2, 'Deployment must remain manual.')
@@ -67,14 +73,12 @@ class BoundedTests(unittest.TestCase):
     def test_production_20261022_f1_legacy_mismatch_rejected(self):
         task, payload = self.two_event_replay()
         payload['items'][0]['source_event_ids'] = [1]
-        with self.assertRaisesRegex(ValueError, '^evidence coverage mismatch$'):
-            self.api().apply(self.db, task, payload)
+        self.assert_quarantined(task, payload, 'evidence coverage mismatch')
 
     def test_production_20261022_f1_empty_evidence_rejected(self):
         task, payload = self.two_event_replay()
         payload['items'][0]['evidence'] = []
-        with self.assertRaisesRegex(ValueError, 'unsupported evidence ids'):
-            self.api().apply(self.db, task, payload)
+        self.assert_quarantined(task, payload, 'unsupported evidence ids')
 
     def test_production_20261022_f1_schema_and_instructions(self):
         from bounded_protocol import build_request, INSTRUCTIONS
@@ -130,7 +134,9 @@ class BoundedTests(unittest.TestCase):
     def test_production_20261022_f3_audit_describes_current_update(self):
         api = self.identity_replay({'kind': 'decision'})
         with memory_sync.connect(self.db) as c:
-            previous = json.loads(c.execute('SELECT metadata FROM memory_items').fetchone()[0])
+            old = c.execute('SELECT * FROM memory_items').fetchone()
+            previous = json.loads(old['metadata'])
+            old_updated = old['updated_at']
         self.event(3, 'Deployment is still manual.')
         task = api.prepare(self.db)
         api.apply(self.db, task, self.payload(task, update=True))
@@ -141,6 +147,8 @@ class BoundedTests(unittest.TestCase):
                 'evidence': previous['evidence'],
                 'batch_id': previous['batch_id'],
                 'identity_from_existing': ['kind'],
+                'content': 'Keep deployment manual after review.',
+                'status': 'active', 'updated_at': old_updated,
             })
             self.assertNotIn('identity_from_existing', metadata['evidence_history'][0])
 
@@ -178,8 +186,7 @@ class BoundedTests(unittest.TestCase):
     def test_new_key_with_related_rejects_wrong_namespace(self):
         api, task, payload, original = self.new_key_with_related()
         payload['items'][0]['memory_key'] = 'project.demo.preference.concise-answers'
-        with self.assertRaisesRegex(ValueError, '^new stable key namespace mismatch$'):
-            api.apply(self.db, task, payload)
+        self.assert_quarantined(task, payload, 'new stable key namespace mismatch')
         with memory_sync.connect(self.db) as c:
             self.assertEqual([dict(row) for row in c.execute('SELECT * FROM memory_items')], [original])
 
@@ -190,8 +197,11 @@ class BoundedTests(unittest.TestCase):
             payload = self.payload(task)
             obj = payload if target == 'payload' else payload['items'][0]
             obj['identity_from_existing'] = ['kind']
-            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'invalid .* schema'):
-                api.apply(self.db, task, payload)
+            if target == 'payload':
+                with self.assertRaisesRegex(ValueError, 'invalid payload schema'):
+                    api.apply(self.db, task, payload)
+            else:
+                self.assert_quarantined(task, payload, 'invalid item schema')
 
     def test_stable_key_correction_preserves_identity_sources_and_summary(self):
         api = self.api()
@@ -242,6 +252,8 @@ class BoundedTests(unittest.TestCase):
         api = self.api()
         task = api.prepare(self.db)
         for mode in ('quote', 'secret', 'conflict', 'coverage'):
+            self.setUp()
+            task = api.prepare(self.db)
             payload = self.payload(task)
             if mode == 'quote':
                 payload['items'][0]['evidence'][0]['quote'] = 'invented'
@@ -251,8 +263,12 @@ class BoundedTests(unittest.TestCase):
                 payload['conflicts'] = ['contradiction']
             else:
                 payload['reviewed_event_ids'] = []
-            with self.assertRaises(ValueError):
-                api.apply(self.db, task, payload)
+            if mode in ('quote', 'secret'):
+                reason = 'unsupported evidence quote' if mode == 'quote' else 'possible secret detected; batch remains pending'
+                self.assert_quarantined(task, payload, reason)
+            else:
+                with self.assertRaises(ValueError):
+                    api.apply(self.db, task, payload)
         with memory_sync.connect(self.db) as c, c:
             self.assertEqual(c.execute('SELECT count(*) FROM summary_state').fetchone()[0], 0)
             self.assertEqual(c.execute('SELECT count(*) FROM memory_sources').fetchone()[0], 0)
@@ -368,8 +384,7 @@ class BoundedTests(unittest.TestCase):
         task = api.prepare(self.db)
         payload = self.payload(task)
         payload['items'][0]['evidence'][0]['event_id'] = True
-        with self.assertRaises(ValueError):
-            api.apply(self.db, task, payload)
+        self.assert_quarantined(task, payload, 'invalid evidence schema')
 
     def test_new_key_schema_constrains_namespace_before_provider_call(self):
         from bounded_protocol import build_request
@@ -406,7 +421,7 @@ class BoundedTests(unittest.TestCase):
             calls.append(model)
             payload = self.payload(api.prepare(self.db))
             if len(calls) == 1:
-                payload['items'][0]['evidence'][0]['event_id'] = 99  # evidence/source mismatch
+                payload['reviewed_event_ids'] = []  # batch-level coverage error
             return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1,
                         usage=dict(input_total_tokens=10, output_tokens=2, actual_cost_usd=0.001))
         result = api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
@@ -443,7 +458,7 @@ class BoundedTests(unittest.TestCase):
             else:
                 payload = self.payload(task)
                 if calls.count('fallback') == 1:
-                    payload['items'][0]['evidence'][0]['event_id'] = 99
+                    payload['reviewed_event_ids'] = []
             return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
         result = api.run_once(self.db, extractor=extractor, conflict_model='fallback', metrics_path=metrics)
         self.assertEqual(result['status'], 'committed')
@@ -498,7 +513,7 @@ class BoundedTests(unittest.TestCase):
         self.assertEqual([r['memory_key'] for r in api.prepare(self.db)['related']],
                          ['project.demo.constraint.manual-deploy'])
 
-    def test_new_key_colliding_with_hidden_session_item_is_retried(self):
+    def test_new_key_colliding_with_hidden_session_item_is_quarantined(self):
         api = self.api()
         with memory_sync.connect(self.db) as c, c:
             c.execute("UPDATE observation_events SET source_session_id='claude-a' WHERE id=1")
@@ -513,7 +528,8 @@ class BoundedTests(unittest.TestCase):
                 payload['items'][0]['memory_key'] = 'session.demo.open_loop.codex-deploy-check'
             return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
         self.assertEqual(api.run_once(self.db, extractor=extractor)['status'], 'committed')
-        self.assertIn('stable key exists outside submitted context', requests[1]['instructions'])
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(api.list_quarantine(self.db)[0]['reason'], 'stable key exists outside submitted context')
 
     def test_retry_tells_the_model_which_validation_failed(self):
         api = self.api()
@@ -522,16 +538,189 @@ class BoundedTests(unittest.TestCase):
             requests.append(request)
             payload = self.payload(api.prepare(self.db))
             if len(requests) == 1:
-                payload['items'][0]['evidence'][0]['event_id'] = 99
+                payload['reviewed_event_ids'] = []
             return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
         result = api.run_once(self.db, extractor=extractor)
         self.assertEqual(result['status'], 'committed')
         first, second = requests
         self.assertNotIn('rejected', first['instructions'])
         self.assertTrue(second['instructions'].startswith(first['instructions']))
-        self.assertIn('evidence coverage mismatch', second['instructions'][len(first['instructions']):])
+        self.assertIn('incomplete event coverage', second['instructions'][len(first['instructions']):])
         self.assertEqual((second['input'], second['text']), (first['input'], first['text']))
         self.assertEqual(result['task']['request'], first)
+
+    # Replays of production failure classes F2/F4; F5 lifecycle regressions.
+    def test_replay_f2_session_key_derived_and_matching_not_recorded(self):
+        for supplied, derived in [('wrong-session', True), ('session', False)]:
+            self.setUp()
+            task = self.api().prepare(self.db)
+            self.api().apply(self.db, task, self.session_item(task, supplied))
+            with memory_sync.connect(self.db) as c:
+                row = c.execute('SELECT * FROM memory_items').fetchone()
+                self.assertEqual(row['scope_key'], 'session')
+                self.assertEqual('scope_key_derived' in json.loads(row['metadata']), derived)
+
+    def test_replay_f2_spans_or_missing_sessions_quarantined(self):
+        for session in ('other', None, ''):
+            self.setUp()
+            self.event(2, 'Keep it manual.', session=session)
+            task = self.api().prepare(self.db)
+            payload = self.session_item(task, 'session')
+            item = payload['items'][0]
+            del item['source_event_ids']
+            item['evidence'] = [dict(event_id=e['id'], quote=e['content']) for e in task['events']]
+            self.assert_quarantined(task, payload, 'session scope spans sessions')
+
+    def test_replay_f4_mixed_batch_commits_without_retry_and_no_secret_stored(self):
+        import copy
+        api = self.api()
+        task = api.prepare(self.db)
+        payload = self.payload(task)
+        bad = copy.deepcopy(payload['items'][0])
+        bad['memory_key'] += '-bad'
+        secret = 'sk-' + 'a' * 32
+        bad['content'] = secret
+        bad['evidence'].append(dict(event_id=999, quote='private rejected quote'))
+        bad['source_event_ids'] = [1, 999, True]
+        payload['items'].append(bad)
+        metrics = self.db.with_suffix('.jsonl')
+        calls = []
+        def extractor(request, *, model):
+            calls.append(model)
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        result = api.run_once(self.db, extractor=extractor, metrics_path=metrics)
+        self.assertEqual((result['status'], result['items'], result['rejected_items']), ('committed', 1, 1))
+        row = api.list_quarantine(self.db)[0]
+        self.assertEqual(row['reason'], 'possible secret detected; batch remains pending')
+        self.assertEqual(json.loads(row['event_ids']), [1])
+        self.assertEqual((row['consumer'], row['batch_id']), (task['consumer'], task['batch_id']))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(metrics.read_text())['rejected_items'], 1)
+        self.assertEqual(api.prepare(self.db)['events'], [])
+        with memory_sync.connect(self.db) as c:
+            dump = '\n'.join(c.iterdump())
+            self.assertNotIn(secret, dump)
+            self.assertNotIn('private rejected quote', dump)
+        self.assertNotIn(secret.encode(), self.db.read_bytes())
+
+    def test_f4_malformed_items_and_duplicates(self):
+        import copy
+        for bad in (None, {}, dict(memory_key=17), dict(memory_key=[])):
+            self.setUp()
+            task = self.api().prepare(self.db)
+            payload = dict(items=[bad], reviewed_event_ids=[1], conflicts=[])
+            self.assert_quarantined(task, payload, 'invalid item schema')
+            self.assertIsNone(self.api().list_quarantine(self.db)[0]['memory_key'])
+        self.setUp()
+        task = self.api().prepare(self.db)
+        payload = self.payload(task)
+        payload['items'].append(copy.deepcopy(payload['items'][0]))
+        payload['items'][0]['content'] = ''
+        with self.assertRaisesRegex(ValueError, 'duplicate stable key'):
+            self.api().apply(self.db, task, payload)
+        self.assertEqual(len(self.api().prepare(self.db)['events']), 1)
+        self.assertEqual(self.api().list_quarantine(self.db), [])
+
+    def test_f4_quarantine_and_coverage_roll_back_together(self):
+        import sqlite3
+        api = self.api()
+        task = api.prepare(self.db)
+        payload = self.payload(task)
+        payload['items'][0]['content'] = ''
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("CREATE TRIGGER reject_receipt BEFORE INSERT ON summary_state BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            api.apply(self.db, task, payload)
+        self.assertEqual(api.list_quarantine(self.db), [])
+        self.assertEqual(len(api.prepare(self.db)['events']), 1)
+
+    def test_f4_dry_run_reports_rejections_without_writing(self):
+        api = self.api()
+        payload = self.payload(api.prepare(self.db))
+        payload['items'][0]['content'] = ''
+        def extractor(request, *, model):
+            return dict(payload=payload, provider='synthetic-test', model=model, api_calls=1, usage={})
+        result = api.run_once(self.db, extractor=extractor, apply_result=False)
+        self.assertEqual((result['status'], result['items'], result['rejected_items']), ('validated', 0, 1))
+        self.assertEqual(api.list_quarantine(self.db), [])
+        self.assertEqual(len(api.prepare(self.db)['events']), 1)
+
+    def test_f5_history_without_prior_evidence_is_bounded(self):
+        from bounded_digest import revision_history
+        old = dict(content='x' * 4000, status='active', updated_at='old-time')
+        self.assertEqual(revision_history(old, {}, 'new', 'resolved'),
+                         [dict(content='x' * 3000, status='active', updated_at='old-time', batch_id=None)])
+
+    def deletion_proposal(self):
+        api = self.api()
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task))
+        with memory_sync.connect(self.db) as c:
+            old = dict(c.execute('SELECT * FROM memory_items').fetchone())
+        self.event(2, 'Remove this restriction.')
+        task = api.prepare(self.db)
+        self.assert_quarantined(task, self.payload(task, 'deleted', True), 'deletion requires confirmation')
+        with memory_sync.connect(self.db) as c:
+            self.assertEqual(dict(c.execute('SELECT * FROM memory_items').fetchone()), old)
+        return api, old, api.list_quarantine(self.db)[0]
+
+    def test_f5_confirm_deletion_cli_preserves_history_and_notifies(self):
+        from unittest.mock import patch
+        api, old, quarantine = self.deletion_proposal()
+        with patch('profile_log_bridge.notify_rows') as notify:
+            self.assertEqual(api.main(['confirm-deletion', '--db', str(self.db), str(quarantine['id'])]), 0)
+            notify.assert_called_once_with(str(self.db), [('memory_items', old['id'])])
+        with memory_sync.connect(self.db) as c:
+            row = c.execute('SELECT * FROM memory_items').fetchone()
+            self.assertEqual(row['status'], 'deleted')
+            revision = json.loads(row['metadata'])['evidence_history'][-1]
+            for field in ('content', 'status', 'updated_at'):
+                self.assertEqual(revision[field], old[field])
+            q = c.execute('SELECT * FROM memory_quarantine').fetchone()
+            self.assertEqual(q['resolution'], 'confirmed')
+            self.assertIsNotNone(q['resolved_at'])
+        self.assertEqual(api.list_quarantine(self.db), [])
+        self.assertEqual(api.main(['confirm-deletion', '--db', str(self.db), str(quarantine['id'])]), 1)
+
+    def test_f5_confirm_deletion_refuses_non_deletion_rows(self):
+        from unittest.mock import patch
+        api, old, quarantine = self.deletion_proposal()
+        with memory_sync.connect(self.db) as c, c:
+            c.execute("UPDATE memory_quarantine SET reason='unsupported evidence quote' WHERE id=?", (quarantine['id'],))
+        with patch('profile_log_bridge.notify_rows') as notify:
+            self.assertEqual(api.main(['confirm-deletion', '--db', str(self.db), str(quarantine['id'])]), 1)
+            notify.assert_not_called()
+        with memory_sync.connect(self.db) as c:
+            self.assertEqual(dict(c.execute('SELECT * FROM memory_items').fetchone()), old)
+            self.assertIsNone(c.execute('SELECT resolved_at FROM memory_quarantine').fetchone()[0])
+
+    def test_f5_dismiss_cli_leaves_memory_unchanged(self):
+        from unittest.mock import patch
+        api, old, quarantine = self.deletion_proposal()
+        self.assertEqual(api.main(['quarantine', '--db', str(self.db)]), 0)
+        with patch('profile_log_bridge.notify_rows') as notify:
+            self.assertEqual(api.main(['dismiss', '--db', str(self.db), str(quarantine['id'])]), 0)
+            notify.assert_not_called()
+        with memory_sync.connect(self.db) as c:
+            self.assertEqual(dict(c.execute('SELECT * FROM memory_items').fetchone()), old)
+            self.assertEqual(c.execute('SELECT resolution FROM memory_quarantine').fetchone()[0], 'dismissed')
+        self.assertEqual(api.list_quarantine(self.db), [])
+
+    def test_f5_supersede_history_keeps_previous_content_status(self):
+        api = self.api()
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task))
+        self.event(2, 'Use the new deployment procedure.')
+        task = api.prepare(self.db)
+        api.apply(self.db, task, self.payload(task, 'superseded', True))
+        with memory_sync.connect(self.db) as c:
+            row = c.execute('SELECT * FROM memory_items').fetchone()
+            self.assertEqual(row['status'], 'superseded')
+            history = json.loads(row['metadata'])['evidence_history']
+            self.assertEqual(history[-1]['content'], 'Keep deployment manual.')
+            self.assertEqual(history[-1]['status'], 'active')
+            self.assertIn('updated_at', history[-1])
+            self.assertNotIn('kind', history[-1])
 
     def worker(self, script):
         fake = Path(self.temp.name) / 'worker'

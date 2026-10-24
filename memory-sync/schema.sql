@@ -52,3 +52,8 @@ CREATE TABLE IF NOT EXISTS memory_summaries (
 CREATE TABLE IF NOT EXISTS summary_state (
  consumer TEXT PRIMARY KEY, last_event_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS memory_quarantine (
+    id INTEGER PRIMARY KEY, consumer TEXT, batch_id TEXT, memory_key TEXT,
+    reason TEXT, event_ids TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT NULL, resolution TEXT NULL);

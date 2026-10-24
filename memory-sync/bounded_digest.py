@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 
-from bounded_protocol import ValidationError, collect, validate, build_request, encode, error_detail
+from bounded_protocol import ValidationError, collect, validate, build_request, encode, error_detail, quarantine_record
 from memory_sync import connect, config, allocate_id, canonical, digest
 from summarize_memory import DEFAULT_CONSUMER, _options, legacy_checkpoint
 
@@ -84,9 +84,77 @@ def prepare(db, *, consumer=DEFAULT_CONSUMER, primary_node='mac', max_events=24,
                         ceiling if highwater is None else highwater, eligible_ids)
 
 
+QUARANTINE_SQL = """CREATE TABLE IF NOT EXISTS memory_quarantine (
+    id INTEGER PRIMARY KEY, consumer TEXT, batch_id TEXT, memory_key TEXT,
+    reason TEXT, event_ids TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT NULL, resolution TEXT NULL)"""
+
+
+def revision_history(old, md, content, status):
+    history = md.get('evidence_history', [])
+    changed = old and (old['content'] != content or old['status'] != status)
+    if old and (md.get('evidence') or changed):
+        revision = dict(batch_id=md.get('batch_id'))
+        for field in ('evidence', 'identity_from_existing', 'scope_key_derived'):
+            if field in md:
+                revision[field] = md[field]
+        if changed:
+            revision.update(content=old['content'][:3000], status=old['status'], updated_at=old['updated_at'])
+        history = history + [revision]
+    return history
+
+
+def notify(db, touched):
+    try:
+        from profile_log_bridge import notify_rows
+        notify_rows(db, touched)
+    except Exception as exc:
+        print('profile-log bridge: ' + type(exc).__name__, file=__import__('sys').stderr)
+
+
+def list_quarantine(db):
+    """Read-only inspection, including databases predating quarantine."""
+    import sqlite3
+    from pathlib import Path
+    with sqlite3.connect(Path(db).resolve().as_uri() + '?mode=ro', uri=True) as c:
+        c.row_factory = sqlite3.Row
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='memory_quarantine'").fetchone():
+            return []
+        return [dict(r) for r in c.execute('SELECT * FROM memory_quarantine WHERE resolved_at IS NULL ORDER BY id')]
+
+
+def resolve_quarantine(db, ident, *, confirm=False):
+    touched = []
+    with connect(db) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute(QUARANTINE_SQL)
+        row = c.execute('SELECT * FROM memory_quarantine WHERE id=? AND resolved_at IS NULL', (ident,)).fetchone()
+        if not row:
+            raise ValidationError('open quarantine row not found')
+        if confirm:
+            if row['reason'] != 'deletion requires confirmation':
+                raise ValidationError('quarantine row is not a deletion request')
+            old = c.execute('SELECT * FROM memory_items WHERE memory_key=?', (row['memory_key'],)).fetchone()
+            if not old:
+                raise ValidationError('memory item not found')
+            md = json.loads(old['metadata'])
+            md['evidence_history'] = revision_history(old, md, old['content'], 'deleted')
+            md['batch_id'] = row['batch_id']
+            c.execute("UPDATE memory_items SET status='deleted',metadata=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                      (canonical(md), old['id']))
+            touched.append(('memory_items', old['id']))
+        c.execute('UPDATE memory_quarantine SET resolved_at=CURRENT_TIMESTAMP,resolution=? WHERE id=?',
+                  ('confirmed' if confirm else 'dismissed', ident))
+    if touched:
+        notify(db, touched)
+    return dict(status='confirmed' if confirm else 'dismissed', id=ident)
+
+
 def apply(db, task, payload, *, provider=None, model=None):
     identity_changes = {}
-    payload = validate(copy.deepcopy(payload), task['events'], task['related'], identity_changes=identity_changes)
+    rejected, scope_changes = [], set()
+    payload = validate(copy.deepcopy(payload), task['events'], task['related'], identity_changes=identity_changes,
+                       scope_changes=scope_changes, rejected=rejected)
     with connect(db) as c, c:
         c.execute('BEGIN IMMEDIATE')
         current = _prepare(c, task['consumer'], task['primary_node'], highwater=task['highwater'], eligible_ids=task.get('eligible_ids'), **task['limits'])
@@ -99,18 +167,23 @@ def apply(db, task, payload, *, provider=None, model=None):
         provenance = dict(generator='agentmesh-bounded-v1', consumer=task['consumer'], batch_id=task['batch_id'],
                           batch_event_ids=ids, provider=provider, model=model)
         touched = []
+        applied = []
+        c.execute(QUARANTINE_SQL)
         for item in payload['items']:
             old = c.execute('SELECT * FROM memory_items WHERE memory_key=?', (item['memory_key'],)).fetchone()
             if old and item['memory_key'] not in {r['memory_key'] for r in task['related']}:
-                raise ValidationError('stable key exists outside submitted context')
+                rejected.append(quarantine_record(item, ids, 'stable key exists outside submitted context'))
+                continue
+            if old and item['status'] == 'deleted':
+                rejected.append(quarantine_record(item, ids, 'deletion requires confirmation'))
+                continue
+            applied.append(item)
             md = json.loads(old['metadata']) if old else {}
             # Preserve previous provenance/quotes and full source links on corrections.
-            history = md.get('evidence_history', [])
-            if md.get('evidence'):
-                revision = dict(evidence=md['evidence'], batch_id=md.get('batch_id'))
-                if 'identity_from_existing' in md:
-                    revision['identity_from_existing'] = md['identity_from_existing']
-                history = history + [revision]
+            history = revision_history(old, md, item['content'], item['status'])
+            md.pop('scope_key_derived', None)
+            if item['memory_key'] in scope_changes:
+                md['scope_key_derived'] = True
             md.pop('identity_from_existing', None)
             if item['memory_key'] in identity_changes:
                 md['identity_from_existing'] = identity_changes[item['memory_key']]
@@ -127,6 +200,9 @@ def apply(db, task, payload, *, provider=None, model=None):
             touched.append(('memory_items', ident))
             c.executemany('INSERT OR IGNORE INTO memory_sources(memory_id,event_id) VALUES(?,?)',
                           [(ident, eid) for eid in item['source_event_ids']])
+        c.executemany('INSERT INTO memory_quarantine(consumer,batch_id,memory_key,reason,event_ids) VALUES(?,?,?,?,?)',
+                      [(task['consumer'], task['batch_id'], r['memory_key'], r['reason'], canonical(r['event_ids'])) for r in rejected])
+        payload['items'] = applied
         project = task['events'][0]['project']
         scopes = {project} | {i['scope_key'] for i in payload['items'] if i['scope'] == 'project'} if project and payload['items'] else set()
         for scope_key in sorted(scopes):
@@ -150,13 +226,8 @@ def apply(db, task, payload, *, provider=None, model=None):
         c.execute('''INSERT INTO summary_state(consumer,last_event_id) VALUES(?,?) ON CONFLICT(consumer) DO UPDATE SET
             last_event_id=max(last_event_id,excluded.last_event_id),updated_at=CURRENT_TIMESTAMP''', (task['consumer'], after))
         c.commit()
-        try:
-            from profile_log_bridge import notify_rows
-            notify_rows(db, touched)
-        except Exception as exc:
-            # The optional bridge never changes a committed result, even when missing.
-            print('profile-log bridge: ' + type(exc).__name__, file=__import__('sys').stderr)
-        return dict(status='committed', events=len(ids), items=len(payload['items']), batch_id=task['batch_id'])
+        notify(db, touched)
+        return dict(status='committed', events=len(ids), items=len(applied), rejected_items=len(rejected), batch_id=task['batch_id'])
 
 
 from contextlib import contextmanager
@@ -261,7 +332,7 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                   start=datetime.now(timezone.utc).isoformat(), status='running', provider=None, model=model,
                   events_processed=0, llm_api_calls=0, fallbacks=0, retries=0, actual_cost_usd=None,
                   context_max_input_tokens=None, context_max_chars=0, submitted_chars=0, raw_chars=0,
-                  accepted_items=0, upserted_items=0, source_coverage=None, errors=[], error_detail=None)
+                  accepted_items=0, rejected_items=0, upserted_items=0, source_coverage=None, errors=[], error_detail=None)
     metric.update({f: None for f in usage_fields})
     results = []
     try:
@@ -291,18 +362,23 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                 metric['actual_cost_usd'] = round(sum(costs), 6) if all(type(v) in (int, float) and v >= 0 for v in costs) else None
                 return result
             def checked(payload):
-                validate(copy.deepcopy(payload), task['events'], task['related'])
-                # A new key may collide with a key hidden from this batch (another
-                # session's item); reject it here so the retry can pick another key.
-                keys = [i.get('memory_key') for i in payload['items']]
+                rejected = []
+                normalized = validate(copy.deepcopy(payload), task['events'], task['related'], rejected=rejected)
+                accepted = []
                 with connect(db) as c:
-                    hidden = c.execute('SELECT 1 FROM memory_items WHERE memory_key IN (SELECT value FROM json_each(?))',
-                                       (canonical(sorted(set(keys) - {r['memory_key'] for r in task['related']})),)).fetchone()
-                if hidden:
-                    raise ValidationError('stable key exists outside submitted context')
+                    related_keys = {r['memory_key'] for r in task['related']}
+                    for item in normalized['items']:
+                        old = c.execute('SELECT 1 FROM memory_items WHERE memory_key=?', (item['memory_key'],)).fetchone()
+                        reason = ('stable key exists outside submitted context' if old and item['memory_key'] not in related_keys
+                                  else 'deletion requires confirmation' if old and item['status'] == 'deleted' else None)
+                        if reason:
+                            rejected.append(quarantine_record(item, [e['id'] for e in task['events']], reason))
+                        else:
+                            accepted.append(item)
+                return len(accepted), len(rejected)
             def first_valid(chosen):
-                # One same-model retry when output fails validation (e.g. evidence
-                # coverage); explicit conflicts and worker failures are not retried.
+                # One same-model retry for batch-level validation only.
+                # Explicit conflicts and worker failures are not retried.
                 result = call(chosen)
                 try:
                     checked(result['payload'])
@@ -329,8 +405,13 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
                 metric['context_max_input_tokens'] = None
                 metric['actual_cost_usd'] = None
                 result = first_valid(conflict_model)
-            metric['accepted_items'] = len(result['payload']['items'])
-            report = apply(db, task, result['payload'], provider=result['provider'], model=result['model']) if apply_result else dict(status='validated', events=len(task['events']), items=len(result['payload']['items']))
+            if apply_result:
+                report = apply(db, task, result['payload'], provider=result['provider'], model=result['model'])
+            else:
+                accepted, rejected = checked(result['payload'])
+                report = dict(status='validated', events=len(task['events']), items=accepted, rejected_items=rejected)
+            metric['rejected_items'] = report.get('rejected_items', 0)
+            metric['accepted_items'] = report['items']
             metric['status'] = report['status']
             metric['events_processed'] = report['events']
             metric['source_coverage'] = 1.0 if report['status'] in ('committed','validated') else 0.0
@@ -351,6 +432,21 @@ def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_m
 def main(argv=None):
     import argparse
     import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ('quarantine', 'confirm-deletion', 'dismiss'):
+        command = argv.pop(0)
+        q = argparse.ArgumentParser(description='Inspect or resolve quarantined memory items')
+        q.add_argument('--db', required=True)
+        if command != 'quarantine':
+            q.add_argument('id', type=int)
+        args = q.parse_args(argv)
+        try:
+            result = dict(rows=list_quarantine(args.db)) if command == 'quarantine' else resolve_quarantine(args.db, args.id, confirm=command == 'confirm-deletion')
+            print(canonical(result))
+            return 0
+        except Exception as exc:
+            print(canonical(dict(status='blocked', detail=error_detail(exc))), file=sys.stderr)
+            return 1
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('database')
     p.add_argument('--apply', action='store_true')

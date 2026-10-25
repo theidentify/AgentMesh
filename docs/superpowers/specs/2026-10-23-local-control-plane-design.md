@@ -262,3 +262,10 @@ a temporary `AGENTMESH_HOME`. They cover the backend switch, rollback and
 - The storm guard counts watchdog kills: more than 3 within 1 h puts the unit in `failed` until `control reset`. It alerts once through job_notify's Discord webhook.
 - At start, orphans are sent SIGTERM only when pid plus `ps lstart` match, and their runs are marked `orphaned`.
 - `panic-revert` needs no presence.
+
+## Amendments from milestone 2.1 (2026-10-25)
+
+- `adopt` runs `launchctl disable gui/<uid>/<label>` and then `bootout`. Bootout alone left the plist in `~/Library/LaunchAgents` to be loaded again at the next reboot or login, and both launchd and the supervisor then scheduled the unit.
+- `release` and `panic-revert` run `launchctl enable`, then `bootstrap` (only if the label is not loaded already).
+- Backstop: when the supervisor starts, it disables and boots out every native unit that launchd has loaded, and audits `launchd_reloaded`.
+- `status` reports health `conflict` for a native unit that launchd also has loaded. It takes precedence over every other health state.

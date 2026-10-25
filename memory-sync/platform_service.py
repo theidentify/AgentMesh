@@ -55,6 +55,8 @@ def render_launchagent(python, app_dir, database, exchange, interval=60, postgre
 def main(argv=None):
     import sys
     actual = sys.argv[1:] if argv is None else argv
+    if actual and actual[0] == 'generate-jobs':
+        return generate_job_units(actual)
     if actual and actual[0] == 'generate-retention':
         return generate_retention_units(actual)
     if any(v == '--unit' or v.startswith('--unit=') for v in actual):
@@ -279,6 +281,70 @@ def generate_retention_units(argv):
             print(root/name)
     except (ValueError, OSError):
         p.error('cannot generate retention units: invalid arguments or output already exists/unwritable')
+    return 0
+
+
+def render_job_unit(platform,name,*,python,jobs_dir,app_dir,state_dir,interval,webhook_file=None,path_env=None):
+    """Render ingest/summary ticks wrapped by the shared failure notifier."""
+    import subprocess
+    import xml.etree.ElementTree as ET
+    if platform not in ('macos','windows'): raise ValueError('invalid platform')
+    if name not in ('ingest','summary'): raise ValueError('invalid job')
+    _validate(python,jobs_dir,app_dir,state_dir,interval)
+    if webhook_file is not None: _validate(python,jobs_dir,app_dir,webhook_file,interval)
+    if int(interval)!=interval: raise ValueError('interval must be whole seconds')
+    if path_env is not None and (type(path_env) is not str or any(unicodedata.category(c)=='Cc' for c in path_env)): raise ValueError('invalid PATH')
+    argv=[str(python),str(Path(app_dir)/'job_notify.py'),'--name',name,'--state-dir',str(state_dir)]
+    if webhook_file is not None: argv+=['--webhook-file',str(webhook_file)]
+    argv+=['--',str(python),str(Path(jobs_dir)/('agentmesh_'+name+'.py'))]
+    stem='org.agentmesh.'+name
+    if platform=='macos':
+        log=str(Path(state_dir)/('launchd-'+name+'.log'))
+        value=dict(Label=stem,ProgramArguments=argv,StartInterval=int(interval),Umask=0o077,WorkingDirectory=str(jobs_dir),
+            RunAtLoad=True,ProcessType='Background',StandardOutPath=log,StandardErrorPath=log)
+        # launchd's default PATH lacks ~/.local/bin, where the summary job's claude CLI lives.
+        if path_env is not None: value['EnvironmentVariables']={'PATH':path_env}
+        return {stem+'.plist':plistlib.dumps(value)}
+    task=ET.Element('Task',version='1.4',xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task')
+    trigger=ET.SubElement(ET.SubElement(task,'Triggers'),'TimeTrigger')
+    ET.SubElement(trigger,'StartBoundary').text='2020-01-01T00:00:00'
+    repeat=ET.SubElement(trigger,'Repetition'); ET.SubElement(repeat,'Interval').text='PT'+str(int(interval))+'S'
+    ET.SubElement(trigger,'Enabled').text='true'
+    principal=ET.SubElement(ET.SubElement(task,'Principals'),'Principal',id='AgentMesh')
+    ET.SubElement(principal,'LogonType').text='InteractiveToken'
+    ET.SubElement(principal,'RunLevel').text='LeastPrivilege'
+    settings=ET.SubElement(task,'Settings')
+    ET.SubElement(settings,'MultipleInstancesPolicy').text='IgnoreNew'
+    ET.SubElement(settings,'ExecutionTimeLimit').text='PT1H'
+    action=ET.SubElement(ET.SubElement(task,'Actions',Context='AgentMesh'),'Exec')
+    ET.SubElement(action,'Command').text=argv[0]; ET.SubElement(action,'Arguments').text=subprocess.list2cmdline(argv[1:])
+    ET.SubElement(action,'WorkingDirectory').text=str(jobs_dir)
+    return {stem+'.xml':task_xml(task)}
+
+
+def generate_job_units(argv):
+    import argparse
+    import os
+    p=argparse.ArgumentParser(description='Render ingest and summary service files only')
+    p.add_argument('command',choices=['generate-jobs'])
+    p.add_argument('--platform',required=True,choices=['macos','windows'])
+    for name in ('python','jobs-dir','app-dir','state-dir','output'): p.add_argument('--'+name,required=True)
+    p.add_argument('--webhook-file'); p.add_argument('--path-env')
+    p.add_argument('--ingest-interval',type=int,default=60); p.add_argument('--summary-interval',type=int,default=300)
+    args=vars(p.parse_args(argv)); args.pop('command'); root=Path(args.pop('output'))
+    intervals={name:args.pop(name+'_interval') for name in ('ingest','summary')}
+    try:
+        files={}
+        for name,interval in intervals.items(): files.update(render_job_unit(name=name,interval=interval,**args))
+        if not root.is_absolute() or any(unicodedata.category(c)=='Cc' for c in str(root)) or any(p.is_symlink() for p in (root,*root.parents)):
+            raise ValueError('invalid output')
+        root.mkdir(mode=0o700)
+        for name,data in files.items():
+            fd=os.open(root/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'wb') as stream: stream.write(data)
+            print(root/name)
+    except (ValueError,OSError):
+        p.error('cannot generate job units: invalid arguments or output already exists/unwritable')
     return 0
 
 

@@ -7,6 +7,7 @@ Authentication is the local Claude Code login; no credentials are stored here.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -48,6 +49,8 @@ def js_schema(value):
 
 
 def command(request, *, executable='claude', model, budget=1.0):
+    if os.name == 'nt' and str(executable).lower().endswith(('.cmd', '.bat')):
+        raise CLIFailure('Windows batch shims are unsupported; pass --claude claude.exe')
     _, schema = check_request(request)
     schema = js_schema(schema)
     args = [executable, '--print', '--safe-mode', '--tools', '',

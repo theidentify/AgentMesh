@@ -85,3 +85,51 @@ def test_config_defaults_under_agentmesh_home_not_hermes(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.CONFIG == tmp_path / 'home/jobs/agentmesh-production.json'
+
+
+def test_boot_id_windows_kernel_boot_time(production, monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    module, _ = production
+    boot = [1760000052.25]
+    def query(cls, buffer, size, returned):
+        assert (cls, size) == (3, 48)
+        filetime = int((boot[0] + 11644473600) * 10**7)
+        ctypes.memmove(buffer, filetime.to_bytes(8, 'little') + bytes(40), 48); return 0
+    monkeypatch.setattr(module, 'os', SimpleNamespace(name='nt'))
+    monkeypatch.setattr(ctypes, 'windll', SimpleNamespace(ntdll=SimpleNamespace(NtQuerySystemInformation=query)), raising=False)
+    monkeypatch.setattr(module.subprocess, 'run', lambda *a, **k: pytest.fail('Windows must not call sysctl'))
+    first = module.boot_id()
+    assert first == datetime.fromtimestamp(1760000052.25, timezone.utc).isoformat()
+    # Same boot: identical id regardless of the wall clock; a reboot changes it.
+    assert module.boot_id() == first
+    boot[0] += 3600
+    assert module.boot_id() != first
+    monkeypatch.setattr(ctypes, 'windll', SimpleNamespace(ntdll=SimpleNamespace(NtQuerySystemInformation=lambda *a: 0xC0000004)), raising=False)
+    with pytest.raises(OSError): module.boot_id()
+
+
+def test_boot_id_macos_preserves_sysctl(production, monkeypatch):
+    from types import SimpleNamespace
+    module, _ = production
+    monkeypatch.setattr(module, 'os', SimpleNamespace(name='posix'))
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs)); return SimpleNamespace(stdout=' boot value\n')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    assert module.boot_id() == 'boot value'
+    assert calls == [(['/usr/sbin/sysctl', '-n', 'kern.boottime'], dict(capture_output=True, text=True, check=True))]
+
+
+def test_summary_uses_boot_helper(production, monkeypatch):
+    import digest_scheduler
+    module, _ = production
+    config = module.load(); config['summary'] = {}
+    monkeypatch.setattr(module, 'load', lambda: config)
+    monkeypatch.setattr(module, 'boot_id', lambda: 'test-boot')
+    calls = []
+    monkeypatch.setattr(digest_scheduler, 'tick', lambda *a, **k: calls.append(k) or {})
+    monkeypatch.setattr(digest_scheduler, 'read_state', lambda *a: {})
+    assert module.execute('summary', []) == 0
+    assert calls[0]['boot_id'] == 'test-boot'

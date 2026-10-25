@@ -83,7 +83,23 @@ class CLIFailure(ValueError):
         self.reason = reason
 
 
-def failure_reason(stdout):
+def failure_reason(stdout, stderr='', code=0):
+    reason = json_failure_reason(stdout)
+    try:
+        result = json.loads(stdout)
+        message = result.get('result', '') if isinstance(result, dict) else stdout
+        status = result.get('api_error_status') if isinstance(result, dict) else None
+    except ValueError: message = stdout; status = None
+    text = ((message if isinstance(message, str) else '') + '\n' + stderr).lower()
+    if status == 429: return 'claude rate limited'
+    if any(marker in text for marker in ('401', 'oauth', 'failed to authenticate', '/login')):
+        return 'claude login expired' if 'expired' in text else 'claude auth failed'
+    if any(marker in text for marker in ('429', 'rate limit', 'usage limit')):
+        return 'claude rate limited'
+    return reason or ('claude exit %d' % code if type(code) is int and code else None)
+
+
+def json_failure_reason(stdout):
     """A fixed reason from the CLI's result line (HTTP status or reason code), never its text."""
     try:
         result = json.loads(stdout)
@@ -103,7 +119,7 @@ def failure_reason(stdout):
         return 'api_error %d' % status
     for key in ('terminal_reason', 'subtype'):
         value = result.get(key)
-        if isinstance(value, str) and value != 'success' and re.fullmatch(r'[a-z][a-z0-9_]{0,39}', value):
+        if value in ('api_error', 'error_max_budget_usd', 'error_max_turns', 'error_during_execution', 'error_max_structured_output_retries'):
             return value
     return None
 
@@ -133,12 +149,18 @@ def main(argv=None):
                                  input=content, text=True, encoding='utf-8', capture_output=True,
                                  timeout=args.timeout, check=False)
         if process.returncode:
-            raise CLIFailure(failure_reason(process.stdout))
-        result = json.loads(process.stdout)
+            raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode))
+        try: result = json.loads(process.stdout)
+        except ValueError: raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode)) from None
         if isinstance(result, dict) and result.get('is_error'):
-            raise CLIFailure(failure_reason(process.stdout))
+            raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode))
         print(canonical(decode_result(result, args.model)))
         return 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError) as exc:
+        reason = {subprocess.TimeoutExpired: 'claude timeout', FileNotFoundError: 'claude executable missing',
+                  PermissionError: 'claude executable denied'}[type(exc)]
+        print(canonical(dict(error_class=type(exc).__name__, reason=reason)))
+        return 1
     except CLIFailure as exc:
         # Never echo CLI output: it may contain source-bearing evidence.
         print(canonical(dict(error_class='ValueError', **({'reason': exc.reason} if exc.reason else {}))))

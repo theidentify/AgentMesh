@@ -83,24 +83,24 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr('sys.stdin', __import__('io').StringIO(json.dumps(request())))
     assert worker.main(['--model', 'claude-sonnet-5-5', '--claude', str(fake)]) == 1
     out = capsys.readouterr().out
-    assert 'SECRET' not in out and json.loads(out) == {'error_class': 'ValueError'}
+    assert 'SECRET' not in out and json.loads(out) == {'error_class': 'ValueError', 'reason': 'claude exit 3'}
 
 
 @pytest.mark.parametrize('stdout, code, reason', [
     (AUTH_EXPIRED_RESULT, 1, 'claude login expired'),
     (AUTH_EXPIRED_RESULT, 0, 'claude login expired'),
     ({'is_error': True, 'api_error_status': 401}, 1, 'claude auth failed'),
-    ({'is_error': True, 'api_error_status': 403, 'result': 'OAuth expired'}, 1, 'claude auth failed'),
+    ({'is_error': True, 'api_error_status': 403, 'result': 'OAuth expired'}, 1, 'claude login expired'),
     ({'is_error': True, 'result': 'FAILED TO AUTHENTICATE: SECRET'}, 1, 'claude auth failed'),
     ({'is_error': True, 'result': 'Invalid API Key: SECRET'}, 1, 'claude auth failed'),
     ({'is_error': True, 'result': 'Use /LOGIN: SECRET'}, 1, 'claude auth failed'),
-    ({'is_error': True, 'api_error_status': 429, 'result': {'oauth': 'expired'}}, 1, 'api_error 429'),
+    ({'is_error': True, 'api_error_status': 429, 'result': {'oauth': 'expired'}}, 1, 'claude rate limited'),
     ({'type': 'result', 'is_error': True, 'subtype': 'success', 'api_error_status': 529,
       'terminal_reason': 'api_error', 'result': 'SECRET provider text'}, 1, 'api_error 529'),
     ({'type': 'result', 'is_error': True, 'subtype': 'success', 'terminal_reason': 'api_error',
       'result': 'SECRET provider text'}, 1, 'api_error'),
     ({'type': 'result', 'is_error': True, 'subtype': 'error_max_budget_usd'}, 0, 'error_max_budget_usd'),
-    ({'type': 'result', 'is_error': True, 'terminal_reason': 'SECRET Free Text!'}, 1, None),
+    ({'type': 'result', 'is_error': True, 'terminal_reason': 'SECRET Free Text!'}, 1, 'claude exit 1'),
 ])
 def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
     import claude_digest_worker as worker
@@ -172,3 +172,47 @@ def test_posix_batch_suffix_is_unchanged(monkeypatch):
     import claude_digest_worker as worker
     monkeypatch.setattr(worker, 'os', SimpleNamespace(name='posix'))
     assert worker.command(request(), executable='/bin/claude.cmd', model='model')[0] == '/bin/claude.cmd'
+
+
+@pytest.mark.parametrize('marker,reason', [
+    ('401', 'claude auth failed'), ('OAuth', 'claude auth failed'),
+    ('failed to authenticate', 'claude auth failed'), ('/login', 'claude auth failed'),
+    ('OAuth expired', 'claude login expired'), ('429', 'claude rate limited'),
+    ('rate limit', 'claude rate limited'), ('usage limit', 'claude rate limited'),
+    ('secret source line 42', 'claude exit 7'),
+], ids=[str(i) for i in range(9)])
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+def test_markers(marker, reason, stream, monkeypatch, capsys):
+    import io
+    from types import SimpleNamespace
+    import claude_digest_worker as worker
+    from bounded_digest import worker_reason
+    import job_notify
+    result = dict(returncode=7, stdout='', stderr=''); result[stream] = marker
+    monkeypatch.setattr(worker.subprocess, 'run', lambda *a, **k: SimpleNamespace(**result))
+    monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
+    assert worker.main(['--model', 'm']) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out)['reason'] == reason and not output.err
+    detail = 'model worker failed' + worker_reason(output.out) + '; coverage unchanged'
+    assert job_notify.summary_fields(json.dumps(dict(detail=detail)))['detail'] == detail
+    assert 'secret source line 42' not in output.out + detail
+
+
+@pytest.mark.parametrize('kind,reason', [
+    ('timeout', 'claude timeout'), ('missing', 'claude executable missing'),
+    ('denied', 'claude executable denied'),
+], ids=['timeout', 'missing', 'denied'])
+def test_launch_failure(kind, reason, monkeypatch, capsys):
+    import io
+    import subprocess
+    import claude_digest_worker as worker
+    exc = dict(timeout=subprocess.TimeoutExpired('secret source line 42', 1),
+               missing=FileNotFoundError('secret source line 42'), denied=PermissionError('secret source line 42'))[kind]
+    def fail(*a, **k): raise exc
+    monkeypatch.setattr(worker.subprocess, 'run', fail)
+    monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
+    assert worker.main(['--model', 'm']) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out)['reason'] == reason
+    assert 'secret source line 42' not in output.out + output.err

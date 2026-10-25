@@ -316,7 +316,7 @@ def worker_reason(stdout):
         reason = json.loads(stdout).get('reason') if len(stdout) < 1000 else None
     except (ValueError, AttributeError):
         return ''
-    return ': ' + reason if isinstance(reason, str) and re.fullmatch(r'[a-z][a-z0-9_ ]{0,39}', reason) else ''
+    return ': ' + reason if isinstance(reason, str) and re.fullmatch(r'(?:claude (?:auth failed|login expired|rate limited|timeout|executable missing|executable denied|exit -?[0-9]+)|api_error(?: [1-5][0-9]{2})?|error_(?:max_budget_usd|max_turns|during_execution|max_structured_output_retries))', reason) else ''
 
 
 def run_once(db, *, extractor=None, command=None, model='gpt-6-luna', conflict_model=None,

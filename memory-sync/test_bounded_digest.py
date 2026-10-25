@@ -728,6 +728,31 @@ class BoundedTests(unittest.TestCase):
         fake.chmod(0o755)
         return [str(fake)]
 
+    def test_failure_status(self):
+        import sys
+        import job_notify
+        import claude_digest_worker
+        from bounded_protocol import ValidationError, error_detail
+        api = self.api(); metrics = self.db.with_suffix('.fail.jsonl')
+        for marker, reason in [('401', 'claude auth failed'), ('secret source line 42', 'claude exit 7')]:
+            fake = self.db.parent / 'claude'
+            fake.write_text('#!/bin/sh\ncat >/dev/null\necho "' + marker + '" >&2\nexit 7\n', encoding='utf-8')
+            fake.chmod(0o755)
+            with self.assertRaises(ValidationError) as caught:
+                api.run_once(self.db, model='m', metrics_path=metrics,
+                    command=[sys.executable, claude_digest_worker.__file__, '--claude', str(fake)])
+            detail = 'model worker failed: ' + reason + '; coverage unchanged'
+            self.assertEqual(error_detail(caught.exception), detail)
+            row = json.loads(metrics.read_text(encoding='utf-8').splitlines()[-1])
+            self.assertEqual(row['error_detail'], detail)
+            status = json.dumps(dict(status='blocked', detail=detail))
+            code = job_notify.run('summary', [sys.executable, '-c',
+                'import sys; print(' + repr(status) + ',file=sys.stderr); sys.exit(1)'], self.db.parent)
+            self.assertEqual(code, 1)
+            text = (self.db.parent / 'job-summary.json').read_text(encoding='utf-8')
+            self.assertEqual(json.loads(text)['fields']['detail'], detail)
+            self.assertNotIn('secret source line 42', text + json.dumps(row))
+
     def test_worker_failure_detail_keeps_only_a_safe_reason(self):
         from bounded_protocol import ValidationError, error_detail
         api = self.api()

@@ -13,6 +13,12 @@ class ConsumerTests(unittest.TestCase):
     event = fixtures.BoundedTests.event
     api = fixtures.BoundedTests.api
     payload = fixtures.BoundedTests.payload
+    def test_note_keys_use_link_separators_on_windows(self):
+        from pathlib import PureWindowsPath
+        from sqlite_export import note_key
+        # Generated links say Sessions/x; a backslash key made every Windows link look broken.
+        self.assertEqual(note_key(PureWindowsPath(r'C:\Users\k\export\Sessions\a 1.md'), PureWindowsPath(r'C:\Users\k\export')), 'Sessions/a 1')
+
     def test_export_infers_transcript_tasks_even_without_structured_task_ref(self):
         from sqlite_export import publish
         self.event(2, 'DEMO-42 requires verified deployment.')

@@ -29,7 +29,7 @@ def test_adopt(tmp_path):
     layout,store,launchd,agents=setup(tmp_path); console=Presence(True)
     result=migrate.adopt(layout,store,'ingest',console=console,call=ok_call,launchd=launchd,agents=agents,sleep=NOSLEEP)
     assert result=={'ok':True,'unit':'ingest','backend':'native'}
-    assert launchd.calls==[('bootout','ingest')] and store.backend('ingest')=='native'
+    assert launchd.calls==[('disable','ingest'),('bootout','ingest')] and store.backend('ingest')=='native'
     assert store.spec('ingest')['argv']==PLISTS['ingest']['ProgramArguments']
     assert console.seen[0][0]=='migrate' and 'Undo: agentmesh-log control release ingest' in console.seen[0][1]
     assert audit(layout)==['requested','ok']
@@ -69,8 +69,35 @@ def test_release(tmp_path):
     result=migrate.release(layout,store,'ingest',console=Presence(True),launchd=launchd,agents=agents,
         sleep=lambda s:store.end_run(run,0,'ok',2))
     assert result=={'ok':True,'unit':'ingest','backend':'launchd','waited_s':2}
-    assert launchd.calls[-1]==('bootstrap','ingest',str(agents/'org.agentmesh.ingest.plist'))
+    assert launchd.calls[-2:]==[('enable','ingest'),('bootstrap','ingest',str(agents/'org.agentmesh.ingest.plist'))]
     assert store.backend('ingest')=='launchd' and store.spec('ingest') is not None
+
+
+def test_adopt_survives_reboot(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents)
+    launchd.reboot()
+    assert 'ingest' not in launchd.loaded and 'summary' in launchd.loaded
+
+
+def test_adopt_disable_failure(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path,fail={'disable'})
+    assert adopt(layout,store,launchd,agents)=={'error':'launchctl_failed'}
+    assert launchd.calls==[] and 'ingest' in launchd.loaded and store.backend('ingest')=='launchd'
+    assert audit(layout)==['requested','launchctl_failed']
+
+
+def test_release_enable_failure(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents); launchd.fail.add('enable')
+    result=migrate.release(layout,store,'ingest',console=Presence(True),launchd=launchd,agents=agents,sleep=NOSLEEP)
+    assert result=={'error':'launchctl_failed'} and 'ingest' not in launchd.loaded
+    assert audit(layout)[-1]=='launchctl_failed'
+
+
+def test_release_survives_reboot(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents)
+    migrate.release(layout,store,'ingest',console=Presence(True),launchd=launchd,agents=agents,sleep=NOSLEEP)
+    launchd.loaded.clear(); launchd.reboot()
+    assert launchd.disabled==set() and 'ingest' in launchd.loaded
 
 
 def test_release_refusals(tmp_path):
@@ -79,7 +106,7 @@ def test_release_refusals(tmp_path):
     adopt(layout,store,launchd,agents)
     denied=migrate.release(layout,store,'ingest',console=Presence(False),launchd=launchd,agents=agents)
     assert denied=={'error':'presence_required'} and store.backend('ingest')=='native'
-    assert launchd.calls==[('bootout','ingest')]
+    assert launchd.calls==[('disable','ingest'),('bootout','ingest')]
 
 
 @pytest.mark.skipif(os.name=='nt',reason='POSIX process groups')
@@ -95,8 +122,10 @@ def test_panic_revert(tmp_path):
         result=migrate.panic_revert(layout,store,launchd=launchd,agents=agents,sleep=NOSLEEP)
         assert result=={'ok':True,'reverted':['ingest','retention'],'stopped':['ingest'],'errors':[]}
         assert same.wait(5)==-15 and other.poll() is None
-        assert launchd.calls[2]==('/bin/launchctl','bootout','gui/501/org.agentmesh.control')
-        assert ('bootstrap','retention',str(agents/'org.agentmesh.retention.plist')) in launchd.calls
+        assert launchd.calls[4]==('/bin/launchctl','bootout','gui/501/org.agentmesh.control')
+        assert launchd.calls[5:]==[('enable','ingest'),('bootstrap','ingest',str(agents/'org.agentmesh.ingest.plist')),
+            ('enable','retention'),('bootstrap','retention',str(agents/'org.agentmesh.retention.plist'))]
+        assert launchd.disabled==set()
         assert store.native_units()=={} and store.open_runs()==[] and audit(layout)[-1]=='ok'
     finally:
         for proc in (same,other):
@@ -107,3 +136,16 @@ def test_panic_revert_with_nothing_native(tmp_path):
     layout,store,launchd,agents=setup(tmp_path)
     assert migrate.panic_revert(layout,store,launchd=launchd,agents=agents,sleep=NOSLEEP)=={'ok':True,'reverted':[],'stopped':[],'errors':[]}
     assert launchd.calls==[('/bin/launchctl','bootout','gui/501/org.agentmesh.control')]
+
+
+def test_panic_enables_loaded(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents)
+    launchd.loaded.add('ingest')  # still loaded (e.g. a manual bootstrap): enable anyway, never bootstrap twice
+    result=migrate.panic_revert(layout,store,launchd=launchd,agents=agents,sleep=NOSLEEP)
+    assert result['reverted']==['ingest'] and launchd.calls[-1]==('enable','ingest') and launchd.disabled==set()
+
+
+def test_panic_revert_enable_failure(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents); launchd.fail.add('enable')
+    result=migrate.panic_revert(layout,store,launchd=launchd,agents=agents,sleep=NOSLEEP)
+    assert result=={'ok':False,'reverted':[],'stopped':[],'errors':['ingest']} and audit(layout)[-1]=='partial'

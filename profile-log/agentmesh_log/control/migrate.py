@@ -34,7 +34,8 @@ def native_unit(name):
 
 
 def adopt(layout, store, name, *, console, call, launchd=None, agents=None, sleep=time.sleep, wait_s=WAIT_S):
-    """launchd -> supervisor: wait for the launchd job to be idle, boot it out, record the plist's spec as native."""
+    """launchd -> supervisor: wait for the launchd job to be idle, disable and boot it out, record the plist's spec as
+    native. Disable first: bootout alone leaves the plist to be loaded again at the next reboot or login."""
     unit=native_unit(name)
     if unit is None: return {'error':'not_native_capable'}
     if store.backend(name)=='native': return {'error':'already_native'}
@@ -53,6 +54,9 @@ def adopt(layout, store, name, *, console, call, launchd=None, agents=None, slee
         if waited>=wait_s:
             audit(layout,'unit.adopt',{'unit':name},'busy'); return {'error':'busy'}
         sleep(POLL_S); waited+=POLL_S
+    try: launchd.disable(unit)
+    except RuntimeError:
+        audit(layout,'unit.adopt',{'unit':name},'launchctl_failed'); return {'error':'launchctl_failed'}
     try: launchd.bootout(unit)
     except RuntimeError:
         if launchd.status(unit)['loaded']:
@@ -74,10 +78,11 @@ def release(layout, store, name, *, console, launchd=None, agents=None, sleep=ti
     waited=0
     while store.open_runs(name) and waited<wait_s: sleep(POLL_S); waited+=POLL_S
     launchd=launchd or LaunchdBackend()
-    if not launchd.status(unit)['loaded']:
-        try: launchd.bootstrap(unit,schedule.plist_path(unit,agents))
-        except RuntimeError:
-            audit(layout,'unit.release',{'unit':name},'launchctl_failed'); return {'error':'launchctl_failed'}
+    try:
+        launchd.enable(unit)
+        if not launchd.status(unit)['loaded']: launchd.bootstrap(unit,schedule.plist_path(unit,agents))
+    except RuntimeError:
+        audit(layout,'unit.release',{'unit':name},'launchctl_failed'); return {'error':'launchctl_failed'}
     audit(layout,'unit.release',{'unit':name},'ok')
     return {'ok':True,'unit':name,'backend':'launchd','waited_s':waited}
 
@@ -97,6 +102,7 @@ def panic_revert(layout, store, *, launchd=None, agents=None, token=started_toke
         store.set_backend(name,'launchd',store.spec(name),now_ms())
         unit=get(name)
         try:
+            launchd.enable(unit)
             if not launchd.status(unit)['loaded']: launchd.bootstrap(unit,schedule.plist_path(unit,agents))
             reverted.append(name)
         except RuntimeError: errors.append(name)

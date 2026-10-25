@@ -40,8 +40,9 @@ def write_plists(directory):
 class FakeLaunchd:
     domain='gui/501'
 
-    def __init__(self, busy=None):
+    def __init__(self, busy=None, fail=()):
         self.busy,self.loaded,self.calls=dict(busy or {}),{u.name for u in UNITS},[]
+        self.disabled,self.fail=set(),set(fail)
 
     def target(self, unit): return self.domain+'/'+unit.label
     def runner(self, argv): self.calls.append(tuple(argv)); return (0,'')
@@ -55,6 +56,18 @@ class FakeLaunchd:
 
     def bootstrap(self, unit, plist):
         self.calls.append(('bootstrap',unit.name,str(plist))); self.loaded.add(unit.name); return True
+
+    def disable(self, unit):
+        if 'disable' in self.fail: raise RuntimeError('launchctl_failed')
+        self.calls.append(('disable',unit.name)); self.disabled.add(unit.name); return True
+
+    def enable(self, unit):
+        if 'enable' in self.fail: raise RuntimeError('launchctl_failed')
+        self.calls.append(('enable',unit.name)); self.disabled.discard(unit.name); return True
+
+    def reboot(self):
+        """What launchd does at boot or login: load every plist in LaunchAgents unless its label is disabled."""
+        self.loaded|={u.name for u in UNITS}-self.disabled
 
 
 class Presence:

@@ -53,3 +53,11 @@ def test_bootout_and_bootstrap_argv():
     backend.bootout(unit); backend.bootstrap(unit,'/x/org.agentmesh.ingest.plist')
     assert calls==[['/bin/launchctl','bootout','gui/501/org.agentmesh.ingest'],
                    ['/bin/launchctl','bootstrap','gui/501','/x/org.agentmesh.ingest.plist']]
+
+
+def test_disable_and_enable_argv():
+    calls=[]; backend=LaunchdBackend(lambda argv:(calls.append(argv) or (0,'')),uid=501); unit=get('retention')
+    backend.disable(unit); backend.enable(unit)
+    assert calls==[['/bin/launchctl','disable','gui/501/org.agentmesh.retention'],
+                   ['/bin/launchctl','enable','gui/501/org.agentmesh.retention']]
+    with pytest.raises(RuntimeError): LaunchdBackend(lambda argv:(5,''),uid=501).disable(unit)

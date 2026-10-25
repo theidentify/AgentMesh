@@ -188,6 +188,46 @@ The repo side (the `src/omp_memory` parser package, `OMP_MEMORY_DSN`, the
 legacy-code drop after 7 green days (~2026-10-29). Mention it there so the
 Windows standalone build is retired in the same step.
 
+### W7 — Windows write/ingest parity (owner request 2026-10-24)
+
+The 0.3.1 worker ingested this PC's Claude/Codex sessions (`workflow.json` ingest true,
+summarize false) and shipped them as packets. The Mac holds only 736 Windows events (last
+2026-10-16 05:52Z); `windows.db` has ~49k. Profile-log stores memory items, not raw
+observations, so parity means running the Mac pipeline on Windows:
+ingest (60 s) → digest summary via Claude CLI/Haiku (300 s tick) → `notify_rows` dual-write
+through the importer agent → catch-up (300 s) as the safety net.
+
+Owner decisions (2026-10-24): backfill with `ingest --start-at 2026-10-16T05:52:00Z`
+(re-read transcripts; never copy `windows.db`, per the README fresh-join rule); Discord
+failure alerts like the Mac (owner copies the webhook file).
+
+Code (W7a, one PR):
+- `jobs/agentmesh_production.py` summary boot id uses `/usr/sbin/sysctl kern.boottime`; add
+  a Windows boot id (boot time from `GetTickCount64`, minute-rounded).
+- Render Windows Task Scheduler units for the ingest (every 60 s) and summary (every
+  300 s) jobs wrapped in `job_notify.py`, like `render_retention_unit`; catch-up already
+  renders via `platform_service generate --unit catch-up` once the Windows bridge config exists.
+- Check `claude_digest_worker.py` with a Windows `claude.exe`/`claude.cmd` path.
+
+Host (W7b, owner-run where persistent):
+1. New staging DB `%USERPROFILE%\.agentmesh\memory-sync\data\windows-staging.db`:
+   `sqlite_memory.py init`, `memory_sync.py init --node windows --group <new uuid>`.
+2. `jobs\agentmesh-production.json` (roots `.claude\projects`, `.codex\sessions`;
+   export root under `.agentmesh\export`; summary command with Windows `claude.exe`, Haiku).
+3. `settings.json`: add the importer agent (write work/common + personal/common,
+   allow_import), the Mac's migration mapping and routing, and the bridge (enabled, recall,
+   dual_write, profiles work+personal, recall_agent, import_agent, recall_fallback false);
+   `settings.local.json`: authority true, cli_argv, database. Owner runs `apply`.
+4. `ingest --start-at 2026-10-16T05:52:00Z` once by hand, then import the three tasks.
+5. Check: Claude login on Windows works for the digest; first summary tick writes memory
+   items; they reach profile-log (catch-up unchanged on 2nd run) and recall on the Mac
+   returns a Windows-authored row (`author_device` 417ab8a5…).
+- Rollback: disable the three tasks; bridge `enabled:false` + `apply`. Rows already
+  imported stay in profile-log (they are normal signed events).
+
+W5 (retire 0.3.1) waits for W7 to be green, because until then the old worker is the
+only thing recording this PC's sessions.
+
 ## Out of scope
 
 - The control-plane supervisor on Windows (M1/M2 are Mac and launchd only).

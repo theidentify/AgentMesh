@@ -225,6 +225,15 @@ Host (W7b, owner-run where persistent):
 - Rollback: disable the three tasks; bridge `enabled:false` + `apply`. Rows already
   imported stay in profile-log (they are normal signed events).
 
+Lessons from the first W7b run (2026-10-25):
+- The summary block needs `"primary_node": "windows"` (`digest_scheduler.tick` defaults to `mac`
+  and blocks with "scheduler requires designated primary node").
+- `claude.exe` needs its own `claude` → `/login` for headless use. A shell launched from the
+  desktop app inherits ANTHROPIC_*/CLAUDE_CODE_* host-auth vars and gets 401; tasks don't.
+- Export failed on Windows path keys (`Sessions\x` vs links `Sessions/x`), fixed in #116.
+- The new importer agent needs a first_access presence window once (`presence open`), like
+  recall did; `migrate catch-up` reports that as `unavailable` (follow-up).
+
 W5 (retire 0.3.1) waits for W7 to be green, because until then the old worker is the
 only thing recording this PC's sessions.
 

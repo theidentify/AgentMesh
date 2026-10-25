@@ -31,3 +31,9 @@ def test_failed_wins():
     assert assess(job,dict(IDLE,failed=True),None)=='failed'
     assert assess(job,dict(IDLE,running=True,pid=1,runtime_s=1,failed=True),None)=='failed'
     assert assess(job,dict(IDLE,loaded=False,failed=True),None)=='missing'
+
+
+def test_conflict_wins():
+    job=get('ingest')
+    assert assess(job,dict(IDLE,conflict=True),None)=='conflict'
+    assert assess(job,dict(IDLE,running=True,pid=1,runtime_s=1,failed=True,conflict=True),None)=='conflict'

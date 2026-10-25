@@ -53,6 +53,9 @@ class LaunchdBackend:
     def stop(self, unit): return self._ok(['/bin/launchctl','kill','SIGTERM',self.target(unit)])
     def bootout(self, unit): return self._ok(['/bin/launchctl','bootout',self.target(unit)])
     def bootstrap(self, unit, plist): return self._ok(['/bin/launchctl','bootstrap',self.domain,str(plist)])
+    # The disabled override survives reboot and login, so a booted-out plist left on disk stays unloaded.
+    def disable(self, unit): return self._ok(['/bin/launchctl','disable',self.target(unit)])
+    def enable(self, unit): return self._ok(['/bin/launchctl','enable',self.target(unit)])
 
     def _ok(self, argv):
         code,_=self.runner(argv)

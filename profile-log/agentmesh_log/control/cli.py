@@ -26,7 +26,9 @@ def add_parsers(commands):
 
 def serve(layout):
     if sys.platform!='darwin': return {'error':'unsupported_platform'}
+    import json
     import signal
+    from . import migrate
     from .launchd import LaunchdBackend
     from .native import NativeBackend
     from .notify import notifier
@@ -35,10 +37,12 @@ def serve(layout):
     from .server import Supervisor
     from .store import Store
     from .units import UNITS
-    layout.ensure(); store=Store(layout.state)
+    layout.ensure(); store=Store(layout.state); launchd=LaunchdBackend()
+    try: migrate.evict_reloaded(layout,store,launchd)
+    except Exception as exc: print(json.dumps({'evict_error':type(exc).__name__}),file=sys.stderr,flush=True)
     native=NativeBackend(store,UNITS,notify=notifier(layout))
     native.reconcile()
-    supervisor=Supervisor(Control(layout,Router(store,LaunchdBackend(),native)),layout,ticker=native.tick,on_close=native.shutdown)
+    supervisor=Supervisor(Control(layout,Router(store,launchd,native)),layout,ticker=native.tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()
     finally: supervisor.close(); store.close()

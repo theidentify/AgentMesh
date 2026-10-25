@@ -70,3 +70,18 @@ def test_adopt_release_panic_locally(tmp_path):
     assert run('release','ingest',answer=False)=={'error':'presence_required'}
     assert run('panic-revert')=={'ok':True,'reverted':['ingest'],'stopped':[],'errors':[]}
     assert run('release','ingest')=={'error':'not_native'}
+
+
+def test_serve_evicts_reloaded_units_first(tmp_path, monkeypatch):
+    from agentmesh_log.control import launchd as launchd_module, native, server
+    from agentmesh_log.control.store import Store
+    monkeypatch.setattr(sys,'platform','darwin')
+    layout=Layout(tmp_path); layout.ensure()
+    store=Store(layout.state); store.set_backend('ingest','native',{},1); store.close()
+    fake_launchd=FakeLaunchd(); order=[]
+    monkeypatch.setattr(launchd_module,'LaunchdBackend',lambda:fake_launchd)
+    monkeypatch.setattr(native.NativeBackend,'reconcile',lambda self:order.append(list(fake_launchd.calls)))
+    monkeypatch.setattr(server.Supervisor,'serve',lambda self:None)
+    monkeypatch.setattr('signal.signal',lambda *a:None)
+    assert execute(parser().parse_args(['control','serve']),layout=layout)=={'ok':True}
+    assert order==[[('disable','ingest'),('bootout','ingest')]] and 'ingest' not in fake_launchd.loaded

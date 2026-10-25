@@ -11,7 +11,7 @@ from .model import Label
 from .broker.keystore import BrokerHome, BrokerState, FileKeyStore, atomic_write
 from .broker.grants import Grant, resolve, names
 from .broker.service import Broker
-from .broker.client import BrokerClient
+from .broker.client import BrokerClient, BrokerUnreachable
 from .oskeystore import select_store, OsKeyStore, initialize, migrate
 from .presence import PresenceManager, ConsolePresence
 
@@ -417,6 +417,13 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'staging identity missing; initialize ingest before apply':'staging_identity_missing',
               'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
+        if code=='presence_required' and args.command=='migrate' and sys.stderr is not None:
+            from .settings import root
+            home=Path(root())/'profile-log'
+            presence_class=getattr(exc,'presence_class','first_access')
+            if not isinstance(presence_class,str) or not presence_class.replace('_','').isalnum(): presence_class='first_access'
+            print(f'run: agentmesh-log presence open --home {home} --class {presence_class}',file=sys.stderr)
         emit(json.dumps({'error':code})); return 1
 
 

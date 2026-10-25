@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 from ..encoding import wire
+from ..broker.client import PresenceRequired, BrokerUnreachable
 from .source import rows, body_for, binding_for, check_binding
 
 CACHE_FORMAT='agentmesh-profile-log-catch-up-cache-v2'
@@ -20,6 +21,7 @@ def local_entry(entry,device):
 
 
 def checked(response):
+    if type(response) is dict and response.get('error')=='presence_required': raise PresenceRequired(response)
     if type(response) is not dict or 'error' in response: raise ValueError('broker unavailable')
     return response
 
@@ -114,6 +116,7 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
                 confirmed[name]=[digest,response.get('id')]
             secret+=response.get('label')=='secret'
         except Exception as exc:
+            if isinstance(exc,(PresenceRequired,BrokerUnreachable)): raise
             if isinstance(exc,ValueError) and str(exc).startswith(('staging ','invalid staging ')): raise
             errors.append(type(exc).__name__); break
     if cache is not None:

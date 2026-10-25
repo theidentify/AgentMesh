@@ -1,5 +1,6 @@
 """Transport-independent broker policy, serialized state changes and threaded IPC."""
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import os
 import math
@@ -29,6 +30,8 @@ SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles sco
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
 
 
+PREFETCH_WORKERS=16
+
 COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
 IO=('bytes_up','bytes_down','class_a','class_b')
 TOTALS=tuple('total_'+k for k in IO)
@@ -57,7 +60,7 @@ def sync_status_valid(row):
 
 class SyncRemote:
     def __init__(self,remote):
-        self.remote=remote; self.keys=set(); self.uploaded=0; self.errors=0
+        self.remote=remote; self.keys=set(); self.uploaded=0; self.errors=0; self._lock=threading.Lock()
         self.io=dict.fromkeys(IO,0); self.start=dict(getattr(remote,'io',self.io))
 
     def counters(self):
@@ -66,28 +69,33 @@ class SyncRemote:
 
     def call(self,name,*args):
         try: return getattr(self.remote,name)(*args)
-        except Exception: self.errors+=1
+        except Exception:
+            with self._lock: self.errors+=1
         raise StorageError('remote operation failed') from None
 
     def list(self,prefix,*,start_after=None):
-        self.io['class_a']+=1
+        with self._lock: self.io['class_a']+=1
         try: keys=set(self.remote.list(prefix) if start_after is None else self.remote.list(prefix,start_after=start_after))
-        except Exception: self.errors+=1
+        except Exception:
+            with self._lock: self.errors+=1
         else:
             self.keys=(self.keys if start_after is not None else {k for k in self.keys if not k.startswith(prefix)})|keys
             return iter(sorted(keys))
         raise StorageError('remote operation failed') from None
 
     def put(self,key,data):
-        self.io['class_a']+=1
-        self.call('put',key,data); self.io['bytes_up']+=len(data); self.keys.add(key); self.uploaded+=1
+        with self._lock: self.io['class_a']+=1
+        self.call('put',key,data)
+        with self._lock: self.io['bytes_up']+=len(data); self.keys.add(key); self.uploaded+=1
 
     def get(self,key):
-        self.io['class_b']+=1
-        data=self.call('get',key); self.io['bytes_down']+=len(data); return data
+        with self._lock: self.io['class_b']+=1
+        data=self.call('get',key)
+        with self._lock: self.io['bytes_down']+=len(data)
+        return data
 
     def head(self,key):
-        self.io['class_b']+=1
+        with self._lock: self.io['class_b']+=1
         return self.call('head',key)
 
 
@@ -100,9 +108,17 @@ class StagedRemote:
             for key in remote.list(prefix)}
         self.keys={key for key in set(plan['keys'])|controls if not key.startswith(keyring.CONTROL_EXCLUSIONS)}
         self.data={}; self.uploads=[]
-        for key in sorted(self.keys-local-plan['skip']):
-            try: self.data[key]=remote.get(key)
-            except StorageError: pass
+        missing=sorted(self.keys-local-plan['skip']); last=time.monotonic()
+        # Storage holds a pre-created boto3 client, never a session per worker.
+        with ThreadPoolExecutor(max_workers=PREFETCH_WORKERS) as pool:
+            pending={pool.submit(remote.get,key):key for key in missing}
+            for count,future in enumerate(as_completed(pending),1):
+                try: self.data[pending[future]]=future.result()
+                except StorageError: pass
+                if len(missing)>200 and sys.stderr is not None:
+                    now=time.monotonic()
+                    if now-last>=5:
+                        print(f'profile-log sync: fetched {count}/{len(missing)}',file=sys.stderr); last=now
 
     def list(self,prefix,*,start_after=None):
         return iter(sorted(k for k in self.keys if k.startswith(prefix) and (start_after is None or k>start_after)))

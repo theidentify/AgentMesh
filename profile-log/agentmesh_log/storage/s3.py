@@ -25,6 +25,7 @@ class S3Storage:
             except Exception: pass
             if client is None: raise StorageError('S3 client initialization failed') from None
         self.client = client
+        self._lock=threading.Lock()
         self.io = dict(bytes_up=0,bytes_down=0,class_a=0,class_b=0)
         self._active=threading.local()
         events=getattr(getattr(client,'meta',None),'events',None)
@@ -33,15 +34,20 @@ class S3Storage:
             for operation in ('PutObject','ListObjectsV2','GetObject','HeadObject'):
                 def sent(request,operation=operation,**kwargs):
                     if not getattr(self._active,'value',False): return
-                    self.io['class_a' if operation in ('PutObject','ListObjectsV2') else 'class_b']+=1
-                    if operation=='PutObject': self.io['bytes_up']+=getattr(self._active,'size',0)
+                    with self._lock:
+                        self.io['class_a' if operation in ('PutObject','ListObjectsV2') else 'class_b']+=1
+                        if operation=='PutObject': self.io['bytes_up']+=getattr(self._active,'size',0)
                 events.register('before-send.s3.'+operation,sent)
 
     def put(self, key, data):
         validate_key(key); validate_data(data)
         self._active.value=True; self._active.size=len(data)
-        if not self._hooks: self.io['class_a']+=1
-        try: self.client.put_object(Bucket=self.bucket, Key=self.prefix + key, Body=data); self.io['bytes_up']+=0 if self._hooks else len(data); return
+        if not self._hooks:
+            with self._lock: self.io['class_a']+=1
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=self.prefix + key, Body=data)
+            with self._lock: self.io['bytes_up']+=0 if self._hooks else len(data)
+            return
         except Exception: pass
         finally: self._active.value=False
         raise StorageError('S3 put failed') from None
@@ -49,11 +55,14 @@ class S3Storage:
     def get(self, key):
         validate_key(key)
         self._active.value=True
-        if not self._hooks: self.io['class_b']+=1
+        if not self._hooks:
+            with self._lock: self.io['class_b']+=1
         try:
             body = self.client.get_object(Bucket=self.bucket, Key=self.prefix + key)['Body']
             try:
-                data=body.read(); self.io['bytes_down']+=len(data); return data
+                data=body.read()
+                with self._lock: self.io['bytes_down']+=len(data)
+                return data
             finally: body.close()
         except Exception as exc:
             response=getattr(exc,'response',None)
@@ -74,10 +83,12 @@ class S3Storage:
             if start_after is not None: options['StartAfter'] = self.prefix + start_after
             pages=iter(paginator.paginate(Bucket=self.bucket, Prefix=self.prefix + prefix, **options))
             while True:
-                if not self._hooks: self.io['class_a']+=1
+                if not self._hooks:
+                    with self._lock: self.io['class_a']+=1
                 try: page=next(pages)
                 except StopIteration:
-                    if not self._hooks: self.io['class_a']-=1
+                    if not self._hooks:
+                        with self._lock: self.io['class_a']-=1
                     break
                 for item in page.get('Contents', []):
                     full = item['Key']
@@ -93,7 +104,8 @@ class S3Storage:
 
     def head(self, key):
         validate_key(key); self._active.value=True
-        if not self._hooks: self.io['class_b']+=1
+        if not self._hooks:
+            with self._lock: self.io['class_b']+=1
         try: return self.client.head_object(Bucket=self.bucket,Key=self.prefix+key)
         except Exception: pass
         finally: self._active.value=False

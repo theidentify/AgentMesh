@@ -9,6 +9,15 @@ from .handshake import hello, check_challenge, authenticate, BrokerIdentityError
 from .transport import UnixClient, PipeClient
 
 
+class BrokerUnreachable(ValueError): pass
+
+
+class PresenceRequired(ValueError):
+    def __init__(self, response):
+        super().__init__('presence_required')
+        self.presence_class=response.get('class','first_access')
+
+
 class BrokerClient:
     def __init__(self, agent, pinned, channel):
         self.agent,self.channel=agent,channel
@@ -26,7 +35,12 @@ class BrokerClient:
         fields(record,{'format','agent_cert','agent_private_key','device_public_key','address'},'agentmesh-agent-key-v1')
         agent=AgentIdentity.from_private(record['agent_cert'],hex_bytes(record['agent_private_key'],32))
         pinned=hex_bytes(record['device_public_key'],32)
-        return cls(agent,pinned,(PipeClient if os.name=='nt' else UnixClient)(record['address']))
+        try: channel=(PipeClient if os.name=='nt' else UnixClient)(record['address'])
+        except OSError as exc:
+            if isinstance(exc,(FileNotFoundError,ConnectionRefusedError)) or getattr(exc,'winerror',None) in (2,3):
+                raise BrokerUnreachable('broker_unreachable') from None
+            raise
+        return cls(agent,pinned,channel)
 
     def request(self, request):
         try:

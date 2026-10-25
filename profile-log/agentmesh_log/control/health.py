@@ -10,7 +10,8 @@ def job_state(layout, unit):
 
 
 def assess(unit, launchd, job):
-    """One of: missing, failed, running, stuck, down, failing, idle."""
+    """One of: conflict, missing, failed, running, stuck, down, failing, idle."""
+    if launchd.get('conflict'): return 'conflict'
     if not launchd['loaded']: return 'missing'
     if launchd.get('failed'): return 'failed'
     if launchd['running']:

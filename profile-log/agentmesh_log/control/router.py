@@ -8,9 +8,11 @@ class Router:
     def pick(self, unit): return self.native if self.store.backend(unit.name)=='native' else self.launchd
 
     def status(self, unit):
+        """A native unit that launchd has loaded too is a `conflict`: both would schedule it."""
         backend=self.store.backend(unit.name)
         status=dict((self.native if backend=='native' else self.launchd).status(unit),backend=backend)
         status.setdefault('failed',False)
+        status['conflict']=backend=='native' and self.launchd.status(unit)['loaded']
         return status
 
     def start(self, unit): return self.pick(unit).start(unit)

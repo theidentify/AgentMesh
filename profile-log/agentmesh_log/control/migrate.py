@@ -87,6 +87,25 @@ def release(layout, store, name, *, console, launchd=None, agents=None, sleep=ti
     return {'ok':True,'unit':name,'backend':'launchd','waited_s':waited}
 
 
+def evict_reloaded(layout, store, launchd):
+    """Supervisor start backstop: launchd loaded a native unit again (a reboot or login after an adopt without disable).
+    Disable and boot it out, so only the supervisor schedules it, and record `launchd_reloaded`."""
+    evicted=[]
+    for name in sorted(store.native_units()):
+        unit=native_unit(name)
+        if unit is None or not launchd.status(unit)['loaded']: continue
+        try:
+            launchd.disable(unit)
+            try: launchd.bootout(unit)
+            except RuntimeError:
+                if launchd.status(unit)['loaded']: raise
+            outcome='ok'; evicted.append(name)
+        except RuntimeError: outcome='launchctl_failed'
+        try: audit(layout,'launchd_reloaded',{'unit':name},outcome)
+        except Exception: pass
+    return evicted
+
+
 def panic_revert(layout, store, *, launchd=None, agents=None, token=started_token, sleep=time.sleep):
     """Emergency return to launchd without the supervisor: stop it, stop its runs, re-bootstrap the original plists."""
     launchd=launchd or LaunchdBackend()

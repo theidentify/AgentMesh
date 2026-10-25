@@ -149,3 +149,32 @@ def test_panic_revert_enable_failure(tmp_path):
     layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents); launchd.fail.add('enable')
     result=migrate.panic_revert(layout,store,launchd=launchd,agents=agents,sleep=NOSLEEP)
     assert result=={'ok':False,'reverted':[],'stopped':[],'errors':['ingest']} and audit(layout)[-1]=='partial'
+
+
+def reload_after_m2_adopt(tmp_path):
+    """An M2-era adopt (bootout only), then a reboot: launchd loads the native unit again."""
+    layout,store,launchd,agents=setup(tmp_path); adopt(layout,store,launchd,agents)
+    launchd.disabled.clear(); launchd.reboot(); launchd.calls.clear()
+    return layout,store,launchd
+
+
+def test_evict_clears_reboot_reload(tmp_path):
+    layout,store,launchd=reload_after_m2_adopt(tmp_path)
+    assert 'ingest' in launchd.loaded
+    assert migrate.evict_reloaded(layout,store,launchd)==['ingest']
+    assert launchd.calls==[('disable','ingest'),('bootout','ingest')] and store.backend('ingest')=='native'
+    rows=[json.loads(line) for line in layout.audit.read_bytes().splitlines()]
+    assert (rows[-1]['op'],rows[-1]['args'],rows[-1]['outcome'])==('launchd_reloaded',{'unit':'ingest'},'ok')
+    launchd.reboot()
+    assert 'ingest' not in launchd.loaded and migrate.evict_reloaded(layout,store,launchd)==[]
+
+
+def test_evict_leaves_launchd_units(tmp_path):
+    layout,store,launchd,agents=setup(tmp_path)
+    assert migrate.evict_reloaded(layout,store,launchd)==[] and launchd.calls==[]
+
+
+def test_evict_failure_is_audited(tmp_path):
+    layout,store,launchd=reload_after_m2_adopt(tmp_path); launchd.fail.add('disable')
+    assert migrate.evict_reloaded(layout,store,launchd)==[] and 'ingest' in launchd.loaded
+    assert audit(layout)[-1]=='launchctl_failed'

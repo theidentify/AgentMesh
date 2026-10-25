@@ -30,8 +30,13 @@ def link(path, label=None, event=None):
     return '[[OMP Memory/' + path + (f'#^event-{event}' if event is not None else '') + '|' + text(label or path).replace('|', '-') + ']]'
 
 
+def note_key(path, root):
+    # Links always use '/'; str() of a Windows path would use '\\' and break every link.
+    return path.relative_to(root).with_suffix('').as_posix()
+
+
 def check_links(root):
-    notes = {str(p.relative_to(root).with_suffix('')):p.read_text(encoding='utf-8') for p in Path(root).rglob('*.md')}
+    notes = {note_key(p, root):p.read_text(encoding='utf-8') for p in Path(root).rglob('*.md')}
     anchors = {path: set(re.findall(r'(?m)^\^(event-\d+)$', contents)) for path, contents in notes.items()}
     checked = sources = 0
     for contents in notes.values():

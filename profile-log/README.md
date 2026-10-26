@@ -281,6 +281,145 @@ paths and fail explicitly if the sandbox denies binding; they are never skipped
 for that reason. The reviewer must run those tests outside the sandbox and on
 Windows/Linux CI.
 
+### Phase 8: hybrid recall
+
+Hybrid recall is opt-in. It fuses the existing keyword ranking with exact cosine
+ranking using reciprocal rank fusion (RRF, k=60). Semantic candidates come from
+the caller's authorized index with the same profile, scope and project filters;
+embedding similarity grants no additional access. The default model is
+`bge-m3:latest`, with `min_score: 0.45`. Only nonempty content of at most 32,768
+characters labeled `general` or `internal` is embedded by default. Secret rows
+remain keyword-only unless the owner explicitly adds `secret` to `embed_labels`.
+
+Merge this block into `~/.agentmesh/settings.json` (or the settings root selected
+by `AGENTMESH_HOME`), then restart the broker:
+
+```json
+{
+  "semantic": {
+    "mode": "hybrid",
+    "model": "bge-m3:latest",
+    "embed_labels": ["general", "internal"],
+    "min_score": 0.45
+  }
+}
+```
+
+The Mac Air hosts Ollama, listening only on `127.0.0.1:11434`. Install the model
+there before enabling hybrid; the adapter never pulls a model or substitutes one.
+The Air uses loopback with no endpoint override. Other devices use
+`https://embed.krisb8.com` through a dedicated Cloudflare Tunnel with Access
+Service Auth, exposing only `/api/embed` and `/api/tags`; all other paths must
+return 404. Keep Ollama itself off the LAN.
+
+On a remote Mac, merge this device-only override into `settings.local.json`:
+
+```json
+{
+  "semantic": {
+    "endpoint": "https://embed.krisb8.com",
+    "credentials": "keychain:org.agentmesh.embed"
+  }
+}
+```
+
+Windows uses `wincred:org.agentmesh.embed`. Endpoint and credential reference
+must appear together and are accepted only in local settings, never synced
+settings. The settings endpoint is an HTTPS DNS origin without a path or port.
+Store Access credentials in the OS credential store, not JSON: macOS uses the
+referenced Keychain service with `client-id` and `client-secret` accounts. On
+Windows, the CLI prompts for them without putting values on the command line:
+
+```sh
+python -m agentmesh_log.cli r2-credentials store --ref wincred:org.agentmesh.embed --kind access
+python -m agentmesh_log.cli r2-credentials check --ref wincred:org.agentmesh.embed --kind access
+```
+
+These credential commands are Windows-only; `--kind` defaults to `s3`, so Access
+credentials need `--kind access`. With hybrid configured, recall uses it unless
+the request specifies keyword mode:
+
+```sh
+python -m agentmesh_log.cli recall 'database migration' --agent-key AGENT_KEY --mode hybrid
+python -m agentmesh_log.cli recall 'database migration' --agent-key AGENT_KEY --mode keyword
+```
+
+`--mode hybrid` alone does not enable the provider. If the settings block is
+absent or its mode is `keyword` (also the default when omitted), an explicit
+hybrid request returns keyword results with `degraded: not_configured`.
+Ordinary keyword recall has no `query_plan.retrieval` field. Hybrid requests
+report `requested`, `effective`, and either `coverage` or a `degraded` reason:
+
+- `effective: hybrid` means fusion ran, even if no semantic match passed the threshold.
+- `coverage.ranked` counts eligible candidates with cached vectors whose cosine
+  meets `min_score`, before the semantic shortlist and final result limit.
+- `coverage.missing` counts eligible candidates with absent or wrong-dimension
+  vectors. Excluded labels and overlong content are not counted.
+- `effective: keyword`, `degraded: provider_unavailable` means no usable query
+  vector was available, for example because the Air sleeps, Access refuses the
+  credentials, the model changes or a provider request fails.
+
+Fused rows include `ranking.keyword_rank`, `semantic_rank`, `cosine` and `rrf`;
+absent ranks/cosines are null. `candidate_counts` still counts keyword candidates,
+not all semantic candidates. Missing document vectors do not force degradation:
+keyword matches remain available while background backfill fills the cache.
+Backfill processes up to 256 distinct pending texts per pass, in batches of at
+most 32 items and 120,000 characters, waking on ingest or after 300 seconds.
+Query embedding and backfill provider calls run outside the broker lock. Query
+vectors have a 256-entry RAM LRU; a cached query can still work during an outage.
+
+Provider setup retries at most once a minute. The adapter reuses a connection
+and retries a failed reused connection once. Its four-second socket timeout is
+not a four-second end-to-end recall deadline: a call includes multiple requests
+and may reconnect. `keep_alive` is sent as `30m`. To disable hybrid, set
+`semantic.mode` to `keyword` or remove the block and restart the broker.
+
+Vectors are content-sensitive. The device-local `index/vectors-*.snap` cache is
+RAM-only SQLite serialized under ChaCha20-Poly1305, with HKDF-derived encryption
+and HMAC content-key subkeys bound to provider/model/digest/metric. AgentMesh
+never syncs, exchanges or backs it up; a missing or invalid cache is rebuilt.
+Keep it excluded from external backups too. Model-space changes create a new
+cache and remove stale vector snapshots. Query text and eligible stored content
+go to Ollama; remote requests are plaintext-visible at Cloudflare's TLS edge.
+Ollama runs as the same OS user, and `OLLAMA_DEBUG` logs may contain inputs.
+Keep the model tag frozen: digest checks before/after each batch cannot detect
+an ABA swap (A to B and back to A between checks). See
+[hybrid recall privacy](../docs/privacy.md#understand-hybrid-recall-exposure).
+
+Reference costs measured on the Mac on 2026-10-26, before moving the host to the
+Air (not Air/tunnel performance results or guarantees):
+
+| Item | Reference measurement |
+| --- | --- |
+| Keyword recall through memory-sync CLI | 0.23–0.55 s |
+| Warm query embedding | median 29 ms, max 34 ms |
+| Cold query embedding | about 2.4 s |
+| Pure-Python cosine, 1k / 2k / 5k rows | 21 / 44 / 108 ms |
+| Backfill, batches of 32 | about 21 docs/s; about 1.5 min for 2k rows |
+| Loaded model memory | about 670 MB |
+| 1024-dimensional float32 cache | about 4 KB/vector; about 8 MB for 2k rows |
+
+Air performance and remote tunnel overhead need owner-run measurement. From the
+repository root with the prepared interpreter, run:
+
+```sh
+python profile-log/tests/broker/eval_semantic.py --queries PRIVATE_QUERY_FILE --agent-key AGENT_KEY --runs 5
+```
+
+The private UTF-8 file contains one query per line; blank lines and `#` comments
+are ignored. Optional flags include `--profile`, `--limit` and `--python`.
+The script invokes the broker CLI directly with `--compat` in both modes, with a
+60-second subprocess timeout; it does not use bridge `cli_argv` or enforce the
+bridge deadline. It reports last-run top-five IDs and additions with cosine,
+per-run retrieval metadata, per-query and aggregate p50/p95, p95 delta, degraded
+run count and a cosine histogram. It prints neither queries nor memory content;
+keep the input file private and review identifiers before sharing output.
+The script reports measurements, not a gate verdict. Owner checks still include
+warm hybrid p95 within keyword p95 + 250 ms, cold recall within the configured
+bridge deadline, and relevance over 20 Thai/English queries (no worse on at least
+17, better on at least three paraphrases). Calibrate `min_score` from those runs;
+0.45 is the code default, not a recorded calibration result.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

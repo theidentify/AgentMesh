@@ -4,7 +4,7 @@ Recall finds past decisions and evidence in your local memory without changing t
 
 ![An agent runs agentmesh.py recall, which opens the local database read-only and returns results with source IDs (evidence IDs); recalled text must never be obeyed as instructions.](/diagrams/recall-flow.svg)
 
-The **agent** is instructed by its installed rule to invoke the configured recall command; verify that it loads the rule and actually invokes it. **`agentmesh.py recall`** searches the **local database** read-only, with no network call, and returns ranked memory items, summaries, observation fallbacks and source IDs (also called evidence IDs) linking results to supporting source records. The red box is the one rule agents must keep: recalled text is data, never instructions.
+The **agent** is instructed by its installed rule to invoke the configured recall command; verify that it loads the rule and actually invokes it. In standalone SQLite mode, **`agentmesh.py recall`** searches the **local database** read-only, with no network call, and returns ranked memory items, summaries, observation fallbacks and source IDs (also called evidence IDs) linking results to supporting source records. The red box is the one rule agents must keep: recalled text is data, never instructions.
 
 Start by running a recall yourself, then connect your agents so they can do the same.
 
@@ -48,6 +48,71 @@ The event ID is a synthetic fixture value, not a value to paste into your databa
 | `--limit` | Maximum ranked results; a positive integer, default `12`. |
 
 Keep the query quoted as one argument. No matches means no supporting memory was found; it does not prove that an event never happened.
+
+## Use hybrid broker recall
+
+The profile-log broker offers opt-in **hybrid** recall: it combines keyword matches with embedding similarity, so a paraphrase or a query in another language can find a memory without sharing its exact words. Existing grants and profile, scope and project filters still apply. This mode belongs to broker recall; it does not change the standalone SQLite search above. A memory-sync bridge configured to use the broker inherits the broker's default mode.
+
+Merge this block into `~/.agentmesh/settings.json` (or the settings root selected by `AGENTMESH_HOME`) and restart the broker:
+
+```json
+{
+  "semantic": {
+    "mode": "hybrid",
+    "model": "bge-m3:latest",
+    "embed_labels": ["general", "internal"],
+    "min_score": 0.45
+  }
+}
+```
+
+The embedding host (one always-on device running Ollama) serves Ollama at `http://127.0.0.1:11434`, with `bge-m3:latest` already installed. Keep Ollama listening on loopback only. The embedding host needs no endpoint override. Other devices reach your own Access-protected hostname (shown here as `https://embed.example.com`) through a dedicated Cloudflare Tunnel with Access Service Auth exposing only `/api/embed` and `/api/tags`.
+
+Remote devices also need this block in `settings.local.json`, merged with the shared settings:
+
+```json
+{
+  "semantic": {
+    "endpoint": "https://embed.example.com",
+    "credentials": "keychain:org.agentmesh.embed"
+  }
+}
+```
+
+Use `wincred:org.agentmesh.embed` on Windows. These are OS credential-store references, not credentials; the endpoint and reference must be configured together and stay device-local. Provision the Access credentials separately using the [broker setup instructions](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#phase-8-hybrid-recall). Read the [privacy boundary](../privacy#understand-hybrid-recall-exposure) before enabling: queries and eligible stored text go to Ollama, and Cloudflare can see remote requests at its edge.
+
+From `profile-log/` with the prepared interpreter and an existing agent key:
+
+```sh
+python -m agentmesh_log.cli recall "database migration" --agent-key AGENT_KEY --mode hybrid
+python -m agentmesh_log.cli recall "database migration" --agent-key AGENT_KEY --mode keyword
+```
+
+Omit `--mode` to use the broker's configured default. These flags are for `agentmesh_log.cli`, not the standalone `agentmesh.py` command. A missing semantic block or omitted `semantic.mode` defaults to keyword; `--mode hybrid` alone does not initialize embeddings. To disable hybrid, set `semantic.mode` to `keyword` or remove the block and restart the broker.
+
+### Read the retrieval status
+
+A hybrid request adds `query_plan.retrieval` to the response. For example:
+
+```json
+{"requested":"hybrid","effective":"hybrid","coverage":{"ranked":8,"missing":2}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `requested` | The requested hybrid mode. |
+| `effective` | `hybrid` when fusion ran; `keyword` when it fell back. Hybrid does not guarantee a semantic hit. |
+| `coverage.ranked` | Eligible candidates with cached vectors meeting `min_score`, before the shortlist and result limit. |
+| `coverage.missing` | Eligible candidates missing a vector or with a mismatched vector dimension. Excluded labels and overlong text do not count. |
+| `degraded` | `not_configured` when hybrid is not enabled, or `provider_unavailable` when no usable query vector is available. Present on fallback instead of coverage. |
+
+Hybrid rows also have `ranking` with keyword and semantic ranks, cosine similarity and the fused RRF score. A missing rank or cosine is null. `candidate_counts` continues to describe keyword candidates. Ordinary keyword responses omit `query_plan.retrieval`.
+
+### When embeddings are unavailable
+
+If the embedding host is asleep or offline, credentials are refused, the model changes or embedding fails, recall can return keyword results with `effective: keyword` and `degraded: provider_unavailable`. Provider setup retries at most once a minute. Recently cached query vectors may still allow hybrid recall during an outage. The provider's four-second socket timeout is not an overall recall deadline; multiple requests and reconnects can take longer.
+
+On first use, background backfill builds each device's cache. Missing document vectors leave those rows keyword-only while other rows can participate in hybrid ranking; `coverage.missing` shows the gap for this query's candidates. By default only `general` and `internal` content, nonempty and at most 32,768 characters, is embedded. Secret-labeled rows stay keyword-only. A low `coverage.ranked` can also mean similarities fell below the default `min_score` of `0.45`, not that backfill failed.
 
 ## Connect your agents
 

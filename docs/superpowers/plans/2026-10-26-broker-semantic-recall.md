@@ -2,17 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an opt-in `hybrid` recall mode to the profile-log broker: the existing FTS5 keyword ranking fused (RRF k=60) with cosine ranking over bge-m3 embeddings from **one central Ollama on the Mac**. The Mac uses loopback. Windows and Air reach it through a dedicated Cloudflare Tunnel with Access Service Auth. Vectors are stored only in an encrypted, device-local cache.
+**Goal:** Add an opt-in `hybrid` recall mode to the profile-log broker: the existing FTS5 keyword ranking fused (RRF k=60) with cosine ranking over bge-m3 embeddings from **one central Ollama on the Mac Air**. The Air uses loopback. The Mac and Windows reach it through a dedicated Cloudflare Tunnel with Access Service Auth. Vectors are stored only in an encrypted, device-local cache.
 
 **Provider decision (owner, 2026-10-26):** use the central Ollama over the existing Cloudflare Tunnel/Access setup. Rejected: OpenRouter (plaintext memory to a third party plus its upstream provider) and Ollama on every device (install burden). One host means one model digest, so all devices produce vectors in the same space.
 
 **Architecture:** A new `broker/semantic.py` owns the Ollama provider, an encrypted `VectorStore`, and a background backfill thread. `AgentIndex.recall` gains an optional `semantic` argument. When the argument is present, the broker selects the agent's authorized rows without a text filter, ranks them by cosine and fuses that ranking with the unchanged keyword ranking. Keyword mode stays byte-identical. Vectors never leave the device and are not synced, backed up or exchanged. On disk they get the same protection as index snapshots: an HKDF subkey of `index_master_key` with ChaCha20-Poly1305.
 
-**Tech Stack:** Python 3.11 stdlib (`http.client`, `ssl`, `array`, `hmac`, `sqlite3`), `cryptography` (already a dependency), Ollama `bge-m3:latest` (1024-dim) on the Mac, Cloudflare Tunnel + Access (Service Auth) for remote devices. No NumPy or hnswlib. At this corpus size exact pure-Python cosine is fast enough (see measurements).
+**Tech Stack:** Python 3.11 stdlib (`http.client`, `ssl`, `array`, `hmac`, `sqlite3`), `cryptography` (already a dependency), Ollama `bge-m3:latest` (1024-dim) on the Mac Air, Cloudflare Tunnel + Access (Service Auth) for remote devices. No NumPy or hnswlib. At this corpus size exact pure-Python cosine is fast enough (see measurements).
 
 ---
 
 ## Measured on the Mac (2026-10-26, M-series, bge-m3 F16 in Ollama)
+
+The host moved to the **Mac Air** (owner, 2026-10-26). These numbers come from the Mac and are a reference only. Task 9 re-measures them on the Air as host, and on the Mac/Windows as tunnel clients. The Air's backfill and cold-load numbers may be slower (passive cooling). The Mac's own recalls now also pay the tunnel round trip.
 
 | Item | Measured | Effect |
 |---|---|---|
@@ -26,7 +28,7 @@
 
 For remote devices, add the tunnel round trip (estimated 50–150 ms per query embed, to be measured in Task 9) and the backfill upload. The first HTTPS connect is expensive because of the owner's broken Wi-Fi IPv6 (~10 s per new connection), so the adapter connects to IPv4 first and keeps one persistent connection.
 
-Expected warm hybrid overhead on the Mac: **+60–150 ms** on top of 0.23–0.55 s. That is acceptable. Keyword mode has **zero** overhead because none of this code runs.
+Expected warm hybrid overhead on the host: **+60–150 ms** on top of 0.23–0.55 s. That is acceptable. Keyword mode has **zero** overhead because none of this code runs.
 
 **Performance gates (Task 9):** warm hybrid p95 ≤ keyword p95 + 250 ms on the live Mac corpus. Cold model: recall returns within `timeout_seconds` by degrading to keyword. Backfill must not raise the p95 of concurrent keyword recall by more than 50 ms.
 
@@ -36,11 +38,11 @@ Expected warm hybrid overhead on the Mac: **+60–150 ms** on top of 0.23–0.55
 2. **Cache keys are `HMAC-SHA256(mac_subkey, content)`, not plain SHA-256.** Plain hashes would let anyone who can read the file confirm a guessed content. The HMAC key comes from the same HKDF output.
 3. **Plaintext never touches disk.** The cache is an in-memory SQLite DB (`temp_store=MEMORY`) that is serialized → encrypted → `atomic_write` (0600), the same pattern as `AgentIndex.save`.
 4. **Authorization is unchanged.** One shared cache per device and space, keyed by content. Ranking only uses rows already selected from that agent's own `AgentIndex` (grant-filtered) with the request's scope/profile/project filter. This meets the "caller MUST authorize candidates" contract in `broker/vectors.py`.
-5. **Secret-label content is never sent to Ollama by default.** `semantic.embed_labels` defaults to `["general","internal"]`. Secret rows stay keyword-only. Query text and eligible content *are* sent to the central Ollama: over loopback on the Mac, and through the tunnel from other devices.
+5. **Secret-label content is never sent to Ollama by default.** `semantic.embed_labels` defaults to `["general","internal"]`. Secret rows stay keyword-only. Query text and eligible content *are* sent to the central Ollama: over loopback on the Air, and through the tunnel from the Mac and Windows.
 8. **Remote transport = Cloudflare Tunnel + Access, the same trust model as `bridge.krisb8.com`.** TLS terminates at Cloudflare's edge, so Cloudflare can see embedded text and queries in plaintext. That trust is already granted for recall results through the MCP gateway, and this plan accepts it the same way. If end-to-end protection is needed later, use Tailscale/WireGuard instead; the adapter only needs a different `endpoint`.
-9. **Do not expose all of Ollama.** Ollama has no auth, and its API includes `/api/pull`, `/api/delete` and `/api/generate`. Use a dedicated tunnel `agentmesh-embed-mac` (its own connector, like `agentmesh-insight-mac`). Its ingress rule matches only path `^/api/(embed|tags)$` → `http://127.0.0.1:11434`, and everything else gets `http_status:404`. The Access application allows only a Service Auth policy with service token `agentmesh-embed`, with no identity login. Ollama keeps listening on 127.0.0.1.
+9. **Do not expose all of Ollama.** Ollama has no auth, and its API includes `/api/pull`, `/api/delete` and `/api/generate`. Use a dedicated tunnel `agentmesh-embed-air` with its own connector on the Air (same pattern as `agentmesh-insight-mac`). Its ingress rule matches only path `^/api/(embed|tags)$` → `http://127.0.0.1:11434`, and everything else gets `http_status:404`. The Access application allows only a Service Auth policy with service token `agentmesh-embed`, with no identity login. Ollama keeps listening on 127.0.0.1.
 10. **The service token lives in the OS credential store only.** On macOS that is the Keychain service `org.agentmesh.embed`, accounts `client-id`/`client-secret`; on Windows it is wincred. `settings.local.json` holds only the reference `keychain:org.agentmesh.embed`. The token is never kept in a plist, in settings or in logs. The adapter sends `CF-Access-Client-Id`/`CF-Access-Client-Secret` plus a non-default `User-Agent`, because Cloudflare 1010 blocks Python-urllib's UA.
-11. **Availability:** when the Mac sleeps or is offline, the other devices degrade to keyword and report `degraded: provider_unavailable`. A connection that fails is never retried in a loop: the lazy reconnect runs at most once a minute.
+11. **Availability:** the Air is a laptop, so expect it to sleep. Whenever it sleeps, is closed or is offline, the other devices degrade to keyword and report `degraded: provider_unavailable`. A connection that fails is never retried in a loop: the lazy reconnect runs at most once a minute.
 6. **Not synced, not backed up.** `index/` is outside `REPLICA_PREFIXES` and `backup.py` only backs up keystore state. The cache can be rebuilt, which keeps it out of the consent-gated backups.
 7. **Ollama boundary (documented, not solved):** Ollama runs as the same user, and `OLLAMA_DEBUG` logs may contain inputs. The model tag must stay frozen. The digest is rechecked around each batch, and the check does not catch an ABA swap (same caveat as `profile-memory/CONTRACT.md`).
 
@@ -865,7 +867,7 @@ def test_hybrid_shape_accepted_and_order_kept(tmp_path, monkeypatch):
 - Create: `profile-log/tests/broker/eval_semantic.py` (not collected by pytest: no `test_` prefix, same as `bench_broker.py`)
 
 - [ ] **Step 1: Write the script.** It reads queries from a local file given as argv (never committed). For each query it runs the CLI recall in both modes N=5 times through the configured `cli_argv`/agent key, then prints, per query: keyword top-5 ids, hybrid top-5 ids, new ids with their cosine, p50/p95 latency per mode, and the coverage `missing`. The output contains ids and numbers only. It never prints content, so the result can be pasted into a report.
-- [ ] **Step 2: Owner runs it on the Mac** with 20 real queries (Thai and English, including paraphrases that share no keyword with the target memory). Gates:
+- [ ] **Step 2: Owner runs it on the Air (host) and the Mac (tunnel client)** with 20 real queries (Thai and English, including paraphrases that share no keyword with the target memory). Gates:
   - warm hybrid p95 ≤ keyword p95 + 250 ms;
   - first query after a cold model returns within the bridge `timeout_seconds`, as keyword with `degraded`, or as hybrid;
   - owner judges hybrid top-5 to be no worse on at least 17/20 queries and better on at least 3 paraphrase queries;
@@ -883,15 +885,15 @@ def test_hybrid_shape_accepted_and_order_kept(tmp_path, monkeypatch):
 
 ### Task 11: Rollout (owner-run, after merge)
 
-- [ ] Mac: deploy the app as in the control-plane/profile-log deploy notes. Add `"semantic": {"mode": "hybrid"}` to `~/.agentmesh/settings.json`, restart the broker, and wait for backfill (watch `coverage.missing` reach 0 via the eval script). Run the Task 9 gates.
-- [ ] Central endpoint (owner-run on the Mac, dashboard-managed like the existing tunnels):
-  1. Create tunnel `agentmesh-embed-mac` with a dedicated connector: launchd `org.agentmesh.embed-tunnel` → a wrapper script that reads the tunnel token from Keychain item `org.agentmesh.embed.tunnel`, following the `insight-tunnel.sh` pattern. Store the token with `-w "$(pbpaste)"`, because the prompt truncates at 128 chars. Metrics go on 127.0.0.1:20243.
+- [ ] Air (host): install Ollama and `ollama pull bge-m3`, keeping it listening on 127.0.0.1. Deploy the app, add `"semantic": {"mode": "hybrid"}` to `~/.agentmesh/settings.json` (loopback, no `endpoint`), restart the broker and wait for backfill (watch `coverage.missing` reach 0 via the eval script). Run the Task 9 gates. Decide on the Air's sleep policy, for example `caffeinate`/`pmset` while on power, or accept degraded keyword recall while it sleeps.
+- [ ] Central endpoint (owner-run on the Air, dashboard-managed like the existing tunnels):
+  1. Create tunnel `agentmesh-embed-air` with a dedicated connector on the Air: launchd `org.agentmesh.embed-tunnel` → a wrapper script that reads the tunnel token from Keychain item `org.agentmesh.embed.tunnel`, following the `insight-tunnel.sh` pattern. Store the token with `-w "$(pbpaste)"`, because the prompt truncates at 128 chars. Metrics go on 127.0.0.1:20243.
   2. Published application `embed.krisb8.com`, path `^/api/(embed|tags)$` → `http://127.0.0.1:11434`, with a catch-all of `http_status:404`. Do not attach the hostname as a Worker custom domain, because that shadows the tunnel route.
   3. Access application for `embed.krisb8.com`, policy Service Auth → service token `agentmesh-embed`, and nothing else.
   4. From another device: `curl -s https://embed.krisb8.com/api/tags` without the token must return the Access 403 (or the login redirect). With the token it must return the model list. `/api/generate` with the token must return 404.
-  5. Ollama on the Mac must keep `bge-m3:latest` frozen (no `ollama pull` while in use). Set `OLLAMA_KEEP_ALIVE=30m` for the Ollama app.
-- [ ] Windows and Air: store the service token (Windows: `python -m agentmesh_log.cli r2-credentials store wincred:org.agentmesh.embed --kind access`; Air: `security add-generic-password -s org.agentmesh.embed -a client-id -w …` and the same for `client-secret`). Then add `"semantic": {"endpoint": "https://embed.krisb8.com", "credentials": "keychain:org.agentmesh.embed"}` to that device's `settings.local.json`; Windows uses `wincred:`. Restart the broker and run the Task 9 gates there. Expect the first-run backfill over the tunnel to take longer. Record the measured remote query-embed latency.
-- [ ] If the Mac is asleep or offline, other devices answer keyword-only with `degraded`, which is expected. If that happens too often, the fix is a different always-on host. No code changes are needed.
+  5. Ollama on the Air must keep `bge-m3:latest` frozen (no `ollama pull` while in use). Set `OLLAMA_KEEP_ALIVE=30m` for the Ollama app.
+- [ ] Mac and Windows (clients): store the service token (Windows: `python -m agentmesh_log.cli r2-credentials store wincred:org.agentmesh.embed --kind access`; Mac: `security add-generic-password -s org.agentmesh.embed -a client-id -w …` and the same for `client-secret`). Then add `"semantic": {"endpoint": "https://embed.krisb8.com", "credentials": "keychain:org.agentmesh.embed"}` to that device's `settings.local.json`; Windows uses `wincred:`. Restart the broker and run the Task 9 gates there. Expect the first-run backfill over the tunnel to take longer. Record the measured remote query-embed latency.
+- [ ] If the Air is asleep or offline, the other devices answer keyword-only with `degraded`, which is expected. If that happens too often, the fix is a different always-on host. No code changes are needed.
 - [ ] Rollback: set `"mode": "keyword"` or remove the block and restart. Optionally delete `index/vectors-*.snap`. Nothing else depends on the cache.
 
 ---

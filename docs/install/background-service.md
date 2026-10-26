@@ -58,6 +58,17 @@ Output (example from code)
 
 `bootout` unloads this exact service. Verify it is no longer loaded and no worker from it remains; a failed command does not establish that it stopped.
 
+### Name shown in Login Items
+
+macOS shows these Python-based agents as "python" in App Background Activity / Login Items. For agents using a virtual environment, preview the name change from the repository root, then apply it:
+
+```sh
+python3 memory-sync/mac_launch_name.py
+python3 memory-sync/mac_launch_name.py --apply
+```
+
+The helper adds an `AgentMesh` link next to each venv's Python interpreter and updates the plist to use it. It reloads only units launchd has loaded; unloaded units remain unloaded. Use `--no-reload` with `--apply` to update files only. Re-run the helper after re-rendering a plist. To switch back to the venv's `python`, run `python3 memory-sync/mac_launch_name.py --revert --apply`.
+
 ## Linux systemd user service
 
 Generate and validate the unit:

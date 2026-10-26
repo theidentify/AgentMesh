@@ -37,3 +37,14 @@ def test_missing_fts(monkeypatch):
         def close(self): pass
     monkeypatch.setattr(index.sqlite3,'connect',lambda *a,**kw:Unavailable())
     with pytest.raises(ValueError,match='unavailable'): AgentIndex('fixture',b'a'*32)
+
+
+def test_recall_output_unchanged_by_refactor():
+    a = AgentIndex('a', b'a'*32)
+    a.replace([row(), {**row('b'),'content':'database only'}, {**row('c'),'content':'unrelated'}])
+    plan = analyze_query('migrate database')
+    for compat in (False, True):
+        out = a.recall(plan, 12, {'work/a'}, {'work'}, compat=compat)
+        assert set(out) == {'query','query_plan','candidate_counts','results','evidence'}
+        assert 'retrieval' not in out['query_plan']
+        assert [r['id'] for r in out['results']] == ['a']

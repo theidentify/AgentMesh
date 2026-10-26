@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from xml.parsers.expat import ExpatError
 
 NAME = 'AgentMesh'
@@ -65,7 +66,15 @@ def loaded(label, runner):
     return runner(['launchctl', 'print', f'gui/{os.getuid()}/{label}']).returncode == 0
 
 
-def apply(items, runner=_run, reload=True):
+def unloaded(label, runner, sleep=time.sleep, tries=50):
+    """bootout returns before a KeepAlive service has exited; bootstrap fails until launchd lets go of it."""
+    for _ in range(tries):
+        if not loaded(label, runner): return True
+        sleep(0.2)
+    return False
+
+
+def apply(items, runner=_run, reload=True, sleep=time.sleep):
     for item in items:
         if item['link'] is not None: ensure_link(item['link'], item['old'])
     active = {item['label'] for item in items if reload and loaded(item['label'], runner)}
@@ -75,6 +84,7 @@ def apply(items, runner=_run, reload=True):
         label = item['label']
         if label not in active: continue
         runner(['launchctl', 'bootout', f'{domain}/{label}'])
+        if not unloaded(label, runner, sleep): raise RuntimeError(f'{label} is still loaded after bootout')
         if runner(['launchctl', 'bootstrap', domain, str(item['plist'])]).returncode != 0:
             # The unit is booted out by now; say how to load it again.
             raise RuntimeError(f"bootstrap failed for {label}; retry: launchctl bootstrap {domain} {item['plist']}")

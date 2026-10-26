@@ -28,14 +28,23 @@ def unit(root, name, python, **extra):
 
 
 class Runner:
-    def __init__(self, active=(), fail=False):
-        self.active, self.fail, self.calls = set(active), fail, []
+    """Fake launchctl: a booted-out unit stays loaded for `lag` more prints, like a KeepAlive service exiting."""
+    def __init__(self, active=(), fail=False, lag=0):
+        self.active, self.fail, self.lag, self.calls, self.leaving = set(active), fail, lag, [], {}
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
         code = 0
-        if argv[1] == 'print': code = int(argv[2].rsplit('/', 1)[-1] not in self.active)
-        if argv[1] == 'bootstrap': code = int(self.fail)
+        if argv[1] == 'print':
+            label = argv[2].rsplit('/', 1)[-1]
+            if label in self.leaving:
+                self.leaving[label] -= 1
+                if self.leaving[label] < 0: self.active.discard(label); del self.leaving[label]
+            code = int(label not in self.active)
+        if argv[1] == 'bootout': self.leaving[argv[2].rsplit('/', 1)[-1]] = self.lag
+        if argv[1] == 'bootstrap':
+            code = int(self.fail)
+            if not self.fail: self.active.add(argv[3].rsplit('/', 1)[-1][:-len('.plist')])
         return SimpleNamespace(returncode=code)
 
 
@@ -131,8 +140,9 @@ def test_reload_order_and_snapshot(tmp_path):
     paths = {name: unit(tmp_path, name, python) for name in ('control', 'sync', 'disabled')}
     runner = Runner(['org.agentmesh.control', 'org.agentmesh.sync'])
     def run(argv):
-        if argv[1] == 'print':
+        if argv[1] == 'print' and not any(c[1] == 'bootout' for c in runner.calls):
             assert all(plistlib.loads(p.read_bytes())['ProgramArguments'][0] == str(python) for p in paths.values())
+        elif argv[1] == 'print': pass
         else:
             assert all(plistlib.loads(p.read_bytes())['ProgramArguments'][0] == str(python.parent/'AgentMesh') for p in paths.values())
         return runner(argv)
@@ -141,8 +151,10 @@ def test_reload_order_and_snapshot(tmp_path):
     assert runner.calls == [
         *[['launchctl', 'print', domain+'/org.agentmesh.'+name] for name in ('control', 'disabled', 'sync')],
         ['launchctl', 'bootout', domain+'/org.agentmesh.sync'],
+        ['launchctl', 'print', domain+'/org.agentmesh.sync'],
         ['launchctl', 'bootstrap', domain, str(paths['sync'])],
         ['launchctl', 'bootout', domain+'/org.agentmesh.control'],
+        ['launchctl', 'print', domain+'/org.agentmesh.control'],
         ['launchctl', 'bootstrap', domain, str(paths['control'])]]
 
 
@@ -190,4 +202,22 @@ def test_bootstrap_failure_stops_reload(tmp_path):
     runner = Runner(['org.agentmesh.a', 'org.agentmesh.z'], fail=True)
     with pytest.raises(RuntimeError, match='org.agentmesh.a'):
         launch_name.apply(launch_name.plan(tmp_path), runner=runner)
-    assert [a[1] for a in runner.calls] == ['print', 'print', 'bootout', 'bootstrap']
+    assert [a[1] for a in runner.calls] == ['print', 'print', 'bootout', 'print', 'bootstrap']
+
+
+def test_waits_for_bootout_before_bootstrap(tmp_path):
+    python = venv(tmp_path/'venv')
+    plist = unit(tmp_path, 'broker', python)
+    runner, naps = Runner(['org.agentmesh.broker'], lag=3), []
+    launch_name.apply(launch_name.plan(tmp_path), runner=runner, sleep=naps.append)
+    assert [a[1] for a in runner.calls] == ['print', 'bootout', 'print', 'print', 'print', 'print', 'bootstrap']
+    assert naps == [0.2]*3 and runner.calls[-1][3] == str(plist)
+
+
+def test_still_loaded_after_bootout(tmp_path):
+    python = venv(tmp_path/'venv')
+    unit(tmp_path, 'broker', python)
+    runner = Runner(['org.agentmesh.broker'], lag=100)
+    with pytest.raises(RuntimeError, match='still loaded after bootout'):
+        launch_name.apply(launch_name.plan(tmp_path), runner=runner, sleep=lambda s: None)
+    assert 'bootstrap' not in [a[1] for a in runner.calls]

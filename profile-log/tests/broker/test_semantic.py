@@ -1,3 +1,4 @@
+import pytest
 from agentmesh_log.broker.index import AgentIndex
 from agentmesh_log.broker.query import analyze_query
 from agentmesh_log.broker.semantic import Semantic
@@ -257,3 +258,35 @@ def test_save_retains_live(tmp_path):
     assert fresh.store.count() == 1
     assert fresh.pending([{**row('a'), 'content': 'a'}]) == []
     assert fresh.pending([{**row('b'), 'content': 'b'}]) == ['b']
+
+
+def test_fuse_cache_only(tmp_path):
+    s = make(tmp_path); s.fetch_in_fuse = False
+    keyword = [{**row('kw'), 'score': 1}]
+    fused, info = s.fuse(analyze_query('database'), keyword, lambda: [], 12)
+    assert fused is keyword
+    assert info == dict(requested='hybrid', effective='keyword', degraded='provider_unavailable')
+    assert s.provider.calls == []
+    s.prefetch('database')
+    _, info = s.fuse(analyze_query('database'), keyword, lambda: [], 12)
+    assert info['effective'] == 'hybrid'
+    assert s.provider.calls == [['database']]
+
+
+@pytest.mark.parametrize('error', [RuntimeError, ValueError], ids=['runtime','value'])
+def test_prefetch_backoff(tmp_path, monkeypatch, error):
+    from agentmesh_log.broker import semantic
+    monkeypatch.setattr(semantic.time, 'monotonic', lambda: 100)
+    calls = []
+    provider = FakeEmbedding()
+    def embed(texts):
+        calls.append(('embed', texts))
+        raise error('offline')
+    provider.embed = embed
+    def factory():
+        calls.append(('factory',))
+        return provider
+    s = Semantic(tmp_path, b'k'*32, factory=factory)
+    s.prefetch('database'); s.prefetch('database')
+    assert calls == [('factory',), ('embed', ['database'])]
+    assert s.provider is None

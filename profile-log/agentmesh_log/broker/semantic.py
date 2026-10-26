@@ -21,6 +21,7 @@ class Semantic:
                  embed_labels=('general','internal'), min_score=0.45, provider=None, factory=None):
         self.index_dir, self.master_key, self.mode = index_dir, master_key, mode
         self.model, self.labels, self.min_score = model, frozenset(embed_labels), min_score
+        self.fetch_in_fuse = True
         self._factory = factory; self._next_attempt = 0.0
         self._queries = OrderedDict(); self._lock = threading.Lock()
         self._attach_lock = threading.Lock()
@@ -75,17 +76,26 @@ class Semantic:
 
     def prefetch(self, text):
         try: self.query_vector(text)
-        except (RuntimeError, ValueError): pass
+        except (RuntimeError, ValueError):
+            self.provider = None if self._factory else self.provider
 
     def _eligible(self, row):
         return row.get('label') in self.labels and 0 < len(row['content']) <= MAX_TEXT
 
     def fuse(self, plan, keyword, authorized, limit):
         info = dict(requested=self.mode, effective=self.mode)
-        try: query = self.query_vector(plan.query)
-        except (RuntimeError, ValueError):
-            self.provider = None if self._factory else self.provider
-            return keyword, {**info, 'effective': 'keyword', 'degraded': 'provider_unavailable'}
+        if self.fetch_in_fuse:
+            try: query = self.query_vector(plan.query)
+            except (RuntimeError, ValueError):
+                self.provider = None if self._factory else self.provider
+                return keyword, {**info, 'effective': 'keyword', 'degraded': 'provider_unavailable'}
+        else:
+            # Broker fusion runs under its lock: only prefetch may contact the provider.
+            with self._lock:
+                query = self._queries.get(plan.query)
+                if query is not None: self._queries.move_to_end(plan.query)
+            if query is None:
+                return keyword, {**info, 'effective': 'keyword', 'degraded': 'provider_unavailable'}
         scored = []; missing = 0
         for row in authorized():
             if not self._eligible(row): continue

@@ -13,5 +13,6 @@ def test_short_explicit_ids(request):
     assert not missing, f'Parametrizations without explicit ids: {missing}'
     # Normalize both supported invocation directories to the longer repo-root form.
     lengths = [len('profile-log/tests/' + item.nodeid.split('tests/', 1)[-1])
-               for item in request.session.items]
+               for item in request.session.items
+               if Path(item.path).is_relative_to(Path(__file__).parent)]
     assert max(lengths) <= 80, f'Longest collected node ID: {max(lengths)} characters'

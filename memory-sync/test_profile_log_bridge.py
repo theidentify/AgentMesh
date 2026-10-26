@@ -15,6 +15,32 @@ def config(tmp_path):
     return db,path,value
 
 
+def test_hybrid_shape_order(tmp_path,monkeypatch):
+    from recall_memory import analyze_query
+    _,_,value=config(tmp_path)
+    def row(ident,content,keyword_rank,semantic_rank,cosine,rrf):
+        return dict(id=ident,source_type='durable',source_ref=None,kind='fact',
+            content=content,project=None,task_ref=None,confidence=1.,
+            scope='work/common',profile='work',label='general',
+            created_at='2020-01-01',updated_at='2020-01-01',source={},evidence_event_ids=[],
+            ranking=dict(keyword_rank=keyword_rank,semantic_rank=semantic_rank,cosine=cosine,rrf=rrf))
+    answer=dict(query='database',query_plan={'retrieval':dict(requested='hybrid',effective='hybrid',
+        coverage=dict(ranked=2,missing=0))},candidate_counts=dict(durable=2,summaries=0,events=0),
+        evidence=[],results=[row('kw','migrate database',1,2,0.7,0.0325),
+                             row('th','ย้ายฐานข้อมูลไปเครื่องใหม่',None,1,0.8,0.0164)])
+    calls=[]
+    def execute(argv,**kwargs):
+        calls.append(argv)
+        assert kwargs['encoding']=='utf-8' and 0<kwargs['timeout']<=1
+        assert '--compat' in argv and '--mode' not in argv
+        return SimpleNamespace(returncode=0,stdout=json.dumps(answer))
+    monkeypatch.setattr(subprocess,'run',execute)
+    result=bridge.broker_recall(analyze_query('database'),40,value)
+    assert len(calls)==1
+    assert [r['id'] for r in result['results']]==['kw','th']
+    assert result==answer
+
+
 def test_p5_8_detached(tmp_path,monkeypatch):
     db,path,value=config(tmp_path); calls=[]
     monkeypatch.setattr(subprocess,'Popen',lambda *a,**k:calls.append((a,k)))

@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 PACKAGE = str(Path(__file__).resolve().parents[2])
 
@@ -50,4 +53,52 @@ def test_usage_private():
     result=cli('recall','fixture','--agent-key','missing','--unknown',marker)
     assert result.returncode==2
     assert marker not in result.stdout+result.stderr
+    assert json.loads(result.stdout)=={'error':'invalid_request'}
+
+
+@pytest.mark.parametrize('mode',[None,'keyword','hybrid'],ids=['default','kw','hy'])
+def test_recall_mode(monkeypatch,mode):
+    from agentmesh_log import cli as module
+    requests=[]; closed=[]
+    def request(value):
+        requests.append(value)
+        return {'results':[]}
+    client=SimpleNamespace(request=request,close=lambda:closed.append(True))
+    monkeypatch.setattr(module.BrokerClient,'from_file',lambda _:client)
+    flags=[] if mode is None else ['--mode',mode]
+    result=cli('recall','database','--agent-key','synthetic',*flags)
+    assert result.returncode==0, result.stdout
+    assert requests==[dict(op='recall',query='database',project=None,task=None,
+        limit=12,profiles=None,scopes=None,compat=False,**({} if mode is None else {'mode':mode}))]
+    assert closed==[True]
+
+
+@pytest.mark.parametrize('action',['store','check'],ids=['store','check'])
+@pytest.mark.parametrize('kind',[None,'s3','access'],ids=['default','s3','access'])
+def test_creds_kind(monkeypatch,action,kind):
+    from agentmesh_log.storage import r2creds
+    calls=[]
+    def credentials(action,ref,**kwargs):
+        calls.append((action,ref,kwargs))
+        return {'ok':True}
+    monkeypatch.setattr(r2creds,'credentials_command',credentials)
+    flags=[] if kind is None else ['--kind',kind]
+    result=cli('r2-credentials',action,'--ref','wincred:synthetic',*flags)
+    assert result.returncode==0, result.stdout
+    assert json.loads(result.stdout)=={'ok':True}
+    assert calls==[(action,'wincred:synthetic',{'kind':kind or 's3'})]
+
+
+@pytest.mark.parametrize('args',[
+    ['recall','database','--agent-key','synthetic','--mode','vector'],
+    ['r2-credentials','store','--ref','wincred:synthetic','--kind','other'],
+    ['r2-credentials','check','--ref','wincred:synthetic','--kind','other'],
+],ids=['mode','store','check'])
+def test_bad_choice(monkeypatch,args):
+    from agentmesh_log import cli as module
+    from agentmesh_log.storage import r2creds
+    monkeypatch.setattr(module.BrokerClient,'from_file',lambda _:pytest.fail('client opened'))
+    monkeypatch.setattr(r2creds,'credentials_command',lambda *a,**kw:pytest.fail('credentials called'))
+    result=cli(*args)
+    assert result.returncode==2
     assert json.loads(result.stdout)=={'error':'invalid_request'}

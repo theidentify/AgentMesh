@@ -31,3 +31,21 @@ def remember(broker, session, agent, body='migrate database', **kwargs):
 
 def recall(broker, session, **kwargs):
     return broker.request(session,dict(op='recall',query='migrate database',**kwargs))
+
+
+class FakeEmbedding:
+    """Offline stand-in for OllamaEmbedding: synonym groups share one axis."""
+    GROUPS = (('database','db','ฐานข้อมูล'), ('deploy','rollout','ติดตั้ง'), ('launchd','service'))
+    def __init__(self, revision='f'*64, fail=False):
+        self.space = dict(provider='fake', model='fake', revision=revision, metric='cosine')
+        self.calls = []; self.fail = fail
+    def embed(self, texts):
+        if self.fail: raise RuntimeError('local Ollama transport failed; no fallback')
+        self.calls.append(list(texts)); out = []
+        for text in texts:
+            v = [0.0]*(len(self.GROUPS)+1); low = text.lower()
+            for i, group in enumerate(self.GROUPS):
+                v[i] = float(sum(low.count(w) for w in group))
+            v[-1] = 0.1  # never a zero vector
+            norm = sum(x*x for x in v) ** .5; out.append([x/norm for x in v])
+        return out

@@ -78,7 +78,7 @@ def test_dispatch_and_reference_validation(native,monkeypatch):
     for ref in ('wincred:', 'wincred:a/b','wincred:a_b','wincred:a\n'):
         with pytest.raises(ValueError): r2creds.validate_remote(ref,'https://example.test')
     monkeypatch.setattr(r2creds,'sys',SimpleNamespace(platform='darwin'))
-    monkeypatch.setattr(r2creds,'load_keychain_credentials',lambda service,runner:(ID,SECRET) if service==SERVICE else None)
+    monkeypatch.setattr(r2creds,'load_keychain_credentials',lambda service,runner,kind='s3':(ID,SECRET) if service==SERVICE else None)
     assert r2creds.load_credentials('keychain:'+SERVICE)==(ID,SECRET)
 
 
@@ -141,3 +141,39 @@ def test_helper_cli_output(native,monkeypatch,capsys):
     native.error=5
     assert cli.main(['r2-credentials','check','--ref',REF])==1
     assert json.loads(capsys.readouterr().out)=={'ok':False,'ref':REF,'status':'refused'}
+
+
+def test_access_native_load_store_delete(native):
+    backend=r2creds.WindowsR2Credentials(native.api,kind='access')
+    backend.store(SERVICE,'a'*32+'.access','b'*64)
+    assert backend.load(SERVICE)==('a'*32+'.access','b'*64)
+    assert native.writes==[SERVICE+'/client-id',SERVICE+'/client-secret']
+    assert native.freed==[39,64,39,64]
+    assert r2creds.load_credentials(REF,api=native.api,kind='access')==('a'*32+'.access','b'*64)
+    backend.delete(SERVICE)
+    assert SERVICE+'/client-id' not in native.values and SERVICE+'/client-secret' not in native.values
+    assert SERVICE+'/access-key-id' in native.values
+
+
+def test_access_prompts_and_missing(native):
+    prompts=[]; values=iter(('a'*32+'.access','b'*64))
+    def prompt(text): prompts.append(text); return next(values)
+    assert r2creds.credentials_command('store',REF,getpass_fn=prompt,api=native.api,kind='access')=={'ok':True,'ref':REF}
+    assert prompts==['Access client ID: ','Access client secret: ']
+    native.values.clear()
+    assert r2creds.credentials_command('check',REF,api=native.api,kind='access')=={'ok':False,'ref':REF,'status':'missing'}
+
+
+@pytest.mark.parametrize('value',[b'a'*32,b'a'*38,b'a'*40,b'A'*32+b'.access'],
+    ids=['suffix','short','long','case'])
+def test_access_native_invalid(native,value):
+    native.values[SERVICE+'/client-id']=value
+    native.values[SERVICE+'/client-secret']=b'b'*64
+    with pytest.raises(StorageError,match='^embedding credentials refused$'):
+        r2creds.WindowsR2Credentials(native.api,kind='access').load(SERVICE)
+
+
+def test_access_store_no_suffix(native):
+    with pytest.raises(StorageError,match='^embedding credentials refused$'):
+        r2creds.WindowsR2Credentials(native.api,kind='access').store(SERVICE,'a'*32,'b'*64)
+    assert native.writes==[]

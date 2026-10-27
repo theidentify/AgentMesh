@@ -263,7 +263,7 @@ def test_p6_p4_cli_lock(setup,monkeypatch):
 
 def test_p6_p4_broker_lock(setup):
     service,store,cr,b=setup
-    client=b.client_factory(b.bridge_key)
+    client=b.client_factory(b.bridge_key); client.broker.lock_wait=0.05
     with service.home.lock():
         assert client.request({'op':'connector_close_secret','app_id':'ab'*16})=={'error':'busy'}
 

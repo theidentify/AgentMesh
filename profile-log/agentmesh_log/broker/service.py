@@ -12,7 +12,7 @@ from ..encoding import wire, parse, typed
 from ..events import prepare_event, attach_signature, verify_event, open_event, event_path
 from ..model import Label
 from ..errors import LabelLoweringRequiresConfirmation
-from .keystore import FileKeyStore
+from .keystore import FileKeyStore, validate_lock_wait
 from ..storage import StorageError
 from .. import keyring
 from ..presence import PresenceManager
@@ -159,9 +159,12 @@ def body_valid(body):
 
 
 class Broker:
-    def __init__(self, home, *, store=None, on_sync=None, on_overview=None):
+    def __init__(self, home, *, store=None, on_sync=None, on_overview=None, lock_wait=2.0):
         from ..oskeystore import select_store
+        validate_lock_wait(lock_wait)
+        self.lock_wait=lock_wait
         self.home,self.store,self.lock = home,store or select_store(home),threading.RLock()
+        self.request_lock=threading.Lock()
         self.presence=PresenceManager(home,self.store)
         self.state=self.store.load(); self.fingerprint=self.store.fingerprint()
         self.replica=Replica(home,self.state); self.audit=Audit(home.root/'audit.jsonl',self.state.audit_key)
@@ -306,10 +309,10 @@ class Broker:
         if self.semantic is not None and type(request) is dict and request.get('op')=='recall' \
                 and request.get('mode','hybrid')!='keyword' and type(request.get('query')) is str and 1<=len(request['query'])<=2048:
             self.semantic.prefetch(request['query'])
-        # Serialize protected-state saves with CLI/bridge ceremonies, including first access.
-        with self.lock:
+        # Lock order: request_lock -> home file lock -> self.lock (inside _request).
+        with self.request_lock:
             try:
-                with self.home.lock(): return self._request(session,request)
+                with self.home.lock(wait=self.lock_wait): return self._request(session,request)
             except FileExistsError: return {'error':'busy'}
 
     def _request(self, session, request):

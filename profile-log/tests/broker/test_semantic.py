@@ -244,6 +244,32 @@ def test_rejected_text_skipped(tmp_path):
     assert out['query_plan']['retrieval']['coverage'] == dict(ranked=2, missing=0, rejected=1)
 
 
+def test_backfill_uses_bulk_timeout(tmp_path, monkeypatch):
+    from agentmesh_log.broker import embedder
+    calls = []
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return FakeEmbedding()
+    monkeypatch.setattr(embedder, 'OllamaEmbedding', factory)
+    s = Semantic.from_settings(tmp_path, b'k'*32, {'mode': 'hybrid'})
+    assert s.backfill_rows(corpus().rows()) == 3
+    assert calls == [{'model': 'bge-m3:latest', 'timeout': 4}, {'model': 'bge-m3:latest', 'timeout': 120}]
+    assert s.provider.calls == [] and s._bulk.calls  # queries never share the backfill connection
+
+
+class FailsSecondBatch(FakeEmbedding):
+    def embed(self, texts):
+        if self.calls: raise RuntimeError('local Ollama transport failed; no fallback')
+        return super().embed(texts)
+
+
+def test_partial_backfill_kept(tmp_path):
+    s = Semantic(tmp_path, b'k'*32, mode='hybrid', provider=FailsSecondBatch(), min_score=0.5)
+    texts = [f'database {i}' for i in range(40)]
+    pairs = s.embed_texts(texts)
+    assert [t for t, _ in pairs] == texts[:32]
+
+
 def test_provider_down_not_rejected(tmp_path):
     s = make(tmp_path, fail=True)
     with pytest.raises(RuntimeError): s.embed_texts(['database'])

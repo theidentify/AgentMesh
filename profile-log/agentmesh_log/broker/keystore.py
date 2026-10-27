@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import stat
 import tempfile
+import time
 from typing import Protocol
 from ..encoding import wire, parse, hex_bytes, fields
 from ..model import Account, Profile, Scope, ScopeTree, Label
@@ -32,6 +33,11 @@ def atomic_write(path, data):
         if os.path.exists(temp): os.unlink(temp)
 
 
+def validate_lock_wait(wait):
+    if type(wait) not in (int,float) or not 0<=wait<=30:
+        raise ValueError('invalid lock wait')
+
+
 class BrokerHome:
     def __init__(self, root):
         self.root = Path(os.path.abspath(root))
@@ -53,9 +59,19 @@ class BrokerHome:
         return r'\\.\pipe\agentmesh-broker-' + device_id[:16] if os.name == 'nt' else str(self.root / 'broker.sock')
 
     @contextmanager
-    def lock(self):
+    def lock(self, wait=0.0):
+        validate_lock_wait(wait)
         path = self.root / '.lock'; _check(path)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        deadline = time.monotonic()+wait
+        while True:
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                break
+            except FileExistsError:
+                remaining = deadline-time.monotonic()
+                if wait==0 or remaining<=0: raise
+                time.sleep(min(0.05,remaining))
+                if time.monotonic()>=deadline: raise
         try:
             with os.fdopen(fd, 'wb') as stream:
                 stream.write(str(os.getpid()).encode()); stream.flush(); os.fsync(stream.fileno())

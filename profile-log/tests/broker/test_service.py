@@ -1,4 +1,7 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from agentmesh_log.broker.semantic import Semantic
 from agentmesh_log.broker.service import Broker, Session
@@ -353,3 +356,61 @@ def test_backfill_reattach(tmp_path, monkeypatch):
     assert b.backfill_once() == 0
     assert semantic.store is not old_store
     assert semantic.store.count() == 0
+
+
+@pytest.mark.parametrize('wait', [-1,float('nan'),float('inf'),True,'1',31],
+    ids=['negative','nan','infinite','bool','string','too_large'])
+def test_invalid_lock_wait(tmp_path, wait):
+    home,state,store,agents=setup_home(tmp_path)
+    with pytest.raises(ValueError): Broker(home,store=store,lock_wait=wait)
+
+
+def test_request_lock_released(tmp_path):
+    home,state,store,agents=setup_home(tmp_path); b=Broker(home,lock_wait=2)
+    session=Session(agents[0].certificate()); held=threading.Event()
+    def holder():
+        with home.lock():
+            held.set(); time.sleep(0.2)
+    thread=threading.Thread(target=holder); thread.start()
+    try:
+        assert held.wait(1)
+        assert 'agent_id' in b.request(session,{'op':'whoami'})
+    finally: thread.join(timeout=3)
+    assert not thread.is_alive() and not (home.root/'.lock').exists()
+
+
+def test_concurrent_requests_serialized(tmp_path):
+    home,state,store,agents=setup_home(tmp_path); b=Broker(home,lock_wait=0)
+    session=Session(agents[0].certificate()); barrier=threading.Barrier(4)
+    def request():
+        barrier.wait(timeout=5)
+        return b.request(session,{'op':'whoami'})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures=[pool.submit(request) for _ in range(4)]
+        results=[future.result(timeout=5) for future in futures]
+    assert all('agent_id' in result and 'error' not in result for result in results), results
+    assert not (home.root/'.lock').exists()
+
+
+def test_request_lock_timeout_unlocked(tmp_path, monkeypatch):
+    from agentmesh_log.broker import keystore
+    home,state,store,agents=setup_home(tmp_path); b=Broker(home,lock_wait=0.3)
+    session=Session(agents[0].certificate()); waiting=threading.Event()
+    sleep=keystore.time.sleep
+    def sleeping(seconds):
+        waiting.set(); sleep(seconds)
+    monkeypatch.setattr(keystore.time,'sleep',sleeping)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with home.lock():
+            start=time.monotonic(); result=pool.submit(b.request,session,{'op':'whoami'})
+            assert waiting.wait(1)
+            acquired=b.lock.acquire(timeout=0.1)
+            try:
+                assert acquired
+                assert not result.done()
+            finally:
+                if acquired: b.lock.release()
+            assert result.result(timeout=2)=={'error':'busy'}
+            assert b.lock_wait<=time.monotonic()-start<b.lock_wait+1
+            assert (home.root/'.lock').exists()
+    assert not (home.root/'.lock').exists()

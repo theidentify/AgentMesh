@@ -8,6 +8,7 @@ from collections import OrderedDict
 from operator import mul
 import threading
 import time
+from .embedder import InputRejected
 from .vector_store import VectorStore
 
 K = 60
@@ -26,6 +27,8 @@ class Semantic:
         self._queries = OrderedDict(); self._lock = threading.Lock()
         self._attach_lock = threading.Lock()
         self.provider = self.store = None
+        # Texts the provider refused one by one; skipped by backfill so they cannot block it.
+        self.rejected = set()
         if provider is not None: self._attach(provider)
 
     @classmethod
@@ -49,6 +52,7 @@ class Semantic:
         with self._lock:
             self._queries.clear()
         self.provider = provider
+        self.rejected = set()
         self.store = VectorStore(self.master_key, provider.space)
         self.path = self.index_dir/VectorStore.filename(provider.space)
         self.store.load(self.path)
@@ -96,16 +100,19 @@ class Semantic:
                 if query is not None: self._queries.move_to_end(plan.query)
             if query is None:
                 return keyword, {**info, 'effective': 'keyword', 'degraded': 'provider_unavailable'}
-        scored = []; missing = 0
+        scored = []; missing = 0; rejected = 0
         for row in authorized():
             if not self._eligible(row): continue
             vector = self.store.get(row['content'])
-            if vector is None or len(vector) != len(query): missing += 1; continue
+            if vector is None or len(vector) != len(query):
+                if row['content'] in self.rejected: rejected += 1
+                else: missing += 1
+                continue
             cosine = sum(map(mul, query, vector))
             if cosine >= self.min_score: scored.append((cosine, row))
         scored.sort(key=lambda item: (-item[0], item[1]['id']))
         semantic = scored[:max(limit*4, 50)]
-        info['coverage'] = dict(ranked=len(scored), missing=missing)
+        info['coverage'] = dict(ranked=len(scored), missing=missing, rejected=rejected)
         entries = {}
         for field, listing in (('keyword_rank', keyword), ('semantic_rank', [r for _, r in semantic])):
             for rank, row in enumerate(listing, 1):
@@ -124,16 +131,30 @@ class Semantic:
 
     def pending(self, rows, budget=256):
         texts = [r['content'] for r in rows if self._eligible(r)]
-        return [t for t in dict.fromkeys(texts) if not self.store.has(t)][:budget]
+        return [t for t in dict.fromkeys(texts) if t not in self.rejected and not self.store.has(t)][:budget]
 
     def embed_texts(self, texts):
-        """Provider calls only; caller stores results. Greedy char-bounded batches."""
+        """Provider calls only; caller stores results. Greedy char-bounded batches.
+
+        A refused batch is retried one text at a time, so one oversized text is
+        recorded in `rejected` instead of failing the whole backfill forever.
+        """
         out = []; batch = []; size = 0
         for text in texts + [None]:
             if text is None or len(batch) == BATCH_ITEMS or size+len(text) > BATCH_CHARS:
-                if batch: out.extend(zip(batch, self.provider.embed(batch)))
+                if batch: out.extend(self._embed_batch(batch))
                 batch = []; size = 0
             if text is not None: batch.append(text); size += len(text)
+        return out
+
+    def _embed_batch(self, batch):
+        try: return list(zip(batch, self.provider.embed(batch)))
+        except InputRejected:
+            if len(batch) == 1: self.rejected.add(batch[0]); return []
+        out = []
+        for text in batch:
+            try: out.extend(zip([text], self.provider.embed([text])))
+            except InputRejected: self.rejected.add(text)
         return out
 
     def backfill_rows(self, rows):

@@ -1,6 +1,7 @@
 import pytest
 from agentmesh_log.broker.index import AgentIndex
 from agentmesh_log.broker.query import analyze_query
+from agentmesh_log.broker.embedder import InputRejected
 from agentmesh_log.broker.semantic import Semantic
 from .support import FakeEmbedding
 from .test_index import row
@@ -223,6 +224,30 @@ def test_batch_chars(tmp_path):
     pairs = s.embed_texts(texts)
     assert [len(call) for call in s.provider.calls] == [4, 1]
     assert [text for text, _ in pairs] == texts
+
+
+class RejectsLong(FakeEmbedding):
+    """Refuses any batch containing a text over 100 characters, like Ollama past its context."""
+    def embed(self, texts):
+        if any(len(t) > 100 for t in texts):
+            self.calls.append(list(texts)); raise InputRejected('Ollama rejected the input (HTTP 400)')
+        return super().embed(texts)
+
+
+def test_rejected_text_skipped(tmp_path):
+    s = Semantic(tmp_path, b'k'*32, mode='hybrid', provider=RejectsLong(), min_score=0.5)
+    a = AgentIndex('a', b'a'*32)
+    a.replace([row('kw'), {**row('long'), 'content': 'database '*20}, {**row('db'), 'content': 'database rollout'}])
+    assert s.backfill_rows(a.rows()) == 2
+    assert s.rejected == {'database '*20} and s.pending(a.rows()) == []
+    out = a.recall(analyze_query('database'), 12, {'work/a'}, {'work'}, semantic=s)
+    assert out['query_plan']['retrieval']['coverage'] == dict(ranked=2, missing=0, rejected=1)
+
+
+def test_provider_down_not_rejected(tmp_path):
+    s = make(tmp_path, fail=True)
+    with pytest.raises(RuntimeError): s.embed_texts(['database'])
+    assert s.rejected == set()
 
 
 def test_stale_cache_removed(tmp_path):

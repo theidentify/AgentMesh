@@ -11,6 +11,14 @@ from urllib.parse import urlsplit
 
 from .vectors import validate_vectors
 
+# bge-m3 accepts 8192 tokens. Ollama's runner defaults (num_ctx 4096, batch 2048)
+# reject longer embedding inputs with HTTP 400, so ask for the model's own limit.
+CONTEXT_TOKENS = 8192
+
+
+class InputRejected(RuntimeError):
+    """Ollama refused this input (HTTP 400), for example text longer than the context."""
+
 
 class _IPv4FirstHTTPS(http.client.HTTPSConnection):
     """Try IPv4 addresses before IPv6; certificate and hostname checks unchanged."""
@@ -100,6 +108,8 @@ class OllamaEmbedding:
                     response=self._connection.getresponse()
                     if response.status in (302,401,403):
                         raise RuntimeError('embedding endpoint refused credentials')
+                    if response.status==400:
+                        raise InputRejected('Ollama rejected the input (HTTP 400)')
                     if response.status!=200:
                         raise RuntimeError(f'local Ollama HTTP status {response.status}; redirects are forbidden')
                     raw=response.read(8*1024*1024+1)
@@ -145,7 +155,8 @@ class OllamaEmbedding:
             return []
         if self._installed_revision() != self._revision:
             raise RuntimeError('installed model revision changed; create a new adapter')
-        data = self._request('/api/embed', {'model': self.model, 'input': texts, 'truncate': False, 'keep_alive': self._keep_alive})
+        data = self._request('/api/embed', {'model': self.model, 'input': texts, 'truncate': False, 'keep_alive': self._keep_alive,
+                                            'options': {'num_ctx': CONTEXT_TOKENS, 'num_batch': CONTEXT_TOKENS}})
         if not isinstance(data, dict) or data.get('model') != self.model:
             raise ValueError('invalid embedding response model')
         vectors = validate_vectors(data.get('embeddings'), expected_count=len(texts), expected_dimension=self._dimension)

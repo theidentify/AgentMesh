@@ -8,6 +8,7 @@ def stub(monkeypatch, digests, vectors):
     def request(self, path, payload=None):
         if path == '/api/tags': return {'models': [{'name': 'bge-m3:latest', 'digest': next(seq)}]}
         assert payload['keep_alive'] == '30m' and payload['truncate'] is False
+        assert payload['options'] == {'num_ctx': 8192, 'num_batch': 8192}
         return {'model': 'bge-m3:latest', 'embeddings': vectors}
     monkeypatch.setattr(embedder.OllamaEmbedding, '_request', request)
 
@@ -68,6 +69,11 @@ def test_remote_headers_and_reuse(monkeypatch):
 @pytest.mark.parametrize('status', [302, 401, 403], ids=['302','401','403'])
 def test_access_refusal(monkeypatch, status):
     with pytest.raises(RuntimeError, match='refused credentials'): remote(monkeypatch, [(status, {})])
+
+def test_input_rejected(monkeypatch):
+    e = remote(monkeypatch, [(200, TAGS), (200, TAGS), (400, {'error': 'the input length exceeds the context length'})])
+    with pytest.raises(embedder.InputRejected): e.embed(['x'])
+    assert FakeConnection.instances[0].closed
 
 @pytest.mark.parametrize('value', ['', '30', '10000m', '1d', None, 30],
     ids=['empty','unit','long','day','none','int'])

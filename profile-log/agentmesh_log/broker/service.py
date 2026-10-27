@@ -503,7 +503,8 @@ class Broker:
             else: self._sync_outcome=row['outcome']
         now=time.monotonic()
         if measured is not None and self.state.control.get('phase4'):
-            try: self.heartbeats.update(measured,self.state,row,tick=now)
+            # Wall clock, not monotonic: macOS stops the monotonic clock while asleep, which held heartbeats back after wake.
+            try: self.heartbeats.update(measured,self.state,row,tick=time.time())
             except Exception as exc: self.heartbeats.error(exc)
         io=measured.counters() if measured is not None else dict.fromkeys(IO,0)
         for k in IO: self._totals['total_'+k]+=io[k]

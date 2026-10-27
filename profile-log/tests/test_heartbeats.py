@@ -139,6 +139,7 @@ def test_md4_broker_failures_and_read_cost(tmp_path,monkeypatch,capsys):
     rows=[]; views=[]; broker=Broker(home,on_sync=rows.append,on_overview=views.append)
     remote=FilesystemStorage(tmp_path/'remote'); put=remote.put; get=remote.get; reads=[]; ticks=[0]
     monkeypatch.setattr('agentmesh_log.broker.service.time.monotonic',lambda:ticks[0])
+    monkeypatch.setattr('agentmesh_log.broker.service.time.time',lambda:ticks[0])
     def fail(path,data):
         if path.startswith(hb.PREFIX): raise OSError('PRIVATE_FAILURE')
         return put(path,data)
@@ -216,6 +217,42 @@ def test_md4_failed_attempts_throttled(mesh,monkeypatch,capsys):
     assert calls==['put','list'] and cache.rows=={}
     cache.update(storage,state,row,tick=900,at=1000)
     assert calls==['put','list','put','list'] and 'PRIVATE_FAILURE' not in capsys.readouterr().err
+
+
+def test_md4_clock_step(mesh):
+    """The throttle runs on wall-clock time: the monotonic clock stops while a Mac sleeps."""
+    storage,rs,ds,ages=mesh; state=state_for(mesh); cache=hb.Heartbeats(); calls=[]
+    reg=rs.load(); state.registry=lambda:reg
+    put,listing=storage.put,storage.list
+    storage.put=lambda p,d:(calls.append('put'),put(p,d))[-1]
+    storage.list=lambda p,**kw:(calls.append('list'),listing(p,**kw))[-1]
+    row=dict(at='2026-10-22T00:00:00Z',outcome='ok')
+    cache.update(storage,state,row,tick=10_000,at=1000); calls.clear()
+    cache.update(storage,state,row,tick=9_000,at=1000)  # the clock stepped back
+    assert calls==['put','list']; calls.clear()
+    cache.update(storage,state,row,tick=9_001,at=1000)
+    assert calls==[]
+
+
+def test_md4_after_sleep(tmp_path,monkeypatch):
+    """A sleeping Mac's monotonic clock barely moves; the broker must still refresh heartbeats on wake."""
+    from agentmesh_log.broker.service import Broker
+    from agentmesh_log.broker.keystore import BrokerHome
+    from agentmesh_log.oskeystore import initialize
+    monkeypatch.setenv('AGENTMESH_ALLOW_FILE_KEYSTORE','1')
+    home=BrokerHome(tmp_path/'home'); initialize(home,['work'],file_keystore=True)
+    broker=Broker(home); remote=FilesystemStorage(tmp_path/'remote'); put=remote.put; puts=[]
+    monkeypatch.setattr(remote,'put',lambda p,d:(puts.append(p),put(p,d))[-1])
+    awake=[0]; wall=[1_000_000]
+    monkeypatch.setattr('agentmesh_log.broker.service.time.monotonic',lambda:awake[0])
+    monkeypatch.setattr('agentmesh_log.broker.service.time.time',lambda:wall[0])
+    try:
+        broker.sync_attempt(remote,60)
+        assert sum(p.startswith(hb.PREFIX) for p in puts)==1
+        awake[0]+=60; wall[0]+=8*3600  # eight hours asleep, one minute awake
+        broker.sync_attempt(remote,60)
+        assert sum(p.startswith(hb.PREFIX) for p in puts)==2
+    finally: broker.close()
 
 
 def test_md1_filesystem_guards(tmp_path,monkeypatch):

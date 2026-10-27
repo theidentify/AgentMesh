@@ -99,14 +99,16 @@ class Heartbeats:
     def update(self, storage, state, row, *, tick, at=None):
         at=now() if at is None else at
         registry=state.registry(); change=(row['outcome'],recipients(registry))
-        if self.written is None or tick-self.written>=900 or change!=self.change:
+        # tick is wall-clock seconds; a backward step counts as due rather than stalling the cache.
+        due=lambda last: last is None or not 0<=tick-last<900
+        if due(self.written) or change!=self.change:
             # Throttle failed attempts too; heartbeat failures must never change sync.
             self.written=tick; self.change=change
             try:
                 record=make(state.device,registry,local(state.device.device_id,row),at=at)
                 storage.put(path(record),wire(record))
             except Exception as exc: self.error(exc)
-        if self.read_at is None or tick-self.read_at>=900:
+        if due(self.read_at):
             self.read_at=tick
             try: self.rows=read(storage,registry,DeviceAgeIdentity.parse(state.control['age_identity']),at=at)
             except Exception as exc: self.error(exc)

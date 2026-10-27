@@ -173,6 +173,15 @@ def test_access_native_invalid(native,value):
         r2creds.WindowsR2Credentials(native.api,kind='access').load(SERVICE)
 
 
+def test_access_native_new_secret(native):
+    secret='Ab3_'*13+'x-'
+    backend=r2creds.WindowsR2Credentials(native.api,kind='access')
+    backend.store(SERVICE,'a'*32+'.access',secret)
+    assert backend.load(SERVICE)==('a'*32+'.access',secret)
+    native.values[SERVICE+'/client-secret']=b'b'*129
+    with pytest.raises(StorageError,match='^embedding credentials refused$'): backend.load(SERVICE)
+
+
 def test_access_store_no_suffix(native):
     with pytest.raises(StorageError,match='^embedding credentials refused$'):
         r2creds.WindowsR2Credentials(native.api,kind='access').store(SERVICE,'a'*32,'b'*64)

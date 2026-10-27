@@ -7,9 +7,11 @@ from urllib.parse import urlsplit
 from . import StorageError
 
 
+# (account, maximum length, pattern). Cloudflare Access client secrets were 64 hex
+# characters; current ones are shorter URL-safe tokens (54 observed), so accept both.
 KINDS={
     's3': ('S3', (('access-key-id',32,'[0-9a-f]{32}'),('secret-access-key',64,'[0-9a-f]{64}'))),
-    'access': ('embedding', (('client-id',39,r'[0-9a-f]{32}\.access'),('client-secret',64,'[0-9a-f]{64}'))),
+    'access': ('embedding', (('client-id',39,r'[0-9a-f]{32}\.access'),('client-secret',128,'[A-Za-z0-9_-]{32,128}'))),
 }
 
 
@@ -87,8 +89,9 @@ class WindowsR2Credentials:
                     if ctypes.get_last_error()==1168: reason=f'{self.label} credentials missing'
                     break
                 try:
-                    if pointer.contents.CredentialBlobSize!=size: break
-                    value=ctypes.string_at(pointer.contents.CredentialBlob,size).decode('ascii')
+                    length=pointer.contents.CredentialBlobSize
+                    if not 0<length<=size: break
+                    value=ctypes.string_at(pointer.contents.CredentialBlob,length).decode('ascii')
                     if not re.fullmatch(pattern,value): break
                     values.append(value)
                 finally: advapi.CredFree(pointer)

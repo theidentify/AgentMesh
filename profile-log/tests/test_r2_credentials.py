@@ -169,6 +169,20 @@ def test_access_keychain(monkeypatch,tmp_path):
     assert calls==['client-id','client-secret']
 
 
+NEW_SECRET='Ab3_'*13+'x-'  # current Cloudflare Access secrets: URL-safe, not 64 hex
+
+
+@pytest.mark.parametrize('secret,ok',[(NEW_SECRET,True),('b'*64,True),('b'*31,False),('b'*129,False),
+    ('Ab3+'*14,False),('Ab3 '*14,False)],ids=['new','hex','short','long','plus','space'])
+def test_access_secret_formats(tmp_path,secret,ok):
+    def run(argv,**kw):
+        return SimpleNamespace(returncode=0,stdout=('a'*32+'.access' if argv[5]=='client-id' else secret)+'\n')
+    load=lambda:loader()('org.agentmesh.embed',runner=run,keychain=str(tmp_path/'keychain'),kind='access')
+    if ok: assert load()==('a'*32+'.access',secret)
+    else:
+        with pytest.raises(StorageError,match='^embedding credentials refused$'): load()
+
+
 @pytest.mark.parametrize('code,value,reason',[(0,'a'*32,'refused'),(0,'A'*32+'.access','refused'),(44,'','missing')],
     ids=['suffix','case','missing'])
 def test_access_keychain_failures(tmp_path,code,value,reason):

@@ -15,6 +15,9 @@ K = 60
 MAX_TEXT = 32768
 BATCH_CHARS = 120000
 BATCH_ITEMS = 32
+# Recall waits on query embeddings; backfill batches of long texts can take far longer.
+QUERY_TIMEOUT = 4
+BULK_TIMEOUT = 120
 
 
 class Semantic:
@@ -27,6 +30,9 @@ class Semantic:
         self._queries = OrderedDict(); self._lock = threading.Lock()
         self._attach_lock = threading.Lock()
         self.provider = self.store = None
+        # Backfill gets its own connection with a longer timeout, so it neither times out
+        # on long batches nor holds the query connection's lock while recall waits.
+        self._bulk = None
         # Texts the provider refused one by one; skipped by backfill so they cannot block it.
         self.rejected = set()
         if provider is not None: self._attach(provider)
@@ -36,13 +42,13 @@ class Semantic:
         if not section or section.get('mode', 'keyword') == 'keyword': return None
         from .embedder import OllamaEmbedding
         model = section.get('model', 'bge-m3:latest')
-        def factory():
-            if 'endpoint' not in section: return OllamaEmbedding(model=model, timeout=4)
+        def factory(timeout=QUERY_TIMEOUT):
+            if 'endpoint' not in section: return OllamaEmbedding(model=model, timeout=timeout)
             from ..storage.r2creds import load_credentials
             from ..storage import StorageError
             try: client_id, secret = load_credentials(section['credentials'], kind='access')
             except StorageError as exc: raise RuntimeError(str(exc)) from None
-            return OllamaEmbedding(model=model, base_url=section['endpoint'], timeout=4,
+            return OllamaEmbedding(model=model, base_url=section['endpoint'], timeout=timeout,
                 headers={'CF-Access-Client-Id': client_id, 'CF-Access-Client-Secret': secret})
         return cls(index_dir, master_key, mode=section['mode'], model=model,
             embed_labels=section.get('embed_labels', ('general','internal')),
@@ -52,6 +58,7 @@ class Semantic:
         with self._lock:
             self._queries.clear()
         self.provider = provider
+        self._bulk = None
         self.rejected = set()
         self.store = VectorStore(self.master_key, provider.space)
         self.path = self.index_dir/VectorStore.filename(provider.space)
@@ -137,23 +144,36 @@ class Semantic:
         """Provider calls only; caller stores results. Greedy char-bounded batches.
 
         A refused batch is retried one text at a time, so one oversized text is
-        recorded in `rejected` instead of failing the whole backfill forever.
+        recorded in `rejected` instead of failing the whole backfill forever. If a
+        later batch fails, the batches already embedded are returned, not dropped.
         """
         out = []; batch = []; size = 0
-        for text in texts + [None]:
-            if text is None or len(batch) == BATCH_ITEMS or size+len(text) > BATCH_CHARS:
-                if batch: out.extend(self._embed_batch(batch))
-                batch = []; size = 0
-            if text is not None: batch.append(text); size += len(text)
+        try:
+            provider = self._bulk_provider()
+            for text in texts + [None]:
+                if text is None or len(batch) == BATCH_ITEMS or size+len(text) > BATCH_CHARS:
+                    if batch: out.extend(self._embed_batch(provider, batch))
+                    batch = []; size = 0
+                if text is not None: batch.append(text); size += len(text)
+        except (RuntimeError, ValueError):
+            if not out: raise
         return out
 
-    def _embed_batch(self, batch):
-        try: return list(zip(batch, self.provider.embed(batch)))
+    def _bulk_provider(self):
+        if self._factory is None: return self.provider
+        if self._bulk is None:
+            bulk = self._factory(timeout=BULK_TIMEOUT)
+            if bulk.space != self.provider.space: raise RuntimeError('provider revision changed')
+            self._bulk = bulk
+        return self._bulk
+
+    def _embed_batch(self, provider, batch):
+        try: return list(zip(batch, provider.embed(batch)))
         except InputRejected:
             if len(batch) == 1: self.rejected.add(batch[0]); return []
         out = []
         for text in batch:
-            try: out.extend(zip([text], self.provider.embed([text])))
+            try: out.extend(zip([text], provider.embed([text])))
             except InputRejected: self.rejected.add(text)
         return out
 

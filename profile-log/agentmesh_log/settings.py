@@ -70,7 +70,18 @@ def validate(value, *, local=False, project=False):
             fields(value['project'], ['name', 'scope'])
             for k, v in value['project'].items(): check(text(v) if k == 'name' else scope(v))
         return value
-    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging', 'device'])
+    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging', 'device', 'semantic'])
+    if 'semantic' in value:
+        s = value['semantic']; fields(s, ['mode', 'model', 'embed_labels', 'min_score'] + (['endpoint', 'credentials'] if local else []))
+        if 'endpoint' in s or 'credentials' in s:
+            check('endpoint' in s and 'credentials' in s)
+            check(type(s['endpoint']) is str and bool(re.fullmatch(r'https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+', s['endpoint'])))
+            check(type(s['credentials']) is str and bool(re.fullmatch(r'(?:keychain|wincred):[A-Za-z0-9.-]+', s['credentials'])))
+        if 'mode' in s: check(s['mode'] in ('keyword', 'hybrid'))
+        if 'model' in s: check(type(s['model']) is str and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', s['model'])) and '//' not in s['model'])
+        if 'embed_labels' in s:
+            v = s['embed_labels']; check(type(v) is list and bool(v) and len(set(v)) == len(v) and set(v) <= {'general', 'internal', 'secret'})
+        if 'min_score' in s: check(type(s['min_score']) in (int, float) and 0 <= s['min_score'] <= 1)
     if 'device' in value:
         from .heartbeats import name_valid
         fields(value['device'], ['name'])

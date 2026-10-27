@@ -25,10 +25,17 @@ from .query import analyze_query
 from .handshake import Challenge
 from .transport import UnixServer, PipeServer
 
-SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat'.split()),
+SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
 
+
+class _NotConfigured:
+    def fuse(self, plan, keyword, authorized, limit):
+        return keyword, dict(requested='hybrid', effective='keyword', degraded='not_configured')
+
+
+_NOT_CONFIGURED=_NotConfigured()
 
 PREFETCH_WORKERS=16
 
@@ -175,6 +182,13 @@ class Broker:
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
         from .imports import Imports
         self.imports=Imports(self)
+        self.semantic=None; self._semantic_wake=threading.Event()
+        try:
+            from .. import settings
+            from .semantic import Semantic
+            self.semantic=Semantic.from_settings(home.root/'index',self.state.index_master_key,settings.load().get('semantic'))
+            if self.semantic is not None: self.semantic.fetch_in_fuse=False
+        except Exception: self.semantic=None
         for grant in self.state.grants.values(): self.index(grant)
 
     def refresh(self):
@@ -260,6 +274,7 @@ class Broker:
         for grant in self.state.grants.values():
             row=self.row(envelope,payload,grant)
             if row is not None: self.indexes[grant.agent_id].add(row)
+        self._semantic_wake.set()
 
     def flush_indexes(self):
         watermark=self.replica.watermark()
@@ -269,7 +284,28 @@ class Broker:
                 index.save(self.home.root/'index'/(aid+'.snap'),*version)
                 self.index_versions[aid]=version
 
+        if self.semantic is not None:
+            self.semantic.save({r['content'] for i in self.indexes.values() for r in i.rows()})
+
+    def backfill_once(self):
+        semantic=self.semantic
+        if semantic is None or not semantic.ensure(): return 0
+        with self.lock:
+            rows=[r for index in self.indexes.values() for r in index.rows()]
+            texts=semantic.pending(rows)
+            store=semantic.store
+        try: pairs=semantic.embed_texts(texts)
+        except (RuntimeError,ValueError): return 0
+        with self.lock:
+            if semantic.store is not store: return 0
+            for text,vector in pairs: store.put(text,vector)
+            semantic.save()
+        return len(pairs)
+
     def request(self, session, request):
+        if self.semantic is not None and type(request) is dict and request.get('op')=='recall' \
+                and request.get('mode','hybrid')!='keyword' and type(request.get('query')) is str and 1<=len(request['query'])<=2048:
+            self.semantic.prefetch(request['query'])
         # Serialize protected-state saves with CLI/bridge ceremonies, including first access.
         with self.lock:
             try:
@@ -334,6 +370,8 @@ class Broker:
             if self.state.control.get('phase4'): result['alerts']=self.state.control.get('alerts',[])
             return result
         if op=='recall':
+            mode=req.get('mode')
+            if mode is not None and mode not in ('keyword','hybrid'): raise ValueError('invalid_request')
             query=req.get('query'); limit=req.get('limit',12)
             if type(req.get('compat',False)) is not bool: raise ValueError('invalid_request')
             if type(query) is not str or not 1<=len(query)<=2048 or not query.strip(): raise ValueError('invalid_request')
@@ -356,8 +394,11 @@ class Broker:
                 if not roots<=scopes: raise ValueError('denied')
                 scopes &= descendants(self.state,roots)
             audit.update(profiles=sorted(profiles),scopes=sorted(scopes))
+            semantic=None if mode=='keyword' else self.semantic
+            if mode=='hybrid' and semantic is None: semantic=_NOT_CONFIGURED
             result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
-                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False))
+                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False),semantic=semantic)
+            audit['mode']=result['query_plan'].get('retrieval',{}).get('effective','keyword')
             if any(r['label']=='secret' for r in result['results']):
                 if grant.connector_app_id is not None:
                     from ..registry_store import now
@@ -574,6 +615,11 @@ class Broker:
                     except Exception: pass
                     if self.stopped.wait(sync_interval): break
             self.sync_thread=threading.Thread(target=sync_loop,daemon=True); self.sync_thread.start()
+        def semantic_loop():
+            while not self.stopped.is_set():
+                while self.backfill_once()>0 and not self.stopped.is_set(): pass
+                self._semantic_wake.wait(300); self._semantic_wake.clear()
+        if self.semantic is not None: threading.Thread(target=semantic_loop,daemon=True).start()
         while not self.stopped.is_set():
             try: conn=self.server.accept()
             except ValueError:

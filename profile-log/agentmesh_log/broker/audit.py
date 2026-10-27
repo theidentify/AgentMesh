@@ -28,11 +28,11 @@ class Audit:
         self.path, self.key, self.lock = path, key, threading.Lock()
 
     def append(self, *, agent_id, op, outcome, profiles=None, scopes=None, cross_profile=False,
-               query=None, result_ids=None, redactions=None, label=None):
+               query=None, result_ids=None, redactions=None, label=None, mode=None):
         query = query if type(query) is str else ''
         row = dict(ts=time.time_ns()//1000000,agent_id=agent_id,op=op,outcome=outcome,
             profiles=profiles or [],scopes=scopes or [],cross_profile=cross_profile,
             query_hmac=hmac.new(self.key,query.encode('utf-8'),hashlib.sha256).hexdigest(),
             query_chars=len(query),result_count=len(result_ids or []),result_ids=result_ids or [],
-            redactions=redactions or {},label=label)
+            redactions=redactions or {},label=label,mode=mode or 'keyword')
         with self.lock: append_row(self.path,row)

@@ -36,6 +36,7 @@ def parser():
     credentials=commands.add_parser('r2-credentials'); credential_sub=credentials.add_subparsers(dest='action',required=True)
     for action in ('store','check'):
         cmd=credential_sub.add_parser(action); cmd.add_argument('--ref',required=True)
+        cmd.add_argument('--kind',choices=('s3','access'),default='s3')
     broker=commands.add_parser('broker'); admin=broker.add_subparsers(dest='action',required=True)
     def home(cmd): cmd.add_argument('--home',required=True)
     def remote(cmd,required=False):
@@ -54,6 +55,7 @@ def parser():
     recall=commands.add_parser('recall'); recall.add_argument('query'); recall.add_argument('--agent-key',required=True)
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
     recall.add_argument('--profile',action='append'); recall.add_argument('--scope',action='append')
+    recall.add_argument('--mode',choices=('keyword','hybrid'))
     recall.add_argument('--per-profile',action='store_true',help='one request per --profile, merged like the bridge (no cross-profile grant needed)')
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
@@ -151,7 +153,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         sys.stdout,sys.stderr=stdout,stderr
     if args.command=='r2-credentials':
         from .storage.r2creds import credentials_command
-        return credentials_command(args.action,args.ref)
+        return credentials_command(args.action,args.ref,kind=args.kind)
     console=console or ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     input_fn=input if input_fn is None else input_fn
     if args.command in ('connector','bridge'):
@@ -181,7 +183,8 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         try:
             if args.command=='recall':
                 request=dict(op='recall',query=args.query,project=args.project,task=args.task,
-                    limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat)
+                    limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat,
+                    **({'mode':args.mode} if args.mode else {}))
                 if not args.per_profile: return client.request(request)
                 if not args.profile or len(set(args.profile))!=len(args.profile) or args.scope: raise ValueError('invalid_request')
                 return merge_profiles([client.request({**request,'profiles':[p]}) for p in args.profile],args.limit)

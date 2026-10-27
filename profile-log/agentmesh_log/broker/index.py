@@ -125,17 +125,34 @@ class AgentIndex:
             self.connection.close(); self._connect()
             return False
 
-    def recall(self, plan, limit, scopes, profiles, compat=False):
-        if compat: return self.recall_compat(plan,limit,scopes,profiles)
+    def recall(self, plan, limit, scopes, profiles, compat=False, semantic=None):
+        build=self._compat_candidates if compat else self._candidates
+        candidates=build(plan,scopes,profiles,cap=limit)
+        selected=[r for r in candidates if (compat and r['source_type']=='summary')
+            or len(plan.terms)<2 or plan.task_refs or r['matched_terms']>=2]
+        query_plan={k:list(v) if isinstance(v,tuple) else v for k,v in asdict(plan).items()}
+        if semantic is not None:
+            selected,query_plan['retrieval']=semantic.fuse(plan,selected,
+                lambda:build(plan,scopes,profiles,cap=None,textual=False),limit)
+        if compat:
+            counts=dict(durable=sum(r['source_type']=='durable' for r in candidates),
+                summaries=sum(r['source_type']=='summary' for r in candidates),events=0)
+        else: counts=dict(durable=len(candidates),summaries=0,events=0)
+        return {'query':plan.query,'query_plan':query_plan,'candidate_counts':counts,
+            'results':selected[:limit],'evidence':[]}
+
+    def _candidates(self, plan, scopes, profiles, *, cap=None, textual=True):
         matches=[]; args=[]
-        if plan.terms:
-            match=' OR '.join('"'+t.replace('"','""')+'"' for t in plan.terms)
-            matches.append('rowid IN (SELECT rowid FROM search WHERE search MATCH ?)'); args.append(match)
-        for term in dict.fromkeys((plan.query.lower(),*plan.terms,*(t.lower() for t in plan.task_refs))):
-            if term: matches.append('instr(folded,?)>0'); args.append(term)
-        if plan.task_refs:
-            matches.append('task_ref IN (SELECT value FROM json_each(?))'); args.append(wire(list(plan.task_refs)).decode())
-        sql='SELECT data FROM metadata WHERE ('+(' OR '.join(matches) or '0')+')'
+        if textual:
+            if plan.terms:
+                match=' OR '.join('"'+t.replace('"','""')+'"' for t in plan.terms)
+                matches.append('rowid IN (SELECT rowid FROM search WHERE search MATCH ?)'); args.append(match)
+            for term in dict.fromkeys((plan.query.lower(),*plan.terms,*(t.lower() for t in plan.task_refs))):
+                if term: matches.append('instr(folded,?)>0'); args.append(term)
+            if plan.task_refs:
+                matches.append('task_ref IN (SELECT value FROM json_each(?))'); args.append(wire(list(plan.task_refs)).decode())
+        text=('('+(' OR '.join(matches) or '0')+')') if textual else '1'
+        sql='SELECT data FROM metadata WHERE '+text
         sql+=' AND scope IN (SELECT value FROM json_each(?)) AND profile IN (SELECT value FROM json_each(?))'
         args.extend((wire(sorted(scopes)).decode(),wire(sorted(profiles)).decode()))
         if plan.project is not None: sql+=' AND project=?'; args.append(plan.project)
@@ -147,18 +164,17 @@ class AgentIndex:
             row.pop('_migration',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
-        selected=[r for r in candidates if len(plan.terms)<2 or plan.task_refs or r['matched_terms']>=2][:limit]
-        return {'query':plan.query,'query_plan':{k:list(v) if isinstance(v,tuple) else v for k,v in asdict(plan).items()},
-            'candidate_counts':dict(durable=len(candidates),summaries=0,events=0),'results':selected,'evidence':[]}
+        return candidates
 
-    def recall_compat(self, plan, limit, scopes, profiles):
+    def _compat_candidates(self, plan, scopes, profiles, *, cap=None, textual=True):
         matches=[]; args=[]
-        for term in dict.fromkeys((plan.query.lower(),*plan.terms,*(t.lower() for t in plan.task_refs))):
-            if term: matches.append('instr(folded,?)>0'); args.append(term)
+        if textual:
+            for term in dict.fromkeys((plan.query.lower(),*plan.terms,*(t.lower() for t in plan.task_refs))):
+                if term: matches.append('instr(folded,?)>0'); args.append(term)
         tasks=wire(list(plan.task_refs)).decode()
-        if plan.task_refs:
+        if textual and plan.task_refs:
             matches.append('upper(scope_key) IN (SELECT value FROM json_each(?))'); args.append(tasks)
-        text='('+(' OR '.join(matches) or '0')+')'
+        text='('+(' OR '.join(matches) or '0')+')' if textual else '1'
         selection="(source_scope='global' OR (? IS NULL AND ?=0) OR project=? OR scope_key=? OR upper(scope_key) IN (SELECT value FROM json_each(?)))"
         summary="(source_table='memory_summaries' AND ((source_scope='project' AND scope_key=?) OR (source_scope='task' AND upper(scope_key) IN (SELECT value FROM json_each(?)))))"
         sql='SELECT data FROM metadata WHERE scope IN (SELECT value FROM json_each(?)) AND profile IN (SELECT value FROM json_each(?)) AND ('
@@ -166,9 +182,9 @@ class AgentIndex:
         sql+="(source_table='memory_items' AND "+selection+' AND '+text+') OR '+summary
         values += [plan.project,plan.project is not None or len(plan.task_refs),plan.project,plan.project,tasks,*args,plan.project,tasks]
         # Unmigrated events keep the ordinary project/text selection.
-        legacy=text.replace('upper(scope_key)','task_ref')
+        legacy=text.replace('upper(scope_key)','task_ref') if textual else '1'
         legacy_args=list(args)
-        if plan.terms:
+        if textual and plan.terms:
             legacy='('+legacy+' OR rowid IN (SELECT rowid FROM search WHERE search MATCH ?))'
             legacy_args.append(' OR '.join('"'+t.replace('"','""')+'"' for t in plan.terms))
         sql+=' OR (source_table IS NULL AND (? IS NULL OR project=?) AND '+legacy+'))'
@@ -183,7 +199,7 @@ class AgentIndex:
         def chronology(row):
             source=row.get('_migration',{}).get('source',{})
             return (source.get('updated_at') or row['updated_at'],source.get('id',0),row['id'])
-        candidates=sorted(durable,key=chronology,reverse=True)[:limit]+sorted(summaries,key=chronology,reverse=True)[:limit]
+        candidates=sorted(durable,key=chronology,reverse=True)[:cap]+sorted(summaries,key=chronology,reverse=True)[:cap]
         for row in candidates:
             row.pop('_outbox',None)
             meta=row.pop('_migration',{})
@@ -200,7 +216,4 @@ class AgentIndex:
                 if row['source_type']=='summary' and source['scope']!='project': row['project']=plan.project
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['source_ref']['id'] if r['source_ref'] else 0,r['id']),reverse=True)
-        selected=[r for r in candidates if r['source_type']=='summary' or len(plan.terms)<2 or plan.task_refs or r['matched_terms']>=2][:limit]
-        return dict(query=plan.query,query_plan={k:list(v) if isinstance(v,tuple) else v for k,v in asdict(plan).items()},
-            candidate_counts=dict(durable=sum(r['source_type']=='durable' for r in candidates),
-                summaries=sum(r['source_type']=='summary' for r in candidates),events=0),results=selected,evidence=[])
+        return candidates

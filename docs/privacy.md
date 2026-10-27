@@ -21,6 +21,20 @@ Keep local databases, WAL/SHM files, credentials and deployment configuration ou
 
 Invitation request and invitation transfer files contain no memory rows or secrets, but carry group/device metadata and are unsigned. Transfer them only through an authenticated trusted channel outside the exchange; never transfer the prepared installation itself.
 
+## Understand hybrid recall exposure
+
+[Hybrid broker recall](./use/recall#use-hybrid-broker-recall) is opt-in. It sends query text and eligible stored row content to Ollama on the embedding host (one always-on device running Ollama) to create embeddings. Background backfill sends eligible content from the broker's per-agent indexes, not just the results of your current query. Query prefetch happens before the broker's full request authorization checks; do not put secrets in a query on the assumption that a later denied request prevents embedding.
+
+By default, only `general` and `internal` rows with nonempty content of at most 32,768 characters are embedded. `secret` rows remain keyword-only unless the owner explicitly adds `secret` to `semantic.embed_labels`. This label rule applies to stored content, not query text. Internal content can include PII; the default is not a promise of anonymization. Ranking still uses only candidates authorized for the requesting agent and its selected filters.
+
+The embedding host connects over loopback to `127.0.0.1:11434`. Other devices use your own Access-protected hostname (shown here as `https://embed.example.com`) through a dedicated Cloudflare Tunnel with Access Service Auth. The tunnel exposes only `/api/embed` and `/api/tags`, with other paths refused; Ollama itself stays bound to loopback. TLS terminates at Cloudflare's edge, so Cloudflare can see remote query text and embedded content in plaintext. Access authentication restricts callers; it does not provide end-to-end encryption from the client to Ollama.
+
+Keep Access credentials in the OS credential store. Only their `keychain:` or `wincred:` reference and the endpoint belong in device-local `settings.local.json`; neither field is accepted in synced settings. Never put credential values in settings, command lines, logs or support posts.
+
+Treat vectors as memory content: embeddings can reveal information about their source text. Each device keeps its own `index/vectors-*.snap` cache, backed by RAM-only SQLite and encrypted on disk with ChaCha20-Poly1305. HKDF derives keys from the index master key, bound to provider, model, model digest and metric; content lookups use HMAC-SHA256 rather than unkeyed hashes. Query vectors stay in a bounded RAM cache. AgentMesh never syncs, exchanges or backs up the vector cache; it rebuilds missing or invalid caches. Exclude these files from external backup tools too—AgentMesh cannot prevent a full-system backup from copying them. Encryption protects copied files, not malicious code running as the same user.
+
+Ollama runs under the host's OS user. `OLLAMA_DEBUG` logs may contain inputs, so keep debug logging off for private use and protect existing logs. Keep the model tag frozen while the broker uses it. The adapter pins the installed digest and checks it before and after every embedding batch, rejecting a detected change. It cannot detect an **ABA swap**, where model A changes to B and back to A between those checks. Cache encryption and digest checks do not remove this same-user trust boundary.
+
 ## Understand integrity checks
 
 File hashes detect changes relative to a trusted expected hash. They do not authenticate the sender or protect against replacement of both a file and its checksum manifest. Restrict access to the exchange folder. Signing and trust configuration are separate operator topics; see the [reference index](./reference/).

@@ -155,3 +155,32 @@ def test_second_item(tmp_path,code,value):
     with pytest.raises(StorageError) as caught: loader()(SERVICE,runner=run,keychain=str(tmp_path/'keychain'))
     clean(caught.value)
     assert str(caught.value)=='S3 credentials '+('missing' if code==44 else 'refused')
+
+
+def test_access_keychain(monkeypatch,tmp_path):
+    from agentmesh_log.storage import r2creds
+    from agentmesh_log import oskeystore
+    monkeypatch.setattr(oskeystore,'login_keychain',lambda:str(tmp_path/'keychain'))
+    calls=[]
+    def run(argv,**kw):
+        calls.append(argv[5])
+        return SimpleNamespace(returncode=0,stdout=('a'*32+'.access' if argv[5]=='client-id' else 'b'*64)+'\n')
+    assert r2creds.load_credentials('keychain:org.agentmesh.embed',kind='access',runner=run)==('a'*32+'.access','b'*64)
+    assert calls==['client-id','client-secret']
+
+
+@pytest.mark.parametrize('code,value,reason',[(0,'a'*32,'refused'),(0,'A'*32+'.access','refused'),(44,'','missing')],
+    ids=['suffix','case','missing'])
+def test_access_keychain_failures(tmp_path,code,value,reason):
+    def run(argv,**kw):
+        return SimpleNamespace(returncode=code,stdout=value if argv[5]=='client-id' else 'b'*64)
+    with pytest.raises(StorageError,match='^embedding credentials '+reason+'$'):
+        loader()('org.agentmesh.embed',runner=run,keychain=str(tmp_path/'keychain'),kind='access')
+
+
+@pytest.mark.parametrize('entry',['load_credentials','load_keychain_credentials','WindowsR2Credentials','credentials_command'],
+    ids=['load','mac','win','cmd'])
+def test_unknown_credentials_kind(entry):
+    from agentmesh_log.storage import r2creds
+    args=() if entry=='WindowsR2Credentials' else ('check','wincred:test') if entry=='credentials_command' else ('test',)
+    with pytest.raises(ValueError): getattr(r2creds,entry)(*args,kind='unknown')

@@ -87,3 +87,44 @@ def test_lock_cleanup_on_error(tmp_path):
     home=BrokerHome(tmp_path/'home')
     with pytest.raises(RuntimeError), home.lock(wait=1): raise RuntimeError('injected')
     assert not (home.root/'.lock').exists()
+
+
+def dead_pid():
+    import subprocess, sys
+    process=subprocess.Popen([sys.executable,'-c','pass']); process.wait()
+    return process.pid
+
+
+@pytest.mark.skipif(os.name=='nt', reason='stale-lock recovery is POSIX only')
+def test_lock_dead_holder(tmp_path):
+    home=BrokerHome(tmp_path/'home'); path=home.root/'.lock'
+    path.write_bytes(str(dead_pid()).encode())
+    with home.lock(): assert path.read_bytes()==str(os.getpid()).encode()
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name=='nt', reason='stale-lock recovery is POSIX only')
+def test_lock_before_boot(tmp_path, monkeypatch):
+    # A lock that survived a reboot is stale even when its pid was reused by a live process.
+    from agentmesh_log.broker import keystore
+    home=BrokerHome(tmp_path/'home'); path=home.root/'.lock'
+    path.write_bytes(str(os.getpid()).encode()); os.utime(path,(1000,1000))
+    monkeypatch.setattr(keystore,'boot_time',lambda:2000)
+    with home.lock(): pass
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name=='nt', reason='stale-lock recovery is POSIX only')
+@pytest.mark.parametrize('data', [b'', b'garbage', b'0'], ids=['empty','garbage','zero'])
+def test_lock_bad_holder(tmp_path, monkeypatch, data):
+    from agentmesh_log.broker import keystore
+    monkeypatch.setattr(keystore,'boot_time',lambda:None)
+    home=BrokerHome(tmp_path/'home'); path=home.root/'.lock'; path.write_bytes(data)
+    with pytest.raises(FileExistsError), home.lock(): pass
+    assert path.read_bytes()==data
+
+
+def test_boot_time_sane():
+    from agentmesh_log.broker.keystore import boot_time
+    started=boot_time()
+    if started is not None: assert 0<started<=time.time()

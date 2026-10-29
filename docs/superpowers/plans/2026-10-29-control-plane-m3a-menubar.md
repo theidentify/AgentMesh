@@ -21,10 +21,12 @@
    - `unit.backend` makes the supervisor run its own child process, `agentmesh-presence`, which calls `LAContext.evaluatePolicy` in the owner's GUI session (`org.agentmesh.control` is a LaunchAgent in `gui/<uid>`, and its children inherit that session).
    - The supervisor reads the verdict from the exit code of a child that it started itself. No client can inject that answer.
    - The app only sends the request and shows the result.
-2. **Biometrics only, no password fallback.**
-   - The policy is `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, with `localizedFallbackTitle = ""`. The spike on 2026-10-29 showed the default sheet still offers "Enter Password…", which returns `LAError.userFallback` (-3). Hiding the button keeps the sheet biometrics only, and -3 counts as denied.
-   - An agent with screen control could type a password into a fallback sheet, but it cannot produce a fingerprint.
-   - When biometrics is unavailable (clamshell mode, no enrolled finger), the op answers `presence_unavailable`. The owner then uses the existing terminal path, `control adopt|release`, with typed console presence. That path stays unchanged.
+2. **Touch ID or the Mac password (owner's choice, 2026-10-29).**
+   - The policy is `LAPolicyDeviceOwnerAuthentication`: the standard macOS sheet, with Touch ID first and "Use Password…" as the fallback. It works with the lid closed and when a fingerprint does not read.
+   - This is weaker than biometrics only, which was the first draft. Anything that can enter the Mac password into the system sheet passes, including an agent with screen control that knows the password. The owner accepted that risk for convenience.
+   - The rate limit, the busy lock and the audit in decision 3 still apply. The audit row records `la_method` (`biometry` or `password`) where LocalAuthentication reports it, so password approvals stay visible.
+   - `presence_unavailable` now means LocalAuthentication itself cannot evaluate (no password set, or the sheet cannot be shown). The typed-console `control adopt|release` path stays unchanged.
+   - Spike note: with `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, the default sheet still shows "Enter Password…", which returns -3 `userFallback`. That no longer matters under this policy.
 3. **Touch ID confirms a person, so the prompt must name the intent.**
    - The reason string is the same summary that `migrate.adopt`/`migrate.release` print today: unit, label, the argv it will run, and the undo command. It also includes the caller's executable from `peer.py`, which is informative but spoofable.
    - An agent can still trigger a prompt and hope for a reflexive touch. To limit that:
@@ -83,7 +85,7 @@ The same as M2, plus:
 |---|---|
 | Create `profile-log/agentmesh_log/control/presence_helper.py` | `HelperPresence`: path checks, runs `agentmesh-presence`, exit code → verdict. |
 | Modify `.../control/layout.py` | Add the `presence_helper` path (`~/.agentmesh/bin/agentmesh-presence`). |
-| Create `control-app/Sources/agentmesh-presence/main.swift`, `Presence.swift` | The Touch ID helper: `available`, `confirm --action`, biometrics only, 60 s timeout. |
+| Create `control-app/Sources/agentmesh-presence/main.swift`, `Presence.swift` | The presence helper: `available`, `confirm --action`, Touch ID or Mac password (`deviceOwnerAuthentication`), 60 s timeout. |
 | Create `.../control/moves.py` | `Moves`: one move at a time, worker thread, in-memory states, tier 2 rate limit. |
 | Modify `.../control/ops.py` | `unit.backend` (tier 2), `moves.get` (tier 0), and `move` in `status` rows. |
 | Modify `.../control/store.py` | `lock` around writes. |
@@ -126,17 +128,19 @@ A LaunchAgent's process shows the system sheet and gets the verdict, so the XPC 
 
 ### Task 2: `store.lock`
 
-- [ ] Write a failing test: two threads call `set_backend` and `record_run` 200 times each, and no `sqlite3.ProgrammingError` or lost rows result.
-- [ ] Add `self.lock=threading.Lock()` to `Store`, wrap every write method in it, and take it in `NativeBackend` wherever it writes.
-- [ ] Commit `fix(control): serialize state.db writes for the move worker`.
+**Finding (2026-10-29):** `Store` already holds `self.lock` around every statement (`_one`, `_all`, `_run`), and nothing in `control/` touches `store.db` directly. No code change is needed.
+
+- [x] Add `test_two_threads`: 300 `set_backend` calls and 300 runs from two threads, with no errors and no lost rows.
+- [x] Mutation check: the test still passes with the lock removed (5 of 5 runs), because Python's `sqlite3` serializes calls on one connection. It is a regression guard for the move worker's usage, not a lock gate. Keep the lock, which costs nothing and protects multi-statement reads.
+- [x] Commit `test(control): state.db from the move worker and the ticker`.
 
 ### Task 3: `agentmesh-presence` and `HelperPresence`
 
 **Swift helper** (`control-app/Sources/agentmesh-presence/`):
 
 ```swift
-// Presence.swift — Touch ID evaluated in a child of the supervisor. Biometrics only: no password sheet that an agent
-// with screen control could fill. The exit code is the verdict; anything but 0 is a refusal.
+// Presence.swift — Touch ID, or the Mac password, evaluated in a child of the supervisor (deviceOwnerAuthentication).
+// The exit code is the verdict; anything but 0 is a refusal.
 import Foundation
 import LocalAuthentication
 
@@ -304,7 +308,7 @@ class HelperPresence:
   - copies the app to `~/Applications`, refusing to overwrite a running instance;
   - installs `agentmesh-presence` to `~/.agentmesh/bin/` (directory 0700, file 0700) through a temp file and `mv`, so the supervisor never runs a half-written helper.
 - [ ] README: build, install and uninstall. Spell out that the app holds no authority, that it only calls the socket, and that Touch ID comes from the supervisor.
-- [ ] Spec: add "Amendments from milestone 3a", covering decisions 1–5 and 7 above. Replace the spec's `pyobjc-framework-LocalAuthentication` line with the helper, and mark `unit.backend` as implemented.
+- [ ] Spec: add "Amendments from milestone 3a", covering decisions 1–5 and 7 above, including the owner's choice of password fallback in decision 2. Replace the spec's `pyobjc-framework-LocalAuthentication` line with the helper, and mark `unit.backend` as implemented.
 - [ ] Run the full suites: `$PY -m pytest -q -p no:cacheprovider profile-log/tests` and `swift test`.
 - [ ] Commit, push, and open the PR.
 

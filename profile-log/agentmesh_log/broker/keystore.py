@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import secrets
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 from typing import Protocol
@@ -38,6 +40,33 @@ def validate_lock_wait(wait):
         raise ValueError('invalid lock wait')
 
 
+def boot_time():
+    """Wall-clock seconds at boot, or None when unknown."""
+    try:
+        if sys.platform=='darwin':
+            out=subprocess.run(['/usr/sbin/sysctl','-n','kern.boottime'],capture_output=True,text=True,timeout=5).stdout
+            return int(out.split('sec = ',1)[1].split(',',1)[0])
+        if sys.platform.startswith('linux'):
+            for line in Path('/proc/stat').read_text().splitlines():
+                if line.startswith('btime '): return int(line.split()[1])
+    except (OSError,subprocess.SubprocessError,ValueError,IndexError): pass
+    return None
+
+
+def stale_lock(path, boot=boot_time):
+    """The holder died without unlinking (crash, SIGKILL, power loss). A lock older than this boot is stale even if
+    its pid now belongs to another process; an unreadable or still-empty lock from this boot is never stale."""
+    try: mtime=path.lstat().st_mtime; data=path.read_bytes()
+    except FileNotFoundError: return False
+    started=boot()
+    if started is not None and mtime<started: return True
+    if not data.isdigit() or int(data)<=0: return False
+    try: os.kill(int(data),0)
+    except ProcessLookupError: return True
+    except OSError: pass
+    return False
+
+
 class BrokerHome:
     def __init__(self, root):
         self.root = Path(os.path.abspath(root))
@@ -62,12 +91,15 @@ class BrokerHome:
     def lock(self, wait=0.0):
         validate_lock_wait(wait)
         path = self.root / '.lock'; _check(path)
-        deadline = time.monotonic()+wait
+        deadline = time.monotonic()+wait; checked = False
         while True:
             try:
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 break
             except FileExistsError:
+                if not checked:
+                    checked = True
+                    if self.clear_stale(path): continue
                 remaining = deadline-time.monotonic()
                 if wait==0 or remaining<=0: raise
                 time.sleep(min(0.05,remaining))
@@ -77,6 +109,18 @@ class BrokerHome:
                 stream.write(str(os.getpid()).encode()); stream.flush(); os.fsync(stream.fileno())
             yield
         finally: path.unlink()
+
+    def clear_stale(self, path):
+        """Remove a dead holder's lock. POSIX only: os.kill(pid, 0) would terminate the process on Windows.
+        flock on the home directory serializes takeovers, so a second waiter re-checks and never unlinks a fresh lock."""
+        if os.name == 'nt': return False
+        import fcntl
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if not stale_lock(path): return False
+            path.unlink(missing_ok=True); return True
+        finally: os.close(fd)
 
 
 @dataclass

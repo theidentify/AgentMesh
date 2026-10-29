@@ -24,7 +24,8 @@
 2. **Touch ID or the Mac password (owner's choice, 2026-10-29).**
    - The policy is `LAPolicyDeviceOwnerAuthentication`: the standard macOS sheet, with Touch ID first and "Use Password…" as the fallback. It works with the lid closed and when a fingerprint does not read.
    - This is weaker than biometrics only, which was the first draft. Anything that can enter the Mac password into the system sheet passes, including an agent with screen control that knows the password. The owner accepted that risk for convenience.
-   - The rate limit, the busy lock and the audit in decision 3 still apply. The audit row records `la_method` (`biometry` or `password`) where LocalAuthentication reports it, so password approvals stay visible.
+   - The rate limit, the busy lock and the audit in decision 3 still apply.
+   - LocalAuthentication has no public API that says whether the owner used Touch ID or the password, so the audit cannot tell the two apart. That was found while building Task 3, and the first draft's `la_method` field is dropped.
    - `presence_unavailable` now means LocalAuthentication itself cannot evaluate (no password set, or the sheet cannot be shown). The typed-console `control adopt|release` path stays unchanged.
    - Spike note: with `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, the default sheet still shows "Enter Password…", which returns -3 `userFallback`. That no longer matters under this policy.
 3. **Touch ID confirms a person, so the prompt must name the intent.**
@@ -76,7 +77,7 @@
 
 The same as M2, plus:
 - `$PY` is `~/.cache/agentmesh-logvenv/bin/python`. If that venv is missing, create it from `profile-log/requirements*.txt` first.
-- Swift: Swift 6 language mode, macOS 14 deployment target, and no third-party packages. Run `swift test` and `swift build -c release` from `control-app/`.
+- Swift: Swift 6 language mode, macOS 14 deployment target, and no third-party packages. Run `control-app/test.sh`, not plain `swift test`: a CommandLineTools-only toolchain does not search `plugins/testing` for the swift-testing macros. Build with `swift build -c release` from `control-app/`.
 - Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## File structure
@@ -91,7 +92,7 @@ The same as M2, plus:
 | Modify `.../control/store.py` | `lock` around writes. |
 | Modify `.../control/native.py` | Take `store.lock` for writes. |
 | Modify `.../control/cli.py` | Serve wiring: build `HelperPresence` and `Moves`. |
-| Create `profile-log/tests/control/test_presence_helper.py`, `test_moves.py`, `test_wire_contract.py` | Tests. |
+| Create `profile-log/tests/control/test_helper.py`, `test_moves.py`, `test_wire_contract.py` | Tests. |
 | Create `profile-log/tests/control/fixtures/status.json` | Shared wire fixture. |
 | Create `control-app/Package.swift` | Executables `AgentMeshControl` and `agentmesh-presence`, a shared test target. |
 | Create `control-app/Sources/AgentMeshControl/ControlClient.swift` | Unix socket, framing, request and response. |
@@ -135,6 +136,13 @@ A LaunchAgent's process shows the system sheet and gets the verdict, so the XPC 
 - [x] Commit `test(control): state.db from the move worker and the ticker`.
 
 ### Task 3: `agentmesh-presence` and `HelperPresence`
+
+**Done (2026-10-29).**
+- The helper is a library, `PresenceCore`, plus the `agentmesh-presence` executable. There are 10 Swift tests, and the `timeout` test runs `confirm` on its own thread, so a missing timeout fails the test instead of hanging the suite.
+- Mutation gates:
+  - Swift: drop the timeout → `timeout` fails after 5 s. Always approve → `deny` fails.
+  - Python: treat exits below 3 as approval → 2 failures. Drop `safe()` → 6 failures. Inherit the environment → 1 failure.
+- The real binary was checked without a prompt: `available` → `{"result":"available"}`, exit 0. Bad argv, an action outside the list, or a 5000-byte summary → exit 64.
 
 **Swift helper** (`control-app/Sources/agentmesh-presence/`):
 
@@ -210,7 +218,7 @@ class HelperPresence:
   - approve → 0; deny → 1; unavailable → 2;
   - a reply that never comes → 3, and `invalidate` is called;
   - an unknown action, an empty summary or an oversized summary → 64, with no `evaluate` call.
-- [ ] **Python tests** (`test_presence_helper.py`) use a fake `runner` and a `tmp_path` helper file:
+- [ ] **Python tests** (`test_helper.py`) use a fake `runner` and a `tmp_path` helper file:
   - exit 0 → True; exits 1, 2, 3 and 64 → False;
   - a timeout or an `OSError` → False;
   - a symlink, a group-writable file or directory, or a missing file → False and the runner is not called;

@@ -232,6 +232,16 @@ class HelperPresence:
 
 ### Task 4: `Moves` and `unit.backend`
 
+**Done (2026-10-29), with a simpler design than the original draft below.**
+- **No split.** `migrate.adopt` and `migrate.release` are unchanged. `Moves` runs all of one on a worker thread and passes a `Gate` as its `console`.
+  - `Gate.confirm` calls the real presence, then wakes the request thread with the verdict.
+  - The request thread waits for whichever comes first, the verdict or the worker finishing early (`unsupported_plist`, `not_native`, ...), for up to `DECIDE_S=90`. No verdict in that time means `presence_required`.
+- **States:** `deciding` → `moving` → `ok` or an error code. Finished moves are kept for 1 h.
+- **Mutation gates:**
+  - The gate ignores the verdict → 3 failures.
+  - No busy check, no rate limit, a timeout that approves, or skipping `available()` → 1 failure each.
+- **Client consequence:** a `unit.backend` request can take up to 90 s, so the Swift read timeout in Task 6 is **100 s**, not 70 s.
+
 `ops.py` additions:
 
 ```python
@@ -281,7 +291,7 @@ class HelperPresence:
   - `connect` to `~/.agentmesh/run/control.sock` with `socket(AF_UNIX, SOCK_STREAM)`;
   - write a 4-byte big-endian length, then the JSON body;
   - read the 4-byte length, reject 0 or > 1 MiB, then read exactly that many bytes;
-  - 70 s read timeout (`SO_RCVTIMEO`), which covers the 60 s Touch ID wait;
+  - 100 s read timeout (`SO_RCVTIMEO`) for `unit.backend`, which covers the supervisor's 90 s decision wait, and 10 s for every other op;
   - the request is `{v:1, id:UUID, op, args}`;
   - the response maps to `Result<JSON, ControlError(code, message)>`.
 - `Models`: `Decodable` `Status`, `UnitRow`, `JobInfo`, `Move`, `Maintenance`, `Quota` and `AuditRow`. Unknown health strings decode to `.unknown(String)` instead of failing.

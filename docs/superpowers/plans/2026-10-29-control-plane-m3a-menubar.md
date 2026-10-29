@@ -22,7 +22,7 @@
    - The supervisor reads the verdict from the exit code of a child that it started itself. No client can inject that answer.
    - The app only sends the request and shows the result.
 2. **Biometrics only, no password fallback.**
-   - The policy is `LAPolicyDeviceOwnerAuthenticationWithBiometrics`.
+   - The policy is `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, with `localizedFallbackTitle = ""`. The spike on 2026-10-29 showed the default sheet still offers "Enter Password…", which returns `LAError.userFallback` (-3). Hiding the button keeps the sheet biometrics only, and -3 counts as denied.
    - An agent with screen control could type a password into a fallback sheet, but it cannot produce a fingerprint.
    - When biometrics is unavailable (clamshell mode, no enrolled finger), the op answers `presence_unavailable`. The owner then uses the existing terminal path, `control adopt|release`, with typed console presence. That path stays unchanged.
 3. **Touch ID confirms a person, so the prompt must name the intent.**
@@ -107,12 +107,22 @@ The same as M2, plus:
 
 This must pass before Task 3. It answers the one open question: does a child of a LaunchAgent show the `evaluatePolicy` sheet?
 
-- [ ] **Step 1:** In `scratchpad/spike/`, write a ~30-line Swift file. It evaluates `LAPolicyDeviceOwnerAuthenticationWithBiometrics` with the reason "AgentMesh spike", waits up to 60 s on a semaphore, prints `{"ok":bool,"la_error":code}` and exits 0 or 1. Build it with `swiftc -O spike.swift -o spike` and sign it with `codesign -s - spike`.
-- [ ] **Step 2:** Run it from the terminal and touch the sensor.
-- [ ] **Step 3:** Run it as a one-shot LaunchAgent: `launchctl submit -l org.agentmesh.spike -o /tmp/spike.log -e /tmp/spike.log -- $PWD/spike`. Touch the sensor, read `/tmp/spike.log`, then run `launchctl remove org.agentmesh.spike`.
-- [ ] **Step 4:** Record both results in the PR.
+- [x] **Step 1:** In `scratchpad/spike/`, write a ~30-line Swift file. It evaluates `LAPolicyDeviceOwnerAuthenticationWithBiometrics` with the reason "AgentMesh spike", waits up to 60 s on a semaphore, prints `{"ok":bool,"la_error":code}` and exits 0 or 1. Build it with `swiftc -O spike.swift -o spike` and sign it with `codesign -s - spike`.
+- [x] **Step 2:** Run it from the terminal and touch the sensor.
+- [x] **Step 3:** Run it as a one-shot LaunchAgent: a temporary plist with `RunAtLoad` and `KeepAlive=false`, loaded by `launchctl bootstrap gui/$(id -u)` (not `launchctl submit`, whose jobs are KeepAlive and would prompt again after every exit). Touch the sensor, read `/tmp/spike.log`, then run `launchctl bootout gui/$(id -u)/org.agentmesh.spike`.
+- [x] **Step 4:** Record both results in the PR.
   - If the LaunchAgent run shows no sheet, or fails with `LAErrorNotInteractive` (-1004), stop here.
   - The fallback design: the supervisor asks the running menu bar app's own helper process, over an XPC Mach service registered by a LaunchAgent with `LimitLoadToSessionType=Aqua`. Amend this plan before you go on.
+
+**Result (2026-10-29, macOS 27, built-in Touch ID, `biometryType` 1): passed.**
+
+| Run | `ppid` | `xpc_service` | Result |
+|---|---|---|---|
+| Terminal, default sheet | shell | — | `denied`, -3 `userFallback`: the default sheet offers "Enter Password…" |
+| Terminal, `localizedFallbackTitle = ""` | shell | — | `approved` in 5.1 s |
+| LaunchAgent (`gui/<uid>`, RunAtLoad, no KeepAlive) | 1 | `org.agentmesh.spike` | `approved` in 2.1 s |
+
+A LaunchAgent's process shows the system sheet and gets the verdict, so the XPC fallback is not needed. Two earlier -3 results, after the fallback button was hidden, came with a sensor touch. Treat them as failed matches: the helper maps every non-approval to a refusal anyway.
 
 ### Task 2: `store.lock`
 

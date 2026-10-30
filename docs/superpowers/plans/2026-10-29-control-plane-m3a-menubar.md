@@ -320,6 +320,16 @@ class HelperPresence:
 
 ### Task 7: Menu bar UI
 
+**Built (2026-10-30). The owner's check is still open.**
+- **Testable logic** is in `ControlCore/Presentation.swift`, covered by 9 tests: severity and the menu bar icon, the actions offered per row, the move text, and the job age.
+- **The app** is the `AgentMeshControl` executable: `StatusModel`, `MenuView`, `UnitRowView` and `AuditView`.
+- **Deviations from the draft below:**
+  - **No `@State`.** On a CommandLineTools-only toolchain the macOS 27 SDK's `@State` macro cannot load: the `SwiftUIMacros` plugin is missing. View state lives in the `@Observable` `StatusModel` instead, because `ObservationMacros` is available.
+  - **Move confirmation** is an inline panel in the row, not a sheet, because sheets are unreliable inside a `MenuBarExtra` window. It shows a generic text ("…will ask for Touch ID or your Mac password. Approve only if you started this move."). The app cannot know the argv. The supervisor's own sheet shows the full `migrate` summary.
+  - **`missing` is neutral** (grey) everywhere. This is simpler than an expected-units list, and retention and insight-tunnel are not installed on this Mac.
+  - **The menu bar icon** changes shape, not colour: checkmark, triangle, octagon, or a question mark when the supervisor is unreachable. Menu bar images are template-rendered.
+- **Launched unbundled** with `swift build && .build/out/Products/Debug/AgentMeshControl`: no errors, and no audit rows (status is tier 0). Launch at login only works from the bundled app (Task 8) and says so.
+
 - **Menu bar icon:** worst health across units. Green covers `idle`/`running`. Amber covers `failing`/`stuck`. Red covers `failed`/`down`/`conflict`. `missing` counts only for units that are expected (the not-installed set is listed in the README). The icon is grey when the socket is unreachable.
 - **Unit row:**
   - name, a health dot, a `native`/`launchd` badge, last exit, and a relative time from `job.at`;

@@ -81,7 +81,10 @@ def test_serve_evicts_reloaded_units_first(tmp_path, monkeypatch):
     fake_launchd=FakeLaunchd(); order=[]
     monkeypatch.setattr(launchd_module,'LaunchdBackend',lambda:fake_launchd)
     monkeypatch.setattr(native.NativeBackend,'reconcile',lambda self:order.append(list(fake_launchd.calls)))
-    monkeypatch.setattr(server.Supervisor,'serve',lambda self:None)
+    served=[]
+    monkeypatch.setattr(server.Supervisor,'serve',lambda self:served.append(self.control))
     monkeypatch.setattr('signal.signal',lambda *a:None)
     assert execute(parser().parse_args(['control','serve']),layout=layout)=={'ok':True}
     assert order==[[('disable','ingest'),('bootout','ingest')]] and 'ingest' not in fake_launchd.loaded
+    moves=served[0].moves
+    assert moves.presence.path==str(layout.presence_helper) and moves.launchd is fake_launchd

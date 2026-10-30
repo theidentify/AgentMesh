@@ -1,0 +1,120 @@
+{
+ "id": "fixture",
+ "ok": true,
+ "result": {
+  "maintenance": {
+   "on": false,
+   "reason": null,
+   "since": null
+  },
+  "quota": {
+   "backoff_s": 0,
+   "backoff_until": null,
+   "calls": 0,
+   "daily_llm_calls": null,
+   "day": "2026-10-29"
+  },
+  "units": [
+   {
+    "backend": "launchd",
+    "health": "idle",
+    "job": {
+     "at": "2026-10-29T05:00:00+00:00",
+     "ok": true,
+     "since": "2026-10-29T05:00:00+00:00"
+    },
+    "kind": "job",
+    "last_exit": 0,
+    "move": null,
+    "name": "ingest",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "launchd",
+    "health": "idle",
+    "job": {
+     "at": "2026-10-29T05:00:00+00:00",
+     "ok": true,
+     "since": "2026-10-29T05:00:00+00:00"
+    },
+    "kind": "job",
+    "last_exit": 0,
+    "move": null,
+    "name": "summary",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "launchd",
+    "health": "missing",
+    "job": null,
+    "kind": "job",
+    "last_exit": null,
+    "move": null,
+    "name": "retention",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "native",
+    "health": "idle",
+    "job": null,
+    "kind": "job",
+    "last_exit": 0,
+    "move": {
+     "move_id": "00000000000000000000000000000000",
+     "state": "moving",
+     "to": "launchd"
+    },
+    "name": "catch-up",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "launchd",
+    "health": "running",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "broker",
+    "pid": 4242,
+    "runtime_s": 120
+   },
+   {
+    "backend": "launchd",
+    "health": "running",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "bridge",
+    "pid": 4242,
+    "runtime_s": 120
+   },
+   {
+    "backend": "launchd",
+    "health": "running",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "insight",
+    "pid": 4242,
+    "runtime_s": 120
+   },
+   {
+    "backend": "launchd",
+    "health": "missing",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "insight-tunnel",
+    "pid": null,
+    "runtime_s": null
+   }
+  ]
+ }
+}

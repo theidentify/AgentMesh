@@ -11,6 +11,7 @@ def test_layout_defaults_to_agentmesh_home(monkeypatch, tmp_path):
     assert layout.audit==tmp_path/'control'/'audit.jsonl'
     assert layout.status==tmp_path/'status'
     assert layout.state==tmp_path/'control'/'state.db'
+    assert layout.presence_helper==tmp_path/'bin'/'agentmesh-presence'
     assert layout.webhook.name=='discord-webhook' and layout.webhook.parent.name=='agentmesh'
 
 

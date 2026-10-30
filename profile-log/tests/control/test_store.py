@@ -49,3 +49,22 @@ def test_kills_and_failed(tmp_path):
     store.set_failed('ingest','restart_storm',400); store.set_failed('ingest','again',500)
     assert store.failed('ingest')=={'since':400,'reason':'restart_storm'}
     assert store.clear_failed('ingest') is True and store.failed('ingest') is None
+
+
+def test_two_threads(tmp_path):
+    # The M3a move worker writes backends while the ticker records runs; one connection, no lost rows.
+    import threading
+    store=Store(tmp_path/'state.db'); errors=[]
+    def mover():
+        try:
+            for i in range(300): store.set_backend('ingest','native' if i%2 else 'launchd',{'i':i},i)
+        except Exception as exc: errors.append(exc)
+    def ticker():
+        try:
+            for i in range(300): store.end_run(store.start_run('catch-up',i+1,None,i),0,'ok',i)
+        except Exception as exc: errors.append(exc)
+    threads=[threading.Thread(target=f) for f in (mover,ticker)]
+    for t in threads: t.start()
+    for t in threads: t.join(30)
+    assert errors==[] and store.spec('ingest')=={'i':299} and store.open_runs()==[]
+    assert store._one('SELECT COUNT(*) FROM runs')[0]==300

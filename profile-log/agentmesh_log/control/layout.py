@@ -13,7 +13,7 @@ class Layout:
         self.socket=self.run/'control.sock'; self.audit=self.control/'audit.jsonl'
         self.maintenance=self.control/'maintenance.json'
         self.quota=self.control/'quota.json'; self.quota_policy=self.control/'quota-policy.json'
-        self.state=self.control/'state.db'
+        self.state=self.control/'state.db'; self.presence_helper=self.root/'bin'/'agentmesh-presence'
         self.webhook=Path.home()/'.config'/'agentmesh'/'discord-webhook'
 
     def ensure(self):

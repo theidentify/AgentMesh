@@ -30,9 +30,11 @@ def serve(layout):
     import signal
     from . import migrate
     from .launchd import LaunchdBackend
+    from .moves import Moves
     from .native import NativeBackend
     from .notify import notifier
     from .ops import Control
+    from .presence_helper import HelperPresence
     from .router import Router
     from .server import Supervisor
     from .store import Store
@@ -42,7 +44,10 @@ def serve(layout):
     except Exception as exc: print(json.dumps({'evict_error':type(exc).__name__}),file=sys.stderr,flush=True)
     native=NativeBackend(store,UNITS,notify=notifier(layout))
     native.reconcile()
-    supervisor=Supervisor(Control(layout,Router(store,launchd,native)),layout,ticker=native.tick,on_close=native.shutdown)
+    # unit.backend: the supervisor's own Touch ID / Mac password helper; a client never vouches for presence.
+    moves=Moves(layout,store,HelperPresence(layout.presence_helper),launchd=launchd)
+    control=Control(layout,Router(store,launchd,native),moves=moves)
+    supervisor=Supervisor(control,layout,ticker=native.tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()
     finally: supervisor.close(); store.close()

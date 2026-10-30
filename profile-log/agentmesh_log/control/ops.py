@@ -1,6 +1,6 @@
 """Control operations: exact schemas, tiers, rate limits and the fail-closed audit rule.
 
-Tier 0 reads are never audited. Every tier 1 action is audited as `requested` before it runs;
+Tier 0 reads are never audited. Every tier 1 and 2 action is audited as `requested` before it runs;
 if that write fails the action is refused, so nothing changes without a record.
 """
 import json
@@ -10,6 +10,7 @@ import threading
 import time
 from ..broker.audit import append_row
 from . import health, maintenance, quota
+from .moves import MoveError
 from .units import UNITS
 
 RESTARTS_PER_HOUR=3
@@ -21,6 +22,7 @@ OPS={  # op: (tier, exact argument names)
     'unit.start':(1,frozenset({'unit'})),'unit.stop':(1,frozenset({'unit'})),'unit.restart':(1,frozenset({'unit'})),
     'unit.reset':(1,frozenset({'unit'})),
     'maintenance.on':(1,frozenset({'reason'})),'maintenance.off':(1,frozenset()),'diagnose':(1,frozenset()),
+    'unit.backend':(2,frozenset({'unit','to'})),'moves.get':(0,frozenset({'move_id'})),
 }
 
 
@@ -30,8 +32,8 @@ class OpError(Exception):
 
 
 class Control:
-    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS):
-        self.layout,self.backend,self.clock,self.units=layout,backend,clock,units
+    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None):
+        self.layout,self.backend,self.clock,self.units,self.moves=layout,backend,clock,units,moves
         self.lock=threading.Lock(); self.recent={}
 
     def handle(self, request, caller):
@@ -84,7 +86,9 @@ class Control:
             window.append(now); self.recent[unit.name]=window
 
     def op_status(self):
-        return dict(units=health.observe(self.layout,self.backend,self.units),
+        units=health.observe(self.layout,self.backend,self.units)
+        for row in units: row['move']=self.moves.current(row['name']) if self.moves is not None else None
+        return dict(units=units,
             maintenance=maintenance.status(self.layout),quota=quota.status(self.layout))
 
     def op_units(self):
@@ -121,6 +125,18 @@ class Control:
         except ValueError: raise OpError('bad_args') from None
 
     def op_maintenance_off(self): return maintenance.turn_off(self.layout)
+
+    def op_unit_backend(self, unit, to):
+        """Tier 2: the supervisor's own presence check (Touch ID or the Mac password), then the move on a worker."""
+        if self.moves is None: raise OpError('presence_unavailable')
+        self.unit(unit)
+        try: return self.moves.request(unit,to)
+        except MoveError as error: raise OpError(error.code) from None
+
+    def op_moves_get(self, move_id):
+        if self.moves is None: raise OpError('unknown_move')
+        try: return self.moves.get(move_id)
+        except MoveError as error: raise OpError(error.code) from None
 
     def op_diagnose(self):
         return dict(status=self.op_status(),units=self.op_units(),python=sys.version.split()[0],

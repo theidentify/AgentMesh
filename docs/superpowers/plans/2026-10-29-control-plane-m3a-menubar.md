@@ -21,10 +21,13 @@
    - `unit.backend` makes the supervisor run its own child process, `agentmesh-presence`, which calls `LAContext.evaluatePolicy` in the owner's GUI session (`org.agentmesh.control` is a LaunchAgent in `gui/<uid>`, and its children inherit that session).
    - The supervisor reads the verdict from the exit code of a child that it started itself. No client can inject that answer.
    - The app only sends the request and shows the result.
-2. **Biometrics only, no password fallback.**
-   - The policy is `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, with `localizedFallbackTitle = ""`. The spike on 2026-10-29 showed the default sheet still offers "Enter Password…", which returns `LAError.userFallback` (-3). Hiding the button keeps the sheet biometrics only, and -3 counts as denied.
-   - An agent with screen control could type a password into a fallback sheet, but it cannot produce a fingerprint.
-   - When biometrics is unavailable (clamshell mode, no enrolled finger), the op answers `presence_unavailable`. The owner then uses the existing terminal path, `control adopt|release`, with typed console presence. That path stays unchanged.
+2. **Touch ID or the Mac password (owner's choice, 2026-10-29).**
+   - The policy is `LAPolicyDeviceOwnerAuthentication`: the standard macOS sheet, with Touch ID first and "Use Password…" as the fallback. It works with the lid closed and when a fingerprint does not read.
+   - This is weaker than biometrics only, which was the first draft. Anything that can enter the Mac password into the system sheet passes, including an agent with screen control that knows the password. The owner accepted that risk for convenience.
+   - The rate limit, the busy lock and the audit in decision 3 still apply.
+   - LocalAuthentication has no public API that says whether the owner used Touch ID or the password, so the audit cannot tell the two apart. That was found while building Task 3, and the first draft's `la_method` field is dropped.
+   - `presence_unavailable` now means LocalAuthentication itself cannot evaluate (no password set, or the sheet cannot be shown). The typed-console `control adopt|release` path stays unchanged.
+   - Spike note: with `LAPolicyDeviceOwnerAuthenticationWithBiometrics`, the default sheet still shows "Enter Password…", which returns -3 `userFallback`. That no longer matters under this policy.
 3. **Touch ID confirms a person, so the prompt must name the intent.**
    - The reason string is the same summary that `migrate.adopt`/`migrate.release` print today: unit, label, the argv it will run, and the undo command. It also includes the caller's executable from `peer.py`, which is informative but spoofable.
    - An agent can still trigger a prompt and hope for a reflexive touch. To limit that:
@@ -74,7 +77,7 @@
 
 The same as M2, plus:
 - `$PY` is `~/.cache/agentmesh-logvenv/bin/python`. If that venv is missing, create it from `profile-log/requirements*.txt` first.
-- Swift: Swift 6 language mode, macOS 14 deployment target, and no third-party packages. Run `swift test` and `swift build -c release` from `control-app/`.
+- Swift: Swift 6 language mode, macOS 14 deployment target, and no third-party packages. Run `control-app/test.sh`, not plain `swift test`: a CommandLineTools-only toolchain does not search `plugins/testing` for the swift-testing macros. Build with `swift build -c release` from `control-app/`.
 - Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## File structure
@@ -83,13 +86,13 @@ The same as M2, plus:
 |---|---|
 | Create `profile-log/agentmesh_log/control/presence_helper.py` | `HelperPresence`: path checks, runs `agentmesh-presence`, exit code → verdict. |
 | Modify `.../control/layout.py` | Add the `presence_helper` path (`~/.agentmesh/bin/agentmesh-presence`). |
-| Create `control-app/Sources/agentmesh-presence/main.swift`, `Presence.swift` | The Touch ID helper: `available`, `confirm --action`, biometrics only, 60 s timeout. |
+| Create `control-app/Sources/agentmesh-presence/main.swift`, `Presence.swift` | The presence helper: `available`, `confirm --action`, Touch ID or Mac password (`deviceOwnerAuthentication`), 60 s timeout. |
 | Create `.../control/moves.py` | `Moves`: one move at a time, worker thread, in-memory states, tier 2 rate limit. |
 | Modify `.../control/ops.py` | `unit.backend` (tier 2), `moves.get` (tier 0), and `move` in `status` rows. |
 | Modify `.../control/store.py` | `lock` around writes. |
 | Modify `.../control/native.py` | Take `store.lock` for writes. |
 | Modify `.../control/cli.py` | Serve wiring: build `HelperPresence` and `Moves`. |
-| Create `profile-log/tests/control/test_presence_helper.py`, `test_moves.py`, `test_wire_contract.py` | Tests. |
+| Create `profile-log/tests/control/test_helper.py`, `test_moves.py`, `test_wire_contract.py` | Tests. |
 | Create `profile-log/tests/control/fixtures/status.json` | Shared wire fixture. |
 | Create `control-app/Package.swift` | Executables `AgentMeshControl` and `agentmesh-presence`, a shared test target. |
 | Create `control-app/Sources/AgentMeshControl/ControlClient.swift` | Unix socket, framing, request and response. |
@@ -126,17 +129,26 @@ A LaunchAgent's process shows the system sheet and gets the verdict, so the XPC 
 
 ### Task 2: `store.lock`
 
-- [ ] Write a failing test: two threads call `set_backend` and `record_run` 200 times each, and no `sqlite3.ProgrammingError` or lost rows result.
-- [ ] Add `self.lock=threading.Lock()` to `Store`, wrap every write method in it, and take it in `NativeBackend` wherever it writes.
-- [ ] Commit `fix(control): serialize state.db writes for the move worker`.
+**Finding (2026-10-29):** `Store` already holds `self.lock` around every statement (`_one`, `_all`, `_run`), and nothing in `control/` touches `store.db` directly. No code change is needed.
+
+- [x] Add `test_two_threads`: 300 `set_backend` calls and 300 runs from two threads, with no errors and no lost rows.
+- [x] Mutation check: the test still passes with the lock removed (5 of 5 runs), because Python's `sqlite3` serializes calls on one connection. It is a regression guard for the move worker's usage, not a lock gate. Keep the lock, which costs nothing and protects multi-statement reads.
+- [x] Commit `test(control): state.db from the move worker and the ticker`.
 
 ### Task 3: `agentmesh-presence` and `HelperPresence`
+
+**Done (2026-10-29).**
+- The helper is a library, `PresenceCore`, plus the `agentmesh-presence` executable. There are 10 Swift tests, and the `timeout` test runs `confirm` on its own thread, so a missing timeout fails the test instead of hanging the suite.
+- Mutation gates:
+  - Swift: drop the timeout → `timeout` fails after 5 s. Always approve → `deny` fails.
+  - Python: treat exits below 3 as approval → 2 failures. Drop `safe()` → 6 failures. Inherit the environment → 1 failure.
+- The real binary was checked without a prompt: `available` → `{"result":"available"}`, exit 0. Bad argv, an action outside the list, or a 5000-byte summary → exit 64.
 
 **Swift helper** (`control-app/Sources/agentmesh-presence/`):
 
 ```swift
-// Presence.swift — Touch ID evaluated in a child of the supervisor. Biometrics only: no password sheet that an agent
-// with screen control could fill. The exit code is the verdict; anything but 0 is a refusal.
+// Presence.swift — Touch ID, or the Mac password, evaluated in a child of the supervisor (deviceOwnerAuthentication).
+// The exit code is the verdict; anything but 0 is a refusal.
 import Foundation
 import LocalAuthentication
 
@@ -206,7 +218,7 @@ class HelperPresence:
   - approve → 0; deny → 1; unavailable → 2;
   - a reply that never comes → 3, and `invalidate` is called;
   - an unknown action, an empty summary or an oversized summary → 64, with no `evaluate` call.
-- [ ] **Python tests** (`test_presence_helper.py`) use a fake `runner` and a `tmp_path` helper file:
+- [ ] **Python tests** (`test_helper.py`) use a fake `runner` and a `tmp_path` helper file:
   - exit 0 → True; exits 1, 2, 3 and 64 → False;
   - a timeout or an `OSError` → False;
   - a symlink, a group-writable file or directory, or a missing file → False and the runner is not called;
@@ -219,6 +231,16 @@ class HelperPresence:
 - [ ] Commit `feat(control): Touch ID through a supervisor-run Swift helper`.
 
 ### Task 4: `Moves` and `unit.backend`
+
+**Done (2026-10-29), with a simpler design than the original draft below.**
+- **No split.** `migrate.adopt` and `migrate.release` are unchanged. `Moves` runs all of one on a worker thread and passes a `Gate` as its `console`.
+  - `Gate.confirm` calls the real presence, then wakes the request thread with the verdict.
+  - The request thread waits for whichever comes first, the verdict or the worker finishing early (`unsupported_plist`, `not_native`, ...), for up to `DECIDE_S=90`. No verdict in that time means `presence_required`.
+- **States:** `deciding` → `moving` → `ok` or an error code. Finished moves are kept for 1 h.
+- **Mutation gates:**
+  - The gate ignores the verdict → 3 failures.
+  - No busy check, no rate limit, a timeout that approves, or skipping `available()` → 1 failure each.
+- **Client consequence:** a `unit.backend` request can take up to 90 s, so the Swift read timeout in Task 6 is **100 s**, not 70 s.
 
 `ops.py` additions:
 
@@ -258,6 +280,12 @@ class HelperPresence:
 
 ### Task 5: Serve wiring and the wire contract
 
+**Done (2026-10-30).**
+- `control serve` builds `Moves(layout, store, HelperPresence(layout.presence_helper), launchd=launchd)` and passes it to `Control`. `test_serve_evicts_reloaded_units_first` checks the wiring.
+- `fixtures/status.json` comes from the live supervisor on 2026-10-30 (8 units, catch-up native). Pids, runtimes and job times are fixed values. The `move` column is added by hand, because the live supervisor predates it, and catch-up carries an example move so the nested keys are pinned.
+- `test_wire_contract.py` checks the envelope, the result, `maintenance`, `quota`, the unit names in order, every row's keys and the `job` and `move` keys.
+- Mutation gates: renaming a `move` key or the `move` column → the test fails.
+
 - [ ] In `control serve`, build `HelperPresence(layout.presence_helper)` and `Moves(...)` and pass them to `Control`.
 - [ ] Add `fixtures/status.json`, a real `status` response with pids, timestamps and reasons replaced by fixed values.
 - [ ] `test_wire_contract.py`: an `op_status` built from `FakeBackend` has exactly the fixture's key sets at every level (unit rows, `job`, `move`, `maintenance`, `quota`).
@@ -265,11 +293,21 @@ class HelperPresence:
 
 ### Task 6: Swift client and models
 
+**Done (2026-10-30).**
+- **Layout:** a library target, `ControlCore`, in three files: `Framing.swift`, `ControlClient.swift` and `Models.swift`. The app executable in Task 7 imports it. Decoding uses `.convertFromSnakeCase`.
+- **Errors:** `describe()` maps every error code from `ops.py`, `moves.py` and `migrate.py` to readable text, with a "Refused: <code>." fallback.
+- **Tests:** 18 Swift tests.
+  - Framing: a `socketpair` round trip, a big-endian header, length 0, length over 1 MiB, `UInt32.max`, and a short read.
+  - Client, against a fake supervisor on a real Unix socket: request shape, result, server error code, mismatched id, bad JSON, closed without a reply, a hung supervisor timing out, no supervisor, and `moveTimeout > 90`.
+  - Models: the shared fixture, an unknown health value, and an audit row.
+- **Live check:** run `AMC_LIVE=1 ./test.sh --filter liveStatus`, which is opt-in and calls only the read-only `status`. It passed against the pre-M3a live supervisor, whose rows have no `move` key. `move` is optional, so the app also works before the supervisor is upgraded.
+- **Mutation gates:** dropping the id check, setting `moveTimeout` to 70 s, or dropping the 1 MiB cap → each makes a test fail.
+
 - `ControlClient`:
   - `connect` to `~/.agentmesh/run/control.sock` with `socket(AF_UNIX, SOCK_STREAM)`;
   - write a 4-byte big-endian length, then the JSON body;
   - read the 4-byte length, reject 0 or > 1 MiB, then read exactly that many bytes;
-  - 70 s read timeout (`SO_RCVTIMEO`), which covers the 60 s Touch ID wait;
+  - 100 s read timeout (`SO_RCVTIMEO`) for `unit.backend`, which covers the supervisor's 90 s decision wait, and 10 s for every other op;
   - the request is `{v:1, id:UUID, op, args}`;
   - the response maps to `Result<JSON, ControlError(code, message)>`.
 - `Models`: `Decodable` `Status`, `UnitRow`, `JobInfo`, `Move`, `Maintenance`, `Quota` and `AuditRow`. Unknown health strings decode to `.unknown(String)` instead of failing.
@@ -281,6 +319,24 @@ class HelperPresence:
 - [ ] Commit `feat(control-app): socket client and status models`.
 
 ### Task 7: Menu bar UI
+
+**Built and owner-checked (2026-10-30).**
+- 09:59:56: `unit.start catch-up` from the app ran native run 298, which exited 0 (75 unchanged).
+- 10:00:32 and 10:00:35: `maintenance.on` (reason "testing"), then `maintenance.off`.
+- The audit records all of these with `caller_exe` set to the app binary.
+- Follow-ups from the first screenshot are fixed: runtimes read `1h 24m`, and units that are not installed have no menu.
+- Still open for later: native units show no last-run time, because `status` has no such field.
+- **Testable logic** is in `ControlCore/Presentation.swift`, covered by 9 tests: severity and the menu bar icon, the actions offered per row, the move text, and the job age.
+- **The app** is the `AgentMeshControl` executable: `StatusModel`, `MenuView`, `UnitRowView` and `AuditView`.
+- **Deviations from the draft below:**
+  - **No `@State`.** On a CommandLineTools-only toolchain the macOS 27 SDK's `@State` macro cannot load: the `SwiftUIMacros` plugin is missing. View state lives in the `@Observable` `StatusModel` instead, because `ObservationMacros` is available.
+  - **Move confirmation** is an inline panel in the row, not a sheet, because sheets are unreliable inside a `MenuBarExtra` window. It shows a generic text ("…will ask for Touch ID or your Mac password. Approve only if you started this move."). The app cannot know the argv. The supervisor's own sheet shows the full `migrate` summary.
+  - **`missing` is neutral** (grey) everywhere. This is simpler than an expected-units list, and retention and insight-tunnel are not installed on this Mac.
+  - **The menu bar icon** is a fixed mark, "A mesh": three nodes and a hub. The owner picked it on 2026-10-30 from four designs previewed live in the menu bar.
+    - Healthy: the mark alone, as a template image, so the system tints and inverts it.
+    - Something needs a look: an orange badge (failing, stuck) or a red one (failed, down, conflict).
+    - Supervisor unreachable: the mark fades and an empty ring replaces the badge.
+- **Launched unbundled** with `swift build && .build/out/Products/Debug/AgentMeshControl`: no errors, and no audit rows (status is tier 0). Launch at login only works from the bundled app (Task 8) and says so.
 
 - **Menu bar icon:** worst health across units. Green covers `idle`/`running`. Amber covers `failing`/`stuck`. Red covers `failed`/`down`/`conflict`. `missing` counts only for units that are expected (the not-installed set is listed in the README). The icon is grey when the socket is unreachable.
 - **Unit row:**
@@ -304,7 +360,7 @@ class HelperPresence:
   - copies the app to `~/Applications`, refusing to overwrite a running instance;
   - installs `agentmesh-presence` to `~/.agentmesh/bin/` (directory 0700, file 0700) through a temp file and `mv`, so the supervisor never runs a half-written helper.
 - [ ] README: build, install and uninstall. Spell out that the app holds no authority, that it only calls the socket, and that Touch ID comes from the supervisor.
-- [ ] Spec: add "Amendments from milestone 3a", covering decisions 1–5 and 7 above. Replace the spec's `pyobjc-framework-LocalAuthentication` line with the helper, and mark `unit.backend` as implemented.
+- [ ] Spec: add "Amendments from milestone 3a", covering decisions 1–5 and 7 above, including the owner's choice of password fallback in decision 2. Replace the spec's `pyobjc-framework-LocalAuthentication` line with the helper, and mark `unit.backend` as implemented.
 - [ ] Run the full suites: `$PY -m pytest -q -p no:cacheprovider profile-log/tests` and `swift test`.
 - [ ] Commit, push, and open the PR.
 

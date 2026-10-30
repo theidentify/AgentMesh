@@ -140,8 +140,9 @@ The Phase 6 principle carries over: **the cloud relays, it never grants.**
 - `presence.py` already defines the `Presence` protocol
   (`confirm(action, summary)`) with `ConsolePresence`.
 - v1 adds `TouchIDPresence`, which implements that protocol through
-  `LAContext.evaluatePolicy` (`pyobjc-framework-LocalAuthentication`, pinned like
-  the other requirements).
+  `LAContext.evaluatePolicy`. *Amended in M3a:* it is `HelperPresence`, which runs
+  the Swift helper `agentmesh-presence` as the supervisor's own child, not pyobjc.
+  See "Amendments from milestone 3a".
 - The **supervisor** raises the prompt. It is a LaunchAgent in the owner's GUI
   session. A client's claim that it passed Touch ID is never trusted.
 - Windows Hello is the v1.1 implementation of the same protocol.
@@ -269,3 +270,31 @@ a temporary `AGENTMESH_HOME`. They cover the backend switch, rollback and
 - `release` and `panic-revert` run `launchctl enable`, then `bootstrap` (only if the label is not loaded already).
 - Backstop: when the supervisor starts, it disables and boots out every native unit that launchd has loaded, and audits `launchd_reloaded`.
 - `status` reports health `conflict` for a native unit that launchd also has loaded. It takes precedence over every other health state.
+
+## Amendments from milestone 3a (2026-10-30)
+
+M3a implements the first tier 2 op, `unit.backend`, and a menu bar client. Plan: `docs/superpowers/plans/2026-10-29-control-plane-m3a-menubar.md`.
+
+- **Presence is a Swift helper the supervisor runs itself.**
+  - `HelperPresence` runs `~/.agentmesh/bin/agentmesh-presence` with a fixed argv, `HOME` as its only environment, the summary on stdin and a 75 s timeout.
+  - Only exit 0 approves.
+  - Before each run the supervisor refuses a helper that is a symlink or group/world-writable, or that sits in such a directory.
+  - The venv gains no pyobjc.
+  - A Task 1 spike confirmed that a LaunchAgent's child shows the system sheet and receives the verdict.
+- **The policy is `LAPolicyDeviceOwnerAuthentication`: Touch ID, or the Mac password as fallback.**
+  - The owner chose this on 2026-10-29 over biometrics only, accepting that anything able to enter the Mac password passes.
+  - LocalAuthentication does not report which method was used, so the audit cannot tell them apart.
+  - This decision covers tier 2 `unit.backend`. Tier 3, which requires Touch ID plus a typed confirmation, is decided again in M4.
+- **`unit.backend` ships without the plan → approve → execute state machine.**
+  - The presence prompt shows the same summary `control adopt` prints: unit, label, argv, and the undo command.
+  - At most 3 prompts per 10 minutes, denials included (`rate_limited`), and one move at a time (`busy`).
+  - The `plan_digest` gate and Discord/passkey approvals come in later M3 slices.
+- **The M2 rule "the supervisor never changes a backend itself" now has one exception.** The supervisor runs the unchanged `migrate.adopt`/`release` on a worker thread, but only after its own presence approval.
+  - The request answers `{accepted, move_id}` once presence decides (≤ 90 s).
+  - `moves.get` (tier 0) and a `move` column in `status` report progress.
+  - Move states are kept in memory only. After a supervisor restart, the audit is the record.
+- **The typed-console `control adopt|release` path stays** as the fallback when presence is unavailable.
+- **The menu bar app `control-app/` is a plain socket client with no authority.**
+  - `profile-log/tests/control/fixtures/status.json` pins the status wire shape for the Python and Swift sides.
+  - New error codes: `presence_unavailable`, `busy`, `unknown_move`.
+

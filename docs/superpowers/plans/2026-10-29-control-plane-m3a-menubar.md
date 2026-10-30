@@ -280,6 +280,12 @@ class HelperPresence:
 
 ### Task 5: Serve wiring and the wire contract
 
+**Done (2026-10-30).**
+- `control serve` builds `Moves(layout, store, HelperPresence(layout.presence_helper), launchd=launchd)` and passes it to `Control`. `test_serve_evicts_reloaded_units_first` checks the wiring.
+- `fixtures/status.json` comes from the live supervisor on 2026-10-30 (8 units, catch-up native). Pids, runtimes and job times are fixed values. The `move` column is added by hand, because the live supervisor predates it, and catch-up carries an example move so the nested keys are pinned.
+- `test_wire_contract.py` checks the envelope, the result, `maintenance`, `quota`, the unit names in order, every row's keys and the `job` and `move` keys.
+- Mutation gates: renaming a `move` key or the `move` column → the test fails.
+
 - [ ] In `control serve`, build `HelperPresence(layout.presence_helper)` and `Moves(...)` and pass them to `Control`.
 - [ ] Add `fixtures/status.json`, a real `status` response with pids, timestamps and reasons replaced by fixed values.
 - [ ] `test_wire_contract.py`: an `op_status` built from `FakeBackend` has exactly the fixture's key sets at every level (unit rows, `job`, `move`, `maintenance`, `quota`).

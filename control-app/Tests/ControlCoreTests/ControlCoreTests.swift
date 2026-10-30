@@ -179,3 +179,12 @@ func fixture() throws -> Data {
     let status = try ControlClient().status()
     #expect(!status.units.isEmpty)
 }
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["AMC_LIVE"] == "1")) func liveUnitsOfferMove() throws {
+    let client = ControlClient()
+    let infos = try client.call("units", as: [UnitInfo].self)
+    let row = try #require(try client.status().units.first { $0.name == "catch-up" })
+    let info = infos.first { $0.name == "catch-up" }
+    #expect(info?.nativeOk == true)
+    #expect(actions(for: row, info: info).contains(.move(to: row.backend == "native" ? "launchd" : "native")))
+}

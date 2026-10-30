@@ -44,6 +44,9 @@ struct UnitRowView: View {
         } label: { Image(systemName: "ellipsis.circle") }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .disabled(available.isEmpty || model.working.contains(row.name))
+            // The menu's items are built once; a new identity rebuilds them when the actions change (units loaded
+            // after the first render, or a move flipped the backend). Without it "Move to …" never appeared.
+            .id(available)
     }
 
     private func confirmation(_ to: String) -> some View {

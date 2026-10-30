@@ -21,6 +21,27 @@ supervisor uses to ask for Touch ID or your Mac password.
   - Approve a sheet only if you started that move.
 - The supervisor allows at most 3 presence prompts per 10 minutes, denials included, and one move at a time.
 
+## Notifications
+
+The installed app posts macOS notifications. It is the alert channel on a Mac without a Discord webhook
+(`~/.config/agentmesh/discord-webhook`).
+
+| Event | When it notifies |
+|---|---|
+| A unit becomes failed, down or in conflict | At once |
+| A unit stays failing or stuck for 10 minutes | Once, after the 10 minutes. A single failed run of a 5-minute job stays quiet. |
+| A unit that was notified about becomes healthy | Once ("recovered") |
+| `control.sock` does not answer for 2 minutes | Once, and once more when it answers again |
+
+The app checks every 30 s with its menu closed and every 5 s with it open.
+
+- Units that are not installed never notify.
+- macOS asks for permission on the first launch of the installed app.
+- An unbundled `swift run` build posts nothing, because UserNotifications needs a bundle identifier.
+
+The supervisor also sends its own alerts (a native unit's 3rd failed run in a row, its recovery, the restart-storm guard)
+to the Discord webhook, when one is configured.
+
 ## Build and install
 
 Use a Swift 6 toolchain on macOS 14 or later. CommandLineTools are enough; Xcode is not needed.

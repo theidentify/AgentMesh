@@ -1,0 +1,86 @@
+// When to raise a macOS notification. This Mac has no Discord webhook, so the menu bar app is where alerts surface.
+// failed, down and conflict notify at once; failing and stuck only after they last warningDelay (one failed run of a
+// 5-minute job stays quiet); a unit that was notified about gets one "recovered" notice. An unreachable supervisor
+// notifies after offlineDelay, and again once it answers.
+import Foundation
+
+public struct Notice: Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let body: String
+}
+
+public struct Watch: Sendable {
+    public var warningDelay: TimeInterval = 600
+    public var offlineDelay: TimeInterval = 120
+    var since: [String: Date] = [:]
+    var notified: Set<String> = []
+    var offlineSince: Date?
+    var offlineNotified = false
+
+    public init(warningDelay: TimeInterval = 600, offlineDelay: TimeInterval = 120) {
+        self.warningDelay = warningDelay; self.offlineDelay = offlineDelay
+    }
+
+    public mutating func update(_ status: Status?, now: Date = Date()) -> [Notice] {
+        guard let status else {
+            let start = offlineSince ?? now
+            offlineSince = start
+            if !offlineNotified, now.timeIntervalSince(start) >= offlineDelay {
+                offlineNotified = true
+                return [Notice(id: "supervisor", title: "AgentMesh supervisor not reachable",
+                               body: "control.sock has not answered for \(Int(offlineDelay / 60)) minutes.")]
+            }
+            return []
+        }
+        var notices: [Notice] = []
+        if offlineNotified {
+            notices.append(Notice(id: "supervisor", title: "AgentMesh supervisor is back", body: "control.sock answers again."))
+        }
+        offlineSince = nil; offlineNotified = false
+        for row in status.units {
+            let level = severity(row.health)
+            if level >= .warning {
+                let start = since[row.name] ?? now
+                since[row.name] = start
+                let delay = level >= .error ? 0 : warningDelay
+                if !notified.contains(row.name), now.timeIntervalSince(start) >= delay {
+                    notified.insert(row.name)
+                    notices.append(Notice(id: row.name, title: "AgentMesh: \(row.name) is \(name(row.health))",
+                                          body: detail(row)))
+                }
+            } else {
+                since[row.name] = nil
+                if notified.remove(row.name) != nil {
+                    notices.append(Notice(id: row.name, title: "AgentMesh: \(row.name) recovered", body: "Now \(name(row.health))."))
+                }
+            }
+        }
+        return notices
+    }
+
+    func name(_ health: Health) -> String {
+        switch health {
+        case .idle: "idle"
+        case .running: "running"
+        case .failing: "failing"
+        case .stuck: "stuck"
+        case .failed: "failed"
+        case .down: "down"
+        case .conflict: "in conflict"
+        case .missing: "not installed"
+        case .unknown(let raw): raw
+        }
+    }
+
+    func detail(_ row: UnitRow) -> String {
+        var parts = ["Backend: \(row.backend)."]
+        if let exit = row.lastExit, exit != 0 { parts.append("Last exit \(exit).") }
+        switch row.health {
+        case .failed: parts.append("Fix it, then Reset from the menu.")
+        case .conflict: parts.append("launchd and the supervisor both schedule it.")
+        default: parts.append("See its log.")
+        }
+        return parts.joined(separator: " ")
+    }
+}

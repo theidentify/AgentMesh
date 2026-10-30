@@ -13,7 +13,7 @@ let package = Package(
         .executableTarget(name: "agentmesh-presence", dependencies: ["PresenceCore"]),
         .target(name: "ControlCore"),
         .executableTarget(name: "AgentMeshControl", dependencies: ["ControlCore"],
-                          linkerSettings: [.linkedFramework("ServiceManagement")]),
+                          linkerSettings: [.linkedFramework("ServiceManagement"), .linkedFramework("UserNotifications")]),
         .testTarget(name: "PresenceCoreTests", dependencies: ["PresenceCore"]),
         .testTarget(name: "ControlCoreTests", dependencies: ["ControlCore"]),
     ]

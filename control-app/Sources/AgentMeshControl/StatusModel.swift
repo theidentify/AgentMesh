@@ -20,11 +20,14 @@ final class StatusModel {
     var confirmingMove: [String: String] = [:]
     var loginError: String?
     private var poller: Task<Void, Never>?
+    private var watch = Watch()
+    private let notifier = Notifier()
 
     init(client: ControlClient = ControlClient()) { self.client = client }
 
     func start() {
         guard poller == nil else { return }
+        Task { await notifier.start() }
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -48,6 +51,7 @@ final class StatusModel {
         case .success(let value): status = value; lastError = nil
         case .failure(let error): status = nil; lastError = describe(error)
         }
+        for notice in watch.update(status) { notifier.post(notice) }
         if infos.isEmpty, status != nil,
            case .success(let list) = await run({ try client.call("units", as: [UnitInfo].self) }) {
             infos = Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0) })

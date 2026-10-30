@@ -8,6 +8,8 @@ let package = Package(
     targets: [
         .target(name: "PresenceCore", linkerSettings: [.linkedFramework("LocalAuthentication")]),
         .executableTarget(name: "agentmesh-presence", dependencies: ["PresenceCore"]),
+        .target(name: "ControlCore"),
         .testTarget(name: "PresenceCoreTests", dependencies: ["PresenceCore"]),
+        .testTarget(name: "ControlCoreTests", dependencies: ["ControlCore"]),
     ]
 )

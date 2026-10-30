@@ -293,6 +293,16 @@ class HelperPresence:
 
 ### Task 6: Swift client and models
 
+**Done (2026-10-30).**
+- **Layout:** a library target, `ControlCore`, in three files: `Framing.swift`, `ControlClient.swift` and `Models.swift`. The app executable in Task 7 imports it. Decoding uses `.convertFromSnakeCase`.
+- **Errors:** `describe()` maps every error code from `ops.py`, `moves.py` and `migrate.py` to readable text, with a "Refused: <code>." fallback.
+- **Tests:** 18 Swift tests.
+  - Framing: a `socketpair` round trip, a big-endian header, length 0, length over 1 MiB, `UInt32.max`, and a short read.
+  - Client, against a fake supervisor on a real Unix socket: request shape, result, server error code, mismatched id, bad JSON, closed without a reply, a hung supervisor timing out, no supervisor, and `moveTimeout > 90`.
+  - Models: the shared fixture, an unknown health value, and an audit row.
+- **Live check:** run `AMC_LIVE=1 ./test.sh --filter liveStatus`, which is opt-in and calls only the read-only `status`. It passed against the pre-M3a live supervisor, whose rows have no `move` key. `move` is optional, so the app also works before the supervisor is upgraded.
+- **Mutation gates:** dropping the id check, setting `moveTimeout` to 70 s, or dropping the 1 MiB cap → each makes a test fail.
+
 - `ControlClient`:
   - `connect` to `~/.agentmesh/run/control.sock` with `socket(AF_UNIX, SOCK_STREAM)`;
   - write a 4-byte big-endian length, then the JSON body;

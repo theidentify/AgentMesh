@@ -320,7 +320,12 @@ class HelperPresence:
 
 ### Task 7: Menu bar UI
 
-**Built (2026-10-30). The owner's check is still open.**
+**Built and owner-checked (2026-10-30).**
+- 09:59:56: `unit.start catch-up` from the app ran native run 298, which exited 0 (75 unchanged).
+- 10:00:32 and 10:00:35: `maintenance.on` (reason "testing"), then `maintenance.off`.
+- The audit records all of these with `caller_exe` set to the app binary.
+- Follow-ups from the first screenshot are fixed: runtimes read `1h 24m`, and units that are not installed have no menu.
+- Still open for later: native units show no last-run time, because `status` has no such field.
 - **Testable logic** is in `ControlCore/Presentation.swift`, covered by 9 tests: severity and the menu bar icon, the actions offered per row, the move text, and the job age.
 - **The app** is the `AgentMeshControl` executable: `StatusModel`, `MenuView`, `UnitRowView` and `AuditView`.
 - **Deviations from the draft below:**

@@ -68,3 +68,15 @@ def test_two_threads(tmp_path):
     for t in threads: t.join(30)
     assert errors==[] and store.spec('ingest')=={'i':299} and store.open_runs()==[]
     assert store._one('SELECT COUNT(*) FROM runs')[0]==300
+
+
+def test_failure_streak(tmp_path):
+    store=Store(tmp_path/'state.db')
+    def run(outcome): store.end_run(store.start_run('x',1,None,1),1,outcome,2)
+    assert store.failure_streak('x')==0
+    for outcome in ('failed','ok','failed','stopped','killed_stuck','orphaned','launch_error'): run(outcome)
+    assert store.failure_streak('x')==3 and store.failure_streak('y')==0
+    last=store._one('SELECT MAX(id) FROM runs')[0]
+    assert store.failure_streak('x',before_id=last)==2
+    store.start_run('x',1,None,3)  # an open run does not count
+    assert store.failure_streak('x')==3

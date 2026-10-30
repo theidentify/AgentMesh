@@ -148,3 +148,60 @@ def test_shutdown_stops_runs(tmp_path):
     proc=native.running['ingest']['proc']
     native.shutdown()
     assert proc.returncode==-15 and native.running=={} and outcomes(store,'ingest')==['stopped']
+
+
+def runs(tmp_path, store, native, clock, codes, name='ingest'):
+    """One scheduled run per code ('fail', 'ok' or 'stop'), each a schedule interval after the last."""
+    for code in codes:
+        body={'fail':'raise SystemExit(4)','ok':'pass','stop':'import time; time.sleep(30)'}[code]
+        adopt(store,name,spec(tmp_path,body)); clock[0]+=61; native.tick()
+        if code=='stop': native.stop(get(name))
+        settle(native,name)
+    time.sleep(0.1)  # alerts go out on daemon threads
+
+
+def test_streak_alerts_once(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    runs(tmp_path,store,native,clock,['fail','fail'])
+    assert alerts==[] and store.failure_streak('ingest')==2
+    runs(tmp_path,store,native,clock,['fail'])
+    assert len(alerts)==1 and '`ingest` failed 3 runs in a row' in alerts[0] and 'exit 4' in alerts[0]
+    assert str(tmp_path/'out.log') in alerts[0]
+    runs(tmp_path,store,native,clock,['fail','fail'])
+    assert len(alerts)==1
+
+
+def test_streak_recovery(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    runs(tmp_path,store,native,clock,['fail']*4+['ok','ok'])
+    assert len(alerts)==2 and 'ran ok again after 4 failed runs' in alerts[1]
+
+
+def test_short_streak_quiet(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    runs(tmp_path,store,native,clock,['fail','fail','ok','fail','fail'])
+    assert alerts==[] and store.failure_streak('ingest')==2
+
+
+def test_stop_neither_breaks_nor_counts(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    runs(tmp_path,store,native,clock,['fail','fail','stop'])
+    assert outcomes(store,'ingest')[-1]=='stopped' and store.failure_streak('ingest')==2 and alerts==[]
+    runs(tmp_path,store,native,clock,['fail'])
+    assert len(alerts)==1
+
+
+def test_streak_survives_restart(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    runs(tmp_path,store,native,clock,['fail','fail'])
+    again=NativeBackend(store,UNITS,clock=lambda:clock[0],environ={'HOME':str(tmp_path)},notify=alerts.append)
+    runs(tmp_path,store,again,clock,['fail'])
+    assert len(alerts)==1
+
+
+def test_launch_errors_streak(tmp_path):
+    alerts=[]; store,native,clock=make(tmp_path,notify=alerts.append)
+    for _ in range(3):
+        adopt(store,'ingest',dict(spec(tmp_path,'pass'),argv=['/nonexistent/agentmesh-job'])); clock[0]+=61; native.tick()
+    native.tick(); time.sleep(0.1)
+    assert len(alerts)==1 and 'launch_error' in alerts[0] and 'exit 127' in alerts[0]

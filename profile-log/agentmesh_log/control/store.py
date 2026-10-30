@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS failed(unit TEXT PRIMARY KEY, since INTEGER NOT NULL,
 '''
 
 
+FAILURES=frozenset(('failed','killed_stuck','launch_error'))
+
+
 class Store:
     def __init__(self, path):
         path=Path(path); _check(path)
@@ -79,6 +82,15 @@ class Store:
     def last_exit(self, unit):
         row=self._one('SELECT exit FROM runs WHERE unit=? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1',(unit,))
         return row[0] if row else None
+
+    def failure_streak(self, unit, before_id=None, limit=200):
+        """Failed runs in a row, newest first, up to the last ok run. Stops, orphans and panic reverts are neither."""
+        sql='SELECT outcome FROM runs WHERE unit=? AND ended_at IS NOT NULL'+(' AND id<?' if before_id else '')+' ORDER BY id DESC LIMIT ?'
+        streak=0
+        for (outcome,) in self._all(sql,(unit,before_id,limit) if before_id else (unit,limit)):
+            if outcome in FAILURES: streak+=1
+            elif outcome=='ok': break
+        return streak
 
     def add_kill(self, unit, at): self._run('INSERT INTO kills(unit,at) VALUES(?,?)',(unit,at))
 

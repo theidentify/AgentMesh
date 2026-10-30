@@ -3,6 +3,9 @@
 Enforcing watchdog: a run past its unit's max_runtime_s gets SIGTERM to its process group, then SIGKILL after
 KILL_GRACE_S. More than STORM_KILLS watchdog kills within STORM_WINDOW_S puts the unit in `failed`; a failed unit is
 never started again (by schedule, start or restart) until `control reset`.
+
+Failure streaks: the FAIL_STREAK-th failed run in a row alerts once, and the first ok run after such a streak alerts
+that the unit recovered. Both come from the runs table, so a supervisor restart neither repeats nor loses them.
 """
 import os
 import signal
@@ -10,10 +13,12 @@ import subprocess
 import threading
 import time
 from . import schedule
+from .store import FAILURES
 
 KILL_GRACE_S=10
 STORM_KILLS=3
 STORM_WINDOW_S=3600
+FAIL_STREAK=3
 
 
 def started_token(pid, runner=subprocess.run):
@@ -39,7 +44,7 @@ class NativeBackend:
         self.store,self.units,self.clock,self.token=store,{u.name:u for u in units},clock,token
         self.notify=notify or (lambda text:None)
         self.environ=dict(os.environ) if environ is None else environ
-        self.lock=threading.RLock(); self.running={}
+        self.lock=threading.RLock(); self.running={}; self.pending=[]
 
     def now_ms(self): return int(self.clock()*1000)
 
@@ -78,7 +83,9 @@ class NativeBackend:
                 env=schedule.child_env(spec,self.environ),stdin=subprocess.DEVNULL,stdout=out,stderr=err,
                 start_new_session=True,umask=spec['umask'],close_fds=True)
         except OSError:
-            self.store.end_run(self.store.start_run(unit.name,-1,None,at),127,'launch_error',at)
+            run_id=self.store.start_run(unit.name,-1,None,at)
+            self.store.end_run(run_id,127,'launch_error',at)
+            self.pending+=self.streak_alerts(unit.name,run_id,'launch_error',127,spec)
             return False
         finally:
             for stream in {id(s):s for s in (out,err) if s is not None}.values(): stream.close()
@@ -111,6 +118,7 @@ class NativeBackend:
                 elif spec['run_at_load']: reference=None
                 else: reference=(self.store.changed_at(name) or 0)/1000
                 if schedule.due(spec,reference,now): self.spawn(unit,spec)
+            alerts+=self.pending; self.pending=[]
         for text in alerts: threading.Thread(target=self.notify,args=(text,),daemon=True).start()
 
     def finish(self, name, run, code):
@@ -118,7 +126,7 @@ class NativeBackend:
         at=self.now_ms()
         outcome={'watchdog':'killed_stuck','stop':'stopped'}.get(run['why']) or ('ok' if code==0 else 'failed')
         self.store.end_run(run['run_id'],code,outcome,at)
-        alerts=[]
+        alerts=self.streak_alerts(name,run['run_id'],outcome,code,self.store.spec(name))
         if run['why']=='watchdog':
             self.store.add_kill(name,at)
             if self.store.kills_since(name,at-STORM_WINDOW_S*1000)>STORM_KILLS:
@@ -128,6 +136,15 @@ class NativeBackend:
         if run['restart'] and not self.store.failed(name) and name in self.store.native_units():
             self.spawn(self.units[name],self.store.spec(name))
         return alerts
+
+    def streak_alerts(self, name, run_id, outcome, code, spec):
+        """One alert when a streak reaches FAIL_STREAK, one when the first ok run ends it; nothing in between."""
+        if outcome=='ok':
+            before=self.store.failure_streak(name,before_id=run_id)
+            return ['🟢 AgentMesh control: `%s` ran ok again after %d failed runs.'%(name,before)] if before>=FAIL_STREAK else []
+        if outcome not in FAILURES or self.store.failure_streak(name)!=FAIL_STREAK: return []
+        log=(spec or {}).get('stderr') or 'its log'
+        return ['🟠 AgentMesh control: `%s` failed %d runs in a row (last: %s, exit %s). See %s.'%(name,FAIL_STREAK,outcome,code,log)]
 
     def reconcile(self):
         """Runs a previous supervisor left open: SIGTERM the orphan only if it is still that same process."""

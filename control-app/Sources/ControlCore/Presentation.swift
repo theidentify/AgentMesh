@@ -15,16 +15,6 @@ public struct UnitInfo: Equatable, Sendable, Decodable {
 public enum Severity: Int, Comparable, Sendable {
     case neutral = 0, ok, warning, error, offline
     public static func < (a: Severity, b: Severity) -> Bool { a.rawValue < b.rawValue }
-
-    /// SF Symbol for the menu bar (template-rendered, so shape carries the meaning, not colour).
-    public var symbol: String {
-        switch self {
-        case .neutral, .ok: "checkmark.circle"
-        case .warning: "exclamationmark.triangle"
-        case .error: "xmark.octagon"
-        case .offline: "questionmark.circle"
-        }
-    }
 }
 
 /// `missing` is neutral: a unit not installed on this Mac (retention, insight-tunnel today) is not an alarm.

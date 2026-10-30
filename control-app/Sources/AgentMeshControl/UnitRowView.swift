@@ -63,7 +63,7 @@ struct UnitRowView: View {
     }
 
     private var detail: String {
-        if let pid = row.pid { return "pid \(pid)" + (row.runtimeS.map { " · \($0)s" } ?? "") }
+        if let pid = row.pid { return "pid \(pid)" + (row.runtimeS.map { " · " + duration($0) } ?? "") }
         var parts: [String] = []
         if let exit = row.lastExit, exit != 0 { parts.append("exit \(exit)") }
         if let ago = age(row.job?.at) { parts.append(ago) }

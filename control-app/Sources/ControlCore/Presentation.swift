@@ -75,7 +75,7 @@ public enum Action: Equatable, Sendable, Hashable {
 
 /// Actions for one row. Nothing while a move of that unit is in flight; moves only for native-capable units.
 public func actions(for row: UnitRow, info: UnitInfo?) -> [Action] {
-    if row.move != nil { return [] }
+    if row.move != nil || row.health == .missing { return [] }  // nothing to start on a unit that is not installed
     var list: [Action] = [.start, .restart]
     if row.kind == "job" { list.append(.stop) }
     if row.health == .failed { list.append(.reset) }
@@ -92,6 +92,13 @@ public func moveSummary(_ unit: String, to: String) -> String {
 
 /// A move is over once it reached ok or any error code.
 public func moveFinished(_ state: String) -> Bool { !["deciding", "moving", "waiting"].contains(state) }
+
+/// A runtime in seconds as "45s", "12m 5s" or "1h 24m".
+public func duration(_ seconds: Int) -> String {
+    if seconds < 60 { return "\(seconds)s" }
+    if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+    return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+}
 
 /// Human-readable age of an ISO-8601 timestamp, for job rows.
 public func age(_ iso: String?, now: Date = Date()) -> String? {

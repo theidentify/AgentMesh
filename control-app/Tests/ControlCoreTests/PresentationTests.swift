@@ -67,3 +67,11 @@ func status(_ rows: [UnitRow]) -> Status {
     let raw = #"[{"kind":"job","label":"org.agentmesh.ingest","max_runtime_s":300,"name":"ingest","native_ok":true,"wrapped":true}]"#
     #expect(try decoder().decode([UnitInfo].self, from: Data(raw.utf8)) == [info(true)])
 }
+
+@Test func notInstalledHasNoActions() {
+    #expect(actions(for: row(health: .missing), info: info(true)) == [])
+}
+
+@Test func durations() {
+    #expect(duration(45) == "45s" && duration(725) == "12m 5s" && duration(5096) == "1h 24m")
+}

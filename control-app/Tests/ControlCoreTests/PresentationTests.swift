@@ -86,3 +86,25 @@ func status(_ rows: [UnitRow]) -> Status {
     #expect(mappingSummary("learn-x", to: "skip").hasPrefix("Keep learn-x out of the profile log."))
     #expect(ControlClient.presenceOps == ["unit.backend", "mapping.set"])
 }
+
+func jobRow(_ name: String, pid: Int?, health: Health = .running, kind: String = "job", move: Move? = nil) -> UnitRow {
+    UnitRow(name: name, kind: kind, backend: "native", health: health, pid: pid, runtimeS: nil, lastExit: 0, job: nil, move: move)
+}
+
+@Test func iconStatePriority() {
+    #expect(iconState(nil) == .offline)
+    #expect(iconState(status([row(health: .idle)])) == .ok)
+    #expect(iconState(status([jobRow("broker", pid: 9, kind: "service")])) == .ok)  // services always run
+    #expect(iconState(status([jobRow("catch-up", pid: 9)])) == .running)
+    var maintenance = status([jobRow("catch-up", pid: 9)])
+    maintenance = Status(units: maintenance.units, maintenance: Maintenance(on: true, reason: "x", since: nil), quota: maintenance.quota)
+    #expect(iconState(maintenance) == .maintenance)
+    #expect(iconState(status([jobRow("ingest", pid: nil, health: .idle, move: Move(moveId: "m", to: "native", state: "moving"))])) == .moving)
+    var pending = status([row(health: .idle)])
+    pending.projects = Projects(pending: ["learn-x"], scopes: ["skip"])
+    #expect(iconState(pending) == .needsYou)
+    pending = Status(units: [row(health: .failing)], maintenance: pending.maintenance, quota: pending.quota, projects: pending.projects)
+    #expect(iconState(pending) == .warning)
+    #expect(iconState(status([row(health: .failing), row(health: .down)])) == .error)
+    #expect(iconState(status([row(health: .missing)])) == .ok)
+}

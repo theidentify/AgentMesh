@@ -1,5 +1,6 @@
 // Polls the supervisor and sends actions. Socket calls block, so they run off the main actor; state changes on it.
 import ControlCore
+import AppKit
 import Foundation
 import Observation
 
@@ -21,6 +22,9 @@ final class StatusModel {
     var confirmingScope: [String: String] = [:]
     var projectErrors: [String: String] = [:]
     var loginError: String?
+    /// The running ring's angle, 0..<1; nil when nothing spins (not running, or Reduce Motion is on).
+    var spinPhase: CGFloat?
+    private var spinner: Task<Void, Never>?
     private var poller: Task<Void, Never>?
     private var watch = Watch()
     private let notifier = Notifier()
@@ -37,7 +41,25 @@ final class StatusModel {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh()
-                try? await Task.sleep(for: .seconds(self.menuOpen ? 5 : 30))
+                try? await Task.sleep(for: .seconds(self.pollInterval))
+            }
+        }
+    }
+
+    /// 2 s while a job runs (so the spin stops when it ends), 5 s with the menu open, 10 s otherwise: catch-up runs
+    /// last a few seconds, so a slower poll would rarely see one.
+    var pollInterval: Double { iconState(status) == .running ? 2 : menuOpen ? 5 : 10 }
+
+    /// Spins the running ring at 15 fps only while a job runs; Reduce Motion keeps it still.
+    func updateSpinner() {
+        let spin = iconState(status) == .running && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !spin { spinner?.cancel(); spinner = nil; spinPhase = nil; return }
+        guard spinner == nil else { return }
+        let start = Date()
+        spinner = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.spinPhase = CGFloat(Date().timeIntervalSince(start).truncatingRemainder(dividingBy: 1.2) / 1.2)
+                try? await Task.sleep(for: .milliseconds(66))
             }
         }
     }
@@ -57,6 +79,7 @@ final class StatusModel {
         case .failure(let error): status = nil; lastError = describe(error)
         }
         for notice in watch.update(status) { notifier.post(notice) }
+        updateSpinner()
         if infos.isEmpty, status != nil,
            case .success(let list) = await run({ try client.call("units", as: [UnitInfo].self) }) {
             infos = Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0) })

@@ -131,3 +131,65 @@ public enum JSONValue: Equatable, Sendable, Decodable, CustomStringConvertible {
 public func decoder() -> JSONDecoder {
     let d = JSONDecoder(); d.keyDecodingStrategy = .convertFromSnakeCase; return d
 }
+
+// keys.inventory, pinned by profile-log/tests/control/fixtures/inventory.json. Each part the supervisor could not read
+// is null; severity and kind stay strings so a newer supervisor's findings still decode.
+
+public struct Device: Equatable, Sendable, Decodable, Identifiable {
+    public let deviceId: String
+    public let revoked: Bool
+    public let thisDevice: Bool
+    public let name: String?
+    public let platform: String?
+    public let lastSeenAt: String?
+    public let lastSyncAt: String?
+    public var id: String { deviceId }
+}
+
+public struct AgentGrant: Equatable, Sendable, Decodable {
+    public let name: String?
+    public let keyRef: String
+    public let secretUntil: String?
+    public let read: [String]?
+    public let write: [String]?
+}
+
+/// A key file as lstat saw it; the supervisor never opens one. agent is absent for the keystore.
+public struct KeyFile: Equatable, Sendable, Decodable {
+    public let path: String
+    public let kind: String
+    public let mode: Int?
+    public let ownerOk: Bool?
+    public let size: Int?
+    public let modifiedAt: String?
+    public var agent: String? = nil
+}
+
+public struct Recovery: Equatable, Sendable, Decodable {
+    public let count: Int
+    public let latestIssuedAt: String?
+}
+
+public struct Backup: Equatable, Sendable, Decodable {
+    public let at: String
+    public let files: Int
+    public let bytes: Int
+}
+
+public struct Finding: Equatable, Sendable, Decodable, Identifiable {
+    public let id: String
+    public let severity: String
+    public let kind: String
+    public let subject: String
+}
+
+public struct Inventory: Equatable, Sendable, Decodable {
+    public let generatedAt: String
+    public let devices: [Device]?
+    public let agents: [AgentGrant]?
+    public let keyFiles: [KeyFile]
+    public let keystore: KeyFile
+    public let recovery: Recovery?
+    public let backup: Backup?
+    public let findings: [Finding]
+}

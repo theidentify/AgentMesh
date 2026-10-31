@@ -1,0 +1,96 @@
+{
+ "id": "fixture",
+ "ok": true,
+ "result": {
+  "agents": [
+   {
+    "key_ref": "a94b562495615595679e856f1388060c",
+    "name": "reader",
+    "read": [
+     "work/common"
+    ],
+    "secret_until": "2027-01-15T07:59:00+00:00",
+    "write": [
+     "work/common"
+    ]
+   }
+  ],
+  "backup": null,
+  "devices": [
+   {
+    "device_id": "d1",
+    "last_seen_at": "2027-01-15T08:00:00+00:00",
+    "last_sync_at": null,
+    "name": "mac",
+    "platform": "macos",
+    "revoked": false,
+    "this_device": true
+   },
+   {
+    "device_id": "d2",
+    "last_seen_at": "2027-01-14T08:00:00+00:00",
+    "last_sync_at": null,
+    "name": "mac",
+    "platform": "macos",
+    "revoked": false,
+    "this_device": false
+   }
+  ],
+  "findings": [
+   {
+    "id": "backup_never:profile",
+    "kind": "backup_never",
+    "severity": "warning",
+    "subject": "profile"
+   },
+   {
+    "id": "key_file_orphan:profile-log/agents/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.key",
+    "kind": "key_file_orphan",
+    "severity": "info",
+    "subject": "profile-log/agents/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.key"
+   }
+  ],
+  "generated_at": "2027-01-15T08:00:00+00:00",
+  "key_files": [
+   {
+    "agent": "reader",
+    "kind": "file",
+    "mode": 384,
+    "modified_at": "2027-01-15T08:00:00+00:00",
+    "owner_ok": true,
+    "path": "profile-log/agents/abababababababababababababababab.key",
+    "size": 1
+   },
+   {
+    "agent": null,
+    "kind": "file",
+    "mode": 384,
+    "modified_at": "2027-01-15T08:00:00+00:00",
+    "owner_ok": true,
+    "path": "profile-log/agents/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.key",
+    "size": 1
+   },
+   {
+    "agent": null,
+    "kind": "file",
+    "mode": 384,
+    "modified_at": "2027-01-15T08:00:00+00:00",
+    "owner_ok": true,
+    "path": "agents/importer.key",
+    "size": 1
+   }
+  ],
+  "keystore": {
+   "kind": "file",
+   "mode": 384,
+   "modified_at": "2027-01-15T08:00:00+00:00",
+   "owner_ok": true,
+   "path": "profile-log/keystore.sealed",
+   "size": 1
+  },
+  "recovery": {
+   "count": 1,
+   "latest_issued_at": "2026-12-16T08:00:00+00:00"
+  }
+ }
+}

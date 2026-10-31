@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from ..broker.audit import append_row
-from . import health, maintenance, projects, quota
+from . import health, inventory, maintenance, projects, quota
 from .moves import MoveError
 from .units import UNITS
 
@@ -24,6 +24,7 @@ OPS={  # op: (tier, exact argument names)
     'maintenance.on':(1,frozenset({'reason'})),'maintenance.off':(1,frozenset()),'diagnose':(1,frozenset()),
     'unit.backend':(2,frozenset({'unit','to'})),'moves.get':(0,frozenset({'move_id'})),
     'mapping.set':(2,frozenset({'project','target'})),
+    'keys.inventory':(0,frozenset()),
 }
 
 
@@ -97,6 +98,8 @@ class Control:
         return [dict(name=u.name,label=u.label,kind=u.kind,wrapped=u.wrapped,max_runtime_s=u.max_runtime_s,native_ok=u.native_ok) for u in self.units]
 
     def op_quota_status(self): return quota.status(self.layout)
+
+    def op_keys_inventory(self): return inventory.inventory(self.layout,time.time())
 
     def op_audit_tail(self, limit):
         if type(limit) is not int or not 1<=limit<=AUDIT_TAIL_MAX: raise OpError('bad_args')

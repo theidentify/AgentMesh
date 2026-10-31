@@ -69,6 +69,7 @@ public struct ControlClient: Sendable {
     }
 
     public func status() throws(ControlError) -> Status { try call("status", as: Status.self) }
+    public func inventory() throws(ControlError) -> Inventory { try call("keys.inventory", as: Inventory.self) }
 
     func exchange(_ body: Data, timeout: TimeInterval) throws(ControlError) -> Data {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)

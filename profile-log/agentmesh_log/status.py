@@ -1,5 +1,7 @@
 """Best-effort content-free status for Insight; never an authority source."""
 from collections import Counter
+import hashlib
+import re
 from datetime import datetime, timezone
 from . import settings
 from .broker.keystore import atomic_write
@@ -38,6 +40,26 @@ def overview(state, *, heartbeats=None, last_sync=None):
         devices=rows)
 
 
+KEY_REF_DOMAIN=b'AgentMesh/key-inventory-ref/v1\x00'
+
+
+def key_ref(agent_id):
+    """The status file never holds an agent_id; the supervisor derives the same ref from a key file's name."""
+    return hashlib.sha256(KEY_REF_DOMAIN+agent_id.encode('ascii')).hexdigest()[:32]
+
+
+def keys(state):
+    """Key inventory for the control plane: names, refs and times only, never ids, key bytes or public keys."""
+    from .heartbeats import iso
+    registry=state.registry(); issued=[r['issued_at'] for r in registry.recoveries.values()]
+    # Every grant, named or not, so a key file is never reported as orphaned just because settings never named it.
+    named={aid:name for name,aid in state.control.get('agent_names',{}).items()}
+    agents=sorted((dict(name=named.get(aid),key_ref=key_ref(aid),secret_until=iso(g.secret_until or None)) for aid,g in state.grants.items()),
+        key=lambda a:a['key_ref'])
+    return dict(generated_at=timestamp(),agents=agents,
+        recoveries=dict(count=len(issued),latest_issued_at=iso(max(issued)) if issued else None))
+
+
 def migration(database, mapping):
     from .migrate.mapping import plan, project_targets
     from .migrate.source import rows
@@ -72,6 +94,7 @@ def valid(value):
     def seq(f): return lambda v:type(v) is list and all(f(x) for x in v)
     def counts(allowed): return lambda v:type(v) is dict and set(v)<=set(allowed) and all(count(n) for n in v.values())
     from .heartbeats import name_valid, iso_valid, PLATFORMS, OUTCOMES as SYNC_OUTCOMES
+    when=lambda v:v is None or iso_valid(v)
     schemas={
         'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
@@ -81,6 +104,10 @@ def valid(value):
                 name=lambda v:v is None or name_valid(v),platform=lambda v:v is None or v in PLATFORMS,
                 last_seen_at=lambda v:v is None or iso_valid(v),last_sync_at=lambda v:v is None or iso_valid(v),
                 last_sync_outcome=lambda v:v is None or v in SYNC_OUTCOMES))(v)))),
+        'keys':obj(dict(generated_at=text,
+            agents=seq(obj(dict(name=nullable,key_ref=lambda v:type(v) is str and re.fullmatch('[0-9a-f]{32}',v) is not None,secret_until=when))),
+            recoveries=obj(dict(count=count,latest_issued_at=when)))),
+        'last_backup':obj(dict(at=iso_valid,files=count,bytes=count)),
         'migration':obj(dict(generated_at=text,projects=seq(obj(dict(project=nullable,items=count,summaries=count,target=text))),unmapped=seq(text))),
         'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update')))),
         'last_catch_up':obj(dict(at=text,outcome=text,outcomes=counts(OUTCOMES),skipped=counts(SKIPPED),
@@ -92,7 +119,7 @@ def valid(value):
 def applied(base, outcome, changes, state=None, value=None, mapping=None):
     try:
         sections=dict(last_apply=dict(at=timestamp(),outcome=outcome,changes=dict(Counter(c['kind'] for c in changes))))
-        if state is not None: sections['overview']=overview(state)
+        if state is not None: sections.update(overview=overview(state),keys=keys(state))
         database=(value or {}).get('bridge',{}).get('database')
         if database and mapping:
             from .migrate.mapping import Mapping

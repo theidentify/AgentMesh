@@ -14,7 +14,15 @@ final class StatusModel {
     var working: Set<String> = []
     var audit: [AuditRow] = []
     var auditError: String?
-    var menuOpen = false { didSet { if menuOpen { Task { await refresh() } } } }
+    /// keys.inventory, polled every inventoryInterval. nil until the first answer, or after a failed poll.
+    var inventory: Inventory?
+    var inventoryError: String?
+    /// false once the supervisor answers unknown_op (older than M3b): the Keys & devices section then hides.
+    var inventorySupported = true
+    var keysOpen = false
+    private var inventoryAt: Date?
+    static let inventoryInterval: TimeInterval = 60
+    var menuOpen = false { didSet { if menuOpen { Task { await refresh(inventory: true) } } } }
     // View state lives here: this toolchain (CommandLineTools) has no SwiftUIMacros plugin, so no @State.
     var reason = ""
     var askingReason = false
@@ -49,6 +57,7 @@ final class StatusModel {
     /// 2 s while a job runs (so the spin stops when it ends), 5 s with the menu open, 10 s otherwise: catch-up runs
     /// last a few seconds, so a slower poll would rarely see one.
     var pollInterval: Double { iconState(status) == .running ? 2 : menuOpen ? 5 : 10 }
+    var icon: IconState { iconState(status, inventory: inventory) }
 
     /// Spins the running ring at 15 fps only while a job runs; Reduce Motion keeps it still.
     func updateSpinner() {
@@ -72,13 +81,23 @@ final class StatusModel {
         }.value
     }
 
-    func refresh() async {
+    /// inventory: true fetches keys.inventory now (the menu just opened); otherwise at most once a minute.
+    func refresh(inventory force: Bool = false) async {
         let client = client
         switch await run({ try client.status() }) {
         case .success(let value): status = value; lastError = nil
         case .failure(let error): status = nil; lastError = describe(error)
         }
         for notice in watch.update(status) { notifier.post(notice) }
+        if status != nil, inventorySupported, force || inventoryAt.map({ Date().timeIntervalSince($0) >= Self.inventoryInterval }) ?? true {
+            inventoryAt = Date()
+            switch await run({ try client.inventory() }) {
+            case .success(let value): inventory = value; inventoryError = nil
+            case .failure(.server(code: "unknown_op", _)): inventorySupported = false; inventory = nil
+            case .failure(let error): inventory = nil; inventoryError = describe(error)
+            }
+            for notice in watch.update(inventory: inventory) { notifier.post(notice) }
+        }
         updateSpinner()
         if infos.isEmpty, status != nil,
            case .success(let list) = await run({ try client.call("units", as: [UnitInfo].self) }) {

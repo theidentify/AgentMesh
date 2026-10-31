@@ -127,7 +127,8 @@ public enum IconState: String, CaseIterable, Sendable {
     case offline, error, warning, needsYou, moving, maintenance, running, ok
 }
 
-public func iconState(_ status: Status?) -> IconState {
+/// A warning finding in the key inventory ranks below broken units and a project waiting for its scope.
+public func iconState(_ status: Status?, inventory: Inventory? = nil) -> IconState {
     guard let status else { return .offline }
     switch overall(status) {
     case .error, .offline: return .error
@@ -135,6 +136,7 @@ public func iconState(_ status: Status?) -> IconState {
     default: break
     }
     if !(status.projects?.pending ?? []).isEmpty { return .needsYou }
+    if inventory?.findings.contains(where: { $0.severity == "warning" }) == true { return .warning }
     if status.units.contains(where: { $0.move != nil }) { return .moving }
     if status.maintenance.on { return .maintenance }
     // Services always have a pid; a job with one is running right now.
@@ -147,4 +149,50 @@ public func versionText(short: String?, build: String?) -> String {
     guard let short, !short.isEmpty else { return "dev build" }
     guard let build, !build.isEmpty, build != short else { return "v" + short }
     return "v\(short) (\(build))"
+}
+
+// MARK: key inventory
+
+/// A file mode as four octal digits: 384 -> "0600".
+public func modeText(_ mode: Int?) -> String {
+    guard let mode else { return "–" }
+    let digits = String(mode, radix: 8)
+    return String(repeating: "0", count: max(0, 4 - digits.count)) + digits
+}
+
+public func sortedFindings(_ findings: [Finding]) -> [Finding] {
+    let rank = ["warning": 0, "info": 1]
+    return findings.enumerated().sorted { (rank[$0.element.severity] ?? 2, $0.offset) < (rank[$1.element.severity] ?? 2, $1.offset) }
+        .map(\.element)
+}
+
+func deviceName(_ id: String, in inventory: Inventory) -> String {
+    inventory.devices?.first { $0.deviceId == id }?.name ?? "Device \(id)"
+}
+
+/// One line per finding, for the menu and the notification title.
+public func findingText(_ finding: Finding, in inventory: Inventory) -> String {
+    let s = finding.subject
+    switch finding.kind {
+    case "device_stale": return "\(deviceName(s, in: inventory)) has not been seen for over 14 days"
+    case "key_file_unsafe": return "\(s) is not a private, owner-only file"
+    case "keystore_unsafe": return "The broker keystore (\(s)) is missing or not owner-only"
+    case "key_file_orphan": return "\(s) matches no grant"
+    case "secret_grant_active": return "A secret grant is open (\(inventory.agents?.first { $0.keyRef == s }?.name ?? "unnamed agent"))"
+    case "no_recovery": return "No recovery kit is set up"
+    case "backup_never": return "No backup recorded yet"
+    case "backup_old": return "The last backup is over 30 days old"
+    case "inventory_stale": return "The broker has not refreshed the key inventory for a day"
+    default: return "\(finding.kind): \(s)"
+    }
+}
+
+/// "MacBook Pro · macos · seen 3d ago", "d1 · this Mac", "old · windows · revoked".
+public func deviceLine(_ device: Device, now: Date = Date()) -> String {
+    var parts = [device.name ?? device.deviceId]
+    if let platform = device.platform { parts.append(platform) }
+    if device.thisDevice { parts.append("this Mac") }
+    else if device.revoked { parts.append("revoked") }
+    else { parts.append(age(device.lastSeenAt, now: now).map { "seen " + $0 } ?? "never seen") }
+    return parts.joined(separator: " · ")
 }

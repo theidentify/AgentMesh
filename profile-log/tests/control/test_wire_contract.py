@@ -29,3 +29,27 @@ def test_status_shape(tmp_path):
     assert [r['name'] for r in rows]==[r['name'] for r in fixture_rows]
     assert all(set(r)==set(fixture_rows[0]) for r in rows+fixture_rows)
     for nested in ('job','move'): assert set(first(rows,nested))==set(first(fixture_rows,nested))
+
+
+INVENTORY=Path(__file__).parent/'fixtures'/'inventory.json'
+
+
+def live_inventory(tmp_path):
+    from .test_inventory import NOW, AID, OTHER, key, sections
+    from agentmesh_log import status
+    layout=Layout(tmp_path).ensure()
+    key(layout.agent_keys/(AID+'.key')); key(layout.agent_keys/(OTHER+'.key')); key(layout.named_keys/'importer.key'); key(layout.keystore)
+    value=sections(last_backup=None); value['keys']['agents'][0]['secret_until']=value['keys']['generated_at']
+    write_json(layout.profile_status,dict(format=status.FORMAT,updated_at=value['keys']['generated_at'],**value))
+    from agentmesh_log.control import inventory
+    return dict(id='fixture',ok=True,result=inventory.inventory(layout,NOW))
+
+
+def test_inventory_shape(tmp_path):
+    want,got=json.loads(INVENTORY.read_text()),live_inventory(tmp_path)
+    assert set(got)==set(want) and set(got['result'])==set(want['result'])
+    for section in ('devices','agents','key_files','findings'):
+        assert got['result'][section] and all(set(r)==set(want['result'][section][0]) for r in got['result'][section]+want['result'][section])
+    for section in ('keystore','recovery'): assert set(got['result'][section])==set(want['result'][section])
+    # The fixture has a null backup, so the app's decoder covers the nullable parts too.
+    assert want['result']['backup'] is None and {f['severity'] for f in want['result']['findings']}=={'warning','info'}

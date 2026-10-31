@@ -25,7 +25,7 @@ struct AgentMeshControlApp: App {
                 .onAppear { model.menuOpen = true }
                 .onDisappear { model.menuOpen = false }
         } label: {
-            Image(nsImage: MenuBarIcon.image(iconState(model.status), phase: model.spinPhase))
+            Image(nsImage: MenuBarIcon.image(model.icon, phase: model.spinPhase))
                 .task { model.start() }
         }
         .menuBarExtraStyle(.window)

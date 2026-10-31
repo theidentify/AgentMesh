@@ -228,7 +228,7 @@ def test_sync_overview_refresh(env,monkeypatch):
     from agentmesh_log.broker import service
     root,home,store=env; calls=[]; rows=[]; clock=[1000.0]
     monkeypatch.setattr(service.time,'monotonic',lambda:clock[0])
-    def on_overview(value): calls.append(value); status.write(root,overview=value)
+    def on_overview(sections): calls.append(sections); status.write(root,**sections)
     broker=service.Broker(home,store=store,on_sync=rows.append,on_overview=on_overview)
     try:
         status.synced(root,sync_row()); broker.sync_attempt(broker_remote(),60)
@@ -237,6 +237,7 @@ def test_sync_overview_refresh(env,monkeypatch):
         assert len(value['overview']['devices'])==1 and row['device_id']==device and not row['revoked']
         assert row['this_device'] and row['name'] and row['last_sync_outcome']=='remote_error'
         assert value['overview']['profiles'][0]['name']=='work' and value['last_sync']['outcome']=='ok'
+        assert value['keys']['recoveries']==dict(count=0,latest_issued_at=None)
         assert status.valid(value) and rows
         broker.sync_attempt(broker_remote(),60); assert len(calls)==1
         clock[0]+=60; broker.sync_attempt(broker_remote(),60); assert len(calls)==2

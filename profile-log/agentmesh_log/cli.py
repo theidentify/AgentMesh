@@ -297,7 +297,8 @@ def execute_migration(args, *, backend=None):
             if args.action=='catch-up':
                 import os
                 cache=Path(os.environ.get('AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE',str(args.db)+'.profile-log.catch-up.json'))
-            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache,binding=binding)
+            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache,binding=binding,
+                hold_unmapped=args.action=='catch-up')
         finally: client.close()
         if args.action=='catch-up': caught_up(args.db,mapping,result)
         return result

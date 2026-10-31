@@ -24,7 +24,7 @@ def first(rows, key): return next(r[key] for r in rows if r[key] is not None)
 def test_status_shape(tmp_path):
     want,got=json.loads(FIXTURE.read_text()),live(tmp_path)
     assert set(got)==set(want) and set(got['result'])==set(want['result'])
-    for section in ('maintenance','quota'): assert set(got['result'][section])==set(want['result'][section])
+    for section in ('maintenance','quota','projects'): assert set(got['result'][section])==set(want['result'][section])
     rows,fixture_rows=got['result']['units'],want['result']['units']
     assert [r['name'] for r in rows]==[r['name'] for r in fixture_rows]
     assert all(set(r)==set(fixture_rows[0]) for r in rows+fixture_rows)

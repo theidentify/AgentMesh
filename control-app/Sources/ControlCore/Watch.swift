@@ -8,6 +8,9 @@ public struct Notice: Equatable, Sendable {
     public let id: String
     public let title: String
     public let body: String
+    /// Set for a new project waiting for a scope: the notification then offers one button per scope.
+    public var project: String? = nil
+    public var scopes: [String] = []
 }
 
 public struct Watch: Sendable {
@@ -17,6 +20,7 @@ public struct Watch: Sendable {
     var notified: Set<String> = []
     var offlineSince: Date?
     var offlineNotified = false
+    var askedProjects: Set<String> = []
 
     public init(warningDelay: TimeInterval = 600, offlineDelay: TimeInterval = 120) {
         self.warningDelay = warningDelay; self.offlineDelay = offlineDelay
@@ -38,6 +42,14 @@ public struct Watch: Sendable {
             notices.append(Notice(id: "supervisor", title: "AgentMesh supervisor is back", body: "control.sock answers again."))
         }
         offlineSince = nil; offlineNotified = false
+        let pending = Set(status.projects?.pending ?? [])
+        for project in (status.projects?.pending ?? []) where !askedProjects.contains(project) {
+            askedProjects.insert(project)
+            notices.append(Notice(id: "project." + project, title: "New project needs a scope",
+                                  body: "\(project): choose where its memory goes. Until then catch-up holds it back.",
+                                  project: project, scopes: status.projects?.scopes ?? []))
+        }
+        askedProjects.formIntersection(pending)
         for row in status.units {
             let level = severity(row.health)
             if level >= .warning {

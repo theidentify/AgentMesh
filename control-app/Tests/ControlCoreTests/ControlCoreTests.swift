@@ -154,6 +154,7 @@ func fixture() throws -> Data {
     #expect(status.units.first { $0.name == "ingest" }?.job?.ok == true)
     #expect(status.units.first { $0.name == "broker" }?.pid == 4242)
     #expect(status.maintenance == Maintenance(on: false, reason: nil, since: nil) && status.quota.calls == 0)
+    #expect(status.projects == Projects(pending: ["Users-example-new-project"], scopes: ["personal/common", "work/common", "skip"]))
 }
 
 @Test func unknownHealthDecodes() throws {

@@ -33,7 +33,17 @@ The installed app posts macOS notifications. It is the alert channel on a Mac wi
 | A unit that was notified about becomes healthy | Once ("recovered") |
 | `control.sock` does not answer for 2 minutes | Once, and once more when it answers again |
 
+| catch-up holds back a new project with no scope | Once per project, with a button per scope (Personal, Work, Skip) |
+
 The app checks every 30 s with its menu closed and every 5 s with it open.
+
+**New projects.** When an agent starts working in a project the migration mapping does not cover, catch-up imports
+everything else and holds that project's memory back.
+- The app asks once, in a notification and in the menu ("New project needs a scope"), where its memory should go.
+- Choosing a scope sends `mapping.set`, and the supervisor raises its own Touch ID / password sheet before it adds the
+  mapping. The held-back memory imports on the next catch-up.
+- `mapping.set` only adds a scope for a waiting project, using a scope the mapping already has (or skip). It never
+  changes an existing mapping.
 
 - Units that are not installed never notify.
 - macOS asks for permission on the first launch of the installed app.

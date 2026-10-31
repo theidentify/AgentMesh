@@ -75,3 +75,14 @@ func status(_ rows: [UnitRow]) -> Status {
 @Test func durations() {
     #expect(duration(45) == "45s" && duration(725) == "12m 5s" && duration(5096) == "1h 24m")
 }
+
+@Test func scopeTitles() {
+    #expect(scopeTitle("personal/common") == "Personal" && scopeTitle("work/common") == "Work")
+    #expect(scopeTitle("work/secret") == "Work / secret" && scopeTitle("skip") == "Skip")
+}
+
+@Test func mappingText() {
+    #expect(mappingSummary("learn-x", to: "work/common").contains("Agents that may read work/common will see it"))
+    #expect(mappingSummary("learn-x", to: "skip").hasPrefix("Keep learn-x out of the profile log."))
+    #expect(ControlClient.presenceOps == ["unit.backend", "mapping.set"])
+}

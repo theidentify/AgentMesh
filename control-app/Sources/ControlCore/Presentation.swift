@@ -103,3 +103,20 @@ public func age(_ iso: String?, now: Date = Date()) -> String? {
     if seconds < 86400 { return "\(seconds / 3600)h ago" }
     return "\(seconds / 86400)d ago"
 }
+
+/// A scope as a button title: personal/common -> Personal, work/common -> Work, work/x -> Work / x, skip -> Skip.
+public func scopeTitle(_ scope: String) -> String {
+    if scope == "skip" { return "Skip" }
+    let parts = scope.split(separator: "/").map(String.init)
+    guard let first = parts.first else { return scope }
+    let head = first.prefix(1).uppercased() + first.dropFirst()
+    let rest = parts.dropFirst().filter { $0 != "common" }
+    return ([head] + rest).joined(separator: " / ")
+}
+
+/// The confirmation shown before mapping.set; the supervisor's own sheet carries the authoritative summary.
+public func mappingSummary(_ project: String, to scope: String) -> String {
+    let what = scope == "skip" ? "Keep \(project) out of the profile log."
+        : "Send memory from \(project) to \(scope). Agents that may read \(scope) will see it."
+    return what + "\n\nThe AgentMesh supervisor will ask for Touch ID or your Mac password."
+}

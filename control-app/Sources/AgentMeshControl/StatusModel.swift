@@ -18,10 +18,15 @@ final class StatusModel {
     var reason = ""
     var askingReason = false
     var confirmingMove: [String: String] = [:]
+    var confirmingScope: [String: String] = [:]
+    var projectErrors: [String: String] = [:]
     var loginError: String?
     private var poller: Task<Void, Never>?
     private var watch = Watch()
     private let notifier = Notifier()
+
+    /// One model for the app and its notification actions (the delegate is created by AppKit, not by SwiftUI).
+    static let shared = StatusModel()
 
     init(client: ControlClient = ControlClient()) { self.client = client }
 
@@ -86,6 +91,18 @@ final class StatusModel {
             case .failure(let error): rowErrors[unit] = describe(error); return
             }
         }
+    }
+
+    /// mapping.set: the supervisor raises its own Touch ID / password sheet before it writes the mapping.
+    func choose(_ scope: String, for project: String) async {
+        let client = client
+        working.insert("project." + project); projectErrors[project] = nil
+        defer { working.remove("project." + project) }
+        let args: [String: Arg] = ["project": .string(project), "target": .string(scope)]
+        if case .failure(let error) = await run({ try client.call("mapping.set", args, as: MappingSet.self) }) {
+            projectErrors[project] = describe(error)
+        }
+        await refresh()
     }
 
     func setMaintenance(on: Bool, reason: String) async {

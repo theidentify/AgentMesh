@@ -59,3 +59,30 @@ func units(_ pairs: (String, Health)...) -> Status { status(pairs.map { row($0.0
     var watch = Watch()
     #expect(watch.update(units(("ingest", .failing), ("broker", .down)), now: at(0)).map(\.title) == ["AgentMesh: broker is down"])
 }
+
+func withProjects(_ pending: [String]) -> Status {
+    var value = units(("ingest", .idle))
+    value.projects = Projects(pending: pending, scopes: ["personal/common", "work/common", "skip"])
+    return value
+}
+
+@Test func newProjectAskedOnce() {
+    var watch = Watch()
+    let first = watch.update(withProjects(["learn-x"]), now: at(0))
+    #expect(first.count == 1 && first[0].project == "learn-x" && first[0].scopes == ["personal/common", "work/common", "skip"])
+    #expect(first[0].title == "New project needs a scope" && first[0].body.hasPrefix("learn-x:"))
+    #expect(watch.update(withProjects(["learn-x"]), now: at(30)).isEmpty)
+    #expect(watch.update(withProjects(["learn-x", "other"]), now: at(60)).map(\.project) == ["other"])
+}
+
+@Test func mappedProjectCanBeAskedAgainLater() {
+    var watch = Watch()
+    _ = watch.update(withProjects(["learn-x"]), now: at(0))
+    #expect(watch.update(withProjects([]), now: at(30)).isEmpty)
+    #expect(watch.update(withProjects(["learn-x"]), now: at(60)).count == 1)
+}
+
+@Test func olderSupervisorHasNoProjects() {
+    var watch = Watch()
+    #expect(watch.update(units(("ingest", .idle)), now: at(0)).isEmpty)
+}

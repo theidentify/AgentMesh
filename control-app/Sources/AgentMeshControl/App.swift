@@ -3,10 +3,14 @@
 import AppKit
 import ControlCore
 import SwiftUI
+import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let banners = ForegroundBanners()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)  // no Dock icon, also when run unbundled from swift run
+        if Bundle.main.bundleIdentifier != nil { UNUserNotificationCenter.current().delegate = banners }
     }
 }
 

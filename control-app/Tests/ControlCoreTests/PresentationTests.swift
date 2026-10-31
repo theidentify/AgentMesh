@@ -108,3 +108,10 @@ func jobRow(_ name: String, pid: Int?, health: Health = .running, kind: String =
     #expect(iconState(status([row(health: .failing), row(health: .down)])) == .error)
     #expect(iconState(status([row(health: .missing)])) == .ok)
 }
+
+@Test func versions() {
+    #expect(versionText(short: "0.1", build: "88c8598") == "v0.1 (88c8598)")
+    #expect(versionText(short: "0.1", build: "88c8598-dirty") == "v0.1 (88c8598-dirty)")
+    #expect(versionText(short: "0.1", build: nil) == "v0.1" && versionText(short: "0.1", build: "0.1") == "v0.1")
+    #expect(versionText(short: nil, build: "x") == "dev build" && versionText(short: "", build: nil) == "dev build")
+}

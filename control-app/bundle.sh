@@ -11,14 +11,19 @@ HOME_DIR="${AGENTMESH_HOME:-$HOME/.agentmesh}"
 APP_NAME="AgentMesh Control.app"
 OUT="build"
 REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# A build from uncommitted changes says so in its version, so the menu never claims a commit it does not match.
+[ -z "$(git status --porcelain -- . 2>/dev/null)" ] || REV="$REV-dirty"
 
 swift build -c release --product AgentMeshControl
 swift build -c release --product agentmesh-presence
 BIN="$(swift build -c release --show-bin-path)"
 
-rm -rf "$OUT/$APP_NAME"
-mkdir -p "$OUT/$APP_NAME/Contents/MacOS"
+rm -rf "$OUT/$APP_NAME" "$OUT/AppIcon.iconset"
+mkdir -p "$OUT/$APP_NAME/Contents/MacOS" "$OUT/$APP_NAME/Contents/Resources"
 cp "$BIN/AgentMeshControl" "$OUT/$APP_NAME/Contents/MacOS/AgentMeshControl"
+# The app icon (notifications, System Settings, Finder) is drawn from code, so the repo holds no binary image.
+swift Scripts/make-icon.swift "$OUT/AppIcon.iconset"
+iconutil -c icns "$OUT/AppIcon.iconset" -o "$OUT/$APP_NAME/Contents/Resources/AppIcon.icns"
 cat > "$OUT/$APP_NAME/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -26,6 +31,7 @@ cat > "$OUT/$APP_NAME/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>org.agentmesh.control-app</string>
   <key>CFBundleName</key><string>AgentMesh Control</string>
   <key>CFBundleExecutable</key><string>AgentMeshControl</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleVersion</key><string>$REV</string>

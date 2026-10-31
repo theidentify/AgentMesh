@@ -40,7 +40,39 @@ def test_presence(tmp_path,monkeypatch,capsys,action,op):
 
 @pytest.mark.parametrize('code',['denied','busy','invalid_request','unavailable'])
 def test_other(code):
-    with pytest.raises(ValueError,match='broker unavailable'): run.checked(dict(error=code))
+    with pytest.raises(ValueError,match='broker unavailable') as error: run.checked(dict(error=code))
+    assert error.value.status_code=='broker_'+code and run.error_code(error.value)=='broker_'+code
+
+
+@pytest.mark.parametrize('response',[dict(error='weird'),dict(error=None),'not a dict',None],ids=['unknown','none','str','null'])
+def test_unknown_broker_error(response):
+    # Only the broker's known codes pass through; anything else is one fixed identifier, never echoed text.
+    with pytest.raises(ValueError) as error: run.checked(response)
+    assert error.value.status_code=='broker_error'
+
+
+def test_error_code_falls_back_to_type():
+    assert run.error_code(KeyError('x'))=='KeyError' and run.error_code(clients.BrokerUnreachable())=='BrokerUnreachable'
+
+
+def test_busy_broker_reported(tmp_path,monkeypatch,capsys):
+    # The 2026-10-28 incident: a stale home lock made every broker request busy; catch-up must say so.
+    monkeypatch.setenv('AGENTMESH_HOME',str(tmp_path/'mesh'))
+    monkeypatch.setattr(source,'binding_for',lambda db: dict(staging_node='test'))
+    class Busy:
+        def request(self,req): return dict(error='busy')
+        def close(self): pass
+    monkeypatch.setattr(clients.BrokerClient,'from_file',lambda path: Busy())
+    from agentmesh_log.migrate.mapping import Mapping
+    monkeypatch.setattr(Mapping,'load',lambda path: SimpleNamespace(targets=set(),target=lambda row:'work'))
+    from agentmesh_log import status
+    seen={}
+    monkeypatch.setattr(status,'write',lambda base,**sections: seen.update(sections))
+    argv=['migrate','catch-up','--db',str(tmp_path/'db'),'--agent-key',str(tmp_path/'key'),'--mapping','unused']
+    assert cli.main(argv)==1
+    output=capsys.readouterr()
+    assert json.loads(output.out)==dict(error='broker_busy') and not output.err
+    assert seen['last_catch_up']['errors']==['broker_busy'] and seen['last_catch_up']['outcome']=='error'
 
 
 @pytest.mark.parametrize('command',['recall','remember','migrate'])

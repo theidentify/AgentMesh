@@ -20,9 +20,26 @@ def local_entry(entry,device):
     return source.get('device')==device if 'device' in source else entry.get('device')==device
 
 
+BROKER_CODES=frozenset(('busy','denied','invalid_request','unavailable'))
+
+
+class BrokerRefused(ValueError):
+    """The broker answered with an error. Keeps its code, so catch-up reports `broker_busy` instead of `unavailable`:
+    90 failed runs on 2026-10-28 said only "unavailable" while a stale home lock made every request busy."""
+    def __init__(self, response):
+        super().__init__('broker unavailable')
+        code=response.get('error') if type(response) is dict else None
+        self.status_code='broker_'+code if code in BROKER_CODES else 'broker_error'
+
+
+def error_code(exc):
+    """A short identifier for status and logs: the broker's own code when it refused, else the exception type."""
+    return getattr(exc,'status_code',None) or type(exc).__name__
+
+
 def checked(response):
     if type(response) is dict and response.get('error')=='presence_required': raise PresenceRequired(response)
-    if type(response) is not dict or 'error' in response: raise ValueError('broker unavailable')
+    if type(response) is not dict or 'error' in response: raise BrokerRefused(response)
     return response
 
 
@@ -121,7 +138,7 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
         except Exception as exc:
             if isinstance(exc,(PresenceRequired,BrokerUnreachable)): raise
             if isinstance(exc,ValueError) and str(exc).startswith(('staging ','invalid staging ')): raise
-            errors.append(type(exc).__name__); break
+            errors.append(error_code(exc)); break
     if cache is not None:
         if refs is not None: confirmed={**known,**confirmed}
         try: save_cache(cache,confirmed)

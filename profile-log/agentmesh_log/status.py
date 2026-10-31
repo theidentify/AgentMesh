@@ -104,10 +104,11 @@ def applied(base, outcome, changes, state=None, value=None, mapping=None):
 
 def caught_up(database, mapping, result=None, *, outcome=None, error=None):
     try:
+        from .migrate.run import error_code
         result=result or {}
         last=dict(at=timestamp(),outcome=outcome or ('unmapped' if result.get('unmapped') else 'error' if result.get('errors') else 'ok'),
             outcomes=folded(result.get('outcomes'),OUTCOMES),skipped=folded(result.get('skipped'),SKIPPED),unmapped=result.get('unmapped',[]),
-            errors=[type(error).__name__] if error is not None else result.get('errors',[]),
+            errors=[error_code(error)] if error is not None else result.get('errors',[]),
             **{k:result.get(k,0) for k in ('busy_retries','timestamp_fallback','secret_labelled')})
         sections=dict(last_catch_up=last)
         try: sections['migration']=migration(database,mapping)

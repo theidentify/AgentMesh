@@ -120,3 +120,24 @@ public func mappingSummary(_ project: String, to scope: String) -> String {
         : "Send memory from \(project) to \(scope). Agents that may read \(scope) will see it."
     return what + "\n\nThe AgentMesh supervisor will ask for Touch ID or your Mac password."
 }
+
+/// What the menu bar icon shows, most important first: an unreachable supervisor, then broken units, then what needs
+/// the owner, then what the supervisor is doing.
+public enum IconState: String, CaseIterable, Sendable {
+    case offline, error, warning, needsYou, moving, maintenance, running, ok
+}
+
+public func iconState(_ status: Status?) -> IconState {
+    guard let status else { return .offline }
+    switch overall(status) {
+    case .error, .offline: return .error
+    case .warning: return .warning
+    default: break
+    }
+    if !(status.projects?.pending ?? []).isEmpty { return .needsYou }
+    if status.units.contains(where: { $0.move != nil }) { return .moving }
+    if status.maintenance.on { return .maintenance }
+    // Services always have a pid; a job with one is running right now.
+    if status.units.contains(where: { $0.kind == "job" && $0.pid != nil }) { return .running }
+    return .ok
+}

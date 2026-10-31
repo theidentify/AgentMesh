@@ -21,6 +21,24 @@ supervisor uses to ask for Touch ID or your Mac password.
   - Approve a sheet only if you started that move.
 - The supervisor allows at most 3 presence prompts per 10 minutes, denials included, and one move at a time.
 
+## Menu bar icon
+
+Three nodes and a hub ("A green"), with one corner badge for the most important state:
+
+| State | Icon |
+|---|---|
+| Supervisor unreachable | Faded mark, empty ring |
+| A unit failed, down or in conflict | Red dot |
+| A unit failing or stuck | Orange dot |
+| A new project needs a scope | Blue dot with a question mark |
+| A unit is moving between launchd and the supervisor | Crossing arrows |
+| Maintenance mode | Pause bars |
+| A job is running | Green dot, and the hub turns into a spinning ring (still under Reduce Motion) |
+| All healthy | Green dot |
+
+The app polls every 10 s, every 5 s with the menu open, and every 2 s while a job runs, so short runs such as catch-up
+(a few seconds) still show.
+
 ## Notifications
 
 The installed app posts macOS notifications. It is the alert channel on a Mac without a Discord webhook

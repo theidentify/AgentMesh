@@ -11,6 +11,8 @@ HOME_DIR="${AGENTMESH_HOME:-$HOME/.agentmesh}"
 APP_NAME="AgentMesh Control.app"
 OUT="build"
 REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# A build from uncommitted changes says so in its version, so the menu never claims a commit it does not match.
+[ -z "$(git status --porcelain -- . 2>/dev/null)" ] || REV="$REV-dirty"
 
 swift build -c release --product AgentMeshControl
 swift build -c release --product agentmesh-presence

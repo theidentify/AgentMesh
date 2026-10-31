@@ -128,6 +128,10 @@ struct MenuView: View {
                 Button("Quit") { NSApp.terminate(nil) }
             }
             if let error = model.loginError { Text(error).font(.caption).foregroundStyle(.red) }
+            Text("AgentMesh Control " + versionText(
+                short: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String))
+                .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
         }
     }
 

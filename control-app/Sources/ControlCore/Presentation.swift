@@ -141,3 +141,10 @@ public func iconState(_ status: Status?) -> IconState {
     if status.units.contains(where: { $0.kind == "job" && $0.pid != nil }) { return .running }
     return .ok
 }
+
+/// The app's version for the menu: "v0.1 (88c8598)" from the bundle's Info.plist, or "dev build" when unbundled.
+public func versionText(short: String?, build: String?) -> String {
+    guard let short, !short.isEmpty else { return "dev build" }
+    guard let build, !build.isEmpty, build != short else { return "v" + short }
+    return "v\(short) (\(build))"
+}

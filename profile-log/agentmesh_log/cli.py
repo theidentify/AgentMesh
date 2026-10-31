@@ -422,6 +422,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
+        if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy
         if code=='presence_required' and args.command=='migrate' and sys.stderr is not None:
             from .settings import root
             home=Path(root())/'profile-log'

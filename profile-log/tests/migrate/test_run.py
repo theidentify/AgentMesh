@@ -243,3 +243,23 @@ def test_cache_ledger_moved(database,tmp_path):
         assert run(database,mapping,client,cache=cache)['outcomes']==dict(unchanged=2)
         assert audit_ops(home)['import']==before+3
     finally: broker.close()
+
+
+def test_unmapped_held(database,tmp_path):
+    # catch-up: a new project waits for its mapping without stopping the mapped ones.
+    import sqlite3
+    home,state,store,agents=setup_home(tmp_path); agent=agents[0]
+    state.grants[agent.agent_id].allow_import=True; store.save(state)
+    broker=Broker(home,store=store); client=LocalClient(broker,agent)
+    with sqlite3.connect(database) as c:
+        c.execute("INSERT INTO memory_items(kind,scope,project,content) VALUES('fact','project','unlisted','x')")
+    mapping=Mapping(dict(format='agentmesh-migration-mapping-v1',projects={},prefixes=[],null_project='work/a',**{'global':'work/a'}))
+    try:
+        result=run(database,mapping,client,hold_unmapped=True)
+        assert result['unmapped']==['unlisted'] and result['errors']==[] and result['outcomes'].get('created',0)>0
+        bodies=[p['body'] for _,p in broker.payloads() if p.get('body')]
+        assert bodies and all('project' in b for b in bodies)
+        assert [b for b in bodies if b['project']=='unlisted']==[]
+        again=run(database,mapping,client,hold_unmapped=True)
+        assert again['unmapped']==['unlisted'] and again['outcomes'].get('retired',0)==0
+    finally: broker.close()

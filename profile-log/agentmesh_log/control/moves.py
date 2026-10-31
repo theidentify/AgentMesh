@@ -44,6 +44,19 @@ class Moves:
     def prompted(self):
         with self.lock: self.prompts.append(self.clock())
 
+    def hold(self):
+        """Reserve the one tier 2 slot for a synchronous prompt outside a move (mapping.set): same busy and rate rules."""
+        with self.lock:
+            now=self.clock()
+            if self.active is not None: raise MoveError('busy')
+            self.prompts=[t for t in self.prompts if now-t<WINDOW_S]
+            if len(self.prompts)>=PROMPTS: raise MoveError('rate_limited')
+            self.active='hold'
+
+    def unhold(self):
+        with self.lock:
+            if self.active=='hold': self.active=None
+
     def request(self, name, to):
         if to not in ('native','launchd') or migrate.native_unit(name) is None: raise MoveError('bad_args')
         with self.lock:

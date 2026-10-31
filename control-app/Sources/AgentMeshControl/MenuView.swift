@@ -18,6 +18,10 @@ struct MenuView: View {
                         UnitRowView(model: model, row: row, info: model.infos[row.name])
                     }
                 }
+                if let projects = status.projects, !projects.pending.isEmpty {
+                    Divider()
+                    pendingProjects(projects)
+                }
                 Divider()
                 maintenance(status.maintenance)
                 Text(quotaText(status.quota)).font(.caption).foregroundStyle(.secondary)
@@ -60,6 +64,43 @@ struct MenuView: View {
         } else {
             Button("Maintenance mode…") { model.askingReason = true }
                 .help("Pause scheduled jobs (ingest, summary, retention). The broker keeps running.")
+        }
+    }
+
+    private func pendingProjects(_ projects: Projects) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("New project needs a scope").font(.callout.weight(.semibold))
+            Text("catch-up holds back its memory until you choose.").font(.caption).foregroundStyle(.secondary)
+            ForEach(projects.pending, id: \.self) { project in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(project).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        if model.working.contains("project." + project) { ProgressView().controlSize(.small) }
+                        ForEach(projects.scopes, id: \.self) { scope in
+                            Button(scopeTitle(scope)) { model.confirmingScope[project] = scope }
+                                .disabled(model.working.contains("project." + project))
+                        }
+                    }
+                    if let scope = model.confirmingScope[project] {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(mappingSummary(project, to: scope)).font(.caption).fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Spacer()
+                                Button("Cancel") { model.confirmingScope[project] = nil }
+                                Button("Continue") {
+                                    model.confirmingScope[project] = nil
+                                    Task { await model.choose(scope, for: project) }
+                                }.keyboardShortcut(.defaultAction)
+                            }
+                        }
+                        .padding(8).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    if let error = model.projectErrors[project] {
+                        Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
         }
     }
 

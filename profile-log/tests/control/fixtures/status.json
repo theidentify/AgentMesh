@@ -7,6 +7,16 @@
    "reason": null,
    "since": null
   },
+  "projects": {
+   "pending": [
+    "Users-example-new-project"
+   ],
+   "scopes": [
+    "personal/common",
+    "work/common",
+    "skip"
+   ]
+  },
   "quota": {
    "backoff_s": 0,
    "backoff_until": null,

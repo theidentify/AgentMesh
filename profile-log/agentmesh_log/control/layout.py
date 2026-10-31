@@ -14,6 +14,7 @@ class Layout:
         self.maintenance=self.control/'maintenance.json'
         self.quota=self.control/'quota.json'; self.quota_policy=self.control/'quota-policy.json'
         self.state=self.control/'state.db'; self.presence_helper=self.root/'bin'/'agentmesh-presence'
+        self.mapping=self.root/'migration-mapping.json'; self.profile_status=self.root/'profile-log-status.json'
         self.webhook=Path.home()/'.config'/'agentmesh'/'discord-webhook'
 
     def ensure(self):

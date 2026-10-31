@@ -37,9 +37,10 @@ struct Envelope<R: Decodable>: Decodable {
 }
 
 public struct ControlClient: Sendable {
-    /// unit.backend waits for the supervisor's presence decision (up to 90 s there).
+    /// unit.backend and mapping.set wait for the supervisor's presence decision (up to 90 s there).
     public static let moveTimeout: TimeInterval = 100
     public static let defaultTimeout: TimeInterval = 10
+    public static let presenceOps: Set<String> = ["unit.backend", "mapping.set"]
 
     public let socketPath: String
 
@@ -57,7 +58,7 @@ public struct ControlClient: Sendable {
         let body: Data
         do { body = try JSONEncoder().encode(Request(id: id, op: op, args: args)) }
         catch { throw .protocolError("encode") }
-        let reply = try exchange(body, timeout: timeout ?? (op == "unit.backend" ? Self.moveTimeout : Self.defaultTimeout))
+        let reply = try exchange(body, timeout: timeout ?? (Self.presenceOps.contains(op) ? Self.moveTimeout : Self.defaultTimeout))
         let envelope: Envelope<R>
         do { envelope = try decoder().decode(Envelope<R>.self, from: reply) }
         catch { throw .protocolError("decode") }
@@ -122,6 +123,7 @@ public func describe(_ error: ControlError) -> String {
         case "not_native": return "Not running under the supervisor."
         case "unsupported_plist": return "The unit's launchd plist could not be read."
         case "launchctl_failed": return "launchctl refused the change."
+        case "not_pending": return "That project already has a scope (or is not waiting for one)."
         default: return "Refused: \(code)."
         }
     }

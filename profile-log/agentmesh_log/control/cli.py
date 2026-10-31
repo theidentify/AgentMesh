@@ -35,6 +35,7 @@ def serve(layout):
     from .notify import notifier
     from .ops import Control
     from .presence_helper import HelperPresence
+    from .projects import Mappings
     from .router import Router
     from .server import Supervisor
     from .store import Store
@@ -45,8 +46,9 @@ def serve(layout):
     native=NativeBackend(store,UNITS,notify=notifier(layout))
     native.reconcile()
     # unit.backend: the supervisor's own Touch ID / Mac password helper; a client never vouches for presence.
-    moves=Moves(layout,store,HelperPresence(layout.presence_helper),launchd=launchd)
-    control=Control(layout,Router(store,launchd,native),moves=moves)
+    presence=HelperPresence(layout.presence_helper)
+    moves=Moves(layout,store,presence,launchd=launchd)
+    control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves))
     supervisor=Supervisor(control,layout,ticker=native.tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()

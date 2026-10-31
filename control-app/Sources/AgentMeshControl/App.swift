@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AgentMeshControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    private let model = StatusModel()  // App is created once; @State would need SwiftUIMacros
+    private let model = StatusModel.shared  // App is created once; @State would need SwiftUIMacros
 
     var body: some Scene {
         MenuBarExtra {

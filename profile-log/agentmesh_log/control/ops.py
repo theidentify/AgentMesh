@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from ..broker.audit import append_row
-from . import health, maintenance, quota
+from . import health, maintenance, projects, quota
 from .moves import MoveError
 from .units import UNITS
 
@@ -23,6 +23,7 @@ OPS={  # op: (tier, exact argument names)
     'unit.reset':(1,frozenset({'unit'})),
     'maintenance.on':(1,frozenset({'reason'})),'maintenance.off':(1,frozenset()),'diagnose':(1,frozenset()),
     'unit.backend':(2,frozenset({'unit','to'})),'moves.get':(0,frozenset({'move_id'})),
+    'mapping.set':(2,frozenset({'project','target'})),
 }
 
 
@@ -32,8 +33,9 @@ class OpError(Exception):
 
 
 class Control:
-    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None):
+    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None):
         self.layout,self.backend,self.clock,self.units,self.moves=layout,backend,clock,units,moves
+        self.mappings=mappings
         self.lock=threading.Lock(); self.recent={}
 
     def handle(self, request, caller):
@@ -88,7 +90,7 @@ class Control:
     def op_status(self):
         units=health.observe(self.layout,self.backend,self.units)
         for row in units: row['move']=self.moves.current(row['name']) if self.moves is not None else None
-        return dict(units=units,
+        return dict(units=units,projects=dict(pending=projects.pending(self.layout),scopes=projects.scopes(self.layout)),
             maintenance=maintenance.status(self.layout),quota=quota.status(self.layout))
 
     def op_units(self):
@@ -131,6 +133,12 @@ class Control:
         if self.moves is None: raise OpError('presence_unavailable')
         self.unit(unit)
         try: return self.moves.request(unit,to)
+        except MoveError as error: raise OpError(error.code) from None
+
+    def op_mapping_set(self, project, target):
+        """Tier 2: add a scope for a new project catch-up is holding back, after the supervisor's presence check."""
+        if self.mappings is None: raise OpError('presence_unavailable')
+        try: return self.mappings.set(project,target)
         except MoveError as error: raise OpError(error.code) from None
 
     def op_moves_get(self, move_id):

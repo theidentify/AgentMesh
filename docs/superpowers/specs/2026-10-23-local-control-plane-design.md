@@ -298,3 +298,23 @@ M3a implements the first tier 2 op, `unit.backend`, and a menu bar client. Plan:
   - `profile-log/tests/control/fixtures/status.json` pins the status wire shape for the Python and Swift sides.
   - New error codes: `presence_unavailable`, `busy`, `unknown_move`.
 
+## Amendments from 2026-10-31 (new projects)
+
+- **catch-up holds back unmapped projects instead of refusing the run.** It imports every mapped row, and rows of a
+  project the migration mapping does not cover are neither imported nor retired. They are reported in
+  `profile-log-status.json` (`last_catch_up.unmapped`), and the run exits 0. Manual `migrate run`/`rows` still refuse.
+  Before this, one new project (learn-langchain) stopped every project's import for 1.5 hours.
+- **`status.projects`** reports `{pending, scopes}`: projects that are held back and still unmapped, and the scopes the
+  mapping already uses, plus `skip`.
+- **`mapping.set {project, target}` is tier 2.** The supervisor's own presence check runs first.
+  - It only adds a mapping for a pending project, to an existing scope or `skip`. It never changes or removes an
+    existing mapping, so it cannot widen who reads a project's memory.
+  - It shares the move slot (`busy`) and the budget of 3 prompts per 10 minutes.
+  - The new mapping is validated with `Mapping`, then replaced atomically, owner-only.
+  - New error code: `not_pending`.
+- **The menu bar app asks once per new project**, in a notification with a button per scope and in its menu. Every
+  choice goes through `mapping.set`.
+- **Native units alert** on the 3rd failed run in a row and on recovery. The app notifies on `failed`/`down`/`conflict`
+  at once, on `failing`/`stuck` after 10 min, and on an unreachable supervisor after 2 min. This Mac has no Discord
+  webhook, so the app is the alert channel.
+

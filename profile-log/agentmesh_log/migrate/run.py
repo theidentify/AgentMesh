@@ -55,7 +55,10 @@ def save_cache(path,entries):
     atomic_write(path,json.dumps(dict(format=CACHE_FORMAT,entries=entries),sort_keys=True,separators=(',',':')).encode('utf-8'))
 
 
-def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cache=None,binding=None):
+def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cache=None,binding=None,hold_unmapped=False):
+    """hold_unmapped (catch-up only): import every mapped row and hold back rows of unmapped projects, which are reported
+    and neither imported nor retired, instead of refusing the whole run. A new project then waits for the owner's
+    scope choice without stopping every other project. Manual runs keep refusing."""
     binding=binding_for(database) if binding is None else binding
     who=checked(client.request(dict(op='whoami')))
     device=who.get('device_id')
@@ -88,7 +91,7 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
         if 'device' in source: body['metadata']['source']['device']=source['device']
         intents.append(dict(source=source,scope=target,created_at=stamp,
             row_hash=body['metadata']['row_hash'],body=None if reason else body))
-    if unmapped:
+    if unmapped and not hold_unmapped:
         return dict(outcomes={},unmapped=sorted(unmapped),skipped=dict(skipped),timestamp_fallback=0,
                     busy_retries=0,errors=['UnmappedProject'],secret_labelled=0)
     for entry in entries:
@@ -123,5 +126,5 @@ def run(database,mapping,client,*,refs=None,take_over=False,sleep=time.sleep,cac
         if refs is not None: confirmed={**known,**confirmed}
         try: save_cache(cache,confirmed)
         except Exception: pass
-    return dict(outcomes=dict(outcomes),unmapped=[],skipped=dict(skipped),timestamp_fallback=fallbacks,
+    return dict(outcomes=dict(outcomes),unmapped=sorted(unmapped),skipped=dict(skipped),timestamp_fallback=fallbacks,
                 busy_retries=retries,errors=errors,secret_labelled=secret)

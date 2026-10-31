@@ -61,10 +61,24 @@ public struct Quota: Equatable, Sendable, Decodable {
     public let backoffUntil: String?
 }
 
+/// New projects catch-up is holding back, and the scopes mapping.set accepts for them. Absent on a pre-2026-10-31
+/// supervisor, so it is optional.
+public struct Projects: Equatable, Sendable, Decodable {
+    public let pending: [String]
+    public let scopes: [String]
+    public init(pending: [String], scopes: [String]) { self.pending = pending; self.scopes = scopes }
+}
+
 public struct Status: Equatable, Sendable, Decodable {
     public let units: [UnitRow]
     public let maintenance: Maintenance
     public let quota: Quota
+    public var projects: Projects? = nil
+}
+
+public struct MappingSet: Equatable, Sendable, Decodable {
+    public let project: String
+    public let target: String
 }
 
 public struct MoveAccepted: Equatable, Sendable, Decodable {

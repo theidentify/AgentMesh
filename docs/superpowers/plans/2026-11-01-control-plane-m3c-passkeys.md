@@ -104,5 +104,13 @@ see decision 4).
       deployed checkout; 49fd007 on main only added docs), an import check, the app rebuilt, the supervisor restarted
       until `keys.inventory` returns `passkeys`, then the broker until it has a new pid, then up to 5 minutes for its
       first `passkeys` section, rollback printed. It refuses to run until REV is set to the merge commit.
-- [ ] Owner check: the passkeys this Mac's `agentmesh-log connector passkey list` prints appear in the menu with the same refs.
-- [ ] Record the results in this plan.
+- [x] Owner check: the passkeys this Mac's `agentmesh-log connector passkey list` prints appear in the menu with the same refs.
+      Result (2026-11-01, on ec7561d): one passkey, `e0288e6666c8c6c0` "Bitwarden", in the CLI, the status file and the
+      menu. Its `created_at` (2026-10-22 03:39 UTC) shows as "added 10d ago", and its issuer `9e06c3bf…` is
+      Krisanatheps-MacBook-Pro in `overview.devices`, which the menu shows. The three id key files show
+      `unnamed (d8a6e82e)`, `(bbbcc352)` and `(a38813bb)`, the same refs as the unnamed Agents lines. No `no_passkey`;
+      the only finding is still `backup_never`. Follow-up (cosmetic): the longer detail on those rows wraps the age
+      onto a second line.
+- [x] Record the results in this plan. Deployed 2026-11-01: merge commit ec7561d (PR #138, all checks green
+      including Windows). The supervisor returned `passkeys`, the broker restarted (new pid) and wrote its first
+      `passkeys` section within the wait.

@@ -146,7 +146,7 @@ def test_md4_broker_failures_and_read_cost(tmp_path,monkeypatch,capsys):
     monkeypatch.setattr(remote,'put',fail)
     try:
         broker.sync_attempt(remote,60)
-        assert rows[-1]['outcome']=='ok' and rows[-1]['errors']==0 and views[-1]['devices'][0]['this_device']
+        assert rows[-1]['outcome']=='ok' and rows[-1]['errors']==0 and views[-1]['overview']['devices'][0]['this_device'] and views[-1]['keys']['agents']==[]
         assert 'PRIVATE_FAILURE' not in capsys.readouterr().err
         monkeypatch.setattr(remote,'put',put); ticks[0]=900; broker.sync_attempt(remote,60)
         assert list(remote.list(hb.PREFIX))

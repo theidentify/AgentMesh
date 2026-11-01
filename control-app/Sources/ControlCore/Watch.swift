@@ -1,7 +1,7 @@
 // When to raise a macOS notification. This Mac has no Discord webhook, so the menu bar app is where alerts surface.
 // failed, down and conflict notify at once; failing and stuck only after they last warningDelay (one failed run of a
 // 5-minute job stays quiet); a unit that was notified about gets one "recovered" notice. An unreachable supervisor
-// notifies after offlineDelay, and again once it answers.
+// notifies after offlineDelay, and again once it answers. A new warning in the key inventory notifies once.
 import Foundation
 
 public struct Notice: Equatable, Sendable {
@@ -21,6 +21,7 @@ public struct Watch: Sendable {
     var offlineSince: Date?
     var offlineNotified = false
     var askedProjects: Set<String> = []
+    var notifiedFindings: Set<String> = []
 
     public init(warningDelay: TimeInterval = 600, offlineDelay: TimeInterval = 120) {
         self.warningDelay = warningDelay; self.offlineDelay = offlineDelay
@@ -68,6 +69,19 @@ public struct Watch: Sendable {
                 }
             }
         }
+        return notices
+    }
+
+    /// One notice per warning finding when it first appears; info findings never notify. A finding that clears may
+    /// notify again later. nil (a failed poll, or a supervisor without keys.inventory) changes nothing.
+    public mutating func update(inventory: Inventory?) -> [Notice] {
+        guard let inventory else { return [] }
+        let warnings = inventory.findings.filter { $0.severity == "warning" }
+        let notices = warnings.filter { !notifiedFindings.contains($0.id) }.map {
+            Notice(id: "finding." + $0.id, title: "AgentMesh: " + findingText($0, in: inventory),
+                   body: "See Keys & devices in the AgentMesh menu.")
+        }
+        notifiedFindings = Set(warnings.map(\.id))
         return notices
     }
 

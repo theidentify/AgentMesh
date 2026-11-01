@@ -565,12 +565,12 @@ class Broker:
         self._publish_overview(now)
 
     def _publish_overview(self, now):
-        # Content-free status refresh; at most once a minute and never fatal to sync.
+        # Content-free status refresh (overview and keys, from one state); at most once a minute and never fatal to sync.
         if self.on_overview is None or (self._overview_written is not None and now-self._overview_written<60): return
         self._overview_written=now
         try:
-            from ..status import overview
-            with self.lock: value=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row)
+            from ..status import overview, keys
+            with self.lock: value=dict(overview=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row),keys=keys(self.state))
             self.on_overview(value)
         except Exception: pass
 

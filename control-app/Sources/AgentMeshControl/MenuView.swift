@@ -22,6 +22,10 @@ struct MenuView: View {
                     Divider()
                     pendingProjects(projects)
                 }
+                if model.inventorySupported {
+                    Divider()
+                    KeysView(model: model)
+                }
                 Divider()
                 maintenance(status.maintenance)
                 Text(quotaText(status.quota)).font(.caption).foregroundStyle(.secondary)
@@ -41,7 +45,7 @@ struct MenuView: View {
                     .background(.orange.opacity(0.25), in: Capsule())
             }
             Spacer()
-            Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+            Button { Task { await model.refresh(inventory: true) } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless).help("Refresh")
         }
     }

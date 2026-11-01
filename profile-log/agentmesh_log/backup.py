@@ -260,6 +260,14 @@ def _restore(args, state, home):
     return dict(ok=True, files=len(files), bytes=size)
 
 
+def _record(home, result):
+    """Tell the key inventory when this AgentMesh home was last backed up: never a path, never another home."""
+    from . import settings, status
+    root = settings.root()
+    if home != _path(root / 'profile-log'): return
+    status.write(root, last_backup=dict(at=status.timestamp(), files=result['files'], bytes=result['bytes']))
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise BackupError('invalid_arguments')
@@ -285,6 +293,7 @@ def main(argv=None):
         home = _path(args.home)
         state = _state(home)
         result = (_create if args.command == 'create' else _restore)(args, state, home)
+        if args.command == 'create': _record(home, result)
     except (Declined, KeyboardInterrupt):
         return 3
     except Exception as error:

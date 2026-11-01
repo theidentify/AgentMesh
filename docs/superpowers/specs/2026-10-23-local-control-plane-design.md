@@ -318,3 +318,30 @@ M3a implements the first tier 2 op, `unit.backend`, and a menu bar client. Plan:
   at once, on `failing`/`stuck` after 10 min, and on an unreachable supervisor after 2 min. This Mac has no Discord
   webhook, so the app is the alert channel.
 
+
+## Amendments from milestone 3b (2026-10-31)
+
+M3b implements the key inventory from milestone 3, read-only. Plan: `docs/superpowers/plans/2026-10-31-control-plane-m3b-inventory.md`.
+
+- **`keys.inventory` is tier 0 and the supervisor never opens a key file or the sealed keystore.** Key files are
+  `lstat`ed only (kind, mode, owner, size, mtime). It covers `profile-log/agents/*.key`, `agents/*.key` and
+  `profile-log/keystore.sealed`.
+- **The broker publishes a content-free `keys` section** in `profile-log-status.json`, from the same once-a-minute hook
+  and the same locked read of state as `overview`.
+  - `agents`: every grant as `{name, key_ref, secret_until}`, with `name` null when settings never named it.
+  - `recoveries`: `{count, latest_issued_at}`.
+  - **No agent_id.** The status file already forbids it (Insight serves the file). `key_ref` is the first 16 bytes of
+    SHA-256(`AgentMesh/key-inventory-ref/v1\0` + agent_id); the supervisor derives it from a key file's name to match
+    files to grants.
+  - Passkeys are not counted yet: `Passkeys.credentials()` is too heavy for that hook. They come with M3c.
+- **`backup create` records `last_backup {at, files, bytes}`** after a success, only for `$AGENTMESH_HOME/profile-log`,
+  and never a path.
+- **Findings use fixed rules and stable ids (`kind:subject`).** Warnings: `key_file_unsafe`, `keystore_unsafe`,
+  `device_stale` (14 days), `no_recovery`, `backup_never`, `backup_old` (30 days), `inventory_stale` (the `keys` section
+  missing or older than 1 day). Info: `key_file_orphan`, `secret_grant_active`. Thresholds are constants until
+  `settings.set` exists.
+- **Open item resolved:** device last-seen is the broker's `overview.devices` (from heartbeats), not `presence.py`.
+- **The menu bar app** polls `keys.inventory` once a minute, shows a "Keys & devices" section, turns its icon `warning`
+  for a warning finding (below `error` and `needsYou`), and notifies once per new warning finding. Info findings never
+  notify.
+- `profile-log/tests/control/fixtures/inventory.json` pins the wire shape for both sides.

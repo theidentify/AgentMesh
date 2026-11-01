@@ -1,5 +1,9 @@
 # Check sync status
 
+::: warning Legacy packet sync
+This page applies only when packet sync is enabled. Since Phase 7a, `packet_sync.enabled` defaults to false and devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). Keep this page for rollback and for groups that have not upgraded.
+:::
+
 Distinguish file delivery from completed record imports before relying on shared memory. Start with a [configured worker](./worker) and its database and runtime paths. You will be able to inspect local counts, peer reports and worker failures, then verify a record at its destination.
 
 ![Basic cycle: ingest supported sessions, export records, exchange packets, import peer packets and write a report; a conflict quarantines the whole packet.](/diagrams/worker-cycle.svg)

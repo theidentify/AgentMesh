@@ -1,5 +1,9 @@
 # Signed sync
 
+::: warning Legacy packet sync
+This page applies only when packet sync is enabled. Since Phase 7a, `packet_sync.enabled` defaults to false and devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). Keep this page for rollback and for groups that have not upgraded.
+:::
+
 Signed sync authenticates change packets against explicitly trusted peers, helping reject forged or unauthorized changes. Begin with an [existing installation](../getting-started/quick-start) or [new empty group](./new-group), and keep its runtime path available. This page helps you inspect security readiness and resume setup; coordinated activation remains an operator procedure.
 
 ::: info

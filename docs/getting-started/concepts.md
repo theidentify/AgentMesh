@@ -1,10 +1,39 @@
 # Concepts
 
-Understand how AgentMesh keeps memory local while sharing record changes between devices. Begin with [What is AgentMesh](../introduction) for the application's scope; no installation is needed yet. You will be ready to choose distinct device identities and prepare a private exchange folder.
+Understand how AgentMesh keeps memory on each device while sharing it, encrypted, through the profile log. Begin with [What is AgentMesh](../introduction) for the application's scope; no installation is needed yet. You will know what each part does and which pages describe the legacy packet sync.
 
 ## How AgentMesh works
 
-Each device keeps a local database and exchanges record changes. The diagram summarizes the main components of routine sync.
+Memory moves through four parts. Each runs on the device, and only encrypted objects leave it.
+
+1. **Staging database.** Ingestion reads supported OMP, Codex and Claude transcripts into a local SQLite database. Raw observations and transcript evidence stay there; they are never uploaded.
+2. **Catch-up.** Imports durable memory items and summaries from staging into the profile log, routing each project to a scope through the migration mapping. A project the mapping does not cover is held back until the owner picks a scope.
+3. **Profile log.** An append-only log of signed, encrypted events, stored in private S3-compatible object storage (Cloudflare R2). Every paired device keeps a local encrypted replica and synchronizes it in the background. The storage provider sees only opaque objects.
+4. **Broker.** A local service (`org.agentmesh.profile-log.broker` on macOS) that holds this device's keys, verifies the log and answers agents' recall and remember requests. When the broker is not running, recall returns an explicit error instead of reading another source.
+
+Settings, agent key files and the staging database are never synchronized. Each device has its own.
+
+## Profiles, scopes and grants
+
+A **profile** (for example `work` or `personal`) is a tree of **scopes** such as `work/common` or `work/client-a`. Each scope has its own encryption keys, so a device or agent can read only what it was granted.
+
+- **Devices** join by pairing: an existing device approves the request after you compare a six-digit code on both screens, and grants exactly the scopes you select. A device can be revoked later.
+- **Agents** never hold scope keys. Each has a key file and a grant: which scopes it may read, which it may write, and whether it may see secret-labelled memory. The broker checks the grant on every request.
+- **Recovery.** Creating the account prints a recovery kit of three shares, any two of which restore it. Keep them apart, and outside the AgentMesh folder.
+
+The [profile-log reference](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery) has the pairing, grant and recovery commands.
+
+## The supervisor and the menu bar app (macOS)
+
+On a Mac, the AgentMesh supervisor (`org.agentmesh.control`) runs the scheduled jobs — catch-up, ingest and summary — and watches the broker and the other background services. The [menu bar app](../use/control-app) is its client: it shows each job's health, asks where a new project's memory should go, and lists the keys and devices this profile holds. Moving a service between launchd and the supervisor needs Touch ID or your Mac password, which the supervisor asks for itself.
+
+## Legacy packet sync
+
+Before Phase 7a, devices exchanged record changes directly as immutable packets through a private Syncthing folder. `packet_sync.enabled` now defaults to false. The code remains so that an owner can roll back, and some setup steps (device identities, the exchange folder) still come from it. The rest of this section describes that model; pages that apply only to it carry a notice at the top.
+
+### How packet sync works
+
+Each device keeps a local database and exchanges record changes. The diagram summarizes the main components of packet sync.
 
 ![Supported transcripts feed the worker and local database; the worker exchanges packets with other devices through a private folder, while live database-file sync is unsafe.](/diagrams/architecture.svg)
 
@@ -14,17 +43,17 @@ The highlighted exchange folder carries packets and reports. Direct Syncthing ex
 
 A fresh bootstrap enables default ingestion and starts the worker immediately unless you pass `--no-ingest`. Use that flag to [review and limit roots before enabling ingestion](../use/ingest#before-the-first-bootstrap-cycle); synchronization still runs. An empty group starts with ingestion disabled. By default the worker waits 60 seconds **after each completed cycle**. Processing time and transport delay add to that wait; it is not a one-minute freshness guarantee.
 
-## Device identity
+### Device identity
 
 A device identity combines a sync group UUID with one of three values: `mac`, `windows` or `linux`. These labels are independent of the operating system. When explaining `--node`, its value is the **node slot**; the `<node>` in `status/<node>.json` means that same value. Elsewhere this guide uses **device identity**.
 
 A group supports at most three active devices with different identities. Two Macs and one Linux device can use the three different identities; a fourth device cannot join the same group under this model. Platform setup wrappers choose a default identity, while the Python installer can select an alternative on any OS. Ask the group administrator which identity is assigned to each device, including offline devices, and inspect existing runtimes. Never clone initialized local state or reuse an identity on another active device.
 
-## Exchange folder and bootstrap
+### Exchange folder and bootstrap
 
 Use a dedicated private exchange folder for each sync group: a group UUID does not isolate several groups sharing one folder. The private exchange folder carries immutable change packets, peer reports at `status/<node>.json`, and supplied bootstrap/setup files. Keep the live database and its WAL/SHM files outside it. The bootstrap ZIP supplies a shared starting snapshot; its manifest checks integrity. A repository checkout contains code, not memories. An unsigned group created by current `setup-new` can [add a second and third device through origin-issued invitations](../install/new-group#adding-another-device). Joining replays the empty-baseline group’s retained packets; it does not copy a database. Lost or expired invitations permanently consume their reserved identities.
 
-## Conflicts affect whole packets
+### Conflicts affect whole packets
 
 ![Device A edits a row and captures a change packet; the exchange carries it to device B, which applies it and records a receipt when the parent matches, or holds the whole packet on conflict or a missing predecessor.](/diagrams/packet-lifecycle.svg)
 
@@ -38,12 +67,12 @@ A packet can contain several changed records. If one conflicts with an independe
 
 After every device is upgraded and the operator [activates the new protocol](../use/resolve-conflicts#activate-once-after-upgrading-every-device), a supported same-lineage conflict can be resolved explicitly, including update versus deletion. A resolution packet records the chosen rows and complete covered history, preserving non-conflicting companion rows from the held packets. It does not silently choose the newest edit or repair different baselines, natural-key collisions or foreign-key relationships. Conflicting independent resolutions require another decision; [receive and verify the result, then explicitly restart workers](../use/resolve-conflicts#receive-on-peers-and-restart).
 
-## Plan for growth
+### Plan for growth
 
 **Capture** compares local records with the last synchronized view and packages their changes. It scans all eight memory tables and keeps decoded rows in memory. Applying new packets also checks a complete resulting row view; receive scans retained packet files. Packet files live under `changes/<node>/` or `signed-changes/<node>/` in the exchange folder. Receipts (accepted packet identifiers/checksums), history (record revision ancestry) and outbox records (outgoing packets and publication state) live in the local SQLite database as `_sync_receipts`, `_sync_history` and `_sync_outbox`. All are retained without automatic pruning. Watch disk use and cycle duration as memory grows; do not delete exchange packets to reclaim space. A missing newest packet can leave undetected missing data, while a missing predecessor can leave later changes pending.
 
 ## What setup does not include
 
-AgentMesh installs memory sync, not Hermes or other agent applications. Setup does not run OS package managers or enable a background service. PostgreSQL is not required for this guide's SQLite path; if you use the optional PostgreSQL mirror, peer changes do not write back to PostgreSQL. See the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details.
+AgentMesh installs its own programs, not Hermes or other agent applications. Setup does not run OS package managers or enable a background service. PostgreSQL is not required for this guide's SQLite path; if you use the optional PostgreSQL mirror, peer changes do not write back to PostgreSQL. See the [sync reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) for protocol details.
 
 Next, prepare the [prerequisites](./prerequisites) for your chosen setup route.

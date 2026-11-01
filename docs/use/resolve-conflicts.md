@@ -1,5 +1,9 @@
 # Resolve conflicts
 
+::: warning Legacy packet sync
+This page applies only when packet sync is enabled. Since Phase 7a, `packet_sync.enabled` defaults to false and devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). Keep this page for rollback and for groups that have not upgraded.
+:::
+
 Choose which version of a conflicting record to keep, then deliver that decision to the other devices without losing unrelated rows. Start with the [packet lifecycle](../getting-started/concepts#conflicts-affect-whole-packets), the runtime paths for the affected installations and [stopped workers](./worker). You will preview and confirm a supported resolution, check convergence and explicitly restart execution.
 
 ## Understand what is being resolved

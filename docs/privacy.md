@@ -17,9 +17,19 @@ The repository contains code, tests and documentation. A private bootstrap conta
 
 ## Separate local storage from exchange
 
+This section applies to [legacy packet sync](./getting-started/concepts#legacy-packet-sync).
+
 Keep local databases, WAL/SHM files, credentials and deployment configuration outside the Syncthing exchange. Only the intended private exchange artifacts should travel between trusted peers. Record-level sync does not make live database-file synchronization safe.
 
 Invitation request and invitation transfer files contain no memory rows or secrets, but carry group/device metadata and are unsigned. Transfer them only through an authenticated trusted channel outside the exchange; never transfer the prepared installation itself.
+
+## Understand what the profile log shares
+
+The profile log leaves the device only as signed, encrypted objects. Object storage (Cloudflare R2) sees their names, sizes and timing, not memory content, scope names or labels. Raw observations and transcript evidence stay in each device's staging database and are never uploaded.
+
+Keep the recovery kit shares apart from each other and outside `~/.agentmesh`, and keep agent key files (`~/.agentmesh/agents/`, `~/.agentmesh/profile-log/agents/`) owner-only; the [menu bar app](./use/control-app#check-keys-and-devices) warns when one is not. Back up with `python -m agentmesh_log.backup create`, which encrypts the archive to this device and the account recovery key.
+
+`~/.agentmesh/profile-log-status.json` holds content-free status for Insight and the menu bar app: names, device IDs, counts, timestamps, hashed agent references and passkey labels. It never holds agent IDs, keys or memory, but treat it like other status files.
 
 ## Understand hybrid recall exposure
 

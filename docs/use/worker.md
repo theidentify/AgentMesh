@@ -1,5 +1,9 @@
 # Control the worker
 
+::: info Profile log
+With packet sync off (the default since Phase 7a), the worker carries no packets; devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). On a Mac managed by the AgentMesh supervisor, ingest, summary and catch-up run as supervisor jobs instead, shown in the [menu bar app](../use/control-app). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
+:::
+
 Choose one worker for the installation so memory can be processed without duplicate loops. Start with a [bootstrap installation](../getting-started/quick-start) or [local empty group](../install/new-group), and locate its runtime and database paths. You will be able to run a cycle, inspect failures and start or stop managed execution.
 
 ## Choose one mode

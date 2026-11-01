@@ -1,5 +1,9 @@
 # Prerequisites
 
+::: info Profile log
+The setup wrappers still check for Syncthing, but with packet sync off (the default since Phase 7a) it carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). The profile log needs private S3-compatible storage credentials, which the [owner runbook](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery) sets up.
+:::
+
 Prepare Python, Syncthing and local storage before installing AgentMesh. Read [Concepts](./concepts) first to understand device identity and the private exchange folder. You will be ready either to use a supplied bootstrap or to create an empty group for local use.
 
 ![Bootstrap setup: check prerequisites, pair devices, run the installer, keep the foreground worker open, then optionally configure background operation.](/diagrams/install-flow.svg)

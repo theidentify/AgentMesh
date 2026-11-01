@@ -40,6 +40,7 @@ export default defineConfig({
         { text: 'Check sync status', link: '/use/status' },
         { text: 'Resolve conflicts', link: '/use/resolve-conflicts' },
         { text: 'Insight dashboard', link: '/use/insight' },
+        { text: 'Menu bar app (macOS)', link: '/use/control-app' },
       ] },
       { text: 'Help', items: [
         { text: 'Troubleshooting', link: '/troubleshooting' },

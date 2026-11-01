@@ -20,6 +20,9 @@ supervisor uses to ask for Touch ID or your Mac password.
   - The sheet accepts Touch ID or the Mac password (`LAPolicyDeviceOwnerAuthentication`), the owner's choice on 2026-10-29.
   - Approve a sheet only if you started that move.
 - The supervisor allows at most 3 presence prompts per 10 minutes, denials included, and one move at a time.
+- **Keys & devices is read-only.** It shows the supervisor's `keys.inventory` (tier 0) and offers no action. The
+  supervisor builds it from `lstat` of key files and the broker's content-free status; it never opens a key file or the
+  sealed keystore.
 
 ## Menu bar icon
 
@@ -29,7 +32,7 @@ Three nodes and a hub ("A green"), with one corner badge for the most important 
 |---|---|
 | Supervisor unreachable | Faded mark, empty ring |
 | A unit failed, down or in conflict | Red dot |
-| A unit failing or stuck | Orange dot |
+| A unit failing or stuck, or a warning in Keys & devices | Orange dot |
 | A new project needs a scope | Blue dot with a question mark |
 | A unit is moving between launchd and the supervisor | Crossing arrows |
 | Maintenance mode | Pause bars |
@@ -37,7 +40,38 @@ Three nodes and a hub ("A green"), with one corner badge for the most important 
 | All healthy | Green dot |
 
 The app polls every 10 s, every 5 s with the menu open, and every 2 s while a job runs, so short runs such as catch-up
-(a few seconds) still show.
+(a few seconds) still show. A Keys & devices warning ranks below a failed unit and a project waiting for a scope.
+
+The bottom of the menu shows the version, `AgentMesh Control v0.1 (<commit>)`: `bundle.sh` writes the commit it built
+from as the bundle version, and an unbundled `swift run` build shows "dev build". The app has its own icon in
+notifications, System Settings and Finder.
+
+## Keys & devices
+
+A collapsible section, polled at most once a minute and again whenever the menu opens. Its header counts the warnings
+and shows when the inventory was taken. Inside, findings come first, then:
+
+| Block | Shows |
+|---|---|
+| Devices | Each paired device: name, platform, and when it was last seen (or "this Mac", "revoked") |
+| Agents | Each grant: its name, or `unnamed (<first 8 of key_ref>)`, what it reads, and an open secret window |
+| Passkeys | Each passkey the broker accepts for approvals: label, when it was added and from which device |
+| Key files | `profile-log/agents/*.key`, `agents/*.key` and the keystore: mode, matching agent, age |
+| Recovery and backup | Whether a recovery kit exists, and the last `backup create` |
+
+| Finding | Severity | Rule |
+|---|---|---|
+| `key_file_unsafe`, `keystore_unsafe` | warning | Not a regular file, a symlink, group/world bits set, wrong owner, or empty |
+| `device_stale` | warning | Another, unrevoked device not seen for 14 days |
+| `no_recovery` | warning | No recovery kit issued |
+| `backup_never`, `backup_old` | warning | No backup recorded, or the last one is over 30 days old |
+| `inventory_stale` | warning | The broker has not refreshed its `keys` section for a day |
+| `key_file_orphan` | info | A `profile-log/agents/<id>.key` that matches no grant |
+| `secret_grant_active` | info | A grant's secret window is open |
+| `no_passkey` | info | The broker reports no passkeys |
+
+Each new warning notifies once and turns the icon orange; info findings never notify. Against a supervisor older than
+M3b (`unknown_op`), the section hides itself.
 
 ## Notifications
 
@@ -50,8 +84,8 @@ The installed app posts macOS notifications. It is the alert channel on a Mac wi
 | A unit stays failing or stuck for 10 minutes | Once, after the 10 minutes. A single failed run of a 5-minute job stays quiet. |
 | A unit that was notified about becomes healthy | Once ("recovered") |
 | `control.sock` does not answer for 2 minutes | Once, and once more when it answers again |
-
 | catch-up holds back a new project with no scope | Once per project, with a button per scope (Personal, Work, Skip) |
+| A new warning appears in Keys & devices | Once per finding; it can notify again after it clears and comes back |
 
 The app checks every 30 s with its menu closed and every 5 s with it open.
 
@@ -106,8 +140,8 @@ control-app/test.sh
 `test.sh` runs `swift test`, adding the swift-testing macro plugin path that a CommandLineTools-only toolchain does not
 search.
 
-- The status wire shape is pinned by `profile-log/tests/control/fixtures/status.json`. The Python and Swift tests both
-  read it.
+- The status and inventory wire shapes are pinned by `profile-log/tests/control/fixtures/status.json` and
+  `inventory.json`. The Python and Swift tests both read them.
 - To check the client against this Mac's supervisor, run `AMC_LIVE=1 control-app/test.sh --filter liveStatus`. It calls
   only the read-only `status`.
 - For an unbundled run: `swift build && .build/out/Products/Debug/AgentMeshControl`.

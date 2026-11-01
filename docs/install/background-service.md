@@ -1,5 +1,9 @@
 # Run in the background
 
+::: info Profile log
+With packet sync off (the default since Phase 7a), the worker carries no packets; devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). On a Mac managed by the AgentMesh supervisor, ingest, summary and catch-up run as supervisor jobs instead, shown in the [menu bar app](../use/control-app). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
+:::
+
 Keep AgentMesh running without a foreground terminal by configuring startup for your platform. Complete [installation](../getting-started/quick-start) and stop the existing worker first. You will have a service or sign-in launcher whose worker health you can verify separately.
 
 ::: info

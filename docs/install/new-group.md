@@ -1,5 +1,9 @@
 # New sync group
 
+::: info Profile log
+These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
+:::
+
 Create an empty local database when you are starting alone without a supplied bootstrap. Complete the [prerequisites](../getting-started/prerequisites), including Python 3.11+, first. You will have local memory that you can ingest and recall from a repository checkout; eligible unsigned groups can add two more devices through the invitation procedure below.
 
 ::: info

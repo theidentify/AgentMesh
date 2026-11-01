@@ -1,5 +1,9 @@
 # Windows
 
+::: info Profile log
+These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
+:::
+
 Install AgentMesh on Windows from a supplied private bootstrap. Complete the [prerequisites](../getting-started/prerequisites) first, including Python and the accepted exchange folder. You will have a local database and foreground sync loop to check on the Windows host.
 
 ::: info

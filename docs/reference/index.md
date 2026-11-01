@@ -10,6 +10,7 @@ Find the repository reference for details beyond the task-based user guide. Star
 | [macOS and Linux setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) | Review installation paths, optional user services and the unsigned invitation/join contract. |
 | [Windows setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md) | Run the bootstrap launcher and interpret its progress. |
 | [Insight](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md) | Configure the read-only dashboard and understand its observations. |
+| [Menu bar app](https://github.com/theidentify/AgentMesh/blob/main/control-app/README.md) | Build, install and remove AgentMesh Control, and see what it may and may not do. |
 
 For the task sequence, use [Resolve conflicts](../use/resolve-conflicts): activate after upgrading peers, preview and confirm a choice, receive it and explicitly restart workers.
 
@@ -17,6 +18,8 @@ For the task sequence, use [Resolve conflicts](../use/resolve-conflicts): activa
 
 | Document | Use it for |
 | --- | --- |
+| [Encrypted profile log](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md) | Create the account, pair devices, grant agents, migrate from SQLite, run the broker and administer settings. |
+| [Control plane design](https://github.com/theidentify/AgentMesh/blob/main/docs/superpowers/specs/2026-10-23-local-control-plane-design.md) | Understand the supervisor, its tiers and its milestones. |
 | [Windows program installation](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md) | Manage existing program installations, confirmations and sign-in startup. |
 | [Workflow](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) | Configure ingestion, primary summarization, exchange and recall. |
 | [OTA updates](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md) | Set up opt-in signed worker updates and recovery. |

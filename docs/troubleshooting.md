@@ -1,5 +1,9 @@
 # Troubleshooting
 
+::: info Profile log
+Most entries below concern [legacy packet sync](./getting-started/concepts#legacy-packet-sync). With the profile log, recall that reports the broker as unavailable means the broker is not running on this device; on a Mac, check it in the [menu bar app](./use/control-app). Recall falls back to the local SQLite database only when `bridge.recall_fallback` is `true`.
+:::
+
 Use these checks to identify sync and installation problems while preserving evidence. Start with [local status and worker diagnostics](./use/status), using a second terminal if a foreground worker is running. You will know which failures can retry and which need review before restarting.
 
 ## Nothing syncs between devices

@@ -1,5 +1,9 @@
 # Quick start
 
+::: info Profile log
+These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
+:::
+
 Install from a supplied private bootstrap, check sync and run your first recall query. Complete the [prerequisites](./prerequisites) and have the group administrator assign an unused device identity first. You will verify the worker and, with a second device already in the group, test that a record reaches its destination.
 
 ## Choose your starting point

@@ -86,12 +86,31 @@ The server prints its loopback URL. Optional runtime paths and a PostgreSQL DSN
 are configured outside Git; absent sources are shown as unavailable. See
 [Insight setup, privacy boundaries and verification](insight/README.md).
 
+## Control plane (macOS)
+
+On the Mac, the AgentMesh supervisor (`org.agentmesh.control`, in `profile-log/agentmesh_log/control/`) runs and
+watches the background units. Catch-up, ingest and summary run as its native, scheduled jobs; the broker and other
+services stay under launchd and are observed. Requests arrive on a local socket and are audited:
+
+- **Tier 0** reads status, the audit log and the key and device inventory (`keys.inventory`), which never opens a key file.
+- **Tier 1** starts, stops, restarts and resets units and toggles maintenance mode, within rate limits.
+- **Tier 2** moves a unit between launchd and the supervisor, or routes a new project to a scope. The supervisor asks
+  for Touch ID or the Mac password itself; no client can assert it.
+
+`agentmesh-log control` is the terminal client; its `panic-revert` restores the original launchd units without the
+supervisor. AgentMesh Control, a menu bar app in `control-app/`, shows unit health, asks where a new
+project's memory should go, notifies on failures, and lists keys, devices, passkeys, recovery and backups. Approvals
+through Discord or a passkey and device and grant operations are not built yet. See the
+[menu bar app](control-app/README.md) and the
+[control plane design](docs/superpowers/specs/2026-10-23-local-control-plane-design.md).
+
 ## Architecture
 
 Each device ingests into its local SQLite staging database. Post-commit imports and
 catch-up write device-qualified sources into the encrypted profile log, synchronized
 through R2. Local recall reads the log through the broker, including independently
 granted work and personal profiles; broker outages return an explicit error.
+On macOS the [control plane](#control-plane-macos) schedules catch-up, ingest and summary.
 
 Phase 7a defaults `packet_sync.enabled` to false. Packet/RANGES/conflict code remains
 for rollback. Workers preserve configured workflow ingest/summary while skipping

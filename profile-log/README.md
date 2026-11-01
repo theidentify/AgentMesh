@@ -999,29 +999,38 @@ rows. No service is installed and no remote synchronization starts automatically
 
 ### Read-only Insight status snapshot
 
-`agentmesh-log apply` (except `--dry-run`) and `agentmesh-log migrate catch-up`
-write `$AGENTMESH_HOME/profile-log-status.json` (default
-`~/.agentmesh/profile-log-status.json`), format `agentmesh-profile-log-status-v1`,
-with mode 0600 using atomic replacement. Unsafe roots and status paths are
-refused. Status failures never change apply/catch-up results or exit codes.
+`$AGENTMESH_HOME/profile-log-status.json` (default `~/.agentmesh/profile-log-status.json`), format
+`agentmesh-profile-log-status-v1`, mode 0600, written by atomic replacement. Unsafe roots and status paths are refused.
+Status failures never change a writer's result or exit code. Each writer replaces only its own sections and preserves
+the others from a valid document; an invalid existing document is replaced. Each section carries its own timestamp.
 
-The snapshot contains names, scope paths, labels, boolean grants, device IDs,
-counts, UTC timestamps and exception class names only. It never contains agent
-IDs, key material or key-file paths, public keys, recovery shares, database paths,
-row IDs/hashes/bodies, or error messages. Apply refreshes profiles/scopes, named
-agents' R/W/default/flags, devices, and its outcome/change counts. When a bridge
-database and mapping are configured, it also refreshes per-project migration
-counts and targets (`scope`, `skip`, `unmapped` or `mixed`). Catch-up refreshes
-migration and its own outcome (`ok`, `unmapped`, `error` or `disabled`), outcome
-and skipped counts, unmapped names, error classes and retry/fallback counts. It
-never writes the overview. Each writer preserves the other's sections; invalid
-existing documents are replaced. Each section carries its own timestamp.
+| Writer | Sections |
+|---|---|
+| `agentmesh-log apply` (not `--dry-run`) | `last_apply` (outcome and change counts), `overview`, `keys`, and `migration` when a bridge database and mapping are configured |
+| `agentmesh-log migrate catch-up` | `last_catch_up` (outcome `ok`, `unmapped`, `error` or `disabled`; outcome and skipped counts, unmapped names, error classes, retry/fallback counts) and `migration`. Never `overview`. |
+| The broker's sync loop | `last_sync` after a sync with traffic or a changed result, and at least every 10 minutes; `overview`, `keys` and `passkeys` at most once a minute, from one locked read of its state |
+| `python -m agentmesh_log.backup create`, on success | `last_backup` (`at`, `files`, `bytes`), only for `$AGENTMESH_HOME/profile-log` |
 
-This file is telemetry, never an authorization source. Insight reads only this
-snapshot for its Profile log tab and displays shortened device IDs. It never
-opens the broker keystore, agent keys, settings or apply audit log. Edit desired
-settings in a terminal with `agentmesh-log admin` / `agentmesh-log apply`; the tab
-has no forms or write operations.
+- `overview`: profiles and scopes, named agents' read/write/default/flags, and devices with their heartbeat name,
+  platform, last seen and last sync.
+- `migration`: per-project counts and targets (`scope`, `skip`, `unmapped` or `mixed`).
+- `keys`: every grant as `{name, key_ref, secret_until}` (`name` is null for an unnamed grant), and the recovery count
+  with its latest issue time. `key_ref` is the first 16 bytes of SHA-256(`AgentMesh/key-inventory-ref/v1\0` + agent ID),
+  as hex, so the file never holds an agent ID.
+- `passkeys`: each passkey the broker accepts for approvals as `{ref, label, created_at, issuer_device}`. `ref` is the
+  16-character prefix `connector passkey list` prints. The broker recounts only when a passkey, removal or device
+  record or its store changes, or hourly.
+
+The snapshot contains names, scope paths, labels, passkey labels, boolean grants, device IDs, key references, counts,
+UTC timestamps and exception class names only. It never contains agent IDs, key material or key-file paths, public keys,
+passkey credential IDs, recovery shares, database or backup paths, row IDs/hashes/bodies, or error messages. The
+validator is a strict allow-list per section: a document with an unknown field is invalid.
+
+This file is telemetry, never an authorization source. Insight reads only this snapshot for its Profile log tab and
+displays shortened device IDs. The control plane's `keys.inventory` reads it to report devices, grants, passkeys,
+recovery and backups, and only reports from it. Neither opens the broker keystore, agent keys, settings or the apply
+audit log. Edit desired settings in a terminal with `agentmesh-log admin` / `agentmesh-log apply`; the tab has no forms
+or write operations.
 
 ## Using AgentMesh from AI apps
 

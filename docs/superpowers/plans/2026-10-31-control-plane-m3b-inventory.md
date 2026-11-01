@@ -159,8 +159,11 @@ does not write `keys` until the deploy).
       secret windows), key files with mode, matching agent and age, the keystore, then recovery and the last backup.
 - [x] 53 Swift tests pass; debug and release builds succeed. The view has no unit tests of its own: everything it
       shows comes from the ControlCore functions Task 4 tested.
-- [ ] Owner check (at the Task 6 deploy; the live supervisor answers `unknown_op` until then): the real data from this Mac shows 3 devices, the named and id key files, recovery, and
-      `backup_never` until the first backup.
+- [x] Owner check (at the Task 6 deploy; the live supervisor answers `unknown_op` until then): the real data from this Mac shows 3 devices, the named and id key files, recovery, and
+      `backup_never` until the first backup. Result (2026-11-01, on 2cf31f7): 3 devices (this Mac, DESKTOP-DOJ622I seen
+      6d ago, the MacBook Pro seen 4d ago), 5 agents (recall, importer, 3 unnamed), 5 key files and the keystore all
+      0600, recovery set up 11d ago, and one warning, `backup_never`. No `key_file_orphan`: every id key file matched a
+      grant. The id key files show no agent because their grants are unnamed; a ref prefix there is a follow-up.
 
 ### Task 6: docs and deploy
 
@@ -171,4 +174,6 @@ does not write `keys` until the deploy).
       and helper rebuilt, the supervisor restarted until it answers `keys.inventory`, the broker restarted until it has
       a new pid, then up to 5 minutes for its first `keys` section. Rollback printed at the end. It refuses to run until
       REV is set to the merge commit.
-- [ ] Record the results in this plan.
+- [x] Record the results in this plan. Deployed 2026-11-01: merge commit 2cf31f7 (PR #136; 0d372bc skips the
+      inventory tests on Windows, which has no `os.getuid`). The supervisor answered `keys.inventory`, the broker
+      restarted (new pid) and wrote its first `keys` section within the 5 minute wait, so `inventory_stale` cleared.

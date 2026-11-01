@@ -1,7 +1,7 @@
 """keys.inventory: which keys and devices exist, how old they are, and what looks wrong. Read-only, tier 0.
 
-The supervisor never opens a key file or the sealed keystore: files are lstat'ed only. Grants, recovery and devices come
-from the broker's content-free sections of profile-log-status.json, which name agents by key_ref, never by agent_id.
+The supervisor never opens a key file or the sealed keystore: files are lstat'ed only. Grants, recovery, devices and passkeys
+come from the broker's content-free sections of profile-log-status.json, which name agents by key_ref, never by agent_id.
 Each source may be missing on its own; that part is then None with a finding, and the op still answers.
 """
 from datetime import datetime
@@ -59,7 +59,7 @@ def key_files(layout, findings):
 
 def inventory(layout, now):
     found=[]; status_=sections(layout)
-    overview,keys,backup=status_.get('overview'),status_.get('keys'),status_.get('last_backup')
+    overview,keys,backup,passkeys=(status_.get(k) for k in ('overview','keys','last_backup','passkeys'))
     by_ref={a['key_ref']:a for a in keys['agents']} if keys else None
     scopes={a['name']:a for a in overview['agents']} if overview else {}
 
@@ -71,7 +71,7 @@ def inventory(layout, now):
             grant=by_ref.get(status.key_ref(stem))
             if grant is None: found.append(('info','key_file_orphan',row['path']))
         if unsafe(row): found.append(('warning','key_file_unsafe',row['path']))
-        files.append(dict(row,agent=grant['name'] if grant else None))
+        files.append(dict(row,agent=grant['name'] if grant else None,key_ref=grant['key_ref'] if grant else None))
     keystore=entry(layout,layout.keystore)
     if unsafe(keystore): found.append(('warning','keystore_unsafe',keystore['path']))
 
@@ -99,6 +99,10 @@ def inventory(layout, now):
     generated=seconds(keys['generated_at']) if keys else None
     if generated is None or now-generated>KEYS_MAX_S: found.append(('warning','inventory_stale','broker'))
 
+    # Info only: passkeys are needed for Insight approvals, not to use the profile. A missing section (an older broker)
+    # is already inventory_stale, so it gives no finding of its own.
+    if passkeys is not None and not passkeys['items']: found.append(('info','no_passkey','profile'))
+
     taken=seconds(backup['at']) if backup else None
     if taken is None: found.append(('warning','backup_never','profile'))
     elif now-taken>BACKUP_MAX_S: found.append(('warning','backup_old','profile'))
@@ -106,4 +110,4 @@ def inventory(layout, now):
     findings=[dict(id=kind+':'+subject,severity=severity,kind=kind,subject=subject)
         for severity,kind,subject in sorted(set(found),key=lambda f:(ORDER[f[0]],f[1],f[2]))]
     return dict(generated_at=iso(int(now*1000)),devices=devices,agents=agents,key_files=files,keystore=keystore,
-        recovery=recovery,backup=dict(backup) if backup else None,findings=findings)
+        recovery=recovery,backup=dict(backup) if backup else None,passkeys=passkeys,findings=findings)

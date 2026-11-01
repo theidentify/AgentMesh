@@ -33,7 +33,8 @@ def sections(**change):
                 allow_secret=False,allow_cross_profile=False,allow_import=True)]),
         keys=dict(generated_at=at(60),agents=[dict(name='reader',key_ref=status.key_ref(AID),secret_until=None)],
             recoveries=dict(count=1,latest_issued_at=at(30*DAY))),
-        last_backup=dict(at=at(DAY),files=3,bytes=100))
+        last_backup=dict(at=at(DAY),files=3,bytes=100),
+        passkeys=dict(generated_at=at(60),items=[dict(ref='ef'*8,label='iPhone',created_at=at(10*DAY),issuer_device='d1'*16)]))
     value.update(change)
     return {k:v for k,v in value.items() if v is not None}
 
@@ -64,6 +65,7 @@ def test_healthy_home_has_no_findings(home):
     assert [d['device_id'] for d in result['devices']]==['d1','d2']
     assert result['agents']==[dict(name='reader',key_ref=status.key_ref(AID),secret_until=None,read=['work/common'],write=['work/common'])]
     assert result['recovery']==dict(count=1,latest_issued_at=at(30*DAY)) and result['backup']['files']==3
+    assert result['passkeys']==sections()['passkeys']
 
 
 def test_key_files_listed(home):
@@ -72,7 +74,8 @@ def test_key_files_listed(home):
     assert set(rows)=={'profile-log/agents/%s.key'%AID,'agents/importer.key'}
     row=rows['profile-log/agents/%s.key'%AID]
     assert row['kind']=='file' and row['mode']==0o600 and row['owner_ok'] and row['size']==1 and row['agent']=='reader'
-    assert rows['agents/importer.key']['agent'] is None
+    assert row['key_ref']==status.key_ref(AID)
+    assert rows['agents/importer.key']['agent'] is None and rows['agents/importer.key']['key_ref'] is None
     keystore=inventory.inventory(layout,NOW)['keystore']
     assert keystore['path']=='profile-log/keystore.sealed' and keystore['kind']=='file'
 
@@ -144,6 +147,34 @@ def test_orphan(home):
     assert [f['severity'] for f in result['findings']]==['info']
 
 
+def test_unnamed_grant_ref(home):
+    # The M3b follow-up: an unnamed grant's key file carries its ref, so the app can say which unnamed agent it is.
+    layout,write=home
+    write(keys=dict(sections()['keys'],agents=[dict(name=None,key_ref=status.key_ref(AID),secret_until=None)]))
+    row={r['path']:r for r in inventory.inventory(layout,NOW)['key_files']}['profile-log/agents/%s.key'%AID]
+    assert row['agent'] is None and row['key_ref']==status.key_ref(AID)
+
+
+def test_orphan_has_no_ref(home):
+    layout,_=home; key(layout.agent_keys/(OTHER+'.key'))
+    row={r['path']:r for r in inventory.inventory(layout,NOW)['key_files']}['profile-log/agents/%s.key'%OTHER]
+    assert row['agent'] is None and row['key_ref'] is None
+
+
+def test_no_passkey(home):
+    layout,write=home; write(passkeys=dict(generated_at=at(60),items=[]))
+    result=inventory.inventory(layout,NOW)
+    assert kinds(result)=={('no_passkey','profile')} and [f['severity'] for f in result['findings']]==['info']
+    assert result['passkeys']==dict(generated_at=at(60),items=[])
+
+
+def test_passkeys_section_missing(home):
+    # An older broker writes no passkeys section: null, and no finding of its own.
+    layout,write=home; write(passkeys=None)
+    result=inventory.inventory(layout,NOW)
+    assert result['passkeys'] is None and result['findings']==[]
+
+
 def test_no_orphan_without_keys_section(home):
     layout,write=home; key(layout.agent_keys/(OTHER+'.key')); write(keys=None)
     assert ('key_file_orphan','profile-log/agents/%s.key'%OTHER) not in kinds(inventory.inventory(layout,NOW))
@@ -211,6 +242,7 @@ def test_unreadable_status(home, tmp_path, problem):
     else: path.write_text('{')
     result=inventory.inventory(layout,NOW)
     assert result['devices'] is None and result['agents'] is None and result['recovery'] is None and result['backup'] is None
+    assert result['passkeys'] is None
     assert kinds(result)=={('inventory_stale','broker'),('backup_never','profile')}
     assert {r['agent'] for r in result['key_files']}=={None}
 

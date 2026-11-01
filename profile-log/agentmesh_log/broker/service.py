@@ -180,7 +180,7 @@ class Broker:
             if sync_status_valid(old) and NETWORK<=set(old):
                 self._totals={k:old[k] for k in TOTALS}; self._totals_since=old['totals_since']
         except Exception: pass
-        self.on_overview=on_overview; self._overview_written=None
+        self.on_overview=on_overview; self._overview_written=None; self._passkey_cache=None
         self._remote_keys=set(); self.sync_thread=None
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
         from .imports import Imports
@@ -565,14 +565,34 @@ class Broker:
         self._publish_overview(now)
 
     def _publish_overview(self, now):
-        # Content-free status refresh (overview and keys, from one state); at most once a minute and never fatal to sync.
+        # Content-free status refresh (overview, keys and passkeys, from one state); at most once a minute and never fatal to sync.
         if self.on_overview is None or (self._overview_written is not None and now-self._overview_written<60): return
         self._overview_written=now
         try:
             from ..status import overview, keys
-            with self.lock: value=dict(overview=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row),keys=keys(self.state))
+            with self.lock:
+                value=dict(overview=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row),keys=keys(self.state))
+                passkeys=self._passkeys()
+                if passkeys is not None: value['passkeys']=passkeys
             self.on_overview(value)
         except Exception: pass
+
+    def _passkeys(self):
+        # Verifying passkey records is too slow for every minute: recount only when a record, a device record or the
+        # store changes, or hourly (a record can become valid by time alone). A failure leaves the section out.
+        try:
+            root=self.home.root/'replica'/'registry'; mark=[self.fingerprint]
+            for name in ('passkeys','passkey-removals','devices'):
+                try: entries=list(os.scandir(root/name))
+                except FileNotFoundError: continue
+                mark+=sorted((name,e.name,e.stat().st_size,e.stat().st_mtime_ns) for e in entries)
+            at=time.time(); cached=self._passkey_cache
+            if cached is not None and cached[0]==mark and at-cached[1]<3600: return cached[2]
+            from ..status import passkeys
+            from ..storage.filesystem import FilesystemStorage
+            value=passkeys(self.state,FilesystemStorage(self.home.root/'replica'),int(at*1000))
+            self._passkey_cache=(mark,at,value); return value
+        except Exception: return None
 
     def connection(self, conn):
         session=None

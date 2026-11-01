@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from . import settings
 from .broker.keystore import atomic_write
-from .encoding import parse, wire
+from .encoding import label_valid, parse, wire
 
 FORMAT = 'agentmesh-profile-log-status-v1'
 OUTCOMES = ('created','revised','retired','unchanged','other')
@@ -60,6 +60,16 @@ def keys(state):
         recoveries=dict(count=len(issued),latest_issued_at=iso(max(issued)) if issued else None))
 
 
+def passkeys(state, local, at):
+    """Passkeys the broker trusts for approvals: a ref (the prefix `connector passkey list` prints), the owner's label,
+    when and by which device. Never a credential id, public key or rp_id."""
+    from .heartbeats import iso
+    from .passkeys import active
+    items=sorted((dict(ref=key[:16],label=r['label'],created_at=iso(r['created_at']),issuer_device=r['issuer_device'])
+        for key,r in active(state,local,at).items()),key=lambda i:i['ref'])
+    return dict(generated_at=timestamp(),items=items)
+
+
 def migration(database, mapping):
     from .migrate.mapping import plan, project_targets
     from .migrate.source import rows
@@ -95,6 +105,7 @@ def valid(value):
     def counts(allowed): return lambda v:type(v) is dict and set(v)<=set(allowed) and all(count(n) for n in v.values())
     from .heartbeats import name_valid, iso_valid, PLATFORMS, OUTCOMES as SYNC_OUTCOMES
     when=lambda v:v is None or iso_valid(v)
+    hexa=lambda n:lambda v:type(v) is str and re.fullmatch('[0-9a-f]{%d}'%n,v) is not None
     schemas={
         'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
@@ -105,8 +116,10 @@ def valid(value):
                 last_seen_at=lambda v:v is None or iso_valid(v),last_sync_at=lambda v:v is None or iso_valid(v),
                 last_sync_outcome=lambda v:v is None or v in SYNC_OUTCOMES))(v)))),
         'keys':obj(dict(generated_at=text,
-            agents=seq(obj(dict(name=nullable,key_ref=lambda v:type(v) is str and re.fullmatch('[0-9a-f]{32}',v) is not None,secret_until=when))),
+            agents=seq(obj(dict(name=nullable,key_ref=hexa(32),secret_until=when))),
             recoveries=obj(dict(count=count,latest_issued_at=when)))),
+        # The label rule is the passkey record's own, so a label the broker accepted never invalidates the whole file.
+        'passkeys':obj(dict(generated_at=text,items=seq(obj(dict(ref=hexa(16),label=label_valid,created_at=iso_valid,issuer_device=hexa(32)))))),
         'last_backup':obj(dict(at=iso_valid,files=count,bytes=count)),
         'migration':obj(dict(generated_at=text,projects=seq(obj(dict(project=nullable,items=count,summaries=count,target=text))),unmapped=seq(text))),
         'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update')))),

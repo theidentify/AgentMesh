@@ -83,3 +83,8 @@ def milliseconds(value):
     if type(value) is not int or not 0 <= value < 2**63:
         raise ValidationError('invalid timestamp')
     return value
+
+
+def label_valid(value):
+    """A passkey label: 1-100 characters, no C0 controls."""
+    return type(value) is str and 1 <= len(value) <= 100 and not any(ord(c) < 32 for c in value)

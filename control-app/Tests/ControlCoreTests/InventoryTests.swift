@@ -29,12 +29,54 @@ func inventory(_ findings: [Finding], devices: [Device]? = nil) -> Inventory {
     #expect(value.keystore.path == "profile-log/keystore.sealed" && value.keystore.agent == nil)
     #expect(value.recovery?.count == 1 && value.backup == nil)
     #expect(value.findings.map(\.kind) == ["backup_never", "key_file_orphan"])
+    #expect(value.keyFiles.map { $0.keyRef?.count } == [32, nil, nil] && value.keystore.keyRef == nil)
+    let passkey = try #require(value.passkeys?.items.first)
+    #expect(passkey.ref == "efefefefefefefef" && passkey.label == "iPhone" && passkey.issuerDevice.count == 32)
+    #expect(value.passkeys?.generatedAt != nil && passkey.createdAt.hasPrefix("2027-01-05"))
 }
 
 @Test func inventoryNullsDecode() throws {
     let body = #"{"generated_at":"x","devices":null,"agents":null,"key_files":[],"recovery":null,"backup":null,"findings":[],"keystore":{"path":"profile-log/keystore.sealed","kind":"missing","mode":null,"owner_ok":null,"size":null,"modified_at":null}}"#
     let value = try decoder().decode(Inventory.self, from: json(body))
     #expect(value.devices == nil && value.keystore.kind == "missing" && value.keystore.mode == nil)
+    #expect(value.passkeys == nil)  // an older supervisor sends no passkeys and no key_ref
+}
+
+@Test func emptyPasskeysDecode() throws {
+    let body = #"{"generated_at":"x","devices":null,"agents":null,"key_files":[],"recovery":null,"backup":null,"findings":[],"passkeys":{"generated_at":"y","items":[]},"keystore":{"path":"k","kind":"missing","mode":null,"owner_ok":null,"size":null,"modified_at":null}}"#
+    let value = try decoder().decode(Inventory.self, from: json(body))
+    #expect(value.passkeys == Passkeys(generatedAt: "y", items: []))
+}
+
+@Test func keyFileAgents() {
+    func file(agent: String?, ref: String?) -> KeyFile {
+        KeyFile(path: "p", kind: "file", mode: 0o600, ownerOk: true, size: 1, modifiedAt: nil, agent: agent, keyRef: ref)
+    }
+    #expect(keyFileAgent(file(agent: "recall", ref: "a38813bb" + String(repeating: "0", count: 24))) == "recall")
+    #expect(keyFileAgent(file(agent: nil, ref: "a38813bb" + String(repeating: "0", count: 24))) == "unnamed (a38813bb)")
+    #expect(keyFileAgent(file(agent: nil, ref: nil)) == nil)
+    #expect(agentLabel(name: nil, keyRef: "d8a6e82e1234") == "unnamed (d8a6e82e)" && agentLabel(name: "x", keyRef: "d8") == "x")
+}
+
+@Test func passkeyLines() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let added = ISO8601DateFormatter().string(from: now.addingTimeInterval(-10 * 86400))
+    let mac = Device(deviceId: "d1", revoked: false, thisDevice: true, name: "Air", platform: "macos", lastSeenAt: nil, lastSyncAt: nil)
+    let pro = Device(deviceId: "d2", revoked: false, thisDevice: false, name: "MacBook Pro", platform: "macos", lastSeenAt: nil, lastSyncAt: nil)
+    let value = inventory([], devices: [mac, pro])
+    func key(_ issuer: String) -> Passkey { Passkey(ref: "ef", label: "iPhone", createdAt: added, issuerDevice: issuer) }
+    #expect(passkeyLine(key("d1"), in: value, now: now) == "iPhone · added 10d ago · from this Mac")
+    #expect(passkeyLine(key("d2"), in: value, now: now) == "iPhone · added 10d ago · from MacBook Pro")
+    #expect(passkeyLine(key("0123456789abcdef"), in: value, now: now) == "iPhone · added 10d ago · from device 01234567")
+    #expect(passkeyLine(Passkey(ref: "ef", label: "Key", createdAt: "soon", issuerDevice: "d2"), in: value, now: now)
+            == "Key · added soon · from MacBook Pro")
+}
+
+@Test func noPasskeyIsQuiet() {
+    var watch = Watch()
+    let value = inventory([finding("no_passkey", "profile", "info")])
+    #expect(findingText(finding("no_passkey", "profile", "info"), in: value) == "No passkey is set up for approvals")
+    #expect(watch.update(inventory: value).isEmpty && iconState(status([row(health: .idle)]), inventory: value) == .ok)
 }
 
 @Test func modeAsOctal() {

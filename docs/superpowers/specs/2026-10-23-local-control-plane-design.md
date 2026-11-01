@@ -345,3 +345,29 @@ M3b implements the key inventory from milestone 3, read-only. Plan: `docs/superp
   for a warning finding (below `error` and `needsYou`), and notifies once per new warning finding. Info findings never
   notify.
 - `profile-log/tests/control/fixtures/inventory.json` pins the wire shape for both sides.
+
+## Amendments from milestone 3c (2026-11-01)
+
+M3c adds passkeys to the key inventory, read-only. Plan: `docs/superpowers/plans/2026-11-01-control-plane-m3c-passkeys.md`.
+
+- **Renumbering.** M3b's plan called the approval state machine and Discord/passkey approvals M3c, and device and grant
+  ops M3d. The owner took the passkey inventory first, so those are now **M3d** (approvals) and **M3e** (device and
+  grant ops). The M3b plan keeps its original wording.
+- **The broker publishes a `passkeys` section:** `{generated_at, items: [{ref, label, created_at, issuer_device}]}`.
+  - `ref` is the first 16 hex characters of the credential hash, the prefix `connector passkey list` prints and
+    `passkey remove` takes. Never the credential id, the public key or the rp_id.
+  - `label` is the owner's own label. **Owner decision:** it may appear in the status file, which Insight serves, as
+    device names already do. The validator checks it with the record's own rule (`encoding.label_valid`), so a label
+    the broker accepted never invalidates the whole file.
+  - Which passkeys are active is `passkeys.active(state, local, at)`, split out of `Passkeys.credentials()`.
+  - The cost M3b deferred is bounded by a cache: the broker recounts only when a file in `registry/passkeys/`,
+    `registry/passkey-removals/` or `registry/devices/` changes, when the store changes, or hourly. A failure leaves
+    only that section out of the write.
+  - It is a new top-level section, with the same accepted rollback cost as `keys`.
+- **No "last used" time.** The bridge stores only the WebAuthn sign counter. Recording a time changes the approval path,
+  which is M3d's.
+- **`keys.inventory`** returns `passkeys` (`null` when the section is missing, with no finding of its own, since
+  `inventory_stale` covers an outdated broker) and `key_ref` on key file rows that match a grant.
+- **New finding:** `no_passkey` (info) when the section has no items. Passkeys are needed only for Insight approvals.
+- **The menu bar app** shows a Passkeys block (`label · added <age> · from <device>`), and labels a key file of an
+  unnamed grant `unnamed (<first 8 of key_ref>)`, as the Agents list does.

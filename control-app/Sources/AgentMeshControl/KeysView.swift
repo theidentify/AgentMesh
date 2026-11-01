@@ -1,5 +1,5 @@
 // Keys & devices: the supervisor's read-only keys.inventory. Findings come first; the rest is reference. Nothing here
-// changes a key or a grant (device and grant ops arrive in M3d, behind the approval state machine).
+// changes a key or a grant (device and grant ops arrive in M3e, behind the approval state machine of M3d).
 import ControlCore
 import SwiftUI
 
@@ -58,6 +58,12 @@ struct KeysView: View {
                     ForEach(agents, id: \.keyRef) { agent in line(agentLine(agent)) }
                 } else { line("Not reported by the broker yet") }
             }
+            section("Passkeys") {
+                if let passkeys = inventory.passkeys {
+                    if passkeys.items.isEmpty { line("None set up") }
+                    ForEach(passkeys.items, id: \.ref) { passkey in line(passkeyLine(passkey, in: inventory)) }
+                } else { line("Not reported by the broker yet") }
+            }
             section("Key files") {
                 ForEach(inventory.keyFiles + [inventory.keystore], id: \.path) { file in
                     HStack(spacing: 6) {
@@ -88,7 +94,7 @@ struct KeysView: View {
     }
 
     private func agentLine(_ agent: AgentGrant) -> String {
-        var parts = [agent.name ?? "unnamed (\(agent.keyRef.prefix(8)))"]
+        var parts = [agentLabel(name: agent.name, keyRef: agent.keyRef)]
         if let read = agent.read { parts.append("reads " + (read.isEmpty ? "nothing" : read.joined(separator: ", "))) }
         if let until = agent.secretUntil { parts.append("secret until \(until.prefix(16).replacingOccurrences(of: "T", with: " "))") }
         return parts.joined(separator: " · ")
@@ -97,7 +103,7 @@ struct KeysView: View {
     private func fileDetail(_ file: KeyFile) -> String {
         if file.kind != "file" { return file.kind }
         var parts = [modeText(file.mode)]
-        if let agent = file.agent { parts.append(agent) }
+        if let agent = keyFileAgent(file) { parts.append(agent) }
         if let modified = age(file.modifiedAt) { parts.append(modified) }
         return parts.joined(separator: " · ")
     }

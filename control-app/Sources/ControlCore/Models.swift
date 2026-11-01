@@ -154,7 +154,8 @@ public struct AgentGrant: Equatable, Sendable, Decodable {
     public let write: [String]?
 }
 
-/// A key file as lstat saw it; the supervisor never opens one. agent is absent for the keystore.
+/// A key file as lstat saw it; the supervisor never opens one. agent and keyRef are absent for the keystore, and keyRef
+/// is set only when the file matches a grant (named or not).
 public struct KeyFile: Equatable, Sendable, Decodable {
     public let path: String
     public let kind: String
@@ -163,6 +164,20 @@ public struct KeyFile: Equatable, Sendable, Decodable {
     public let size: Int?
     public let modifiedAt: String?
     public var agent: String? = nil
+    public var keyRef: String? = nil
+}
+
+/// A passkey the broker trusts for approvals: ref is the prefix `connector passkey list` prints.
+public struct Passkey: Equatable, Sendable, Decodable {
+    public let ref: String
+    public let label: String
+    public let createdAt: String
+    public let issuerDevice: String
+}
+
+public struct Passkeys: Equatable, Sendable, Decodable {
+    public let generatedAt: String
+    public let items: [Passkey]
 }
 
 public struct Recovery: Equatable, Sendable, Decodable {
@@ -192,4 +207,6 @@ public struct Inventory: Equatable, Sendable, Decodable {
     public let recovery: Recovery?
     public let backup: Backup?
     public let findings: [Finding]
+    /// nil from an older supervisor or broker; an empty list means none are set up.
+    public var passkeys: Passkeys? = nil
 }

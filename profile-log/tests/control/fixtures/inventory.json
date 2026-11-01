@@ -54,6 +54,7 @@
   "key_files": [
    {
     "agent": "reader",
+    "key_ref": "a94b562495615595679e856f1388060c",
     "kind": "file",
     "mode": 384,
     "modified_at": "2027-01-15T08:00:00+00:00",
@@ -63,6 +64,7 @@
    },
    {
     "agent": null,
+    "key_ref": null,
     "kind": "file",
     "mode": 384,
     "modified_at": "2027-01-15T08:00:00+00:00",
@@ -72,6 +74,7 @@
    },
    {
     "agent": null,
+    "key_ref": null,
     "kind": "file",
     "mode": 384,
     "modified_at": "2027-01-15T08:00:00+00:00",
@@ -87,6 +90,17 @@
    "owner_ok": true,
    "path": "profile-log/keystore.sealed",
    "size": 1
+  },
+  "passkeys": {
+   "generated_at": "2027-01-15T07:59:00+00:00",
+   "items": [
+    {
+     "created_at": "2027-01-05T08:00:00+00:00",
+     "issuer_device": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+     "label": "iPhone",
+     "ref": "efefefefefefefef"
+    }
+   ]
   },
   "recovery": {
    "count": 1,

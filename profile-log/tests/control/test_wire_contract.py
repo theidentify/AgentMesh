@@ -53,6 +53,8 @@ def test_inventory_shape(tmp_path):
     assert set(got)==set(want) and set(got['result'])==set(want['result'])
     for section in ('devices','agents','key_files','findings'):
         assert got['result'][section] and all(set(r)==set(want['result'][section][0]) for r in got['result'][section]+want['result'][section])
-    for section in ('keystore','recovery'): assert set(got['result'][section])==set(want['result'][section])
+    for section in ('keystore','recovery','passkeys'): assert set(got['result'][section])==set(want['result'][section])
+    items=got['result']['passkeys']['items']+want['result']['passkeys']['items']
+    assert items and all(set(i)=={'ref','label','created_at','issuer_device'} for i in items)
     # The fixture has a null backup, so the app's decoder covers the nullable parts too.
     assert want['result']['backup'] is None and {f['severity'] for f in want['result']['findings']}=={'warning','info'}

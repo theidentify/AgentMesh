@@ -10,7 +10,7 @@ from webauthn.helpers import options_to_json, decode_credential_public_key
 from webauthn.helpers.structs import AuthenticatorSelectionCriteria, ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor
 from .connector import digest, exact
 from .connector_cli import controls, approval_proposal, apply_approval
-from .encoding import fields, hex_bytes, milliseconds, parse, wire, typed
+from .encoding import fields, hex_bytes, label_valid, milliseconds, parse, wire, typed
 from .registry_store import signed, domain, now
 from .identity import verify_signature
 from .presence import PresenceManager
@@ -39,6 +39,29 @@ def settings(state):
     return value
 
 
+def active(state, local, at):
+    """Active passkeys by credential hash: signed by a device with read authority, not removed, for this rp_id."""
+    cr=controls(state,local); registry,ring=cr.context(); result={}; removed=set()
+    for kind,prefix in (('passkey-removal','registry/passkey-removals/'),('passkey','registry/passkeys/')):
+        for path in local.list(prefix):
+            try:
+                r=parse(local.get(path)); keys={'credential_id_sha256','removed_at','issuer_device'} if kind=='passkey-removal' else {'credential_id','public_key','label','rp_id','created_at','issuer_device'}
+                fields(r,keys|{'format','signature'},'agentmesh-'+kind+'-v1');hex_bytes(r['issuer_device'],16)
+                timestamp=r['removed_at' if kind=='passkey-removal' else 'created_at'];milliseconds(timestamp)
+                if timestamp>at: continue
+                verify_signature(r,registry.device_public(r['issuer_device'],at=at),domain(kind))
+                if not cr.reader(ring,r['issuer_device'],at): continue
+                if kind=='passkey-removal': identifier=r['credential_id_sha256'];hex_bytes(identifier,32)
+                else:
+                    identifier=credential_hash(unb64(r['credential_id']));decode_credential_public_key(unb64(r['public_key']))
+                    if not label_valid(r['label']) or type(r['rp_id']) is not str: continue
+                if path!=prefix+identifier+'.json': continue
+                if kind=='passkey-removal': removed.add(identifier)
+                elif identifier not in removed and r['rp_id']==settings(state)['rp_id']: result[identifier]=r
+            except Exception: continue
+    return result
+
+
 class Passkeys:
     # CLI administration owns its lock; ceremonies lock only local state transitions.
     def __init__(self,home,store,storage,*,clock=now,update=None):
@@ -46,25 +69,7 @@ class Passkeys:
         self.local=FilesystemStorage(home.root/'replica');self.update=update or home.lock
 
     def credentials(self):
-        state=self.store.load(); cr=controls(state,self.local); registry,ring=cr.context(); at=self.clock(); result={}; removed=set()
-        for kind,prefix in (('passkey-removal','registry/passkey-removals/'),('passkey','registry/passkeys/')):
-            for path in self.local.list(prefix):
-                try:
-                    r=parse(self.local.get(path)); keys={'credential_id_sha256','removed_at','issuer_device'} if kind=='passkey-removal' else {'credential_id','public_key','label','rp_id','created_at','issuer_device'}
-                    fields(r,keys|{'format','signature'},'agentmesh-'+kind+'-v1');hex_bytes(r['issuer_device'],16)
-                    timestamp=r['removed_at' if kind=='passkey-removal' else 'created_at'];milliseconds(timestamp)
-                    if timestamp>at: continue
-                    verify_signature(r,registry.device_public(r['issuer_device'],at=at),domain(kind))
-                    if not cr.reader(ring,r['issuer_device'],at): continue
-                    if kind=='passkey-removal': identifier=r['credential_id_sha256'];hex_bytes(identifier,32)
-                    else:
-                        identifier=credential_hash(unb64(r['credential_id']));decode_credential_public_key(unb64(r['public_key']))
-                        if type(r['label']) is not str or not 1<=len(r['label'])<=100 or any(ord(c)<32 for c in r['label']) or type(r['rp_id']) is not str: continue
-                    if path!=prefix+identifier+'.json': continue
-                    if kind=='passkey-removal': removed.add(identifier)
-                    elif identifier not in removed and r['rp_id']==settings(state)['rp_id']: result[identifier]=r
-                except Exception: continue
-        return result
+        return active(self.store.load(),self.local,self.clock())
 
     def local_record(self,kind,identifier,**values):
         state=self.store.load();record=signed(kind,state.device._private,**values,issuer_device=state.device.device_id)
@@ -76,7 +81,7 @@ class Passkeys:
         self.storage.put(path,data)
 
     def add(self,label,console):
-        if type(label) is not str or not 1<=len(label)<=100 or any(ord(c)<32 for c in label): raise ValueError('invalid_request')
+        if not label_valid(label): raise ValueError('invalid_request')
         self.authority()
         PresenceManager(self.home,self.store).require('device','approve',console=console,one_shot=True)
         code=''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(10))

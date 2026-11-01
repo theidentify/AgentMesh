@@ -183,8 +183,27 @@ public func findingText(_ finding: Finding, in inventory: Inventory) -> String {
     case "backup_never": return "No backup recorded yet"
     case "backup_old": return "The last backup is over 30 days old"
     case "inventory_stale": return "The broker has not refreshed the key inventory for a day"
+    case "no_passkey": return "No passkey is set up for approvals"
     default: return "\(finding.kind): \(s)"
     }
+}
+
+/// A grant as a person reads it: its name, or "unnamed (a38813bb)" from the first 8 characters of its ref.
+public func agentLabel(name: String?, keyRef: String) -> String {
+    name ?? "unnamed (\(keyRef.prefix(8)))"
+}
+
+/// The agent a key file belongs to, or nil (a named key such as importer.key, an orphan, or the keystore).
+public func keyFileAgent(_ file: KeyFile) -> String? {
+    file.agent ?? file.keyRef.map { agentLabel(name: nil, keyRef: $0) }
+}
+
+/// "iPhone · added 10d ago · from MacBook Pro"; the device that added it is "this Mac" or its id prefix when unnamed.
+public func passkeyLine(_ passkey: Passkey, in inventory: Inventory, now: Date = Date()) -> String {
+    let device = inventory.devices?.first { $0.deviceId == passkey.issuerDevice }
+    let from = device?.thisDevice == true ? "this Mac" : device?.name ?? "device \(passkey.issuerDevice.prefix(8))"
+    return [passkey.label, "added " + (age(passkey.createdAt, now: now) ?? passkey.createdAt), "from " + from]
+        .joined(separator: " · ")
 }
 
 /// "MacBook Pro · macos · seen 3d ago", "d1 · this Mac", "old · windows · revoked".

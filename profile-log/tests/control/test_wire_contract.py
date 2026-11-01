@@ -1,6 +1,8 @@
 """The status wire shape the menu bar app decodes (control-app reads the same fixture)."""
 import json
+import os
 from pathlib import Path
+import pytest
 from agentmesh_log.control.layout import Layout, write_json
 from agentmesh_log.control.moves import Moves
 from agentmesh_log.control.ops import Control
@@ -45,6 +47,7 @@ def live_inventory(tmp_path):
     return dict(id='fixture',ok=True,result=inventory.inventory(layout,NOW))
 
 
+@pytest.mark.skipif(os.name=='nt',reason='POSIX modes and owners')
 def test_inventory_shape(tmp_path):
     want,got=json.loads(INVENTORY.read_text()),live_inventory(tmp_path)
     assert set(got)==set(want) and set(got['result'])==set(want['result'])

@@ -11,6 +11,7 @@ from agentmesh_log.control.ops import Control
 from agentmesh_log.heartbeats import iso
 from .support import FakeBackend
 
+pytestmark=pytest.mark.skipif(os.name=='nt',reason='POSIX modes and owners; the supervisor is macOS only')
 NOW=1_800_000_000.0
 DAY=86400
 AID='ab'*16

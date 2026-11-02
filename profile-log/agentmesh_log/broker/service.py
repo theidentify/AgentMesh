@@ -28,7 +28,7 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
-    'heads': {'scope','memory_keys'}, 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
+    'heads': {'scope','memory_keys','after'}, 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -308,24 +308,29 @@ class Broker:
         """Current head per memory key in one write scope, for the summarizer's upsert (allow_summarize only).
 
         Secret heads are left out: the summarizer never reads or revises secret memories. Without memory_keys the
-        answer is every keyed head of the scope, for the summarizer's related context; more than HEADS_ALL is
-        refused as truncated rather than silently cut."""
+        answer is one page of the scope's keyed heads in key order, at most HEADS_ALL, for the summarizer's related
+        context; `next` is the key to pass as `after` for the following page, null on the last."""
         from .connectors import effective
         if not effective(grant).allow_summarize: raise ValueError('denied')
-        name,keys=req.get('scope'),req.get('memory_keys')
+        name,keys,after=req.get('scope'),req.get('memory_keys'),req.get('after')
         if type(name) is not str or ('memory_keys' in req and (type(keys) is not list or not 1<=len(keys)<=200
-                or len(set(keys))!=len(keys) or any(type(k) is not str or not 1<=len(k)<=512 for k in keys))):
+                or len(set(keys))!=len(keys) or any(type(k) is not str or not 1<=len(k)<=512 for k in keys))) \
+                or ('after' in req and ('memory_keys' in req or type(after) is not str or not 1<=len(after)<=512)):
             raise ValueError('invalid_request')
         sid=resolve(self.state,name)
         if sid not in grant.write or sid not in allowed: raise ValueError('denied')
-        rows=self.index(grant).heads(scope_names[sid],keys,None if keys else HEADS_ALL+1)
+        rows=self.index(grant).heads(scope_names[sid],keys,None if keys else HEADS_ALL+1,after)
         audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id])
-        if keys is None and len(rows)>HEADS_ALL: return {'error':'truncated'}
+        more=keys is None and len(rows)>HEADS_ALL
+        if more: rows=rows[:HEADS_ALL]
+        following=rows[-1]['_memory_key'] if more else None
         rows=[r for r in rows if r['label']!='secret']
         audit['result_ids']=[r['id'] for r in rows]
         fields=('id','kind','content','label','project','task_ref','confidence','updated_at')
-        return {'heads':{r['_memory_key']:{**{k:r.get(k) for k in fields},'item_scope':r['_item']['scope'],
+        result={'heads':{r['_memory_key']:{**{k:r.get(k) for k in fields},'item_scope':r['_item']['scope'],
                                            'scope_key':r['_item']['scope_key'],'status':r['_item']['status']} for r in rows}}
+        if keys is None: result['next']=following
+        return result
 
     def stats(self, grant, audit, allowed, scope_names):
         """Counts and metadata of the agent's own visible memories, never content (Insight, SQLite retirement R3).

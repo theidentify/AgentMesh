@@ -97,13 +97,13 @@ class AgentIndex:
         row=self._events.get(identifier)
         return dict(row) if row is not None else None
 
-    def heads(self, scope, memory_keys=None, limit=None):
+    def heads(self, scope, memory_keys=None, limit=None, after=None):
         """The visible head per memory key in one scope (a revised key has one head; retired and deleted rows are absent).
 
-        Without keys, every keyed head of the scope in key order, at most limit rows."""
+        Without keys, the keyed heads of the scope in key order after the key `after`, at most limit rows."""
         if memory_keys is None:
-            sql='SELECT data FROM metadata WHERE scope=? AND memory_key IS NOT NULL ORDER BY memory_key LIMIT ?'
-            return [parse(r[0]) for r in self.connection.execute(sql,(scope,-1 if limit is None else limit))]
+            sql='SELECT data FROM metadata WHERE scope=? AND memory_key IS NOT NULL AND memory_key>? ORDER BY memory_key LIMIT ?'
+            return [parse(r[0]) for r in self.connection.execute(sql,(scope,after or '',-1 if limit is None else limit))]
         sql='SELECT data FROM metadata WHERE scope=? AND memory_key IN (SELECT value FROM json_each(?))'
         return [parse(r[0]) for r in self.connection.execute(sql,(scope,wire(sorted(memory_keys)).decode()))]
 

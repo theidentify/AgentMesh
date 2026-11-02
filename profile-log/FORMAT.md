@@ -530,8 +530,9 @@ row, `body.metadata.source.memory_key`. The agent index stores it per visible he
 schema 7; older snapshots rebuild). `{"op":"heads","scope":<name>,"memory_keys":[...]}`
 (1-200 distinct keys, each 1-512 characters) returns `{"heads":{key:{id,kind,content,label,
 project,task_ref,confidence,updated_at,item_scope,scope_key,status}}}` for the keys that have
-a visible, non-secret head in that scope. Without `memory_keys` it returns every keyed head of
-the scope, or `{"error":"truncated"}` above 500. It requires allow_summarize and a write grant
+a visible, non-secret head in that scope. Without `memory_keys` it returns one page of the
+scope's keyed heads in key order, at most 500, plus `next`: the key to send as `after` (1-512
+characters) for the following page, or null on the last page. It requires allow_summarize and a write grant
 for the scope. Keys without a head are absent. Recall and tree responses never include the key.
 
 `item_scope`, `scope_key` and `status` are the staging item's own fields (global, project,

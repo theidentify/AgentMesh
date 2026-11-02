@@ -15,6 +15,7 @@ MARKER_START='<!-- BOUNDED-CURRENT:START -->'
 MARKER_END='<!-- BOUNDED-CURRENT:END -->'
 RELATED=('memory_key','kind','scope','scope_key','project','content','status','confidence')
 SCOPES=('global','project','task','session')
+PAGES=200  # heads pages of 500 per scope: 100,000 keyed memories, far above any real scope
 STATUSES=('active','superseded','resolved','deleted')
 
 
@@ -42,7 +43,13 @@ class Heads:
 
     def scope(self, name):
         if name not in self.cache:
-            self.cache[name]=checked(self.client.request(dict(op='heads',scope=name)))['heads']
+            heads,after={},None
+            for _ in range(PAGES):
+                page=checked(self.client.request(dict(op='heads',scope=name,**({'after':after} if after else {}))))
+                heads.update(page['heads']); after=page.get('next')
+                if not after: break
+            else: raise ValueError('too many keyed heads in '+name)
+            self.cache[name]=heads
         return self.cache[name]
 
     def drop(self, name): self.cache.pop(name,None)

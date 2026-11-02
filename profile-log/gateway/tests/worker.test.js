@@ -32,10 +32,10 @@ test('P6-2 approved OAuth, single-use approval, hashed rotating tokens, immediat
  assert.equal((await admin(h,'revoke',{app_id:a.p.app_id,policy_ref:ref})).status,200);
  assert.equal((await rpc(h,a.token.access_token,'tools/list')).status,401);
 });
-test('P6-8 only three tools, strict schemas, limit cap, fixed errors and preamble',async()=>{
+test('P6-8 only the listed tools, strict schemas, limit cap, fixed errors and preamble',async()=>{
  const h=await harness(),a=await approved(h);let request;
  h.worker=createGateway({fetcher:async(url,options)=>{request=JSON.parse(new TextDecoder().decode(options.body));return Response.json({data:{results:[],candidate_counts:{durable:0}}});}});
- const listing=await (await rpc(h,a.token.access_token,'tools/list')).json();assert.deepEqual(listing.result.tools.map(t=>t.name).sort(),['recall','remember','whoami']);
+ const listing=await (await rpc(h,a.token.access_token,'tools/list')).json();assert.deepEqual(listing.result.tools.map(t=>t.name).sort(),['memory_cat','memory_grep','memory_ls','recall','remember','whoami']);
  for(const method of ['resources/list','prompts/list','sampling/createMessage'])assert.deepEqual(await (await rpc(h,a.token.access_token,method)).json(),{error:'invalid_request'});
  const oversized=await (await rpc(h,a.token.access_token,'tools/call',{name:'remember',arguments:{body:'x'.repeat(32769)}})).json();assert.equal(oversized.error.message,'invalid_request');
  const good=await (await rpc(h,a.token.access_token,'tools/call',{name:'recall',arguments:{query:'hello',limit:20}})).json();assert.equal(request.arguments.limit,3);assert.equal(good.result.structuredContent.preamble,PREAMBLE);
@@ -188,6 +188,18 @@ test('deploy bridge fetch uses a Workers-supported redirect mode and refuses red
  h.env.ACCESS_CLIENT_ID=' id-with-space\n';
  await callTool(h.env,auth,'recall',{query:'x'},redirecting);
  assert.equal(options.headers['CF-Access-Client-Id'],'id-with-space');
+});
+test('memory tree tools are read-only, capped and carry the preamble',async()=>{
+ const h=await harness(),a=await approved(h),auth={props:{app_id:a.p.app_id},clientId:a.client};let seen=[];
+ const fetcher=async(url,options)=>{seen.push(JSON.parse(new TextDecoder().decode(options.body)));return Response.json({path:'/',children:[]});};
+ assert.equal((await callTool(h.env,auth,'memory_ls',{},fetcher)).preamble,PREAMBLE);assert.deepEqual(seen.at(-1),{tool:'memory_ls',arguments:{}});
+ await callTool(h.env,auth,'memory_grep',{query:'x',path:'/work',limit:20},fetcher);assert.equal(seen.at(-1).arguments.limit,3);
+ assert.ok((await callTool(h.env,auth,'memory_cat',{path:'/work/INDEX.md'},fetcher)).preamble);
+ await writePolicy(h,a.client,{...a.p,remember:null,issued_at:Date.now()+1});await new Promise(r=>setTimeout(r,5));
+ assert.ok((await callTool(h.env,auth,'memory_ls',{path:'/work',depth:2},fetcher)).preamble);
+ for(const [tool,args] of [['memory_ls',{depth:3}],['memory_cat',{}],['memory_cat',{path:''}],['memory_grep',{query:' '}],['memory_grep',{query:'x',limit:21}],['memory_ls',{path:'x'.repeat(513)}],['memory_ls',{extra:1}]])
+  assert.deepEqual(await callTool(h.env,auth,tool,args,fetcher),{error:'invalid_request'});
+ assert.equal(seen.length,4);
 });
 test('P6-3 recall forwards names but refuses out-of-policy IDs before the bridge',async()=>{
  const h=await harness(),a=await approved(h),auth={props:{app_id:a.p.app_id},clientId:a.client};let seen=[];

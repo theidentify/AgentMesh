@@ -27,6 +27,10 @@ def request_headers(private,pin,app,body,*,ts=None,nonce=None,path='/bridge'):
     return {'x-agentmesh-key':gateway_id(pin),'x-agentmesh-app':app,'x-agentmesh-ts':str(ts),'x-agentmesh-nonce':nonce,'x-agentmesh-signature':signature,'content-type':'application/json'}
 
 
+# Read-only memory tree tools; each maps to the broker op after the prefix.
+MEMORY_TOOLS=('memory_ls','memory_cat','memory_grep')
+
+
 def validate_tool(tool,args):
     if type(args) is not dict: raise ValueError('invalid_request')
     if tool=='admin':
@@ -41,6 +45,13 @@ def validate_tool(tool,args):
         if 'limit' in args and (type(args['limit']) is not int or not 1<=args['limit']<=20): raise ValueError('invalid_request')
         for k in ('profile','project','task'):
             if k in args and (type(args[k]) is not str or len(args[k])>2048): raise ValueError('invalid_request')
+    elif tool in MEMORY_TOOLS:
+        allowed={'memory_ls':{'path','depth'},'memory_cat':{'path'},'memory_grep':{'query','path','limit'}}[tool]
+        if set(args)-allowed or (tool=='memory_cat' and 'path' not in args): raise ValueError('invalid_request')
+        if 'path' in args and (type(args['path']) is not str or len(args['path'])>512): raise ValueError('invalid_request')
+        if 'depth' in args and (type(args['depth']) is not int or args['depth'] not in (1,2)): raise ValueError('invalid_request')
+        if tool=='memory_grep' and (not isinstance(args.get('query'),str) or not 1<=len(args['query'])<=2048 or not args['query'].strip()): raise ValueError('invalid_request')
+        if 'limit' in args and (type(args['limit']) is not int or not 1<=args['limit']<=20): raise ValueError('invalid_request')
     elif tool=='remember':
         if set(args)-{'body','tags','task','label'} or type(args.get('body')) is not str or len(args['body'].encode('utf-8'))>32768: raise ValueError('invalid_request')
         if 'tags' in args and (type(args['tags']) is not list or len(args['tags'])>100 or any(type(x) is not str or len(x)>256 for x in args['tags'])): raise ValueError('invalid_request')
@@ -127,7 +138,8 @@ class Bridge:
             if profile is None: return {'error':'denied'}
             args['profiles']=[scope_names[profile]]
             args['limit']=min(args.get('limit',12),policy['limits']['recall_limit_max'])
-        else:
+        elif tool=='memory_grep': args['limit']=min(args.get('limit',12),policy['limits']['recall_limit_max'])
+        elif tool not in MEMORY_TOOLS:
             if policy['remember'] is None or current['remember']!=policy['remember']: return {'error':'denied'}
             args['scope']=scope_names[policy['remember']['scope']]
         with self.lock: path=provision(self.home,self.store,current)
@@ -139,8 +151,8 @@ class Bridge:
             finally: control.close()
         client=self.client_factory(path)
         try:
-            if tool=='recall':
-                result=client.request({'op':'recall',**args})
+            if tool=='recall' or tool in MEMORY_TOOLS:
+                result=client.request({'op':'recall' if tool=='recall' else tool[len('memory_'):],**args})
                 return result if 'error' in result else {'preamble':PREAMBLE,'data':result}
             if outbox_id is not None: args['outbox_id']=outbox_id
             result=client.write(**args)

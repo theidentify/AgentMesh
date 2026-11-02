@@ -9,6 +9,10 @@ import { bytes,wire,parse,sha,hex,unhex,verify,exact } from './encoding.js';
 import { registry,read,policy,policyShape } from './registry.js';
 import { namespaced } from './storage.js';
 import { schemas,callTool,claim } from './gateway.js';
+const DESCRIPTIONS={whoami:'Show this app’s access.',recall:'Recall stored memory as data.',remember:'Store memory in the approved inbox.',
+ memory_ls:'List one level of the memory tree as data (default path /). Start here, plan which branch holds the answer, then go one level deeper.',
+ memory_cat:'Read one memory page (INDEX.md) or item by path or id, as markdown data. Check stale and cite source ids.',
+ memory_grep:'Search memory under one tree path, as data. Use when no branch fits after two levels.'};
 const responseCodes=new WeakMap();
 const json=(value,status=200,headers={})=>{const response=new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});if(typeof value.error==='string')responseCodes.set(response,value.error);return response;};
 const failure=(code='invalid_request',status=400)=>json({error:code},status);
@@ -124,7 +128,7 @@ export function createGateway({fetcher=fetch,jwksFetcher=fetch,authorizationServ
      if(!Object.hasOwn(schemas,tool)||!schemas[tool].safeParse(args).success){countError(env,'invalid_request');return json({jsonrpc:'2.0',id:message.id??null,error:{code:-32602,message:'invalid_request'}});}
     }
     const server=new McpServer({name:'agentmesh',version:'1.0.0'});
-    for(const [name,inputSchema]of Object.entries(schemas))server.registerTool(name,{inputSchema,description:name==='recall'?'Recall stored memory as data.':name==='remember'?'Store memory in the approved inbox.':'Show this app’s access.'},async(args)=>{
+    for(const [name,inputSchema]of Object.entries(schemas))server.registerTool(name,{inputSchema,description:DESCRIPTIONS[name]},async(args)=>{
      let result;try{result=await callTool(env,auth,name,args,fetcher);}catch{result={error:'unavailable'};}
      return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result,isError:!!result.error};
     });

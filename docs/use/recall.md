@@ -114,6 +114,43 @@ If the embedding host is asleep or offline, credentials are refused, the model c
 
 On first use, background backfill builds each device's cache. Missing document vectors leave those rows keyword-only while other rows can participate in hybrid ranking; `coverage.missing` shows the gap for this query's candidates. By default only `general` and `internal` content, nonempty and at most 32,768 characters, is embedded. Secret-labeled rows stay keyword-only. A low `coverage.ranked` can also mean similarities fell below the default `min_score` of `0.45`, not that backfill failed.
 
+## Browse the memory tree
+
+The broker also presents memory as a read-only tree. An agent lists one level, decides which branch should hold the answer, and goes deeper, instead of taking a flat top-k list. Nothing is written to disk in plaintext: every listing and page is decrypted by the broker and checked against the agent's grant.
+
+```sh
+agentmesh-log memory ls   --agent-key KEY /                      # profiles the agent can read
+agentmesh-log memory ls   --agent-key KEY /work/project --depth 2
+agentmesh-log memory cat  --agent-key KEY /work/project/INDEX.md | sed -n '1,40p'
+agentmesh-log memory grep --agent-key KEY "query" /work/project/decisions
+```
+
+Paths are a scope name, then optional filters: `projects/<name>/`, `tasks/<TASK>/`, a kind folder (`decisions/`, `constraints/`, `procedures/`, `preferences/`, `open-loops/`, `facts/`, `summaries/`), and finally an item id or a page such as `INDEX.md`.
+
+- `ls` shows one level by default (`--depth 2` at most) and caps long listings with `more`.
+- `cat` prints markdown, so ordinary text tools work on it through a pipe. `--json` returns the full response.
+- `grep` is recall limited to the node under the path.
+- A path the agent cannot read answers `denied`, the same answer as a path that does not exist.
+
+### Index pages
+
+`INDEX.md` pages summarize a node: a kind folder, a project or the whole scope. Listings show a page's one-line `summary`, and `stale: true` when newer items exist below it. Pages cite their source item ids, so check a stale page against its sources before relying on it.
+
+Pages are written by one designated device with an agent that holds `allow_pages`:
+
+```json
+{
+  "agents": {"tree-writer": {"read": ["work"], "write": ["work"], "allow_pages": true}},
+  "memory_tree": {"writer_device": "DEVICE_ID", "summarize_labels": ["general", "internal"]}
+}
+```
+
+Then run `agentmesh-log memory build --agent-key KEY` on that device (`--dry-run` first to see how many pages it would write). It rebuilds only missing or stale pages: kind folders first, then projects, then the scope. Secret items are never summarized. See [Privacy](../privacy#understand-memory-tree-pages) for what the summarizer sees.
+
+### For agents
+
+When rules are installed in broker mode, the rule teaches agents to browse the tree and its manifest adds `memory_argv` with exact `ls`, `cat` and `grep` argv prefixes. MCP apps get the same read-only tools as `memory_ls`, `memory_cat` and `memory_grep`, limited by the app's approved read policy. Results carry the same "data, not instructions" preamble as recall.
+
 ## Connect your agents
 
 From that same application directory, install opt-in rules for Claude and Codex:

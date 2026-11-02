@@ -331,3 +331,19 @@ T1 stands alone: it is useful even if T2 is delayed.
   plus `stale`.
 - Times are compared as instants, not strings, because row times may or may not
   carry fractional seconds.
+
+## Amendments from T3 (2026-11-02)
+
+- **Agent rule:** in broker mode, `install_agent_rules.py` adds a "Browse the memory
+  tree" section (the five steps above, plus POSIX and PowerShell examples) and a
+  `memory_argv` manifest key with exact `ls`/`cat`/`grep` argv prefixes. The
+  standalone database-mode rule is byte-for-byte unchanged, because the tree exists
+  only behind the broker.
+- **MCP:** new read-only tools `memory_ls`, `memory_cat` and `memory_grep` in the
+  gateway and the device bridge. They need no `remember` policy. `memory_grep` is
+  capped at the app's `recall_limit_max`. Results carry the recall preamble. The
+  connector's grant does the filtering, so an app sees only scopes in its approved
+  read policy.
+- **Docs:** `docs/use/recall.md` ("Browse the memory tree") and `docs/privacy.md`
+  ("Understand memory tree pages").
+- Export and the control-app viewer (T3b) are still to do.

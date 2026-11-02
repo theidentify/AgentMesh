@@ -425,15 +425,18 @@ def execute_phase4(args,backend,console,input_fn):
 def build_pages(client, args):
     """`memory build`: settings memory_tree gives the writer device, labels, model and caps."""
     from .settings import load
-    from .pages import build, ClaudeSummarizer
+    from .pages import build, ClaudeSummarizer, Reconnecting
     tree=load().get('memory_tree',{})
     me=client.request(dict(op='whoami'))
     if 'error' in me: return me
     if tree.get('writer_device') not in (None,me['device_id']): return {'error':'not_writer_device'}
     if args.max_pages is not None and not 1<=args.max_pages<=200: raise ValueError('invalid_request')
     summarize=ClaudeSummarizer(model=tree.get('model','claude-sonnet-5-5'),budget=tree.get('budget_usd',0.5))
-    return build(client,summarize=summarize,labels=tuple(tree.get('summarize_labels',('general','internal'))),
-        max_pages=args.max_pages or tree.get('max_pages',20),scopes=args.scope,dry_run=args.dry_run)
+    writer=Reconnecting(lambda:BrokerClient.from_file(args.agent_key))
+    try:
+        return build(writer,summarize=summarize,labels=tuple(tree.get('summarize_labels',('general','internal'))),
+            max_pages=args.max_pages or tree.get('max_pages',20),scopes=args.scope,dry_run=args.dry_run)
+    finally: writer.close()
 
 
 def main(argv=None,*,backend=None,console=None,input_fn=None):

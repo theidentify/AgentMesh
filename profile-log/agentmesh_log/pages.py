@@ -48,6 +48,29 @@ class ClaudeSummarizer:
             executable=self.executable,budget=self.budget,timeout=self.timeout)[0]
 
 
+class Reconnecting:
+    """A broker client that survives the broker closing idle connections (30 s) during slow summarizer calls.
+
+    A read that fails on a dead socket reconnects once and retries; reads are idempotent. A write always starts
+    on a fresh connection, because its remember/sign steps must share one session."""
+    def __init__(self, connect):
+        self.connect=connect; self.client=connect()
+
+    def reset(self):
+        try: self.client.close()
+        except OSError: pass
+        self.client=self.connect()
+
+    def request(self, request):
+        try: return self.client.request(request)
+        except (OSError,EOFError): self.reset(); return self.client.request(request)
+
+    def write(self, *args, **kwargs):
+        self.reset(); return self.client.write(*args,**kwargs)
+
+    def close(self): self.client.close()
+
+
 def _check(response):
     if 'error' in response: raise RuntimeError(response['error'])
     return response

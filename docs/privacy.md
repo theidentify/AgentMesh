@@ -45,6 +45,16 @@ Treat vectors as memory content: embeddings can reveal information about their s
 
 Ollama runs under the host's OS user. `OLLAMA_DEBUG` logs may contain inputs, so keep debug logging off for private use and protect existing logs. Keep the model tag frozen while the broker uses it. The adapter pins the installed digest and checks it before and after every embedding batch, rejecting a detected change. It cannot detect an **ABA swap**, where model A changes to B and back to A between those checks. Cache encryption and digest checks do not remove this same-user trust boundary.
 
+## Understand memory tree pages
+
+[Memory tree](./use/recall#browse-the-memory-tree) pages are summaries, so a single page can reveal more than any one item. AgentMesh limits them as follows:
+
+- `memory build` sends the newest eligible items of one node to Claude (`claude --print` with no tools, MCP servers or session persistence). Only labels listed in `memory_tree.summarize_labels` are sent, `general` and `internal` by default. Secret items are never sent, and the broker refuses any page that cites a secret item.
+- Pages are ordinary encrypted events in the scope they describe. They sync and back up like other memory and are never written to disk as plaintext.
+- A page's label is at least the highest label among its sources, and it never goes down automatically.
+- A page summarizes only its own scope. The root and profile listings are assembled per request from the scopes that agent can read, so an agent never learns the name of a project it cannot read.
+- Page text is model output over stored memory. Treat it as data, like any recalled text.
+
 ## Understand integrity checks
 
 File hashes detect changes relative to a trusted expected hash. They do not authenticate the sender or protect against replacement of both a file and its checksum manifest. Restrict access to the exchange folder. Signing and trust configuration are separate operator topics; see the [reference index](./reference/).

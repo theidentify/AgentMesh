@@ -146,3 +146,22 @@ def test_settings_agent_key_local_only():
     assert validate({'memory_tree': {'agent_key': '/abs/key.json'}}, local=True)
     for value, local in ((({'agent_key': '/abs/key.json'}), False), ({'agent_key': 'relative.json'}, True)):
         with pytest.raises(ValueError): validate({'memory_tree': value}, local=local)
+
+
+def test_reconnecting_survives_closed_socket(tmp_path):
+    home, b, client, agents, ids = setup(tmp_path)
+    opened = []
+    class Flaky(Local):
+        dead = False
+        def request(self, request):
+            if self.dead: raise OSError(9, 'Bad file descriptor')
+            return super().request(request)
+        def close(self): self.dead = True
+    def connect():
+        opened.append(Flaky(b, agents[0])); return opened[-1]
+    writer = pages.Reconnecting(connect)
+    def slow(material):
+        for c in opened: c.dead = True  # the broker dropped every idle connection meanwhile
+        return dict(summary='s', body='- b')
+    report = pages.build(writer, summarize=slow, max_pages=2)
+    assert report['written'] == 2 and report['failed'] == 0 and len(opened) > 2

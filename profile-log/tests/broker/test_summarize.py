@@ -101,10 +101,14 @@ def test_write_rules(tmp_path):
     assert '- [decision] k.one: first\n- [decision] k.two: second' in summary['content']
     again = summarize.write(client, MAPPING, request(client, [item('k.one', 'first'), item('k.two', 'second', status='deleted')]))
     assert again['written'] == [dict(memory_key='k.one', outcome='unchanged', id=created['written'][0]['id'])]
-    assert again['rejected'] == [dict(memory_key='k.two', reason='deletion requires confirmation')]
+    assert again['rejected'] == [dict(memory_key='k.two', scope='work/a', reason='deletion requires confirmation')]
+    # The owner confirms it: the key is hidden, the event history stays.
+    confirmed = summarize.delete(client, 'work/a', 'k.two')
+    assert confirmed['ok'] and 'k.two' not in client.request(dict(op='heads', scope='work/a'))['heads']
+    with pytest.raises(ValueError, match='not_found'): summarize.delete(client, 'work/a', 'k.two')
     client.write(keyed('k.hidden', 'other session', scope='session', scope_key='s9'), scope='work/a')
     outside = summarize.write(client, MAPPING, request(client, [item('k.hidden', 'rewrite', scope='session', scope_key='s9')]))
-    assert outside['rejected'] == [dict(memory_key='k.hidden', reason='stable key exists outside submitted context')]
+    assert outside['rejected'] == [dict(memory_key='k.hidden', scope='work/a', reason='stable key exists outside submitted context')]
     stale = request(client, [item('k.three', 'third')])
     client.write(keyed('k.race', 'written meanwhile'), scope='work/a')
     with pytest.raises(summarize.Stale): summarize.write(client, MAPPING, stale)

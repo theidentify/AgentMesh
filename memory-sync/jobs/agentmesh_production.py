@@ -51,7 +51,7 @@ def broker(c,action,args):
     raise ValidationError('transcript scan errors: '+', '.join('%s=%d'%kv for kv in sorted(Counter(report['error_classes']).items())))
    return 0
   backend=broker_digest.CliBackend(b['cli_argv'],b['agent_key'],b['mapping'])
-  options={k:v for k,v in c['summary'].items() if k not in ('consumer','primary_node','metrics_path')}
+  options={k:v for k,v in c['summary'].items() if k not in ('consumer','primary_node')}
   report=broker_digest.tick(b['state_dir'],backend,roots=c.get('roots'),boot_id=boot_id(),force=a.force,**options)
   save(c,'last-summary',dict(observed_at=datetime.now(timezone.utc).isoformat(),backend='broker',**report))
  return 0

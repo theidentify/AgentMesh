@@ -317,7 +317,30 @@ def run_once(state, sources, backend, *, extractor=None, command=None, model='gp
     return dict(applied, scan=report, llm_api_calls=len(calls))
 
 
-def tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None, boot_id=None, force=False, **options):
+def tick(state_dir, backend, *, metrics_path=None, **kw):
+    """One scheduled tick; with metrics_path, a run row in the summary metrics log (the same log the SQLite digest
+    wrote, so Insight's metrics view continues), including failed ticks."""
+    import time
+    import uuid
+    started, clock = datetime.now(timezone.utc), time.monotonic()
+    metric = dict(record_type='run', pipeline_version='agentmesh-broker-v1', run_id=uuid.uuid4().hex, start=started.isoformat(),
+                  status='running', model=kw.get('model'), events_processed=0, batch_count=0, llm_api_calls=0, errors=[], error_detail=None)
+    try:
+        report = _tick(state_dir, backend, **kw)
+        metric.update(status=report['status'], events_processed=report.get('events', 0), batch_count=report.get('batches', 0),
+                      llm_api_calls=report.get('llm_api_calls', 0))
+        return report
+    except Exception as exc:
+        metric.update(status='failed', errors=[type(exc).__name__], error_detail=error_detail(exc))
+        raise
+    finally:
+        if metrics_path is not None and metric['status'] != 'scheduled':
+            from bounded_digest import append_metric
+            metric.update(end=datetime.now(timezone.utc).isoformat(), duration_seconds=time.monotonic() - clock)
+            append_metric(metrics_path, metric)
+
+
+def _tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None, boot_id=None, force=False, **options):
     """Daily/boot schedule like digest_scheduler: once due, run windows until drained, at most max_batches per tick."""
     from bounded_digest import run_lock
     if type(max_batches) is not int or not 1 <= max_batches <= 1000:

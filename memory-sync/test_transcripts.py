@@ -69,7 +69,7 @@ class SqliteInventoryTests(unittest.TestCase):
         'memory-sync/resolution_apply.py', 'memory-sync/retention_audit.py', 'memory-sync/security_wizard.py',
         'memory-sync/shared_memory_context.py', 'memory-sync/smoke_os_unlock.py', 'memory-sync/smoke_standalone.py',
         'memory-sync/smoke_windows_install.py', 'memory-sync/smoke_worker_lifetime.py', 'memory-sync/sqlite_export.py',
-        'memory-sync/sqlite_memory.py', 'memory-sync/staging_retention.py', 'memory-sync/standalone_build.py',
+        'memory-sync/sqlite_cutover.py', 'memory-sync/sqlite_memory.py', 'memory-sync/staging_retention.py', 'memory-sync/standalone_build.py',
         'memory-sync/summarize_memory.py', 'memory-sync/support/benchmark_receive_backlog.py',
         'memory-sync/sync_worker.py', 'profile-log/agentmesh_log/migrate/source.py',
         'profile-log/agentmesh_log/verify_remote.py'}

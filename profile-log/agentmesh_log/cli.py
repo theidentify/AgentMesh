@@ -108,6 +108,8 @@ def parser():
         if action=='rows': cmd.add_argument('--ref',action='append',required=True)
         if action=='report': cmd.add_argument('--out',required=True)
     summarizer=commands.add_parser('summary'); steps=summarizer.add_subparsers(dest='action',required=True)
+    delete=steps.add_parser('delete',help='confirm a quarantined deletion (typed presence)')
+    delete.add_argument('--agent-key',required=True); delete.add_argument('--scope',required=True); delete.add_argument('--memory-key',required=True)
     for action in ('related','write'):
         cmd=steps.add_parser(action); cmd.add_argument('--agent-key',required=True)
         routing=cmd.add_mutually_exclusive_group(required=True)
@@ -336,6 +338,14 @@ def execute_summary(args, *, backend=None):
     """One summarizer step for memory-sync's broker backend; the request is JSON on stdin, never on the command line."""
     from .migrate.mapping import Mapping
     from . import summarize
+    if args.action=='delete':
+        from .presence import ConsolePresence
+        console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
+        if not console.confirm('delete','Hide memory %s in %s (a revision with status deleted; history stays).'%(args.memory_key,args.scope)):
+            return {'error':'presence_required'}
+        client=BrokerClient.from_file(args.agent_key)
+        try: return summarize.delete(client,args.scope,args.memory_key)
+        finally: client.close()
     raw=sys.stdin.buffer.read(8*1024*1024+1)
     if len(raw)>8*1024*1024: raise ValueError('invalid_request')
     try: request=parse(raw)
@@ -490,7 +500,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'staging binding device differs from broker':'staging_binding_device_mismatch',
               'staging node differs from binding':'staging_binding_node_mismatch',
               'staging identity missing; initialize ingest before apply':'staging_identity_missing',
-              'unmapped project':'unmapped_project','truncated':'truncated','denied':'denied',
+              'unmapped project':'unmapped_project','truncated':'truncated','denied':'denied','not_found':'not_found',
               'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'

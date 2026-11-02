@@ -689,7 +689,7 @@ def profile_log_status(agentmesh_home, now=None):
         if 'overview' in value:
             result['overview'] = fields(value['overview'], dict(generated_at=text,
                 profiles=lambda v:sequence(v,lambda r:fields(r,dict(name=text,scopes=lambda v:sequence(v,lambda r:fields(r,dict(path=text,label=text)))))),
-                agents=lambda v:sequence(v,lambda r:fields(r,dict(name=text,read=strings,write=strings,default_write=text,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
+                agents=lambda v:sequence(v,lambda r:fields(r,dict(name=text,read=strings,write=strings,default_write=text,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean,allow_pages=boolean))),
                 devices=lambda v:sequence(v,lambda r:fields(r,dict(device_id=lambda v:(text(v) or '')[:12] or None,revoked=boolean,
                     this_device=boolean,name=lambda v:v if type(v) is str and 1<=len(v)<=64 and v.isprintable() else None,
                     platform=lambda v:v if v in ('macos','windows','linux','ios','android','other') else None,

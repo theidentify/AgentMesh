@@ -64,6 +64,9 @@ def parser():
         cmd.add_argument('path',nargs='?' if action!='cat' else None,default='/')
     tree.choices['ls'].add_argument('--depth',type=int,choices=(1,2),default=1)
     tree.choices['cat'].add_argument('--json',action='store_true',help='full response instead of markdown')
+    build=tree.add_parser('build',help='rebuild missing or stale memory tree pages (needs an allow_pages agent)')
+    build.add_argument('--agent-key',required=True); build.add_argument('--scope',action='append')
+    build.add_argument('--max-pages',type=int); build.add_argument('--dry-run',action='store_true')
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
     remember.add_argument('--task')
@@ -90,7 +93,7 @@ def parser():
     keystore=commands.add_parser('keystore'); key_sub=keystore.add_subparsers(dest='action',required=True)
     cmd=key_sub.add_parser('migrate'); home(cmd); cmd.add_argument('--to',choices=['os'],required=True); cmd.add_argument('--out')
     init.add_argument('--out'); init.add_argument('--file-keystore',action='store_true')
-    grant.add_argument('--allow-import',action='store_true')
+    grant.add_argument('--allow-import',action='store_true'); grant.add_argument('--allow-pages',action='store_true')
     recall.add_argument('--compat',action='store_true')
     migration=commands.add_parser('migrate'); operations=migration.add_subparsers(dest='action',required=True)
     for action in ('plan','run','rows','catch-up','report','verify'):
@@ -189,6 +192,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         client=BrokerClient.from_file(args.agent_key)
         try:
             if args.command=='memory':
+                if args.action=='build': return build_pages(client,args)
                 request=dict(op=args.action,path=args.path)
                 if args.action=='ls': request['depth']=args.depth
                 if args.action=='grep': request.update(query=args.query,limit=args.limit,**({'mode':args.mode} if args.mode else {}))
@@ -243,7 +247,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             PresenceManager(home,store).require('agent','grant',console=console); state=store.load()
             from .admin import create_agent
             path,grant=create_agent(home,state,args.name,args.read,args.write,args.default_write,
-                args.allow_secret,args.allow_cross_profile,args.allow_import)
+                args.allow_secret,args.allow_cross_profile,args.allow_import,args.allow_pages)
             store.save(state)
             return {'agent_key':str(path)}
         if args.action=='revoke':
@@ -417,6 +421,20 @@ def execute_phase4(args,backend,console,input_fn):
         approver.grant(state,scopes)
         return {'ok':True}
     raise ValueError('invalid_request')
+
+def build_pages(client, args):
+    """`memory build`: settings memory_tree gives the writer device, labels, model and caps."""
+    from .settings import load
+    from .pages import build, ClaudeSummarizer
+    tree=load().get('memory_tree',{})
+    me=client.request(dict(op='whoami'))
+    if 'error' in me: return me
+    if tree.get('writer_device') not in (None,me['device_id']): return {'error':'not_writer_device'}
+    if args.max_pages is not None and not 1<=args.max_pages<=200: raise ValueError('invalid_request')
+    summarize=ClaudeSummarizer(model=tree.get('model','claude-sonnet-5-5'),budget=tree.get('budget_usd',0.5))
+    return build(client,summarize=summarize,labels=tuple(tree.get('summarize_labels',('general','internal'))),
+        max_pages=args.max_pages or tree.get('max_pages',20),scopes=args.scope,dry_run=args.dry_run)
+
 
 def main(argv=None,*,backend=None,console=None,input_fn=None):
     p=parser(); args=p.parse_args(argv)

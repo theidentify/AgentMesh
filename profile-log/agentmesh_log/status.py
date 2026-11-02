@@ -106,10 +106,12 @@ def valid(value):
     from .heartbeats import name_valid, iso_valid, PLATFORMS, OUTCOMES as SYNC_OUTCOMES
     when=lambda v:v is None or iso_valid(v)
     hexa=lambda n:lambda v:type(v) is str and re.fullmatch('[0-9a-f]{%d}'%n,v) is not None
+    agent=dict(name=text,read=seq(text),write=seq(text),default_write=nullable,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean)
     schemas={
         'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
-            agents=seq(obj(dict(name=text,read=seq(text),write=seq(text),default_write=nullable,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean))),
+            # Rows without allow_pages (before memory tree T2) stay valid for upgrade and rollback.
+            agents=seq(lambda v:obj(agent)(v) or obj({**agent,'allow_pages':boolean})(v)),
             # Legacy {device_id,revoked} rows stay valid so an upgrade or rollback never drops other sections.
             devices=seq(lambda v:obj(dict(device_id=text,revoked=boolean))(v) or obj(dict(device_id=text,revoked=boolean,this_device=boolean,
                 name=lambda v:v is None or name_valid(v),platform=lambda v:v is None or v in PLATFORMS,

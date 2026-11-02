@@ -271,6 +271,27 @@ class Broker:
         self.indexes[aid]=index; self.index_versions[aid]=version
         return index
 
+    def page_floor(self, grant, req, tags, sid, scope_names, revises):
+        """Label floor of a page write (the highest source label); general for an ordinary memory.
+
+        Only allow_pages grants write pages. A page cites only non-secret, non-page events of its own
+        scope, and each page path keeps one revision chain: create once, then revise the current head.
+        A revision keeps at least the label of the page it revises."""
+        from . import tree
+        page=tree.page_request(req['body'],tags)
+        if page is None: return Label.general
+        if not grant.allow_pages: raise ValueError('denied')
+        rel,sources=page; scope=scope_names[sid]; rows=self.index(grant).rows(); by_id={r['id']:r for r in rows}
+        heads={r['id']:r for r in rows if r['scope']==scope and tree.page_rel(r)==rel}
+        if (req['op']=='remember' and heads) or (req['op']=='revise' and revises not in heads): raise ValueError('denied')
+        # A page never lowers its own label; lowering stays a user decision.
+        floor=Label[heads[revises]['label']] if req['op']=='revise' else Label.general
+        for identifier in sources:
+            source=by_id.get(identifier)
+            if source is None or source['scope']!=scope or source['kind']=='page' or source['label']=='secret': raise ValueError('denied')
+            floor=max(floor,Label[source['label']])
+        return floor
+
     def secret_read(self, grant):
         if grant.connector_app_id is not None:
             from ..registry_store import now
@@ -303,7 +324,7 @@ class Broker:
         row=tree.find(path,rows,scopes)
         if row['label']=='secret': self.secret_read(grant)
         audit.update(result_ids=[row['id']],label=row['label'])
-        return dict(path=tree.canonical(row),event=row,markdown=tree.markdown(row))
+        return dict(path=tree.canonical(row),event=row,markdown=tree.markdown(row),stale=tree.stale(row,rows))
 
     def ingest(self, envelope, data):
         try: _,payload=self._open(envelope,data)
@@ -461,12 +482,14 @@ class Broker:
                 if old is None or old['scope']!=scope_names[sid] or sid not in allowed: raise ValueError('denied')
                 if old.get('_migration'): raise ValueError('denied')
                 if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
+                if (old['kind']=='page')!=(type(req['body']) is dict and req['body'].get('kind')=='page'): raise ValueError('denied')
                 previous=Label[old['label']]
+            floor=self.page_floor(grant,req,tags,sid,scope_names,revises)
             from .connectors import outbox_body
             body,duplicate=outbox_body(self,grant,req)
             if duplicate is not None: return duplicate
             body,tags,task,detected,redactions=sanitize(body,tags,task)
-            label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general)
+            label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general,floor)
             cert=session.certificate
             agent=SimpleNamespace(account_id=cert['account_id'],device_id=cert['device_id'],agent_id=cert['agent_id'],certificate=lambda:dict(cert))
             key=next(t.keys[sid] for t in self.state.trees if sid in t.keys)

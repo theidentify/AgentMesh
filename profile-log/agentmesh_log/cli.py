@@ -106,6 +106,12 @@ def parser():
         if action in ('run','rows','catch-up'): cmd.add_argument('--take-over',action='store_true')
         if action=='rows': cmd.add_argument('--ref',action='append',required=True)
         if action=='report': cmd.add_argument('--out',required=True)
+    summarizer=commands.add_parser('summary'); steps=summarizer.add_subparsers(dest='action',required=True)
+    for action in ('related','write'):
+        cmd=steps.add_parser(action); cmd.add_argument('--agent-key',required=True)
+        routing=cmd.add_mutually_exclusive_group(required=True)
+        routing.add_argument('--mapping'); routing.add_argument('--settings',action='store_true')
+        cmd.add_argument('--project-dir',action='append',default=[])
     terminal=commands.add_parser('admin'); terminal.add_argument('--menu',action='store_true'); terminal.add_argument('--filesystem')
     project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
     apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
@@ -186,6 +192,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         value=load()
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
+    if args.command=='summary': return execute_summary(args,backend=backend)
     if args.command not in ('broker','recall','remember','memory'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
@@ -323,6 +330,32 @@ def execute_migration(args, *, backend=None):
         raise
 
 
+def execute_summary(args, *, backend=None):
+    """One summarizer step for memory-sync's broker backend; the request is JSON on stdin, never on the command line."""
+    from .migrate.mapping import Mapping
+    from . import summarize
+    raw=sys.stdin.buffer.read(8*1024*1024+1)
+    if len(raw)>8*1024*1024: raise ValueError('invalid_request')
+    try: request=parse(raw)
+    except Exception: raise ValueError('invalid_request') from None
+    if not summarize.valid_request(request,args.action): raise ValueError('invalid_request')
+    if args.settings:
+        from .settings import load,root
+        from .apply import open_home
+        from .projects import effective_mapping
+        _,store=open_home(root(),backend)
+        mapping=effective_mapping(load(),store.load(),args.project_dir)
+    else: mapping=Mapping.load(args.mapping)
+    client=BrokerClient.from_file(args.agent_key)
+    try:
+        if args.action=='related':
+            context=summarize.related(client,mapping,request['project'],request['sessions'])
+            return dict(related=context,digest=summarize.digest(context))
+        try: return summarize.write(client,mapping,request)
+        except summarize.Stale: return dict(status='stale')
+    finally: client.close()
+
+
 def share_result(shares,args,home):
     from .recovery import write_shares
     if getattr(args,'out',None):
@@ -455,6 +488,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'staging binding device differs from broker':'staging_binding_device_mismatch',
               'staging node differs from binding':'staging_binding_node_mismatch',
               'staging identity missing; initialize ingest before apply':'staging_identity_missing',
+              'unmapped project':'unmapped_project','truncated':'truncated','denied':'denied',
               'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'

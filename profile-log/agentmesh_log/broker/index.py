@@ -74,7 +74,7 @@ class AgentIndex:
                     self.connection.execute('DELETE FROM metadata WHERE rowid=?',old)
             for visible in heads([self._events[i] for i in component]):
                 visible.pop('revises',None)
-                if visible.get('_migration',{}).get('retired'): continue
+                if visible.get('_migration',{}).get('retired') or visible.get('_item',{}).get('status','active')!='active': continue
                 cursor=self.connection.execute('INSERT INTO metadata VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (visible['id'],wire(visible),visible['scope'],visible['profile'],visible['project'],
                      (visible['task_ref'] or '').upper(),visible['content'].lower(),
@@ -97,8 +97,13 @@ class AgentIndex:
         row=self._events.get(identifier)
         return dict(row) if row is not None else None
 
-    def heads(self, scope, memory_keys):
-        """The visible head per memory key in one scope (a revised key has one head; retired rows are absent)."""
+    def heads(self, scope, memory_keys=None, limit=None):
+        """The visible head per memory key in one scope (a revised key has one head; retired and deleted rows are absent).
+
+        Without keys, every keyed head of the scope in key order, at most limit rows."""
+        if memory_keys is None:
+            sql='SELECT data FROM metadata WHERE scope=? AND memory_key IS NOT NULL ORDER BY memory_key LIMIT ?'
+            return [parse(r[0]) for r in self.connection.execute(sql,(scope,-1 if limit is None else limit))]
         sql='SELECT data FROM metadata WHERE scope=? AND memory_key IN (SELECT value FROM json_each(?))'
         return [parse(r[0]) for r in self.connection.execute(sql,(scope,wire(sorted(memory_keys)).decode()))]
 
@@ -169,6 +174,7 @@ class AgentIndex:
             row.pop('_outbox',None)
             row.pop('_migration',None)
             row.pop('_memory_key',None)
+            row.pop('_item',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
         return candidates
@@ -210,6 +216,7 @@ class AgentIndex:
         for row in candidates:
             row.pop('_outbox',None)
             row.pop('_memory_key',None)
+            row.pop('_item',None)
             meta=row.pop('_migration',{})
             source=meta.get('source')
             row['source_ref']={k:source[k] for k in ('device','table','id') if k in source} if source else None

@@ -109,7 +109,7 @@ def validate(value, *, local=False, project=False):
         check(type(value['agents']) is dict)
         for name, agent in value['agents'].items():
             check(bool(AGENT.fullmatch(name)))
-            fields(agent, ['read', 'write', 'default_write', 'allow_secret', 'allow_cross_profile', 'allow_import', 'allow_pages'])
+            fields(agent, ['read', 'write', 'default_write', 'allow_secret', 'allow_cross_profile', 'allow_import', 'allow_pages', 'allow_summarize'])
             for k, v in agent.items():
                 if k in ('read', 'write'): check(type(v) is list and all(scope(s) for s in v))
                 elif k == 'default_write': check(v is None or scope(v))

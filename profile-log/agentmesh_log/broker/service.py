@@ -28,7 +28,7 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
-    'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
+    'heads': {'scope','memory_keys'}, 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -249,11 +249,14 @@ class Broker:
         migration=admitted(self,envelope,payload)
         meta={**body.get('metadata',{}),'author_device':envelope['device']} if migration else {}
         instant=datetime.fromtimestamp(payload['created_at']/1000,timezone.utc).isoformat().replace('+00:00','Z')
+        # Summarizer writes carry metadata.memory_key; imported rows carry it in their staging source.
+        given=body.get('metadata',{}).get('memory_key') if type(body.get('metadata')) is dict else None
+        key=given if type(given) is str else (meta.get('source',{}).get('memory_key') if migration else None)
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
             tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'],
-            _migration=meta, **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
+            _migration=meta, **({'_memory_key':key} if type(key) is str and key else {}), **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
 
     def index(self, grant):
         from .connectors import effective
@@ -291,6 +294,22 @@ class Broker:
             if source is None or source['scope']!=scope or source['kind']=='page' or source['label']=='secret': raise ValueError('denied')
             floor=max(floor,Label[source['label']])
         return floor
+
+    def heads(self, grant, req, audit, allowed, scope_names):
+        """Current head per memory key in one write scope, for the summarizer's upsert (allow_summarize only).
+
+        Secret heads are left out: the summarizer never reads or revises secret memories."""
+        from .connectors import effective
+        if not effective(grant).allow_summarize: raise ValueError('denied')
+        name,keys=req.get('scope'),req.get('memory_keys')
+        if type(name) is not str or type(keys) is not list or not 1<=len(keys)<=200 or len(set(keys))!=len(keys) \
+                or any(type(k) is not str or not 1<=len(k)<=512 for k in keys): raise ValueError('invalid_request')
+        sid=resolve(self.state,name)
+        if sid not in grant.write or sid not in allowed: raise ValueError('denied')
+        rows=[r for r in self.index(grant).heads(scope_names[sid],keys) if r['label']!='secret']
+        audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],result_ids=[r['id'] for r in rows])
+        fields=('id','kind','content','label','project','task_ref','confidence','updated_at')
+        return {'heads':{r['_memory_key']:{k:r.get(k) for k in fields} for r in rows}}
 
     def secret_read(self, grant):
         if grant.connector_app_id is not None:
@@ -462,6 +481,7 @@ class Broker:
             audit['result_ids']=[r['id'] for r in result['results']]
             return result
         if op in ('ls','cat','grep'): return self.tree(session,grant,req,audit,allowed,scope_names)
+        if op=='heads': return self.heads(grant,req,audit,allowed,scope_names)
         if op in ('remember','revise'):
             if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
             from .imports import RESERVED

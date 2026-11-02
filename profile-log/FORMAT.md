@@ -522,6 +522,17 @@ scope has one revision chain: `remember` creates it once, and `revise` must name
 Pages carry no project or task_ref. Body kind `page` without the tag, or the tag without kind
 `page`, is invalid.
 
+### Memory keys and summarizer heads
+
+Local grants add allow_summarize (bool, default false), included in the grant digest. A
+memory's key is `body.metadata.memory_key` (a summarizer write) or, for an imported staging
+row, `body.metadata.source.memory_key`. The agent index stores it per visible head (snapshot
+schema 7; older snapshots rebuild). `{"op":"heads","scope":<name>,"memory_keys":[...]}`
+(1-200 distinct keys, each 1-512 characters) returns `{"heads":{key:{id,kind,content,label,
+project,task_ref,confidence,updated_at}}}` for the keys that have a visible, non-secret head
+in that scope. It requires allow_summarize and a write grant for the scope. Keys without a
+head are absent. Recall and tree responses never include the key.
+
 ### Import trust
 
 Local grants add allow_import (bool, default false), included in the grant digest.

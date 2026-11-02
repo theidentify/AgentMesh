@@ -110,8 +110,9 @@ def valid(value):
     schemas={
         'last_sync':lambda v:type(v) is dict and 'last_ok_at' in v and nullable(v['last_ok_at']) and sync_status_valid({k:n for k,n in v.items() if k!='last_ok_at'}),
         'overview':obj(dict(generated_at=text,profiles=seq(obj(dict(name=text,scopes=seq(obj(dict(path=text,label=text)))))),
-            # Rows without allow_pages (before memory tree T2) stay valid for upgrade and rollback.
-            agents=seq(lambda v:obj(agent)(v) or obj({**agent,'allow_pages':boolean})(v)),
+            # Newer flags are optional so rows from older releases stay valid for upgrade and rollback.
+            agents=seq(lambda v:type(v) is dict and set(agent)<=set(v)<=set(agent)|{'allow_pages','allow_summarize'}
+                and all(({**agent,'allow_pages':boolean,'allow_summarize':boolean})[k](x) for k,x in v.items())),
             # Legacy {device_id,revoked} rows stay valid so an upgrade or rollback never drops other sections.
             devices=seq(lambda v:obj(dict(device_id=text,revoked=boolean))(v) or obj(dict(device_id=text,revoked=boolean,this_device=boolean,
                 name=lambda v:v is None or name_valid(v),platform=lambda v:v is None or v in PLATFORMS,

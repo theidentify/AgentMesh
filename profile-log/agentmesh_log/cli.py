@@ -93,7 +93,7 @@ def parser():
     keystore=commands.add_parser('keystore'); key_sub=keystore.add_subparsers(dest='action',required=True)
     cmd=key_sub.add_parser('migrate'); home(cmd); cmd.add_argument('--to',choices=['os'],required=True); cmd.add_argument('--out')
     init.add_argument('--out'); init.add_argument('--file-keystore',action='store_true')
-    grant.add_argument('--allow-import',action='store_true'); grant.add_argument('--allow-pages',action='store_true')
+    grant.add_argument('--allow-import',action='store_true'); grant.add_argument('--allow-pages',action='store_true'); grant.add_argument('--allow-summarize',action='store_true')
     recall.add_argument('--compat',action='store_true')
     migration=commands.add_parser('migrate'); operations=migration.add_subparsers(dest='action',required=True)
     for action in ('plan','run','rows','catch-up','report','verify'):
@@ -247,7 +247,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             PresenceManager(home,store).require('agent','grant',console=console); state=store.load()
             from .admin import create_agent
             path,grant=create_agent(home,state,args.name,args.read,args.write,args.default_write,
-                args.allow_secret,args.allow_cross_profile,args.allow_import,args.allow_pages)
+                args.allow_secret,args.allow_cross_profile,args.allow_import,args.allow_pages,args.allow_summarize)
             store.save(state)
             return {'agent_key':str(path)}
         if args.action=='revoke':

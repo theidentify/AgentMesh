@@ -27,10 +27,11 @@ class AgentIndex:
             self.connection.execute('CREATE VIRTUAL TABLE search USING fts5(content, tokenize=unicode61)')
             self.connection.execute('CREATE TABLE metadata(id TEXT PRIMARY KEY, data BLOB NOT NULL, '
                 'scope TEXT, profile TEXT, project TEXT, task_ref TEXT, folded TEXT, '
-                'source_device TEXT, source_table TEXT, source_scope TEXT, scope_key TEXT, retired INTEGER)')
+                'source_device TEXT, source_table TEXT, source_scope TEXT, scope_key TEXT, retired INTEGER, memory_key TEXT)')
             self.connection.execute('CREATE INDEX filters ON metadata(scope,profile,project)')
+            self.connection.execute('CREATE INDEX memory_keys ON metadata(scope,memory_key)')
             self.connection.execute('CREATE TABLE events(id TEXT PRIMARY KEY, data BLOB NOT NULL)')
-            self.connection.execute('PRAGMA user_version=6')
+            self.connection.execute('PRAGMA user_version=7')
         except sqlite3.Error: self.connection.close(); raise ValueError('unavailable') from None
         self._events, self._links, self._waiting = {}, {}, {}
         self.dirty = True
@@ -74,13 +75,13 @@ class AgentIndex:
             for visible in heads([self._events[i] for i in component]):
                 visible.pop('revises',None)
                 if visible.get('_migration',{}).get('retired'): continue
-                cursor=self.connection.execute('INSERT INTO metadata VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                cursor=self.connection.execute('INSERT INTO metadata VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (visible['id'],wire(visible),visible['scope'],visible['profile'],visible['project'],
                      (visible['task_ref'] or '').upper(),visible['content'].lower(),
                      visible.get('_migration',{}).get('source',{}).get('device'),
                      visible.get('_migration',{}).get('source',{}).get('table'),
                      visible.get('_migration',{}).get('source',{}).get('scope'),
-                     visible.get('_migration',{}).get('source',{}).get('scope_key'),0))
+                     visible.get('_migration',{}).get('source',{}).get('scope_key'),0,visible.get('_memory_key')))
                 self.connection.execute('INSERT INTO search(rowid,content) VALUES (?,?)',
                     (cursor.lastrowid,visible['content']))
         self.dirty=True
@@ -95,6 +96,11 @@ class AgentIndex:
     def event(self, identifier):
         row=self._events.get(identifier)
         return dict(row) if row is not None else None
+
+    def heads(self, scope, memory_keys):
+        """The visible head per memory key in one scope (a revised key has one head; retired rows are absent)."""
+        sql='SELECT data FROM metadata WHERE scope=? AND memory_key IN (SELECT value FROM json_each(?))'
+        return [parse(r[0]) for r in self.connection.execute(sql,(scope,wire(sorted(memory_keys)).decode()))]
 
     def rows(self):
         return [parse(r[0]) for r in self.connection.execute('SELECT data FROM metadata')]
@@ -113,9 +119,9 @@ class AgentIndex:
             data = ChaCha20Poly1305(self.key).decrypt(raw[:12],raw[12:],self.aad(grant_digest,replica_watermark))
             self.connection.deserialize(data)
             self.connection.execute('PRAGMA temp_store=MEMORY')
-            if self.connection.execute('PRAGMA user_version').fetchone()[0]!=6: raise ValueError('old snapshot')
+            if self.connection.execute('PRAGMA user_version').fetchone()[0]!=7: raise ValueError('old snapshot')
             # Validate schema, including the incremental event table. Old snapshots rebuild.
-            self.connection.execute('SELECT scope,profile,project,task_ref,folded,source_device,source_table,source_scope,scope_key,retired FROM metadata LIMIT 0')
+            self.connection.execute('SELECT scope,profile,project,task_ref,folded,source_device,source_table,source_scope,scope_key,retired,memory_key FROM metadata LIMIT 0')
             events=[parse(r[0]) for r in self.connection.execute('SELECT data FROM events')]
             self._events,self._links,self._waiting={},{},{}
             for row in events: self._link(row)
@@ -162,6 +168,7 @@ class AgentIndex:
         for row in candidates:
             row.pop('_outbox',None)
             row.pop('_migration',None)
+            row.pop('_memory_key',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
         return candidates
@@ -202,6 +209,7 @@ class AgentIndex:
         candidates=sorted(durable,key=chronology,reverse=True)[:cap]+sorted(summaries,key=chronology,reverse=True)[:cap]
         for row in candidates:
             row.pop('_outbox',None)
+            row.pop('_memory_key',None)
             meta=row.pop('_migration',{})
             source=meta.get('source')
             row['source_ref']={k:source[k] for k in ('device','table','id') if k in source} if source else None

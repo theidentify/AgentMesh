@@ -20,6 +20,7 @@ class Grant:
     connector_app_id: str | None = None
     secret_until: int = 0
     allow_pages: bool = False
+    allow_summarize: bool = False
 
     def __post_init__(self):
         if self.max_label not in ("general","internal","secret"): raise ValueError("invalid label grant")
@@ -29,6 +30,7 @@ class Grant:
             hex_bytes(self.connector_app_id,16)
         if type(self.allow_import) is not bool: raise ValueError('invalid import grant')
         if type(self.allow_pages) is not bool: raise ValueError('invalid pages grant')
+        if type(self.allow_summarize) is not bool: raise ValueError('invalid summarize grant')
 
     def digest(self):
         return hashlib.sha256(wire(asdict(self))).hexdigest()

@@ -30,7 +30,7 @@ class Cache:
             return self.value
 
 
-def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None, cron_archive=None):
+def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None, cron_archive=None, insight_agent_key=None):
     agentmesh_home = adapters.agentmesh_root(agentmesh_home)
     readers = {'sqlite':adapters.MemoryReader(sqlite=sqlite), 'postgres':adapters.MemoryReader(dsn=dsn, backend='postgres')}
     primary = primary or os.environ.get('INSIGHT_PRIMARY_BACKEND', 'postgres')
@@ -63,6 +63,7 @@ def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, 
 
     connection_cache = Cache(connections)
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
+    stats_cache = Cache(lambda: adapters.memory_stats(agentmesh_home, insight_agent_key), ttl=60)
     storage_cache = storage.Cache(storage.Observer(agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
     storage_cache.warm()
     access = remote_access.Verifier()
@@ -118,6 +119,9 @@ def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, 
                     if args:
                         raise ValueError('Unknown parameter')
                     return self.send(200, profile_cache.get())
+                if path == '/api/log-counts':
+                    if args: raise ValueError('Unknown parameter')
+                    return self.send(200, stats_cache.get())
                 if path == '/api/metrics':
                     if args:
                         raise ValueError('Unknown parameter')
@@ -179,9 +183,10 @@ def main():
     parser.add_argument('--agentmesh-home', type=Path, default=Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))))
     parser.add_argument('--metrics-log', type=Path, action='append')
     parser.add_argument('--sqlite', type=Path, help='Existing AgentMesh staging database, never created')
+    parser.add_argument('--insight-agent-key', type=Path, help='Read-only profile-log agent for memory counts; defaults to agents/insight.key')
     # DSN only via environment, not CLI/process list or a web form.
     args = parser.parse_args()
-    server = make_server(args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log, cron_archive=args.cron_archive)
+    server = make_server(args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log, cron_archive=args.cron_archive, insight_agent_key=args.insight_agent_key)
     print(json.dumps({'url':'http://127.0.0.1:'+str(server.server_port),'pid':os.getpid(),'readonly':True}), flush=True)
     try:
         server.serve_forever()

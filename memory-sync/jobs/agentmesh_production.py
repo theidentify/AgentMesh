@@ -26,8 +26,7 @@ def load():
   sys.path.insert(0,c['runtime']);return c
  if c.get('backend','sqlite')!='sqlite':raise ValueError('unknown backend')
  if c['primary_backend']!='sqlite' or c['retention']!='disabled':raise ValueError('inactive SQLite authority or unsafe retention')
- for k in ('database','runtime','export_root'):
-  if not Path(c[k]).is_absolute():raise ValueError('absolute path required')
+ if any(not Path(c[k]).is_absolute() for k in ('database','runtime','export_root') if k in c):raise ValueError('absolute path required')
  if not Path(c['database']).is_file():raise ValueError('database unavailable')
  sys.path.insert(0,c['runtime']);return c
 def save(c,name,value):
@@ -61,18 +60,9 @@ def execute(action,argv=None):
  try:
   c=load()
   if c.get('backend')=='broker':return broker(c,action,args)
-  if action=='context':
-   from shared_memory_context import main
-   return main(['--database',c['database'],*args]) or 0
-  if action=='recall':
-   from recall_memory import main
-   return main([c['database'],*args]) or 0
-  if action=='retention':
-   from retention_audit import audit
-   print(json.dumps(audit(c['database'])));return 0
-  if action=='export':
-   from sqlite_export import main
-   return main([c['database'],*args] if args else [c['database'],'--root',c['export_root']]) or 0
+  # SQLite retirement R3: context, recall, export and retention are gone; agents use broker recall and the
+  # memory tree, and the plaintext Markdown export is no longer written (R4 archives the last one).
+  if action not in ('ingest','summary','blocked'):raise ValueError('unknown operation')
   if action=='blocked':raise ValueError('legacy PostgreSQL writer disabled after SQLite cutover')
   p=argparse.ArgumentParser();p.add_argument('--force',action='store_true'); a=p.parse_args(args)
   from datetime import datetime,timezone
@@ -80,15 +70,14 @@ def execute(action,argv=None):
   with run_lock(str(CONFIG)+'.'+action):
    if action=='ingest':
     from ingest_sessions import ingest,raise_for_errors
-    from sqlite_export import publish
     report=ingest(c['database'],roots=c['roots']);save(c,'last-ingest',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
     raise_for_errors(report)
-    exported=publish(c['database'],c['export_root']);save(c,'last-export',dict(observed_at=datetime.now(timezone.utc).isoformat(),**exported))
    elif action=='summary':
     from digest_scheduler import tick
     boot=boot_id()
     try:
-     report=tick(c['database'],root=c['export_root'],boot_id=boot,force=a.force,**c['summary']);save(c,'last-summary',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
+     # The root stays part of the window identity, so a window opened before R3 still resumes; nothing is exported.
+     report=tick(c['database'],root=c.get('export_root',str(Path(c['database']).parent/'export')),exporter=None,boot_id=boot,force=a.force,**c['summary']);save(c,'last-summary',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
     finally:
      from digest_scheduler import read_state
      state=read_state(c['database']);state['source_of_truth']='SQLite';state['observed_at']=datetime.now(timezone.utc).isoformat()

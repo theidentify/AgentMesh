@@ -52,6 +52,7 @@ def parser():
     revoke=admin.add_parser('revoke'); home(revoke); revoke.add_argument('agent_id')
     run=admin.add_parser('run'); home(run); run.add_argument('--sync-interval',type=float); run.add_argument('--log-dir'); remote(run)
     sync=admin.add_parser('sync'); home(sync); remote(sync,True)
+    stats=commands.add_parser('stats'); stats.add_argument('--agent-key',required=True)
     recall=commands.add_parser('recall'); recall.add_argument('query'); recall.add_argument('--agent-key',required=True)
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
     recall.add_argument('--profile',action='append'); recall.add_argument('--scope',action='append')
@@ -193,7 +194,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='summary': return execute_summary(args,backend=backend)
-    if args.command not in ('broker','recall','remember','memory'):
+    if args.command not in ('broker','recall','remember','memory','stats'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
@@ -204,6 +205,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
                 if args.action=='ls': request['depth']=args.depth
                 if args.action=='grep': request.update(query=args.query,limit=args.limit,**({'mode':args.mode} if args.mode else {}))
                 return client.request(request)
+            if args.command=='stats': return client.request(dict(op='stats'))
             if args.command=='recall':
                 request=dict(op='recall',query=args.query,project=args.project,task=args.task,
                     limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat,

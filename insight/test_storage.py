@@ -225,7 +225,7 @@ def test_st18_tunnel():
 
 def test_st19_allowlist():
     import remote_access
-    assert remote_access.ALLOWED_PATHS==frozenset(('/', '/metrics.html','/health','/api/profile-log','/api/metrics','/api/connections','/api/operations','/api/storage'))
+    assert remote_access.ALLOWED_PATHS==frozenset(('/', '/metrics.html','/health','/api/profile-log','/api/metrics','/api/connections','/api/operations','/api/storage','/api/log-counts'))
 
 
 def test_st18_deadline_and_redirect():

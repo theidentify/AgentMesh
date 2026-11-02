@@ -118,3 +118,18 @@ def test_valid_request():
                 {**good, 'items': [item('k', 'x', status='gone')]}, {**good, 'items': [{**item('k', 'x'), 'extra': 1}]},
                 {**good, 'project': ''}, {**good, 'sessions': 's'}, {k: v for k, v in good.items() if k != 'provenance'}):
         assert not summarize.valid_request(bad, 'write')
+
+
+def test_stats_counts_only(tmp_path):
+    """R3: Insight's view. Counts per scope and project, never content; secret rows only for agents that read them."""
+    b, state, client, _ = broker(tmp_path)
+    client.write(keyed('k.one', 'first text'), scope='work/a')
+    client.write(dict(kind='fact', content='plain note', project='demo'), scope='work/a')
+    client.write(dict(kind='fact', content='other project', project='mesh'), scope='work/a')
+    stats = client.request(dict(op='stats'))
+    assert stats['total'] == 3 and stats['more_projects'] == 0
+    row, = stats['scopes']
+    assert (row['scope'], row['count'], row['keyed'], row['kinds'], row['labels']) == ('work/a', 3, 1, {'decision': 1, 'fact': 2}, {'general': 3})
+    assert stats['projects'] == [dict(project='demo', count=2), dict(project='mesh', count=1)]
+    assert 'text' not in str(stats) and 'note' not in str(stats)
+    assert client.request(dict(op='stats', scope='work/a')) == {'error': 'invalid_request'}

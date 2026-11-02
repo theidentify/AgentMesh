@@ -48,13 +48,22 @@ def test_ingest_errors_report_a_notifier_safe_detail(production, capsys, monkeyp
     assert saved['error_classes'] == ['OperationalError', 'OperationalError']
 
 
-def test_export_failure_reports_its_fixed_message(production, capsys):
+def test_ingest_no_longer_exports(production, capsys):
+    """SQLite retirement R3: the plaintext Markdown projection is not written; a manual note there is left alone."""
     module, tmp_path = production
     root = tmp_path / 'export'
     root.mkdir()
     (root / '_Index.md').write_text('# Manual note with the generated name\n')
-    line = blocked(module, capsys)
-    assert line['detail'] == 'manual projection note collision'
+    assert module.execute('ingest', []) == 0
+    assert sorted(p.name for p in root.iterdir()) == ['_Index.md']
+    assert not (tmp_path / 'status/last-export.json').exists()
+
+
+@pytest.mark.parametrize('action', ['context', 'recall', 'export', 'retention'], ids=['context', 'recall', 'export', 'retention'])
+def test_legacy_actions_removed(production, capsys, action):
+    module, _ = production
+    assert module.execute(action, []) == 1
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])['error_class'] == 'ValueError'
 
 
 def test_clean_ingest_still_succeeds(production, capsys):
@@ -64,8 +73,7 @@ def test_clean_ingest_still_succeeds(production, capsys):
 
 
 @pytest.mark.parametrize('name,action', [
-    ('agentmesh_ingest.py', 'ingest'), ('agentmesh_summary.py', 'summary'),
-    ('agentmesh_retention.py', 'retention')])
+    ('agentmesh_ingest.py', 'ingest'), ('agentmesh_summary.py', 'summary')])
 def test_job_shims_dispatch_their_action(name, action, monkeypatch):
     import runpy
     import types

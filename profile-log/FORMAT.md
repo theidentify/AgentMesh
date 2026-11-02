@@ -547,6 +547,15 @@ the keyed head `summary/<project>` of kind `summary`. An agent with allow_summar
 of an imported head is denied. The importer must be revoked before the summarizer writes
 (cutover), otherwise the importer and the summarizer would extend the same key.
 
+### Memory counts
+
+`{"op":"stats"}` (no other fields) returns counts and metadata of the calling agent's own visible
+memories, never content: `{total, scopes:[{scope, profile, count, keyed, kinds:{kind:n},
+labels:{label:n}, updated_at}], projects:[{project, count}], more_projects}`. Projects are the
+top 50 by count. Any agent may ask; the answer covers only scopes it can already read, so a
+secret row counts only for an agent allowed to read secrets. Insight calls it as a read-only
+`insight` agent (`agentmesh-log stats --agent-key agents/insight.key`).
+
 ### Import trust
 
 Local grants add allow_import (bool, default false), included in the grant digest.

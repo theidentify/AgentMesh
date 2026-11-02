@@ -48,8 +48,10 @@ def test_nav_page_sources(world):
     cli, ids = world
     decide = scripted(('ls', '/work', ''), ('ls', '/work/a', ''), ('cat', '/work/a/decisions/INDEX.md', ''))
     result = ev.navigate(cli, decide, 'where do pages live', {ids['d2']}, 8)
-    assert result == dict(hit=True, calls=4, calls_to_hit=4, bytes=result['bytes'], ms=4.0,
+    assert result == dict(hit=True, calls=4, calls_to_hit=4, seen=True, calls_to_seen=4, bytes=result['bytes'], ms=4.0,
                           actions=['ls', 'ls', 'ls', 'cat'], cost_usd=0.03)
+    listed_only = ev.navigate(cli, scripted(('ls', '/work/a/decisions', ''), ('done', '', '')), 'x', {ids['d2']}, 8)
+    assert listed_only['hit'] is False and listed_only['seen'] is True and listed_only['calls_to_seen'] == 2
 
 
 def test_nav_limits(world):
@@ -97,3 +99,11 @@ def test_main_ids_only(world, tmp_path):
 def test_main_rejects_bad_input(tmp_path, capsys):
     assert ev.main(['--queries', str(tmp_path/'missing'), '--agent-key', 'k'], cli=object(), out=lambda s: None) == 1
     assert ev.main(['--queries', 'x', '--agent-key', 'k', '--modes', 'bogus'], cli=object(), out=lambda s: None) == 2
+
+
+def test_interleave_and_profiles(world):
+    a = [dict(id='a1'), dict(id='a2')]; b = [dict(id='b1'), dict(id='a1'), dict(id='b3')]
+    assert [r['id'] for r in ev.interleave([a, b], 10)] == ['a1', 'b1', 'a2', 'b3']
+    assert [r['id'] for r in ev.interleave([a, b], 2)] == ['a1', 'b1']
+    cli, ids = world
+    assert ev.recall_mode(cli, 'grep', 'Never sync vectors', {ids['c1']}, 12, ('work',))['rank'] == 1

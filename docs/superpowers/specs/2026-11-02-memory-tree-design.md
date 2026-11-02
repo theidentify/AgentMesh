@@ -41,7 +41,8 @@ needed, results are explainable, and the tree is readable by people.
 
 ## Non-goals (v1)
 
-- Plaintext files on disk, mounts, FUSE.
+- Plaintext files on disk, mounts, FUSE. The only exception is an export the owner
+  asks for (see "Markdown out").
 - LLM calls inside the broker's recall path.
 - Agents writing pages. Agents stay read-only; only the tree writer writes pages.
 - Removing FTS5, the hybrid code or the Ollama host.
@@ -187,6 +188,62 @@ Update the `agentmesh-shared-memory` rule and the MCP gateway tool descriptions:
 5. Cite page paths and source ULIDs; check `stale` and fall back to `grep` when a
    page is stale for a status question.
 
+## Markdown out
+
+Pages are markdown in every place a person or agent reads them. Only storage is
+encrypted. There are three ways to get the markdown out.
+
+### Pipes (agents and people)
+
+`recall cat` writes the page's markdown to stdout, so ordinary text tools work on
+it without any file on disk:
+
+```bash
+recall cat work/agentmesh/INDEX.md | sed -n '10,40p'
+recall cat work/agentmesh/decisions/INDEX.md | grep -n Ollama
+```
+
+Plaintext lives only in the pipe's process memory. The broker still checks grants
+and writes audit records. In-place edits (`sed -i`) are impossible by design:
+agents are read-only, and the writer changes pages only through the broker.
+
+### Export (owner only)
+
+```
+agentmesh control memory export <path> <folder> [--include-internal]
+```
+
+Writes the subtree as a folder of `.md` files, for Obsidian, an editor or an
+archive. It writes plaintext on purpose, so:
+
+- It is a **control-plane ceremony**, not a broker op. Agent sessions cannot call
+  it. Same-user code is outside the broker's boundary, so the export needs proof
+  of human presence (Touch ID or passkey), like other control-plane actions
+  (`2026-10-23-local-control-plane-design.md`, Threat model).
+- `general` only by default. `--include-internal` adds `internal`. `secret` is
+  never exported; its pages and items appear as counts only.
+- The target folder must be empty or new. Files are written 0600 and the folder
+  0700. The command refuses known synced or indexed locations (iCloud Drive,
+  Desktop and Documents when iCloud sync is on, the Syncthing exchange folder) unless
+  `--allow-synced` is passed.
+- A `README.md` at the export root records the time, the device, the labels
+  included, and that the folder is plaintext the owner must manage or delete.
+- Audited as `op=export` with the path, the label set and the file count, never
+  the content.
+
+### Viewer (control app)
+
+A read-only "Memory" view in the local control app (the menu bar app) renders the
+tree and pages as markdown: depth-1 browsing, `see-also` links, `stale` badges, and
+source ULIDs that open the raw event.
+
+- The control app fetches pages through the broker under the owner's own agent
+  identity and grants. It renders in memory and writes no cache files.
+- Opening the view needs the same presence check as other content-revealing
+  control-plane actions, and it locks again after an idle timeout.
+- **Not in Insight.** Insight is reachable through a tunnel and its Profile log tab
+  is content-free by design. Memory content stays out of it.
+
 ## Phases
 
 | Phase | Work | LLM |
@@ -195,6 +252,7 @@ Update the `agentmesh-shared-memory` rule and the MCP gateway tool descriptions:
 | **T1** | Broker `ls`/`cat`/`grep` with the metadata fallback tree; CLI; audit; schemas; tests. | no |
 | **T2** | Page events (`kind=page`, `page:` tag), writer job, summarizer, security rules 1–3, `stale`. | yes (writer only) |
 | **T3** | Agent rule and MCP gateway tools; docs (`docs/use/recall.md`, `docs/privacy.md`). | no |
+| **T3b** | Owner export ceremony and the control app Memory view. Needs T1; more useful after T2. | no |
 | **T4** | Evaluate keyword vs hybrid vs tree on the T0 set. Decide the fate of hybrid and the Ollama host. | no |
 
 T1 stands alone: it is useful even if T2 is delayed.
@@ -211,6 +269,10 @@ T1 stands alone: it is useful even if T2 is delayed.
 - Bridge contract unchanged for `recall`.
 - Writer: single-writer guard; budget cap; deterministic paths with a fake
   summarizer (like `FakeEmbedding` in `tests/broker/support.py`).
+- Export: refused without presence; refused from an agent session; `secret`
+  never written; default excludes `internal`; refuses a non-empty or synced
+  target; file modes 0600/0700; audit has no content.
+- Viewer: no files written while browsing; locks after idle.
 
 ## Open items for planning
 

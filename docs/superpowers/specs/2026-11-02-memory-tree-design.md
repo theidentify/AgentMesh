@@ -370,3 +370,23 @@ T1 stands alone: it is useful even if T2 is delayed.
   the outcome, never content.
 - **Swift:** a Memory window in the menu bar app (read-only, nothing on disk), and the
   presence helper now accepts actions `read` and `export` besides `migrate`.
+
+## Amendments from T0/T4 (2026-11-02)
+
+- **Harness:** `profile-log/tests/broker/eval_tree.py` (owner-run, never in pytest).
+  It is a sibling of `eval_semantic.py`, not an extension. The query file is
+  private JSONL with `targets` (item ULIDs), because tree navigation needs a
+  target to score. It runs keyword, hybrid and `memory grep` (rank of the first
+  target) and an LLM navigator (`claude --print`, no tools, at most `--max-steps`
+  calls from `/`).
+- **Navigator hit:** a cat of a target, a grep that returns it, or a cat of a
+  page that cites it in `sources`. The navigator stops at the first hit.
+- **Report:** ids and numbers only. The summary has hit@5, hit@limit, latency
+  p50/p95, the tree's mean calls and cost, and `only` per approach.
+- **Decision rule:** keep the Ollama host only if hybrid answers queries nothing
+  else does (`only.hybrid` ≥ 2 of 20), or hybrid hit@5 exceeds both keyword and
+  the tree by at least 2. Otherwise set `semantic.mode: keyword` and retire the
+  host. The owner runs it after deploying T1–T3b and running `memory build`. The
+  verdict is recorded here as a further amendment.
+- `pages.claude_json` is now the shared one-call Claude helper for the page
+  writer and the navigator.

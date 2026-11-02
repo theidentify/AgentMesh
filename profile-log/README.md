@@ -420,6 +420,35 @@ bridge deadline, and relevance over 20 Thai/English queries (no worse on at leas
 17, better on at least three paraphrases). Calibrate `min_score` from those runs;
 0.45 is the code default, not a recorded calibration result.
 
+### Keyword vs hybrid vs memory tree (T0/T4)
+
+`eval_tree.py` compares four ways to the same answers on one private query set:
+keyword recall, hybrid recall, `memory grep` from the root, and an LLM navigator
+that walks the tree with `ls`/`cat`/`grep` the way an agent would (at most 8
+calls, stopping at the first call that reaches a target).
+
+```sh
+python profile-log/tests/broker/eval_tree.py --queries PRIVATE_JSONL --agent-key AGENT_KEY
+```
+
+Each line of the private UTF-8 JSONL file is `{"query": "...", "targets":
+["ULID", ...]}`: the item ids a good answer must reach. Find them once with
+`memory ls`/`memory cat` or recall. Run it after `memory build` has written
+pages, so the navigator has summaries to plan from. Per query, it prints the
+target's rank in keyword/hybrid/grep results and the navigator's hit, calls,
+calls to hit, bytes, latency and Claude cost. The summary adds hit@5 and
+hit@limit per recall mode, tree hits and mean calls, and `only`: how many queries
+only one approach answered. Output has ids and numbers only. The navigator's
+steps send listings and pages to Claude, the same trust as the page writer.
+Flags: `--modes`, `--limit`, `--max-steps`, `--model`, `--budget` (USD per step).
+
+Decision rule from the spec (T4): keep the central Ollama host only if hybrid
+answers queries the tree does not. On 20 queries, that means `only.hybrid` ≥ 2,
+or hybrid hit@5 beating both keyword and the tree by at least 2. Otherwise
+freeze hybrid (`semantic.mode: keyword`) and retire the host. Weigh this with
+cost: the tree's cost is navigator calls at query time plus `memory build`,
+while hybrid's cost is the always-on embedding host.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

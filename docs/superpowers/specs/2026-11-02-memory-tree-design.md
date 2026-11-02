@@ -302,3 +302,32 @@ T1 stands alone: it is useful even if T2 is delayed.
 - Audit: `ls`/`cat` record the path as the query HMAC, never in plaintext; `cat`
   records the result id and label.
 - `stale` and the depth-2 `summary` lines from pages wait for T2.
+
+## Amendments from T2 (2026-11-02)
+
+- **Scope of v1:** the writer builds `INDEX` pages only, for each kind folder, each
+  `projects/<p>/` node and the scope itself, bottom-up. Topic pages (slugs) and
+  `tasks/<T>/INDEX` are deferred. The broker already accepts and lists slug pages.
+- **Write op:** pages use `remember`/`revise` with body kind `page` and one
+  `page:<rel>` tag. No separate op was needed. Rules are in `Broker.page_floor`
+  and `profile-log/FORMAT.md` ("Memory tree pages").
+- **Grant flag `allow_pages`:** flows through `broker grant --allow-pages`, settings
+  agents, apply, the status overview (rows without it stay valid) and Insight. It
+  changes every grant digest, so each agent index rebuilds once after deploy.
+- **Labels never go down:** a page revision keeps at least the previous page label,
+  because lowering still needs user confirmation.
+- **Sources:** up to 40 newest eligible items under the node. The newest 12 are sent
+  in full and the rest as one-line summaries. Child INDEX summaries of the same
+  scope are added for project and scope pages.
+- **Writer:** `agentmesh-log memory build --agent-key K [--scope S] [--max-pages N] [--dry-run]`,
+  configured by the `memory_tree` settings section (`writer_device`, `summarize_labels`,
+  `model`, `max_pages`, `budget_usd`). It refuses to run on any device except
+  `writer_device`. The summarizer is `claude --print` with no tools, MCP or session
+  persistence. The default model is `claude-sonnet-5-5` with a $0.50 budget per page.
+- **Not yet:** a scheduled control-plane unit (debounce after ingest, daily budget).
+  Until then the owner runs `memory build` by hand.
+- `ls` shows pages first (`INDEX.md`, then slugs). A folder or scope entry takes its
+  `summary` and `stale` from its INDEX page. `cat` returns the page's own markdown
+  plus `stale`.
+- Times are compared as instants, not strings, because row times may or may not
+  carry fractional seconds.

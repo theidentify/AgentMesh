@@ -94,10 +94,25 @@ def rank(results, targets):
     return next((n for n, row in enumerate(results, 1) if row.get('id') in targets), None)
 
 
-def recall_mode(cli, mode, query, targets, limit):
+def interleave(lists, limit):
+    """Merge per-profile rankings rank by rank, as `recall --per-profile` does."""
+    out, seen = [], set()
+    for row in (r for group in zip(*[l + [None]*(max(map(len, lists))-len(l)) for l in lists]) for r in group):
+        if row is not None and row['id'] not in seen: seen.add(row['id']); out.append(row)
+    return out[:limit]
+
+
+def recall_mode(cli, mode, query, targets, limit, profiles=()):
+    """Search every profile, like the installed agent rule (`--per-profile`); none means the default profile."""
     try:
-        if mode == 'grep': answer, ms, _ = cli('memory', 'grep', query, '/', '--limit', str(limit))
-        else: answer, ms, _ = cli('recall', query, '--limit', str(limit), '--mode', mode)
+        if mode == 'grep':
+            answers = [cli('memory', 'grep', query, '/'+p if p else '/', '--limit', str(limit)) for p in (profiles or ('',))]
+            ms = sum(a[1] for a in answers); answer = answers[0][0]
+            if not any('error' in a[0] for a in answers):
+                answer = dict(answer, results=interleave([a[0]['results'] for a in answers], limit))
+        else:
+            extra = ['--per-profile'] + [x for p in profiles for x in ('--profile', p)] if profiles else []
+            answer, ms, _ = cli('recall', query, '--limit', str(limit), '--mode', mode, *extra)
     except Failure:
         return dict(rank=None, ms=None, error=True)
     if 'error' in answer: return dict(rank=None, ms=round(ms, 3), error=True)
@@ -112,6 +127,12 @@ def _short(text):
     return text if len(text) <= SUMMARY_CHARS else text[:SUMMARY_CHARS-1]+'…'
 
 
+def listed(action, answer):
+    """Item ids whose one-line summary an ls showed the navigator (seen, not read)."""
+    if action != 'ls': return set()
+    return {c['name'] for c in answer.get('children', []) if c.get('type') == 'event'}
+
+
 def observe(action, answer):
     """(text shown to the navigator, item ids this call reached)."""
     if action == 'ls':
@@ -121,6 +142,7 @@ def observe(action, answer):
             lines.append('%s [%s] %s' % (c['name'], ', '.join(facts), _short(c.get('summary'))))
         if answer.get('more'): lines.append('(+%d more)' % answer['more'])
         return '\n'.join(lines) or '(empty)', set()
+
     if action == 'cat':
         event = answer.get('event', {}); markdown = answer.get('markdown', '')
         reached = {event['id']} if event.get('id') else set()
@@ -145,8 +167,8 @@ def claude_navigator(model, budget):
 
 
 def navigate(cli, decide, query, targets, max_steps):
-    calls, nbytes, ms, cost, first = 0, 0, 0.0, 0.0, None
-    actions, history, reached = [], [], set()
+    calls, nbytes, ms, cost, first, seen_at = 0, 0, 0.0, 0.0, None, None
+    actions, history, reached, seen = [], [], set(), set()
     step = dict(action='ls', path='/', query='')
     while calls < max_steps and step['action'] != 'done':
         action, path = step['action'], step['path'] or '/'
@@ -156,16 +178,19 @@ def navigate(cli, decide, query, targets, max_steps):
         try:
             answer, took, size = cli(*args); ms += took; nbytes += size
             text, ids = ('error: '+str(answer['error']), set()) if 'error' in answer else observe(action, answer)
+            if 'error' not in answer: seen |= listed(action, answer)
         except Failure:
             text, ids = 'error: failed', set()
         calls += 1; actions.append(action); reached |= ids
+        if seen_at is None and (seen | reached) & targets: seen_at = calls
         if reached & targets: first = calls; break
         history.append('## %d. %s %s%s\n%s' % (calls, action, path, ' '+step['query'] if action == 'grep' else '', text))
         if calls >= max_steps: break
         try: step, spent = decide(query, history)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError): break
         cost += spent or 0.0
-    return dict(hit=first is not None, calls=calls, calls_to_hit=first, bytes=nbytes, ms=round(ms, 3),
+    return dict(hit=first is not None, calls=calls, calls_to_hit=first, seen=seen_at is not None, calls_to_seen=seen_at,
+                bytes=nbytes, ms=round(ms, 3),
                 actions=actions, cost_usd=round(cost, 4))
 
 
@@ -180,7 +205,7 @@ def summarize(reports, limit):
     tree = [r['tree'] for r in reports if 'tree' in r]
     if tree:
         hits = [t for t in tree if t['hit']]
-        summary['tree'] = dict(hits=len(hits), mean_calls=round(sum(t['calls'] for t in tree)/len(tree), 2),
+        summary['tree'] = dict(hits=len(hits), seen=sum(1 for t in tree if t.get('seen')), mean_calls=round(sum(t['calls'] for t in tree)/len(tree), 2),
                                mean_calls_to_hit=round(sum(t['calls_to_hit'] for t in hits)/len(hits), 2) if hits else None,
                                mean_bytes=round(sum(t['bytes'] for t in tree)/len(tree)),
                                cost_usd=round(sum(t['cost_usd'] for t in tree), 4), **latencies([t['ms'] for t in tree]))
@@ -202,6 +227,7 @@ def main(argv=None, *, cli=None, decide=None, out=print):
     parser.add_argument('--modes', default='keyword,hybrid,grep,tree')
     parser.add_argument('--model', default='claude-sonnet-5-5')
     parser.add_argument('--budget', type=float, default=0.2, help='USD per navigator step')
+    parser.add_argument('--profile', action='append', default=[], help='profiles to search (repeat); default: the agent default')
     args = parser.parse_args(argv)
     modes = args.modes.split(',')
     if not modes or set(modes) - set(RECALL_MODES+('tree',)) or not 1 <= args.limit <= 100 or not 1 <= args.max_steps <= 30:
@@ -216,7 +242,7 @@ def main(argv=None, *, cli=None, decide=None, out=print):
         report = dict(query_index=index, targets=len(item['targets']))
         for mode in modes:
             if mode == 'tree': report['tree'] = navigate(cli, decide, item['query'], item['targets'], args.max_steps)
-            else: report[mode] = recall_mode(cli, mode, item['query'], item['targets'], args.limit)
+            else: report[mode] = recall_mode(cli, mode, item['query'], item['targets'], args.limit, tuple(args.profile))
         reports.append(report); out(json.dumps(report))
     out(json.dumps(summarize(reports, args.limit)))
     return 0

@@ -390,3 +390,29 @@ T1 stands alone: it is useful even if T2 is delayed.
   verdict is recorded here as a further amendment.
 - `pages.claude_json` is now the shared one-call Claude helper for the page
   writer and the navigator.
+
+## T4 verdict (2026-11-02, Mac Air, live data)
+
+Measured with `eval_tree.py` on 20 private owner queries: 8 Thai, 12 English, worded
+unlike their targets, across work and personal. The pages came from `memory build`
+(65 pages). Recall modes search both profiles, like the installed agent rule.
+
+| Approach | Found | In top 5 | Notes |
+|---|---|---|---|
+| keyword recall | 9/20 | 5 | p95 120 ms |
+| hybrid recall | 18/20 | 12 | p95 174 ms |
+| `memory grep` from `/` | 18/20 | 12 | same ranks as hybrid (settings default) |
+| tree navigator | 12/20 | — | 3.4 calls to hit on average, at most 8; $0.80 for 20 queries; p95 1.3 s |
+
+- Only hybrid found 8 queries; only the tree found 2 (both missed by every recall
+  mode).
+- **Decision:** `only.hybrid` is 8 ≥ 2, so **keep hybrid and the Ollama host**.
+  The tree complements recall, it does not replace it. Agents should start with
+  recall/grep for specific facts and use the tree for overviews and for questions
+  recall misses.
+- The navigator mostly reached targets through `grep` (hybrid underneath) after one
+  `ls`. Pure walking found answers when the INDEX summaries named the topic.
+- Harness fixes made during the run: recall modes now search every `--profile`
+  (the first run used only the agent's default profile and could not reach work
+  targets), and the tree reports `seen` (the target's summary was listed) next to
+  `hit` (read or returned).

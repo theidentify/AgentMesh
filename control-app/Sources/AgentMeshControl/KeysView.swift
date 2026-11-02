@@ -69,7 +69,8 @@ struct KeysView: View {
                     HStack(spacing: 6) {
                         Text(file.path).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                         Spacer()
-                        Text(fileDetail(file)).font(.caption).foregroundStyle(.secondary)
+                        // One line: the path gives way (middle truncation) before the detail wraps.
+                        Text(fileDetail(file)).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                     }
                 }
             }

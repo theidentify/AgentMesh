@@ -62,12 +62,21 @@ def test_heads_all_hides_deleted(tmp_path):
     assert [r['memory_key'] for r in summarize.related(client, MAPPING, 'demo', ['s1'])] == ['k.one', 'k.two']
 
 
-def test_heads_all_bounded(tmp_path, monkeypatch):
+def test_heads_all_paged(tmp_path, monkeypatch):
     b, state, client, _ = broker(tmp_path)
     for key in ('a', 'b'): client.write(keyed(key, 'memory ' + key), scope='work/a')
     monkeypatch.setattr(service, 'HEADS_ALL', 1)
-    assert client.request(dict(op='heads', scope='work/a')) == {'error': 'truncated'}
-    assert set(client.request(dict(op='heads', scope='work/a', memory_keys=['a']))['heads']) == {'a'}
+    first = client.request(dict(op='heads', scope='work/a'))
+    assert (set(first['heads']), first['next']) == ({'a'}, 'a')
+    last = client.request(dict(op='heads', scope='work/a', after='a'))
+    assert (set(last['heads']), last['next']) == ({'b'}, None)
+    assert client.request(dict(op='heads', scope='work/a', after='b')) == {'heads': {}, 'next': None}
+    assert client.request(dict(op='heads', scope='work/a', memory_keys=['a'], after='a')) == {'error': 'invalid_request'}
+    assert 'next' not in client.request(dict(op='heads', scope='work/a', memory_keys=['a']))
+    # The summarizer reads every page.
+    assert sorted(summarize.Heads(client).scope('work/a')) == ['a', 'b']
+    monkeypatch.setattr(summarize, 'PAGES', 1)
+    with pytest.raises(ValueError, match='too many keyed heads'): summarize.Heads(client).scope('work/a')
 
 
 def test_revise_imported_head(tmp_path):

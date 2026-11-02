@@ -51,6 +51,14 @@ blocks the cutover (none today).
 Still open: the memory tree build after a summary tick (run `memory build` as today), and per-device rollback of
 memories the summarizer wrote after the cutover (rollback summarizes those transcripts again into SQLite).
 
+## Cutover on the Mac Air (2026-11-02)
+
+Applied as archive `sqlite-mac-20261102-135815` (23 transcripts, 180 waiting events, 39 rekeyed). The first ingest
+passed; the first broker summary failed with `summarizer related failed: truncated`: the live mapping sends every
+project to `work/common`, which holds more than the 500 keyed heads the R2 `heads` list allowed. The cursor did not
+move, so nothing was lost. Fixed by paging the list: `heads` without `memory_keys` returns 500 at a time with `next`,
+and the summarizer reads every page (`summarize.Heads`, at most `PAGES` pages).
+
 ## Owner runbook (Mac Air)
 
 1. Merge and deploy `main` (the runtime needs `broker_digest.py` and `sqlite_cutover.py`; the dry run says so if not).

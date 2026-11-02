@@ -70,7 +70,7 @@ def validate(value, *, local=False, project=False):
             fields(value['project'], ['name', 'scope'])
             for k, v in value['project'].items(): check(text(v) if k == 'name' else scope(v))
         return value
-    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging', 'device', 'semantic'])
+    fields(value, ['$schema', 'profiles', 'agents', 'migration', 'routing', 'bridge', 'packet_sync', 'staging', 'device', 'semantic', 'memory_tree'])
     if 'semantic' in value:
         s = value['semantic']; fields(s, ['mode', 'model', 'embed_labels', 'min_score'] + (['endpoint', 'credentials'] if local else []))
         if 'endpoint' in s or 'credentials' in s:
@@ -82,6 +82,14 @@ def validate(value, *, local=False, project=False):
         if 'embed_labels' in s:
             v = s['embed_labels']; check(type(v) is list and bool(v) and len(set(v)) == len(v) and set(v) <= {'general', 'internal', 'secret'})
         if 'min_score' in s: check(type(s['min_score']) in (int, float) and 0 <= s['min_score'] <= 1)
+    if 'memory_tree' in value:
+        t = value['memory_tree']; fields(t, ['writer_device', 'summarize_labels', 'model', 'max_pages', 'budget_usd'])
+        if 'writer_device' in t: check(type(t['writer_device']) is str and bool(re.fullmatch(r'[0-9a-f]{32}', t['writer_device'])))
+        if 'summarize_labels' in t:
+            v = t['summarize_labels']; check(type(v) is list and bool(v) and len(set(v)) == len(v) and set(v) <= {'general', 'internal'})
+        if 'model' in t: check(type(t['model']) is str and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', t['model'])))
+        if 'max_pages' in t: check(type(t['max_pages']) is int and 1 <= t['max_pages'] <= 200)
+        if 'budget_usd' in t: check(type(t['budget_usd']) in (int, float) and 0 < t['budget_usd'] <= 5)
     if 'device' in value:
         from .heartbeats import name_valid
         fields(value['device'], ['name'])
@@ -100,7 +108,7 @@ def validate(value, *, local=False, project=False):
         check(type(value['agents']) is dict)
         for name, agent in value['agents'].items():
             check(bool(AGENT.fullmatch(name)))
-            fields(agent, ['read', 'write', 'default_write', 'allow_secret', 'allow_cross_profile', 'allow_import'])
+            fields(agent, ['read', 'write', 'default_write', 'allow_secret', 'allow_cross_profile', 'allow_import', 'allow_pages'])
             for k, v in agent.items():
                 if k in ('read', 'write'): check(type(v) is list and all(scope(s) for s in v))
                 elif k == 'default_write': check(v is None or scope(v))

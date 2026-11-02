@@ -12,7 +12,7 @@ from .model import Label
 from .oskeystore import select_store
 from .presence import PresenceManager
 
-FLAGS = ('allow_secret', 'allow_cross_profile', 'allow_import')
+FLAGS = ('allow_secret', 'allow_cross_profile', 'allow_import', 'allow_pages')
 
 
 def agent_value(value):

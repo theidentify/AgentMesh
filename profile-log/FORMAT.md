@@ -508,6 +508,20 @@ then creates a new root; there are no cross-scope revisions. The source ledger i
 reconstructed from readable encrypted replica events, keyed by (device-or-null,table,id), with the
 largest event ULID as head. No separate ledger file is authoritative.
 
+### Memory tree pages
+
+Local grants add allow_pages (bool, default false), included in the grant digest. A page is an
+ordinary event whose body is `{"kind":"page","content":<markdown>}` with exactly one tag
+`page:<rel>`. `<rel>` is a canonical node prefix (`projects/<quoted project>/`, `tasks/<TASK>/`,
+`<kind folder>/`, in that order) followed by `INDEX` or a lowercase slug. The content starts with a
+frontmatter block whose `path` equals `<rel>`, whose `summary` is one line of 1-200 characters, and
+whose `sources` lists 1-200 distinct event ULIDs. Only allow_pages grants write pages. Every source
+must be a visible, non-secret, non-page head event in the page's own scope. The page label is at
+least the highest source label and at least the label of the page it revises. Each `<rel>` per
+scope has one revision chain: `remember` creates it once, and `revise` must name the current head.
+Pages carry no project or task_ref. Body kind `page` without the tag, or the tag without kind
+`page`, is invalid.
+
 ### Import trust
 
 Local grants add allow_import (bool, default false), included in the grant digest.

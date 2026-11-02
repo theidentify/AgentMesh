@@ -121,9 +121,9 @@ def write(client, mapping, request):
         if name is None: skipped+=1; continue
         old=heads.scope(name).get(item['memory_key'])
         if old is not None and item['memory_key'] not in known:
-            rejected.append(dict(memory_key=item['memory_key'],reason='stable key exists outside submitted context')); continue
+            rejected.append(dict(memory_key=item['memory_key'],scope=name,reason='stable key exists outside submitted context')); continue
         if old is not None and item['status']=='deleted':
-            rejected.append(dict(memory_key=item['memory_key'],reason='deletion requires confirmation')); continue
+            rejected.append(dict(memory_key=item['memory_key'],scope=name,reason='deletion requires confirmation')); continue
         outcome,ident=upsert(client,heads,name,item,request['provenance'])
         written.append(dict(memory_key=item['memory_key'],outcome=outcome,id=ident))
     summaries=[]
@@ -135,6 +135,16 @@ def write(client, mapping, request):
         outcome,ident=upsert(client,heads,name,item,request['provenance'])
         summaries.append(dict(memory_key=item['memory_key'],outcome=outcome,id=ident))
     return dict(status='committed',written=written,rejected=rejected,skipped=skipped,summaries=summaries)
+
+
+def delete(client, scope, memory_key):
+    """The owner's confirmation of a quarantined deletion: the key's head is revised to status deleted, which hides it."""
+    head=checked(client.request(dict(op='heads',scope=scope,memory_keys=[memory_key])))['heads'].get(memory_key)
+    if head is None: raise ValueError('not_found')
+    item=dict(memory_key=memory_key,kind=head['kind'],scope=head['item_scope'] or 'project',scope_key=head['scope_key'],
+              project=head['project'],content=head['content'],status='deleted',confidence=head['confidence'])
+    response=checked(client.write(body(item,dict(batch_id='owner-confirmed')),scope=scope,revises=head['id'],expected_scope=scope))
+    return dict(ok=True,memory_key=memory_key,id=response['id'])
 
 
 def valid_request(value, action):

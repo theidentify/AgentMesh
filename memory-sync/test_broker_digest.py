@@ -181,3 +181,18 @@ def test_production_broker_backend(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])['error_class'] == 'ValueError'
     config.write_text(json.dumps({**value, 'broker': {**broker, 'extra': 1}}))
     assert module.execute('ingest', []) == 1
+
+
+def test_tick_metrics(setup):
+    tmp_path, folder, fake = setup
+    (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
+    metrics = tmp_path / 'metrics.jsonl'
+    options = dict(roots={'omp': tmp_path / 'omp'}, extractor=extractor, model='m', metrics_path=metrics)
+    broker_digest.tick(tmp_path / 'jobs', fake, now='2026-11-02T08:00:00+00:00', **options)
+    broker_digest.tick(tmp_path / 'jobs', fake, now='2026-11-02T09:00:00+00:00', **options)  # scheduled: no row
+    with (folder / 'a.jsonl').open('a') as handle: handle.write(record('u2', 'beta two'))
+    fake.fail = True
+    with pytest.raises(ValidationError): broker_digest.tick(tmp_path / 'jobs', fake, force=True, now='2026-11-02T10:00:00+00:00', **options)
+    rows = [json.loads(line) for line in metrics.read_text().splitlines()]
+    assert [(r['status'], r['events_processed']) for r in rows] == [('completed', 1), ('failed', 0)]
+    assert rows[1]['errors'] == ['ValidationError'] and 'content' not in json.dumps(rows)

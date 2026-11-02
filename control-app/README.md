@@ -14,6 +14,7 @@ supervisor uses to ask for Touch ID or your Mac password.
   |---|---|---|
   | Start, restart, stop, reset, maintenance on/off | Tier 1 | The supervisor's rate limits and the audit |
   | Move to supervisor or launchd (`unit.backend`) | Tier 2 | The supervisor's own presence check |
+  | Open the Memory window (`memory.unlock`) | Tier 2 | The supervisor's own presence check, then an idle lock |
 
 - **Touch ID never comes from this app.** For a move, the supervisor runs its own `agentmesh-presence` child and trusts
   only that child's exit code. A client, this app included, cannot claim the check passed.
@@ -23,6 +24,18 @@ supervisor uses to ask for Touch ID or your Mac password.
 - **Keys & devices is read-only.** It shows the supervisor's `keys.inventory` (tier 0) and offers no action. The
   supervisor builds it from `lstat` of key files and the broker's content-free status; it never opens a key file or the
   sealed keystore.
+
+## Memory
+
+**Memory…** in the menu opens a read-only browser of the memory tree: one level at a time, with `INDEX.md` page
+summaries, `stale` and label badges, and pages or items rendered as markdown on the right.
+
+- **Unlock** asks the supervisor for `memory.unlock`. The supervisor shows its own Touch ID / Mac password sheet
+  (action `read`). Once unlocked, each read keeps it open; after 5 minutes without one the supervisor locks it again
+  and the window drops what it showed. **Lock** locks it at once, and closing the window clears it.
+- The supervisor reads through the broker with the agent key in `settings.local.json` `memory_tree.agent_key`, so that
+  agent's grants, labels and the broker audit still apply. A secret item needs the broker's own presence window too.
+- The app writes nothing to disk. Plaintext export is a CLI-only ceremony (`agentmesh-log control memory-export`).
 
 ## Menu bar icon
 

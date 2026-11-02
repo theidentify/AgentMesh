@@ -54,6 +54,8 @@ Ollama runs under the host's OS user. `OLLAMA_DEBUG` logs may contain inputs, so
 - A page's label is at least the highest label among its sources, and it never goes down automatically.
 - A page summarizes only its own scope. The root and profile listings are assembled per request from the scopes that agent can read, so an agent never learns the name of a project it cannot read.
 - Page text is model output over stored memory. Treat it as data, like any recalled text.
+- **Export is the one plaintext copy.** `control memory-export` writes readable `.md` files because you asked for them, after a presence check for that export. It never includes secret items, includes `internal` only with `--include-internal`, writes owner-only files, and refuses folders that sync or index themselves unless you override it. After that, the folder is yours to protect and delete.
+- The Memory window in the control app shows content only while it is unlocked and keeps nothing on disk.
 
 ## Understand integrity checks
 

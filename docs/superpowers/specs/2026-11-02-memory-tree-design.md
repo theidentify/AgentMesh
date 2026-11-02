@@ -347,3 +347,26 @@ T1 stands alone: it is useful even if T2 is delayed.
 - **Docs:** `docs/use/recall.md` ("Browse the memory tree") and `docs/privacy.md`
   ("Understand memory tree pages").
 - Export and the control-app viewer (T3b) are still to do.
+
+## Amendments from T3b (2026-11-02)
+
+- **CLI name:** export is `agentmesh-log control memory-export <path> <folder>
+  [--include-internal] [--allow-synced]`, a tier 2 control op `memory.export`.
+  Presence is the supervisor's own helper with action `export`, every time. The
+  socket client waits up to 15 minutes for this op.
+- **Viewer:** control ops `memory.unlock` (tier 2, presence action `read`),
+  `memory.lock` (tier 1), and `memory.ls`/`memory.cat` (tier 0, but refused with
+  `locked` unless unlocked). Each read slides a 5-minute idle window. Prompts share
+  the moves' tier 2 slot and rate limit (3 per 10 minutes).
+- **Broker access:** the supervisor uses the agent key in `settings.local.json`
+  `memory_tree.agent_key` (local only, absolute path). Grants, labels and the broker
+  audit apply as for any agent.
+- **Export details:** it walks `ls` with a new `offset` paging argument and writes each
+  page or item once, at its canonical path (`projects/` and `tasks/` are views).
+  Files are created with `O_EXCL|O_NOFOLLOW` at 0600 in 0700 folders, with a
+  `README.md` marking the folder as plaintext. Synced roots refused by default: iCloud
+  Drive, `~/Library/CloudStorage`, `~/.agentmesh`, and Desktop/Documents when iCloud
+  Desktop & Documents is on. The control audit records the args (path and folder) and
+  the outcome, never content.
+- **Swift:** a Memory window in the menu bar app (read-only, nothing on disk), and the
+  presence helper now accepts actions `read` and `export` besides `migrate`.

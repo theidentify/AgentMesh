@@ -72,6 +72,8 @@ final class Stub: Evaluator, @unchecked Sendable {
     #expect(parse(["available"]) == .available)
     #expect(parse(["confirm", "--action", "migrate"]) == .confirm("migrate"))
     #expect(parse([]) == nil)
+    #expect(parse(["confirm", "--action", "read"]) == .confirm("read"))
+    #expect(parse(["confirm", "--action", "export"]) == .confirm("export"))
     #expect(parse(["confirm", "--action", "apply"]) == nil)
     #expect(parse(["confirm", "--action", "migrate", "extra"]) == nil)
     #expect(parse(["available", "--action", "migrate"]) == nil)

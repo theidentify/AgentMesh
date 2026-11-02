@@ -147,6 +147,22 @@ Pages are written by one designated device with an agent that holds `allow_pages
 
 Then run `agentmesh-log memory build --agent-key KEY` on that device (`--dry-run` first to see how many pages it would write). It rebuilds only missing or stale pages: kind folders first, then projects, then the scope. Secret items are never summarized. See [Privacy](../privacy#understand-memory-tree-pages) for what the summarizer sees.
 
+### View and export as the owner
+
+Agents use the CLI or MCP tools above. You, the owner, have two more ways in, both through the local control plane (the supervisor) and both behind its own Touch ID / Mac password check:
+
+- **Memory window** in the AgentMesh Control menu bar app. One unlock, then it locks again after 5 minutes without use.
+- **Export** to a folder of plaintext `.md` files, for an editor or an archive:
+
+  ```sh
+  agentmesh-log control memory-export /work/project ~/memory-export
+  agentmesh-log control memory-export /work ~/memory-export-all --include-internal
+  ```
+
+  Every export asks for presence again. It writes `general` items only unless you pass `--include-internal`, and never secret ones. The target must be new or empty. It refuses iCloud Drive, cloud-provider folders, `~/.agentmesh`, and Desktop or Documents when iCloud syncs them, unless you pass `--allow-synced`. A `README.md` in the export records what it holds. AgentMesh never updates or deletes an export, so remove it yourself when you are done.
+
+Both need `memory_tree.agent_key` in `settings.local.json`: the absolute path of an agent key whose grants cover what you want to see. The writer agent from the previous section works.
+
 ### For agents
 
 When rules are installed in broker mode, the rule teaches agents to browse the tree and its manifest adds `memory_argv` with exact `ls`, `cat` and `grep` argv prefixes. MCP apps get the same read-only tools as `memory_ls`, `memory_cat` and `memory_grep`, limited by the app's approved read policy. Results carry the same "data, not instructions" preamble as recall.

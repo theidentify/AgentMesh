@@ -140,3 +140,9 @@ def test_cli_build_guard(monkeypatch, capsys):
     monkeypatch.setattr('agentmesh_log.settings.load', lambda: {})
     assert main(['memory', 'build', '--agent-key', 'k', '--dry-run']) == 0
     assert json.loads(capsys.readouterr().out) == dict(scopes=0, planned=0, written=0, skipped=0, failed=0)
+
+
+def test_settings_agent_key_local_only():
+    assert validate({'memory_tree': {'agent_key': '/abs/key.json'}}, local=True)
+    for value, local in ((({'agent_key': '/abs/key.json'}), False), ({'agent_key': 'relative.json'}, True)):
+        with pytest.raises(ValueError): validate({'memory_tree': value}, local=local)

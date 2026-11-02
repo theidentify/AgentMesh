@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct AgentMeshControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     private let model = StatusModel.shared  // App is created once; @State would need SwiftUIMacros
+    private let memory = MemoryModel(client: StatusModel.shared.client)
 
     var body: some Scene {
         MenuBarExtra {
@@ -34,5 +35,10 @@ struct AgentMeshControlApp: App {
             AuditView(model: model)
         }
         .defaultSize(width: 720, height: 420)
+
+        Window("AgentMesh Memory", id: "memory") {
+            MemoryView(model: memory)
+        }
+        .defaultSize(width: 900, height: 560)
     }
 }

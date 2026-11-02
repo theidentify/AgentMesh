@@ -40,6 +40,8 @@ _NOT_CONFIGURED=_NotConfigured()
 
 PREFETCH_WORKERS=16
 
+HEADS_ALL=500
+
 COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
 IO=('bytes_up','bytes_down','class_a','class_b')
 TOTALS=tuple('total_'+k for k in IO)
@@ -252,11 +254,17 @@ class Broker:
         # Summarizer writes carry metadata.memory_key; imported rows carry it in their staging source.
         given=body.get('metadata',{}).get('memory_key') if type(body.get('metadata')) is dict else None
         key=given if type(given) is str else (meta.get('source',{}).get('memory_key') if migration else None)
+        item=None
+        if type(key) is str and key:
+            # The summarizer's own view of a keyed memory: item scope, scope key and status (deleted ones are hidden).
+            origin=body['metadata'] if type(given) is str else meta.get('source',{})
+            item={k:origin.get(k) if type(origin.get(k)) is str else None for k in ('scope','scope_key')}
+            item['status']=origin.get('status') if type(given) is str and type(origin.get('status')) is str else 'active'
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
             tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'],
-            _migration=meta, **({'_memory_key':key} if type(key) is str and key else {}), **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
+            _migration=meta, **({'_memory_key':key,'_item':item} if item is not None else {}), **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
 
     def index(self, grant):
         from .connectors import effective
@@ -298,18 +306,25 @@ class Broker:
     def heads(self, grant, req, audit, allowed, scope_names):
         """Current head per memory key in one write scope, for the summarizer's upsert (allow_summarize only).
 
-        Secret heads are left out: the summarizer never reads or revises secret memories."""
+        Secret heads are left out: the summarizer never reads or revises secret memories. Without memory_keys the
+        answer is every keyed head of the scope, for the summarizer's related context; more than HEADS_ALL is
+        refused as truncated rather than silently cut."""
         from .connectors import effective
         if not effective(grant).allow_summarize: raise ValueError('denied')
         name,keys=req.get('scope'),req.get('memory_keys')
-        if type(name) is not str or type(keys) is not list or not 1<=len(keys)<=200 or len(set(keys))!=len(keys) \
-                or any(type(k) is not str or not 1<=len(k)<=512 for k in keys): raise ValueError('invalid_request')
+        if type(name) is not str or ('memory_keys' in req and (type(keys) is not list or not 1<=len(keys)<=200
+                or len(set(keys))!=len(keys) or any(type(k) is not str or not 1<=len(k)<=512 for k in keys))):
+            raise ValueError('invalid_request')
         sid=resolve(self.state,name)
         if sid not in grant.write or sid not in allowed: raise ValueError('denied')
-        rows=[r for r in self.index(grant).heads(scope_names[sid],keys) if r['label']!='secret']
-        audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],result_ids=[r['id'] for r in rows])
+        rows=self.index(grant).heads(scope_names[sid],keys,None if keys else HEADS_ALL+1)
+        audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id])
+        if keys is None and len(rows)>HEADS_ALL: return {'error':'truncated'}
+        rows=[r for r in rows if r['label']!='secret']
+        audit['result_ids']=[r['id'] for r in rows]
         fields=('id','kind','content','label','project','task_ref','confidence','updated_at')
-        return {'heads':{r['_memory_key']:{k:r.get(k) for k in fields} for r in rows}}
+        return {'heads':{r['_memory_key']:{**{k:r.get(k) for k in fields},'item_scope':r['_item']['scope'],
+                                           'scope_key':r['_item']['scope_key'],'status':r['_item']['status']} for r in rows}}
 
     def secret_read(self, grant):
         if grant.connector_app_id is not None:
@@ -500,7 +515,12 @@ class Broker:
                 parse_ulid(revises)
                 old=self.index(grant).event(revises)
                 if old is None or old['scope']!=scope_names[sid] or sid not in allowed: raise ValueError('denied')
-                if old.get('_migration'): raise ValueError('denied')
+                # An imported head is the importer's, except for the summarizer continuing the same memory key: after
+                # cutover (importer revoked) every staging memory is an imported head the summarizer must keep current.
+                from .connectors import effective
+                given=req['body'].get('metadata',{}).get('memory_key') if type(req['body']) is dict else None
+                if old.get('_migration') and not (effective(grant).allow_summarize and old.get('_memory_key')
+                                                  and given==old['_memory_key']): raise ValueError('denied')
                 if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
                 if (old['kind']=='page')!=(type(req['body']) is dict and req['body'].get('kind')=='page'): raise ValueError('denied')
                 previous=Label[old['label']]

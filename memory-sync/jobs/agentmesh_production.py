@@ -15,8 +15,16 @@ def boot_id():
   filetime=int.from_bytes(bytes(info)[:8],'little')
   return datetime.fromtimestamp(filetime/10**7-11644473600,timezone.utc).isoformat()
  return subprocess.run(['/usr/sbin/sysctl','-n','kern.boottime'],capture_output=True,text=True,check=True).stdout.strip()
+BROKER=('cli_argv','agent_key','mapping','state_dir')
 def load():
  c=json.loads(CONFIG.read_text(encoding='utf-8'))
+ # SQLite retirement R2: backend 'broker' reads transcripts directly and writes through the summarizer agent.
+ if c.get('backend','sqlite')=='broker':
+  b=c.get('broker')
+  if type(b) is not dict or set(b)!=set(BROKER) or not Path(c['runtime']).is_absolute():raise ValueError('invalid broker backend')
+  if any(not Path(v).is_absolute() for v in (b['agent_key'],b['mapping'],b['state_dir'],c['status_dir'])):raise ValueError('absolute path required')
+  sys.path.insert(0,c['runtime']);return c
+ if c.get('backend','sqlite')!='sqlite':raise ValueError('unknown backend')
  if c['primary_backend']!='sqlite' or c['retention']!='disabled':raise ValueError('inactive SQLite authority or unsafe retention')
  for k in ('database','runtime','export_root'):
   if not Path(c[k]).is_absolute():raise ValueError('absolute path required')
@@ -25,10 +33,34 @@ def load():
 def save(c,name,value):
  p=Path(c['status_dir'])/(name+'.json');p.parent.mkdir(parents=True,exist_ok=True)
  tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(value,ensure_ascii=False,sort_keys=True),encoding='utf-8');os.replace(tmp,p)
+def broker(c,action,args):
+ if action not in ('ingest','summary'):raise ValueError('action unavailable on the broker backend')
+ p=argparse.ArgumentParser();p.add_argument('--force',action='store_true'); a=p.parse_args(args)
+ from bounded_digest import run_lock
+ import broker_digest
+ b=c['broker']
+ with run_lock(str(CONFIG)+'.'+action):
+  if action=='ingest':
+   # Nothing is stored: report what the next summary tick will read, without moving any cursor.
+   state=broker_digest.State(b['state_dir']);sources,errors=broker_digest.discover(c.get('roots'))
+   _,report=broker_digest.scan(state,sources,start_at=state.summary['start_at'])
+   report['errors']+=len(errors);report['error_classes']+=[type(e).__name__ for e in errors]
+   save(c,'last-ingest',dict(observed_at=datetime.now(timezone.utc).isoformat(),backend='broker',**report))
+   if report['errors']:
+    from collections import Counter
+    from bounded_protocol import ValidationError
+    raise ValidationError('transcript scan errors: '+', '.join('%s=%d'%kv for kv in sorted(Counter(report['error_classes']).items())))
+   return 0
+  backend=broker_digest.CliBackend(b['cli_argv'],b['agent_key'],b['mapping'])
+  options={k:v for k,v in c['summary'].items() if k not in ('consumer','primary_node','metrics_path')}
+  report=broker_digest.tick(b['state_dir'],backend,roots=c.get('roots'),boot_id=boot_id(),force=a.force,**options)
+  save(c,'last-summary',dict(observed_at=datetime.now(timezone.utc).isoformat(),backend='broker',**report))
+ return 0
 def execute(action,argv=None):
  args=list(sys.argv[1:] if argv is None else argv)
  try:
   c=load()
+  if c.get('backend')=='broker':return broker(c,action,args)
   if action=='context':
    from shared_memory_context import main
    return main(['--database',c['database'],*args]) or 0

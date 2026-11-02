@@ -529,9 +529,23 @@ memory's key is `body.metadata.memory_key` (a summarizer write) or, for an impor
 row, `body.metadata.source.memory_key`. The agent index stores it per visible head (snapshot
 schema 7; older snapshots rebuild). `{"op":"heads","scope":<name>,"memory_keys":[...]}`
 (1-200 distinct keys, each 1-512 characters) returns `{"heads":{key:{id,kind,content,label,
-project,task_ref,confidence,updated_at}}}` for the keys that have a visible, non-secret head
-in that scope. It requires allow_summarize and a write grant for the scope. Keys without a
-head are absent. Recall and tree responses never include the key.
+project,task_ref,confidence,updated_at,item_scope,scope_key,status}}}` for the keys that have
+a visible, non-secret head in that scope. Without `memory_keys` it returns every keyed head of
+the scope, or `{"error":"truncated"}` above 500. It requires allow_summarize and a write grant
+for the scope. Keys without a head are absent. Recall and tree responses never include the key.
+
+`item_scope`, `scope_key` and `status` are the staging item's own fields (global, project,
+task or session): from `body.metadata` for a summarizer write, from the import source
+otherwise (status `active`). A summarizer write whose `metadata.status` is not `active`
+hides the key in every index, like a retired import.
+
+A summarizer write's metadata is `{memory_key, status, scope, scope_key, generator, batch_id,
+batch_events, provider, model, origin:{agents, sessions}, evidence}`. `batch_events` and the
+evidence `event_id`s are transcript event ids, not staging row ids. The project summary is
+the keyed head `summary/<project>` of kind `summary`. An agent with allow_summarize may
+`revise` an imported head when the new body carries the same memory key; any other revision
+of an imported head is denied. The importer must be revoked before the summarizer writes
+(cutover), otherwise the importer and the summarizer would extend the same key.
 
 ### Import trust
 

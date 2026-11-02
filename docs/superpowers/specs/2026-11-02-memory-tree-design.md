@@ -110,12 +110,12 @@ LLM summarization exists.
 ## Broker API
 
 New read-only ops, sharing the existing session, grant check and audit
-(`broker/service.py`). CLI subcommands mirror them under `recall`.
+(`broker/service.py`). CLI subcommands mirror them under `agentmesh-log memory` (`recall` already takes the query as its positional argument).
 
 ```
-recall ls   <path> [--depth 1|2]          children of a node, depth 1 by default
-recall cat  <path|ULID>                   one page, or one raw event by id
-recall grep <query> [<path>] [--mode keyword|hybrid] [--limit N]
+memory ls   [<path>] [--depth 1|2]        children of a node, depth 1 by default
+memory cat  <path|ULID> [--json]          one page, or one raw event by id
+memory grep <query> [<path>] [--mode keyword|hybrid] [--limit N]
 ```
 
 - `ls` returns, per child: name, type (`dir`/`page`/`event`), `summary`, item
@@ -181,7 +181,7 @@ events. These rules make option A as safe as today's recall:
 
 Update the `agentmesh-shared-memory` rule and the MCP gateway tool descriptions:
 
-1. `recall ls /` (or the project root when known).
+1. `memory ls /` (or the project root when known).
 2. Plan: name the branch where the answer should be and why.
 3. Walk with `ls` / `cat`, one level at a time; follow `see-also` when relevant.
 4. If no branch fits after two levels, `grep` under the closest node.
@@ -195,12 +195,12 @@ encrypted. There are three ways to get the markdown out.
 
 ### Pipes (agents and people)
 
-`recall cat` writes the page's markdown to stdout, so ordinary text tools work on
+`memory cat` writes the page's markdown to stdout, so ordinary text tools work on
 it without any file on disk:
 
 ```bash
-recall cat work/agentmesh/INDEX.md | sed -n '10,40p'
-recall cat work/agentmesh/decisions/INDEX.md | grep -n Ollama
+memory cat work/agentmesh/INDEX.md | sed -n '10,40p'
+memory cat work/agentmesh/decisions/INDEX.md | grep -n Ollama
 ```
 
 Plaintext lives only in the pipe's process memory. The broker still checks grants
@@ -281,3 +281,24 @@ T1 stands alone: it is useful even if T2 is delayed.
 - Whether the writer runs on the always-on device or follows the Insight host.
 - Slug rules for Thai titles (transliterate or keep Thai in paths).
 - How many raw events a page may cite before it must be split.
+
+## Amendments from T1 (2026-11-02)
+
+- CLI is `agentmesh-log memory ls|cat|grep`, not `recall ls`, so `recall <query>`
+  keeps its positional argument unchanged.
+- Broker ops `ls`, `cat`, `grep` live in `broker/tree.py` and `Broker.tree`. Without
+  pages, a scope node lists child scopes, `projects/`, `tasks/` and the kind folders
+  that have items; a kind folder lists events, newest first. Kinds outside the
+  folders (tool calls, responses, …) are reachable only through `grep` and `cat`.
+- `/` and `/<profile>/` are synthesized from the agent's readable scope names. An
+  unknown or unreadable path answers `denied`, so it does not reveal existence.
+- Project and task names are URL-quoted in paths. Task names are matched without
+  case.
+- `grep` reuses `recall`. The node's project goes to recall; task and kind are
+  post-filters over a widened pool (limit 100). A secret anywhere in that pool
+  still triggers the presence check, which is conservative.
+- `cat` prints markdown (frontmatter + content) by default and `--json` gives the
+  full response. Secret items need the same presence or connector check as recall.
+- Audit: `ls`/`cat` record the path as the query HMAC, never in plaintext; `cat`
+  records the result id and label.
+- `stale` and the depth-2 `summary` lines from pages wait for T2.

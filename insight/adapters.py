@@ -194,6 +194,49 @@ def retention_status(database):
         return result
 
 
+MEMORY_LABELS = ('general', 'internal', 'secret')
+STATS_KINDS = ('fact', 'decision', 'constraint', 'preference', 'procedure', 'open_loop', 'summary', 'page', 'note', 'task')
+
+
+def memory_stats(agentmesh_home=None, agent_key=None, runner=None, executable=None):
+    """Counts and metadata of the profile log through the broker, never content (SQLite retirement R3).
+
+    Runs `agentmesh-log stats` as the read-only insight agent (agents/insight.key unless given). The broker answer
+    is projected onto a fixed schema here, so a changed or hostile answer cannot put text on the page."""
+    import subprocess
+    import sys
+    key = Path(agent_key) if agent_key else agentmesh_root(agentmesh_home)/'agents'/'insight.key'
+    if not key.is_file():
+        return {'available':False,'configured':False,'error':'Insight agent not configured',
+                'note':'Grant a read-only agent named insight to show profile log counts here.'}
+    argv = [executable or sys.executable, '-m', 'agentmesh_log.cli', 'stats', '--agent-key', str(key)]
+    try:
+        done = (runner or subprocess.run)(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        value = json.loads(done.stdout.decode('utf-8')) if len(done.stdout) < 1024*1024 else None
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+        value = None
+    if not isinstance(value, dict) or 'error' in value or done.returncode:
+        code = value.get('error') if isinstance(value, dict) else None
+        code = code if isinstance(code, str) and re.fullmatch(r'[a-z_]{1,40}', code) else 'unavailable'
+        return {'available':False,'configured':True,'error':'Profile log unavailable ('+code+')'}
+    def count(v): return v if type(v) is int and 0 <= v < 2**53 else None
+    def name(v): return v if isinstance(v, str) and 0 < len(v) <= 200 and v.isprintable() else None
+    def counts(v, allowed): return {k:count(n) for k, n in (v if isinstance(v, dict) else {}).items() if k in allowed}
+    scopes = []
+    for row in value.get('scopes') if isinstance(value.get('scopes'), list) else []:
+        if not isinstance(row, dict) or name(row.get('scope')) is None: continue
+        updated = row.get('updated_at') if isinstance(row.get('updated_at'), str) and parse_instant(row.get('updated_at')) else None
+        scopes.append({'scope':name(row['scope']),'profile':name(row.get('profile')),'count':count(row.get('count')),
+                       'keyed':count(row.get('keyed')),'kinds':counts(row.get('kinds'), STATS_KINDS),
+                       'labels':counts(row.get('labels'), MEMORY_LABELS),'updated_at':updated})
+    projects = [{'project':name(r.get('project')),'count':count(r.get('count'))}
+                for r in (value.get('projects') if isinstance(value.get('projects'), list) else [])[:50]
+                if isinstance(r, dict) and name(r.get('project'))]
+    return {'available':True,'configured':True,'total':count(value.get('total')),'scopes':scopes[:100],'projects':projects,
+            'more_projects':count(value.get('more_projects')),
+            'note':'Counts from the encrypted profile log, read by the insight agent. No memory text leaves the broker.'}
+
+
 def unavailable(label):
     return {'available':False,'error':label + ' unavailable or not configured'}
 

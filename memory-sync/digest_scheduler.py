@@ -101,8 +101,8 @@ def tick(database, *, root, consumer=DEFAULT_CONSUMER, primary_node='mac', comma
                 raise ValidationError('eligible event removed or kind changed')
             pending['phase'] = 'export'
             save(database, consumer, state)
-        # Export errors retain this phase; restart retries export without any model calls.
-        exported = exporter(database, identity['root'])
+        # Export errors retain this phase; restart retries export without any model calls. No exporter: nothing to do.
+        exported = exporter(database, identity['root']) if exporter is not None else None
         state['success'] = dict(day=pending['day'], boot_id=pending['boot_id'], window_id=pending['window_id'],
                                 completed_at=stamp, manifest_sha256=pending['manifest_sha256'], events=len(manifest))
         state['pending'] = None

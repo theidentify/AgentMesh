@@ -28,7 +28,7 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
-    'heads': {'scope','memory_keys'}, 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
+    'heads': {'scope','memory_keys'}, 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -41,6 +41,7 @@ _NOT_CONFIGURED=_NotConfigured()
 PREFETCH_WORKERS=16
 
 HEADS_ALL=500
+STATS_PROJECTS=50
 
 COUNTS=('uploaded','downloaded','invalid','errors','outbox','local_objects','remote_objects')
 IO=('bytes_up','bytes_down','class_a','class_b')
@@ -326,6 +327,25 @@ class Broker:
         return {'heads':{r['_memory_key']:{**{k:r.get(k) for k in fields},'item_scope':r['_item']['scope'],
                                            'scope_key':r['_item']['scope_key'],'status':r['_item']['status']} for r in rows}}
 
+    def stats(self, grant, audit, allowed, scope_names):
+        """Counts and metadata of the agent's own visible memories, never content (Insight, SQLite retirement R3).
+
+        Per scope: total, kinds, labels, keyed (summarizer) heads and the newest update; projects by count, top 50."""
+        scopes={scope_names[s]:s for s in allowed}
+        audit.update(scopes=sorted(scopes.values()))
+        by={}; projects={}
+        for row in self.index(grant).rows():
+            if row['scope'] not in scopes: continue
+            entry=by.setdefault(row['scope'],dict(scope=row['scope'],profile=row['profile'],count=0,keyed=0,kinds={},labels={},updated_at=None))
+            entry['count']+=1; entry['keyed']+='_memory_key' in row
+            entry['kinds'][row['kind']]=entry['kinds'].get(row['kind'],0)+1
+            entry['labels'][row['label']]=entry['labels'].get(row['label'],0)+1
+            entry['updated_at']=max(filter(None,(entry['updated_at'],row['updated_at'])))
+            if row.get('project'): projects[row['project']]=projects.get(row['project'],0)+1
+        top=sorted(projects.items(),key=lambda kv:(-kv[1],kv[0]))[:STATS_PROJECTS]
+        return dict(total=sum(e['count'] for e in by.values()),scopes=[by[k] for k in sorted(by)],
+                    projects=[dict(project=k,count=v) for k,v in top],more_projects=max(0,len(projects)-STATS_PROJECTS))
+
     def secret_read(self, grant):
         if grant.connector_app_id is not None:
             from ..registry_store import now
@@ -497,6 +517,7 @@ class Broker:
             return result
         if op in ('ls','cat','grep'): return self.tree(session,grant,req,audit,allowed,scope_names)
         if op=='heads': return self.heads(grant,req,audit,allowed,scope_names)
+        if op=='stats': return self.stats(grant,audit,allowed,scope_names)
         if op in ('remember','revise'):
             if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
             from .imports import RESERVED

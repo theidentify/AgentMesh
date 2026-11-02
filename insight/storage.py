@@ -96,6 +96,29 @@ def file_size(path):
     except OSError: return None
 
 
+def summarizer_state(root):
+    """The broker summarizer's JSON state (SQLite retirement R2/R3): sizes and counts only, never paths or keys."""
+    result=dict(available=False,files=[],tracked_transcripts=None,pending_events=None,quarantine=None,last_completed_day=None,pending=None)
+    jobs=Path(root)/'jobs'
+    for name in ('transcript-cursors.json','summary-state.json'):
+        path=jobs/name
+        try:
+            if path.is_symlink() or not path.is_file(): continue
+            result['files'].append(dict(name=name,bytes=path.stat().st_size)); result['available']=True
+        except OSError: pass
+    cursors=read_json(jobs/'transcript-cursors.json'); state=read_json(jobs/'summary-state.json')
+    files=cursors.get('files') if isinstance(cursors.get('files'),dict) else None
+    if files is not None:
+        result['tracked_transcripts']=len(files)
+        result['pending_events']=sum(len(f.get('done') or []) for f in files.values() if isinstance(f,dict))
+    if isinstance(state.get('quarantine'),list): result['quarantine']=len(state['quarantine'])
+    success=state.get('success') if isinstance(state.get('success'),dict) else {}
+    day=success.get('day')
+    result['last_completed_day']=day if isinstance(day,str) and len(day)==10 else None
+    result['pending']=state.get('pending') if type(state.get('pending')) is bool else None
+    return result
+
+
 def sqlite_stats(path):
     result=dict(available=False,dbstat=None,rows={},tables=[])
     if path is None or not safe_path(path): return result
@@ -453,7 +476,7 @@ class Observer:
         claude.update({k.replace('_day','_month'):v*30 if v is not None else None for k,v in list(claude.items())}); claude['bytes_note']='Bytes are not recorded'; claude['estimate']=True
         cpu=[r['cpu_day'] for r in local]+[r.get('week',{}).get('cpu_s')/7 if r.get('week',{}).get('cpu_s') is not None else None for r in jobs[:2]]
         kwh=sum(cpu)/3600*prices['energy']['watts_per_core']/1000 if all(v is not None for v in cpu) else None
-        return dict(available=True,computed_at=now.isoformat(),refresh_seconds=600,sqlite=sql,disk=disk,profile=profile,r2=r2,
+        return dict(available=True,computed_at=now.isoformat(),refresh_seconds=600,sqlite=sql,summarizer=summarizer_state(self.root),disk=disk,profile=profile,r2=r2,
             costs=dict(pricing=pricing,r2=r2_cost(r2,prices),summary=summary),compute=dict(services=local,jobs=jobs,summary_duration_day=daily('duration_seconds'),energy=dict(kwh_day=kwh,cost_day=kwh*prices['energy']['price_per_kwh'] if kwh is not None and prices['energy']['price_per_kwh'] is not None else None,estimate=True)),
             buffers=self.buffers(sql,disk,sync,runs,now),network=dict(r2=r2['network'],tunnel=tunnel,claude=claude,nettop='not measured: requires sampling; unstable macOS format; root-owned cloudflared cannot be attributed reliably without sudo'),
             followups=['bridge writes drain status','catch-up waiting count','catch-up job resource recording','audit log rotation','orphan index snapshots: likely pruning bug'])

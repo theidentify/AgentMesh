@@ -21,22 +21,31 @@ SCHEMA = {'type':'object','additionalProperties':False,'required':['summary','bo
     'properties':{'summary':{'type':'string','maxLength':SUMMARY_MAX},'body':{'type':'string','maxLength':BODY_MAX}}}
 
 
+def claude_json(material, *, instructions, schema, model, executable='claude', budget=0.5, timeout=300):
+    """One `claude --print` call with no tools, MCP or session persistence (as the digest worker).
+
+    Returns (structured output, cost in USD or None). Material goes over stdin, never argv."""
+    args=[executable,'--print','--safe-mode','--tools','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
+        '--no-session-persistence','--no-chrome','--disable-slash-commands','--permission-prompts','none',
+        '--output-format','json','--system-prompt',instructions,'--json-schema',json.dumps(schema),
+        '--max-budget-usd',str(budget),'--model',model]
+    done=subprocess.run(args,input=material,capture_output=True,text=True,timeout=timeout)
+    result=json.loads(done.stdout) if done.stdout.strip() else None
+    if done.returncode or not isinstance(result,dict) or result.get('is_error'): raise RuntimeError('claude failed')
+    payload=result.get('structured_output')
+    if not isinstance(payload,dict) or set(payload)!=set(schema['properties']): raise RuntimeError('claude failed')
+    cost=result.get('total_cost_usd')
+    return payload,(cost if type(cost) in (int,float) else None)
+
+
 class ClaudeSummarizer:
-    """One `claude --print` call per page with no tools, MCP or session persistence (as the digest worker)."""
+    """The page writer's summarizer: one claude_json call per page."""
     def __init__(self, *, model, executable='claude', budget=0.5, timeout=300):
         self.model,self.executable,self.budget,self.timeout = model,executable,budget,timeout
 
     def __call__(self, material):
-        args=[self.executable,'--print','--safe-mode','--tools','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
-            '--no-session-persistence','--no-chrome','--disable-slash-commands','--permission-prompts','none',
-            '--output-format','json','--system-prompt',INSTRUCTIONS,'--json-schema',json.dumps(SCHEMA),
-            '--max-budget-usd',str(self.budget),'--model',self.model]
-        done=subprocess.run(args,input=material,capture_output=True,text=True,timeout=self.timeout)
-        result=json.loads(done.stdout) if done.stdout.strip() else None
-        if done.returncode or not isinstance(result,dict) or result.get('is_error'): raise RuntimeError('summarizer failed')
-        payload=result.get('structured_output')
-        if not isinstance(payload,dict) or set(payload)!={'summary','body'}: raise RuntimeError('summarizer failed')
-        return payload
+        return claude_json(material,instructions=INSTRUCTIONS,schema=SCHEMA,model=self.model,
+            executable=self.executable,budget=self.budget,timeout=self.timeout)[0]
 
 
 def _check(response):

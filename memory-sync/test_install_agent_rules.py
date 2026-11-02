@@ -227,6 +227,21 @@ class BrokerRulesTests(unittest.TestCase):
             args=parser().parse_args(argv[3:]+['query with spaces','--limit','12','--project','P'])
         self.assertEqual((args.query,args.limit,args.project,args.agent_key,args.compat,args.per_profile,args.profile),('query with spaces',12,'P',str(key),True,True,['work','personal']))
 
+    def test_broker_memory_tree_argv(self):
+        key=self.root/'key'
+        target=self.mod.install(home=self.home,agents=['claude'],python=sys.executable,broker_agent_key=key,broker_profiles=['work'])['claude']
+        manifest=json.loads(target.with_name('agentmesh-shared-memory.command.json').read_text(encoding='utf-8'))
+        self.assertEqual(set(manifest),{'managed_by','version','recall_argv','default_limit','memory_argv'})
+        for action in ('ls','cat','grep'):
+            self.assertEqual(manifest['memory_argv'][action],[sys.executable,'-m','agentmesh_log.cli','memory',action,'--agent-key',str(key)])
+        text=target.read_text(encoding='utf-8')
+        self.assertIn('## Browse the memory tree',text)
+        self.assertLess(text.index('## Browse the memory tree'),text.index('## Pitfalls'))
+        with patch.object(sys,'path',[str(MODULE.parent.parent/'profile-log'),*sys.path]):
+            from agentmesh_log.cli import parser
+            args=parser().parse_args(manifest['memory_argv']['grep'][3:]+['query with spaces','/work/a'])
+        self.assertEqual((args.command,args.action,args.query,args.path,args.agent_key),('memory','grep','query with spaces','/work/a',str(key)))
+
     def test_broker_invalid_inputs(self):
         ok=dict(broker_agent_key=self.root/'key',python=sys.executable)
         for kwargs in [dict(broker_agent_key='relative',python=sys.executable,broker_profiles=['work']),

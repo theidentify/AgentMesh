@@ -54,3 +54,24 @@ def test_p6_3_profile_names(tmp_path,profile,allowed):
         if allowed: assert 'data' in result and calls==[1]
         else: assert result=={'error':'denied'} and calls==[]
     finally: broker.close()
+
+
+def test_memory_tree_tools(tmp_path):
+    from phase6_support import device
+    h,s,storage,cr,p,k,pin,broker,b=device(tmp_path)
+    try:
+        stored=b.invoke(p['app_id'],{'tool':'remember','arguments':{'body':'marker tree note'}})
+        assert stored['status']=='stored'
+        root=b.invoke(p['app_id'],{'tool':'memory_ls','arguments':{}})
+        assert root['preamble'] and [c['name'] for c in root['data']['children']]==['personal/']
+        assert b.invoke(p['app_id'],{'tool':'memory_ls','arguments':{'path':'/work'}})=={'error':'denied'}
+        facts=b.invoke(p['app_id'],{'tool':'memory_ls','arguments':{'path':'/personal/inbox/facts','depth':1}})['data']['children']
+        assert [c['name'] for c in facts]==[stored['id']]
+        page=b.invoke(p['app_id'],{'tool':'memory_cat','arguments':{'path':stored['id']}})
+        assert 'marker tree note' in page['data']['markdown']
+        found=b.invoke(p['app_id'],{'tool':'memory_grep','arguments':{'query':'marker tree','path':'/personal','limit':20}})
+        assert [r['id'] for r in found['data']['results']]==[stored['id']]
+        for tool,args in [('memory_cat',{}),('memory_ls',{'depth':3}),('memory_ls',{'depth':True}),('memory_grep',{'query':' '}),
+                          ('memory_grep',{'query':'x','limit':21}),('memory_ls',{'path':'x'*513}),('memory_cat',{'path':'/x','extra':1})]:
+            with pytest.raises(ValueError,match='invalid_request'): b.invoke(p['app_id'],{'tool':tool,'arguments':args})
+    finally: broker.close()

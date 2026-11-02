@@ -69,16 +69,17 @@ def test_export(tmp_path):
     out=tmp_path/'out'
     result=m.export('/work/a',str(out),False,False)
     assert presence.asked[-1][0]=='export' and 'PLAINTEXT' in presence.asked[-1][1]
-    files=sorted(str(p.relative_to(out)) for p in out.rglob('*') if p.is_file())
+    files=sorted(p.relative_to(out).as_posix() for p in out.rglob('*') if p.is_file())
     assert result['files']==len(files)-1 and result['secret_skipped']==1 and result['labels']==['general']
     assert 'README.md' in files and 'work/a/decisions/INDEX.md' in files  # its only source is general
     assert not any('/projects/' in f for f in files)  # project views do not duplicate items
-    text=''.join(p.read_text() for p in out.rglob('*.md'))
+    text=''.join(p.read_text(encoding='utf-8') for p in out.rglob('*.md'))
     assert 'Pages live' in text and 'Use central Ollama' not in text and 'sk-not-a-real-one' not in text
-    assert stat.S_IMODE(os.stat(out).st_mode)==0o700
-    assert all(stat.S_IMODE(os.stat(p).st_mode)==0o600 for p in out.rglob('*') if p.is_file())
+    if os.name!='nt':  # POSIX modes only; Windows relies on the profile's ACLs
+        assert stat.S_IMODE(os.stat(out).st_mode)==0o700
+        assert all(stat.S_IMODE(os.stat(p).st_mode)==0o600 for p in out.rglob('*') if p.is_file())
     full=m.export('/work',str(tmp_path/'full'),True,False)
-    text=''.join(p.read_text() for p in (tmp_path/'full').rglob('*.md'))
+    text=''.join(p.read_text(encoding='utf-8') for p in (tmp_path/'full').rglob('*.md'))
     assert 'Use central Ollama' in text and full['labels']==['general','internal'] and full['files']>result['files']
     assert (tmp_path/'full'/'work'/'a'/'decisions'/'INDEX.md').exists()
 
@@ -111,7 +112,7 @@ def test_control_ops(tmp_path):
     assert call('memory.cat',{'path':'/x','extra':1})['error']['code']=='bad_args'
     out=tmp_path/'exported'
     assert call('memory.export',{'path':'/work','folder':str(out),'include_internal':False,'allow_synced':False})['result']['files']>=1
-    rows=[json.loads(l) for l in layout.audit.read_text().splitlines()]
+    rows=[json.loads(l) for l in layout.audit.read_text(encoding='utf-8').splitlines()]
     assert [(r['op'],r['outcome']) for r in rows]==[('memory.unlock','requested'),('memory.unlock','ok'),('memory.export','requested'),('memory.export','ok')]
     assert Control(layout,None).handle(dict(v=1,id='x',op='memory.unlock',args={}),{})['error']['code']=='presence_unavailable'
 

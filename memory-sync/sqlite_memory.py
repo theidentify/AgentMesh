@@ -173,66 +173,19 @@ def _after_start(event, cutoff):
 def ingest_file(path, transcript, project=None, agent='omp'):
     from hashlib import sha256
     from dataclasses import asdict
-    import sys
-    # Import pure parsers only, never ingest.py/db.py (which open PostgreSQL).
-    source = Path(__file__).resolve().parent / 'src'
-    if source.is_dir() and str(source) not in sys.path:
-        sys.path.insert(0, str(source))
-    from omp_memory.parser import parse_omp_lines
-    from omp_memory.codex_parser import (parse_codex_lines, read_session_meta,
-                                         infer_codex_project, is_reviewer_session)
-    from omp_memory.claude_parser import parse_claude_lines, infer_claude_project
-
-    transcript = Path(transcript).expanduser().resolve()
-    if agent not in ('omp', 'codex', 'claude'):
-        raise ValueError('unsupported agent')
-    meta = None
-    if agent == 'codex':
-        meta = read_session_meta(transcript)
-        if meta is None or is_reviewer_session(meta):
-            return {'inserted': 0, 'lines_processed': 0, 'next_offset': 0, 'skipped': True}
-        project = project or infer_codex_project(meta)
-    elif agent == 'claude':
-        project = project or infer_claude_project(transcript)
-    else:
-        workspace = transcript.parent.name
-        project = project or (workspace[len('-Workspaces-'):] if workspace.startswith('-Workspaces-')
-                              else workspace.lstrip('-') or 'unknown')
-    stat = transcript.stat()
-    identity = f'{stat.st_dev}:{stat.st_ino}'
+    import transcripts
+    transcript, project, skipped = transcripts.resolve(transcript, agent, project)
+    if skipped:
+        return {'inserted': 0, 'lines_processed': 0, 'next_offset': 0, 'skipped': True}
     with _connect(path) as c, c:
         # Serialize the cursor read + batch write to avoid concurrent regressions.
         c.execute('BEGIN IMMEDIATE')
         cursor = c.execute('SELECT file_identity,byte_offset,line_number FROM ingestion_cursors WHERE source_path=?', (str(transcript),)).fetchone()
-        old_identity, offset, line_number = tuple(cursor) if cursor else (None, 0, 0)
-        if old_identity != identity or offset > stat.st_size:
-            offset, line_number = 0, 0
-        with transcript.open('rb') as handle:
-            handle.seek(offset)
-            tail = handle.read()
-        final_newline = tail.rfind(b'\n')
-        if final_newline < 0:
-            return {'source_path': str(transcript), 'inserted': 0, 'lines_processed': 0, 'next_offset': offset}
-        complete = tail[:final_newline + 1]
-        raw_lines = complete.splitlines(keepends=True)
-        lines, errors = [], []
-        current_offset = offset
-        for index, raw in enumerate(raw_lines, 1):
-            line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
-            lines.append(line)
-            try:
-                json.loads(line)
-            except json.JSONDecodeError as exc:
-                errors.append((str(transcript), current_offset, line_number + index,
-                               sha256(raw).hexdigest(), 'invalid_json', str(exc)))
-            current_offset += len(raw)
-        if agent == 'codex':
-            meta = read_session_meta(transcript) or {}
-            events = parse_codex_lines(lines, str(transcript), project=project, session_id=meta.get('id') or meta.get('session_id'))
-        elif agent == 'claude':
-            events = parse_claude_lines(lines, str(transcript), project=project)
-        else:
-            events = parse_omp_lines(lines, str(transcript), project=project)
+        window = transcripts.read(transcript, agent, project, tuple(cursor) if cursor else None)
+        if not window['complete']:
+            return {'source_path': str(transcript), 'inserted': 0, 'lines_processed': 0, 'next_offset': window['offset']}
+        events, errors = window['events'], window['errors']
+        identity, next_offset, next_line = window['cursor']
         configured = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentmesh_ingestion_start'").fetchone()
         if configured:
             cutoff = c.execute('SELECT start_at FROM agentmesh_ingestion_start').fetchone()
@@ -262,14 +215,13 @@ def ingest_file(path, transcript, project=None, agent='omp'):
         else:
             c.executemany('''INSERT INTO ingestion_errors(source_path,byte_offset,line_number,line_hash,error_type,error_message)
                 VALUES(?,?,?,?,?,?) ON CONFLICT(source_path,line_hash) DO NOTHING''', errors)
-        next_offset = offset + len(complete)
         c.execute('''INSERT INTO ingestion_cursors(source_path,file_identity,byte_offset,line_number,source_hash)
             VALUES(?,?,?,?,?) ON CONFLICT(source_path) DO UPDATE SET
             file_identity=excluded.file_identity,byte_offset=excluded.byte_offset,
             line_number=excluded.line_number,source_hash=excluded.source_hash,updated_at=CURRENT_TIMESTAMP''',
-            (str(transcript), identity, next_offset, line_number + len(lines), sha256(f'{identity}:{next_offset}'.encode()).hexdigest()))
+            (str(transcript), identity, next_offset, next_line, sha256(f'{identity}:{next_offset}'.encode()).hexdigest()))
         return {'source_path': str(transcript), 'inserted': inserted,
-                'lines_processed': len(lines), 'next_offset': next_offset}
+                'lines_processed': window['lines'], 'next_offset': next_offset}
 
 
 def status(path):

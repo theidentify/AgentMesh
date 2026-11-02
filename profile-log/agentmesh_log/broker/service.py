@@ -27,7 +27,8 @@ from .transport import UnixServer, PipeServer
 
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
-    'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set()}
+    'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
+    'ls': {'path','depth'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -270,6 +271,40 @@ class Broker:
         self.indexes[aid]=index; self.index_versions[aid]=version
         return index
 
+    def secret_read(self, grant):
+        if grant.connector_app_id is not None:
+            from ..registry_store import now
+            if not grant.allow_secret or now()>=grant.secret_until: raise ValueError('denied')
+        else: self.presence.require('secret_read','read')
+
+    def tree(self, session, grant, req, audit, allowed, scope_names):
+        """Memory tree ops: ls/cat over the agent's own rows; grep is recall limited to a node."""
+        from . import tree
+        path=req.get('path','/'); scopes={scope_names[s] for s in allowed}
+        if req['op']=='grep':
+            audit['query']=req.get('query')
+            profile,roots,project,task,kind=tree.grep_scopes(path,scopes)
+            limit=req.get('limit',12)
+            if type(limit) is not int or not 1<=limit<=100: raise ValueError('invalid_request')
+            # Task and kind are post-filters (recall only ranks by task), so widen the pool first.
+            recall=dict(op='recall',query=req.get('query'),limit=100 if task or kind else limit,project=project,
+                **({'profiles':[profile],'scopes':roots} if profile else {}),**({'mode':req['mode']} if 'mode' in req else {}))
+            result=self.dispatch(session,grant,recall,None,audit)
+            keep=[r for r in result['results'] if (kind is None or r['kind']==kind)
+                and (task is None or (r.get('task_ref') or '').upper()==task.upper())][:limit]
+            audit['result_ids']=[r['id'] for r in keep]
+            return {**result,'results':keep,'path':'/'+'/'.join(tree.split(path))}
+        audit['query']=path
+        rows=self.index(grant).rows()
+        if req['op']=='ls':
+            depth=req.get('depth',1)
+            if type(depth) is not int: raise ValueError('invalid_request')
+            return tree.listing(path,rows,scopes,depth)
+        row=tree.find(path,rows,scopes)
+        if row['label']=='secret': self.secret_read(grant)
+        audit.update(result_ids=[row['id']],label=row['label'])
+        return dict(path=tree.canonical(row),event=row,markdown=tree.markdown(row))
+
     def ingest(self, envelope, data):
         try: _,payload=self._open(envelope,data)
         except (ValueError,KeyError,StopIteration): return
@@ -402,13 +437,10 @@ class Broker:
             result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
                 limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False),semantic=semantic)
             audit['mode']=result['query_plan'].get('retrieval',{}).get('effective','keyword')
-            if any(r['label']=='secret' for r in result['results']):
-                if grant.connector_app_id is not None:
-                    from ..registry_store import now
-                    if not grant.allow_secret or now()>=grant.secret_until: raise ValueError('denied')
-                else: self.presence.require('secret_read','read')
+            if any(r['label']=='secret' for r in result['results']): self.secret_read(grant)
             audit['result_ids']=[r['id'] for r in result['results']]
             return result
+        if op in ('ls','cat','grep'): return self.tree(session,grant,req,audit,allowed,scope_names)
         if op in ('remember','revise'):
             if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
             from .imports import RESERVED

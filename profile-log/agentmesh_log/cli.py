@@ -57,6 +57,13 @@ def parser():
     recall.add_argument('--profile',action='append'); recall.add_argument('--scope',action='append')
     recall.add_argument('--mode',choices=('keyword','hybrid'))
     recall.add_argument('--per-profile',action='store_true',help='one request per --profile, merged like the bridge (no cross-profile grant needed)')
+    memory=commands.add_parser('memory'); tree=memory.add_subparsers(dest='action',required=True)
+    for action in ('ls','cat','grep'):
+        cmd=tree.add_parser(action); cmd.add_argument('--agent-key',required=True)
+        if action=='grep': cmd.add_argument('query'); cmd.add_argument('--limit',type=int,default=12); cmd.add_argument('--mode',choices=('keyword','hybrid'))
+        cmd.add_argument('path',nargs='?' if action!='cat' else None,default='/')
+    tree.choices['ls'].add_argument('--depth',type=int,choices=(1,2),default=1)
+    tree.choices['cat'].add_argument('--json',action='store_true',help='full response instead of markdown')
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
     remember.add_argument('--task')
@@ -176,11 +183,16 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         value=load()
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
-    if args.command not in ('broker','recall','remember'):
+    if args.command not in ('broker','recall','remember','memory'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
         try:
+            if args.command=='memory':
+                request=dict(op=args.action,path=args.path)
+                if args.action=='ls': request['depth']=args.depth
+                if args.action=='grep': request.update(query=args.query,limit=args.limit,**({'mode':args.mode} if args.mode else {}))
+                return client.request(request)
             if args.command=='recall':
                 request=dict(op='recall',query=args.query,project=args.project,task=args.task,
                     limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat,
@@ -410,6 +422,9 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
     p=parser(); args=p.parse_args(argv)
     try:
         result=execute(args,backend=backend,console=console,input_fn=input_fn)
+        # `memory cat` prints the page itself so it can be piped into sed/grep.
+        if args.command=='memory' and args.action=='cat' and not args.json and type(result.get('markdown')) is str:
+            emit(result['markdown'].rstrip('\n')); return 0
         emit(json.dumps(result,ensure_ascii=False,sort_keys=True))
         return 1 if 'error' in result or result.get('errors',0) or (args.command=='r2-credentials' and result.get('ok') is False) else 0
     except KeyboardInterrupt: return 0

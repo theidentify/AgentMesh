@@ -125,6 +125,7 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button("Audit…") { openWindow(id: "audit"); NSApp.activate() }
+                Button("Memory…") { openWindow(id: "memory"); NSApp.activate() }
                 Spacer()
                 Toggle("Launch at login", isOn: Binding(get: { SMAppService.mainApp.status == .enabled }, set: setLoginItem))
                     .toggleStyle(.checkbox)

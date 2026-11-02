@@ -192,11 +192,11 @@ def children(parts, rows, scopes):
     return out
 
 
-def listing(path, rows, scopes, depth=1):
-    if depth not in (1,2): raise ValueError('invalid_request')
-    parts=split(path); items=children(parts,rows,scopes)
+def listing(path, rows, scopes, depth=1, offset=0):
+    if depth not in (1,2) or type(offset) is not int or not 0<=offset<=10**6: raise ValueError('invalid_request')
+    parts=split(path); items=children(parts,rows,scopes)[offset:]
     if depth==2:
-        for item in items:
+        for item in items[:MAX_CHILDREN]:
             if item['type'] not in ('event','page'):
                 nested=children(parts+[item['name'].rstrip('/')],rows,scopes)
                 item['children']=[c['name'] for c in nested[:MAX_NESTED]]

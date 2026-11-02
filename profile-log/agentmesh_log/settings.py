@@ -83,7 +83,8 @@ def validate(value, *, local=False, project=False):
             v = s['embed_labels']; check(type(v) is list and bool(v) and len(set(v)) == len(v) and set(v) <= {'general', 'internal', 'secret'})
         if 'min_score' in s: check(type(s['min_score']) in (int, float) and 0 <= s['min_score'] <= 1)
     if 'memory_tree' in value:
-        t = value['memory_tree']; fields(t, ['writer_device', 'summarize_labels', 'model', 'max_pages', 'budget_usd'])
+        t = value['memory_tree']; fields(t, ['writer_device', 'summarize_labels', 'model', 'max_pages', 'budget_usd'] + (['agent_key'] if local else []))
+        if 'agent_key' in t: check(type(t['agent_key']) is str and len(t['agent_key']) <= 4096 and os.path.isabs(t['agent_key']) and '\0' not in t['agent_key'])
         if 'writer_device' in t: check(type(t['writer_device']) is str and bool(re.fullmatch(r'[0-9a-f]{32}', t['writer_device'])))
         if 'summarize_labels' in t:
             v = t['summarize_labels']; check(type(v) is list and bool(v) and len(set(v)) == len(v) and set(v) <= {'general', 'internal'})

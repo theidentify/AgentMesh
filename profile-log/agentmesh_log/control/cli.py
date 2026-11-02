@@ -10,6 +10,8 @@ CALLS={
     'restart':lambda a:('unit.restart',{'unit':a.unit}),
     'reset':lambda a:('unit.reset',{'unit':a.unit}),
     'maintenance':lambda a:('maintenance.on',{'reason':a.reason}) if a.state=='on' else ('maintenance.off',{}),
+    'memory-export':lambda a:('memory.export',{'path':a.path,'folder':str(Path(a.folder).expanduser().absolute()),
+        'include_internal':a.include_internal,'allow_synced':a.allow_synced}),
 }
 
 
@@ -21,6 +23,9 @@ def add_parsers(commands):
     maintenance.add_argument('--reason',default='maintenance')
     sub.add_parser('audit').add_argument('--limit',type=int,default=20)
     sub.add_parser('panic-revert')
+    export=sub.add_parser('memory-export',help='write a memory subtree as plaintext markdown files (Touch ID each time)')
+    export.add_argument('path'); export.add_argument('folder')
+    export.add_argument('--include-internal',action='store_true'); export.add_argument('--allow-synced',action='store_true')
     plist=sub.add_parser('plist'); plist.add_argument('--out',required=True); plist.add_argument('--python',default=sys.executable)
 
 
@@ -35,6 +40,7 @@ def serve(layout):
     from .notify import notifier
     from .ops import Control
     from .presence_helper import HelperPresence
+    from .memory import Memory
     from .projects import Mappings
     from .router import Router
     from .server import Supervisor
@@ -48,7 +54,8 @@ def serve(layout):
     # unit.backend: the supervisor's own Touch ID / Mac password helper; a client never vouches for presence.
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=launchd)
-    control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves))
+    control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves),
+        memory=Memory(layout,presence,moves))
     supervisor=Supervisor(control,layout,ticker=native.tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()

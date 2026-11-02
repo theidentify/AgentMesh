@@ -28,7 +28,7 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
-    'ls': {'path','depth'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
+    'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -320,7 +320,7 @@ class Broker:
         if req['op']=='ls':
             depth=req.get('depth',1)
             if type(depth) is not int: raise ValueError('invalid_request')
-            return tree.listing(path,rows,scopes,depth)
+            return tree.listing(path,rows,scopes,depth,req.get('offset',0))
         row=tree.find(path,rows,scopes)
         if row['label']=='secret': self.secret_read(grant)
         audit.update(result_ids=[row['id']],label=row['label'])

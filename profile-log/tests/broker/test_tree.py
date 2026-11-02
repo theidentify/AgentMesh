@@ -127,3 +127,13 @@ def test_cli_cat_prints_markdown(monkeypatch, capsys):
     assert client.sent == dict(op='ls', path='/', depth=2)
     assert main(['memory', 'grep', '--agent-key', 'k', 'ollama', '/work', '--mode', 'hybrid']) == 0
     assert client.sent == dict(op='grep', path='/work', query='ollama', limit=12, mode='hybrid')
+
+
+def test_offset_paging(monkeypatch):
+    monkeypatch.setattr(tree, 'MAX_CHILDREN', 2)
+    first = tree.listing('/work/a', ROWS, SCOPES)
+    second = tree.listing('/work/a', ROWS, SCOPES, offset=2)
+    third = tree.listing('/work/a', ROWS, SCOPES, offset=4)
+    assert names(first) + names(second) + names(third) == ['projects/', 'tasks/', 'decisions/', 'constraints/', 'facts/']
+    assert (first['more'], second['more'], third['more']) == (3, 1, 0)
+    with pytest.raises(ValueError): tree.listing('/', ROWS, SCOPES, offset=-1)

@@ -25,6 +25,10 @@ OPS={  # op: (tier, exact argument names)
     'unit.backend':(2,frozenset({'unit','to'})),'moves.get':(0,frozenset({'move_id'})),
     'mapping.set':(2,frozenset({'project','target'})),
     'keys.inventory':(0,frozenset()),
+    # The memory tree: viewing opens once with presence (memory.unlock), export asks every time.
+    'memory.unlock':(2,frozenset()),'memory.lock':(1,frozenset()),
+    'memory.ls':(0,frozenset({'path','depth'})),'memory.cat':(0,frozenset({'path'})),
+    'memory.export':(2,frozenset({'path','folder','include_internal','allow_synced'})),
 }
 
 
@@ -34,9 +38,9 @@ class OpError(Exception):
 
 
 class Control:
-    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None):
+    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None, memory=None):
         self.layout,self.backend,self.clock,self.units,self.moves=layout,backend,clock,units,moves
-        self.mappings=mappings
+        self.mappings,self.memory=mappings,memory
         self.lock=threading.Lock(); self.recent={}
 
     def handle(self, request, caller):
@@ -143,6 +147,20 @@ class Control:
         if self.mappings is None: raise OpError('presence_unavailable')
         try: return self.mappings.set(project,target)
         except MoveError as error: raise OpError(error.code) from None
+
+    def memory_call(self, name, *args):
+        if self.memory is None: raise OpError('presence_unavailable')
+        try: return getattr(self.memory,name)(*args)
+        except MoveError as error: raise OpError(error.code) from None
+
+    def op_memory_unlock(self): return self.memory_call('unlock')
+    def op_memory_lock(self): return self.memory_call('relock')
+    def op_memory_ls(self, path, depth): return self.memory_call('ls',path,depth)
+    def op_memory_cat(self, path): return self.memory_call('cat',path)
+
+    def op_memory_export(self, path, folder, include_internal, allow_synced):
+        """Tier 2: plaintext files for the owner, after the supervisor's presence check for this export."""
+        return self.memory_call('export',path,folder,include_internal,allow_synced)
 
     def op_moves_get(self, move_id):
         if self.moves is None: raise OpError('unknown_move')

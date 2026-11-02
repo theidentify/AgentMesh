@@ -23,8 +23,9 @@ public protocol Evaluator: Sendable {
     func invalidate()
 }
 
-/// Actions that may reach this sheet. Kept narrower than presence.ACTIONS: only backend moves use it in M3a.
-public let actions: Set<String> = ["migrate"]
+/// Actions that may reach this sheet. Kept narrower than presence.ACTIONS: backend moves and mappings (migrate),
+/// opening the memory viewer (read) and a plaintext memory export (export).
+public let actions: Set<String> = ["migrate", "read", "export"]
 public let maxSummaryBytes = 4096
 public let reasonPrefixChars = 400
 

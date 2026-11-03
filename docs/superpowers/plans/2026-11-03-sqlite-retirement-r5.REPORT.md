@@ -43,6 +43,19 @@ Owner steps the Mac run needed that are not obvious:
 - After a broker restart, wait until it accepts connections before running a job (a run 4 s after the restart got
   `broker_unreachable`).
 
+## Windows cutover (2026-11-03)
+
+Applied as archive `sqlite-windows-20261103-034127` (16 transcripts, 16 waiting events, floor 2026-10-16T05:52Z). The
+switch, archive and bridge were as expected, but every summary then failed with `summarizer related failed:
+unmapped_project`. Four throwaway Claude sessions (diagnostic `claude -p` runs and the owner's login tests, from the home
+folder, `.agentmesh`, System32 and the PowerShell install folder) had no route in the migration mapping, and one
+unmapped project stopped every summary. Under SQLite only that project's rows waited at import.
+
+Fixed: the broker summary holds back only an unmapped project's events (its cursors stay), carries on with the others,
+and lists the held names in `jobs/summary-unmapped.json`. The control app's new-project prompt reads that file as well
+as catch-up's status (catch-up imports nothing after the cutover). The mapping still never guesses a route. On Windows,
+which has no control app, the owner routes them in `settings.json` `migration.projects` (a scope, or `skip`) and applies.
+
 ## Windows runbook (owner, in PowerShell)
 
 `$PY` is the Windows venv python of the AgentMesh install (`%USERPROFILE%\.agentmesh\venv\Scripts\python.exe` unless the

@@ -1,7 +1,7 @@
 """New projects waiting for a scope, and mapping.set: the owner picks one, proved by the supervisor's presence check.
 
-catch-up holds back the rows of a project the migration mapping does not cover and reports it in
-profile-log-status.json. mapping.set only adds a mapping for such a pending project and only to a scope the mapping
+catch-up (before the SQLite cutover) and the broker summary (after it) hold back a project the migration mapping does
+not cover and report it, in profile-log-status.json and jobs/summary-unmapped.json. mapping.set only adds a mapping for such a pending project and only to a scope the mapping
 already uses (or skip): it never changes an existing mapping, so an agent cannot widen who reads a project's memory,
 and every addition needs the owner's Touch ID or Mac password. The file is replaced atomically, owner-only.
 """
@@ -20,14 +20,24 @@ def covered(mapping, name):
     except ValueError: return False
 
 
-def pending(layout):
-    """Projects the last catch-up held back that the mapping still does not cover. Unreadable state means none."""
+def held(layout):
+    """Project names held back for want of a mapping: by the last catch-up (before the SQLite cutover) and by the last
+    broker summary tick (after it, catch-up imports nothing). An unreadable source contributes none."""
+    names=[]
+    try: names+=parse(layout.profile_status.read_bytes()).get('last_catch_up',{}).get('unmapped',[])
+    except Exception: pass
     try:
-        status=parse(layout.profile_status.read_bytes())
-        names=status.get('last_catch_up',{}).get('unmapped',[])
-        mapping=load(layout)
+        value=parse((layout.root/'jobs'/'summary-unmapped.json').read_bytes())
+        if value.get('format')=='agentmesh-summary-unmapped-v1': names+=value.get('projects',[])
+    except Exception: pass
+    return names
+
+
+def pending(layout):
+    """Projects held back that the mapping still does not cover. Unreadable state means none."""
+    try: mapping=load(layout)
     except Exception: return []
-    return sorted({n for n in names if type(n) is str and n and not covered(mapping,n)})
+    return sorted({n for n in held(layout) if type(n) is str and n and not covered(mapping,n)})
 
 
 def scopes(layout):

@@ -93,7 +93,8 @@ def upsert(client, heads, name, item, provenance):
     """remember a new key, revise a changed one, leave an unchanged one alone. Returns (outcome, id)."""
     old=heads.scope(name).get(item['memory_key'])
     if old is not None and same(old,item): return 'unchanged',old['id']
-    response=checked(client.write(body(item,provenance),scope=name,revises=None if old is None else old['id'],expected_scope=name))
+    # No expected_scope: the unsigned event names the scope by id, not by the name the summarizer holds.
+    response=checked(client.write(body(item,provenance),scope=name,revises=None if old is None else old['id']))
     heads.drop(name)
     return ('revised' if old else 'created'),response['id']
 
@@ -150,7 +151,7 @@ def delete(client, scope, memory_key):
     if head is None: raise ValueError('not_found')
     item=dict(memory_key=memory_key,kind=head['kind'],scope=head['item_scope'] or 'project',scope_key=head['scope_key'],
               project=head['project'],content=head['content'],status='deleted',confidence=head['confidence'])
-    response=checked(client.write(body(item,dict(batch_id='owner-confirmed')),scope=scope,revises=head['id'],expected_scope=scope))
+    response=checked(client.write(body(item,dict(batch_id='owner-confirmed')),scope=scope,revises=head['id']))
     return dict(ok=True,memory_key=memory_key,id=response['id'])
 
 

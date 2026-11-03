@@ -21,7 +21,7 @@ from agentmesh_log.broker.service import Broker
 from agentmesh_log.control import maintenance, retire
 from agentmesh_log.control.layout import Layout
 
-pytestmark = pytest.mark.skipif(os.name == 'nt', reason='the ceremony is Mac-only (launchd jobs, Touch ID)')
+POSIX = os.name != 'nt'  # file modes are owner-only on POSIX; Windows keeps the archive in the private profile folder
 
 
 class Client(Local):
@@ -115,9 +115,10 @@ def test_retire_rollback_delete(staging):
     archive = s['root']/'backups'/'archive'/result['archive']
     # The staging files moved into an owner-only archive, nothing left behind.
     assert not s['db'].exists() and not s['export'].exists()
-    assert stat.S_IMODE(archive.stat().st_mode) == 0o700
-    assert stat.S_IMODE((archive/'staging.db').stat().st_mode) == 0o400
-    assert stat.S_IMODE((archive/'export'/'_Index.md').stat().st_mode) == 0o400
+    if POSIX:
+        assert stat.S_IMODE(archive.stat().st_mode) == 0o700
+        assert stat.S_IMODE((archive/'staging.db').stat().st_mode) == 0o400
+        assert stat.S_IMODE((archive/'export'/'_Index.md').stat().st_mode) == 0o400
     assert (archive/'README.md').is_file() and (archive/'config'/'bridge.json').is_file()
     # Switched: broker backend, importer quiet, summarizer state seeded, maintenance off again.
     config = json.loads(s['production'].read_text())
@@ -135,7 +136,7 @@ def test_retire_rollback_delete(staging):
     rolled = retire.rollback(s['layout'], s['root'], result['archive'], console=Yes(), helper=None)
     assert rolled.get('ok'), rolled
     assert s['db'].is_file() and (s['export']/'_Index.md').read_text() == 'plaintext projection'
-    assert stat.S_IMODE(s['db'].stat().st_mode) == 0o600
+    if POSIX: assert stat.S_IMODE(s['db'].stat().st_mode) == 0o600
     assert json.loads(s['production'].read_text()).get('backend', 'sqlite') == 'sqlite'
     assert json.loads(s['bridge'].read_text())['authority'] is True
     assert not any((s['root']/'jobs'/n).exists() for n in retire.STATE_FILES)

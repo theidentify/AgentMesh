@@ -266,3 +266,25 @@ def test_s2_bridge_flags_off_narrow(env):
     result=run(console=console(calls=calls)); assert result['ok'] and not calls
     value['bridge']={'enabled':False,'recall':False,'dual_write':False}; save_user(value)
     result=run(console=console(calls=calls)); assert result['ok'] and not calls
+
+
+def test_bridge_after_sqlite_retire(env):
+    """The staging database archived by sqlite-retire: apply still works, the bridge turns recall-only, the importer goes."""
+    root, home, store=env
+    value=desired(); value['agents']['importer']={'read':[],'write':['work/common'],'allow_import':True}
+    value['bridge']={'enabled':True,'profile':'work','recall_agent':'reader','import_agent':'importer','dual_write':True}
+    value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
+    save_user(value)
+    local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
+    assert run(console=console())['ok']
+    (root/'db').rename(root/'archived.db')
+    path=root/'db.profile-log.json'
+    del value['agents']['importer']; save_user(value)
+    result=run(console=console())
+    assert result['ok'] and {c['kind'] for c in result['diff']} >= {'agent_remove'}
+    config=json.loads(path.read_text(encoding='utf-8'))
+    assert (config['dual_write'], config['authority'], config['recall'], config['staging_node']) == (False, False, True, 'test-node')
+    assert 'importer' not in store.load().control['agent_names']
+    # Without a recorded node there is nothing to bind to.
+    state=store.load(); state.control['applied_bridge'].pop('staging_node'); store.save(state)
+    assert run(dry_run=True)['error']=='invalid_settings'

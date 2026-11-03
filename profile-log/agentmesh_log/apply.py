@@ -49,7 +49,14 @@ def bridge_value(value, state, base):
     profiles=b.get('profiles',[b['profile']] if 'profile' in b else [])
     if not profiles or not set(profiles)<={t.root.name for t in state.trees}: raise ValueError('invalid_settings')
     from .migrate.source import staging_node
-    node=staging_node(b['database']); device=state.device.device_id
+    if Path(b['database']).exists() or Path(b['database']).is_symlink(): node=staging_node(b['database'])
+    else:
+        # sqlite-retire archived the staging database: nothing can be written to it, so the bridge is recall-only and
+        # keeps the node it was bound to.
+        node=b.get('staging_node')
+        if not node: raise ValueError('invalid_settings')
+        b.update(dual_write=False,authority=False)
+    device=state.device.device_id
     if ('device_id' in b and b['device_id']!=device) or ('staging_node' in b and b['staging_node']!=node):
         raise ValueError('invalid_settings')
     b.update(device_id=device,staging_node=node)
@@ -211,7 +218,9 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
                 if not path.parent.is_dir() or path.parent.is_symlink(): raise ValueError('invalid_settings')
                 if bridge['enabled']:
                     declared_names = set(value.get('agents', state.control.get('agent_names', {})))
-                    if not {bridge['recall_agent'], bridge['import_agent']} <= declared_names: raise ValueError('invalid_settings')
+                    # The importer is needed only while the bridge writes to staging; after the cutover it is revoked.
+                    needed = {bridge['recall_agent']} | ({bridge['import_agent']} if bridge['dual_write'] or bridge['authority'] else set())
+                    if not needed <= declared_names: raise ValueError('invalid_settings')
                     if mapping is None and not state.control.get('applied_mapping'): raise ValueError('invalid_settings')
             if dry_run: return dict(ok=True, diff=changes)
             settings.safe(base / 'apply.jsonl', missing=True)

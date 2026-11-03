@@ -89,6 +89,26 @@ def test_window_ends_mid_file_and_resumes(setup):
     assert fake.writes[-1]['items'][0]['evidence'][0]['event_id'] == fake.writes[-1]['items'][0]['source_event_ids'][0]
 
 
+def renumbered(identity):
+    device, inode = identity.split(':')
+    return '%d:%s' % (int(device) + 2, inode)
+
+
+def test_device_renumbering_keeps_cursors(setup):
+    """macOS renumbers APFS st_dev across reboots: unchanged and half-summarized files are not summarized again."""
+    tmp_path, folder, fake = setup
+    (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
+    (folder / 'b.jsonl').write_text(record('v1', 'beta two') + record('v2', 'gamma three'))
+    run(tmp_path, fake, max_events=1)
+    run(tmp_path, fake, max_events=1)
+    path = tmp_path / 'jobs' / broker_digest.CURSORS
+    data = json.loads(path.read_text())
+    for entry in data['files'].values(): entry['identity'] = renumbered(entry['identity'])
+    path.write_text(json.dumps(data))
+    while run(tmp_path, fake)['status'] != 'idle': pass
+    assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two', 'gamma three']
+
+
 def test_failed_or_stale_write_keeps_cursors(setup):
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))

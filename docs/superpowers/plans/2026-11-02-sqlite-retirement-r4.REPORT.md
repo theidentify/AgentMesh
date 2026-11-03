@@ -64,6 +64,11 @@ name as the client's `expected_scope`, but the unsigned event names the scope by
 (`invalid scope binding`) and nothing was written. The binding is dropped (the broker binds the named scope itself), and
 `test_write_through_broker_client` now drives the real `BrokerClient`, which the in-process test client had bypassed.
 
+After the cutover `agentmesh-log apply` failed (`apply_failed`, even with no change): the settings bridge still names
+the staging database, and apply opened it for its node id. Apply now keeps the recorded node when the database is gone
+and makes the bridge recall-only (`dual_write` and `authority` off; the applied record had kept them on, so the next
+apply would have turned catch-up back on). The importer is required only while the bridge writes, so it can be revoked.
+
 ## Owner runbook (Mac Air)
 
 1. Merge and deploy `main` (the runtime needs `broker_digest.py` and `sqlite_cutover.py`; the dry run says so if not).

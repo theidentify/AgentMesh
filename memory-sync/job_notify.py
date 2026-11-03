@@ -195,7 +195,10 @@ def run(name, argv, state_dir, webhook_file=None, timeout=3000, sender=post, now
     started = time.monotonic()
     before = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
     try:
-        process = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        # The Claude digest worker appends a redacted record of each failed CLI run here (stderr is otherwise lost).
+        env = dict(os.environ)
+        env.setdefault('AGENTMESH_WORKER_ERROR_LOG', str(Path(state_dir) / 'claude-worker.err.log'))
+        process = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
         code, out, err = process.returncode, process.stdout, process.stderr
     except subprocess.TimeoutExpired:
         code, out, err = 124, '', json.dumps({'error_class': 'Timeout'})

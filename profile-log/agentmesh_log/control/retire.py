@@ -1,7 +1,8 @@
 """Retire the SQLite staging database on this device (SQLite retirement R4).
 
 Owner-run in a terminal, never over the socket: `agentmesh-log control sqlite-retire` is a dry run that changes
-nothing; `--apply` needs typed console presence and Touch ID (or the Mac password) through the supervisor's helper.
+nothing; `--apply` needs typed console presence, plus Touch ID (or the Mac password) through the supervisor's helper on
+a Mac. Windows has no helper yet, so typed console presence is the whole check there (SQLite retirement R5).
 
 Apply, in order, with ingest and summary paused (maintenance on, and both job locks held so no run is in flight):
   1. final import (`migrate catch-up` as the importer) and `migrate verify`: any staging memory missing from the
@@ -144,7 +145,7 @@ def size(path):
 
 def summary_text(setup, result):
     seed=result['seed']
-    return ('Retire the SQLite staging database on this Mac.\n'
+    return ('Retire the SQLite staging database on this device.\n'
             'Imports anything left, verifies nothing is missing, then switches the summary job to the broker.\n'
             'Transcripts followed: %d (waiting events: %d, read again: %d)\n'
             'Archived (not deleted): %s\n'
@@ -186,7 +187,7 @@ owner-only, never synced and never backed up.
 
 
 def present(console, helper, action, summary):
-    """Tier 3: typed console confirmation and Touch ID (or the Mac password) through the supervisor's helper."""
+    """Tier 3: typed console confirmation, then the supervisor's helper (Touch ID or the Mac password) where there is one."""
     if not console.confirm(action,summary): return False
     return helper is None or helper.confirm(action,summary)
 

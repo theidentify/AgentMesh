@@ -157,13 +157,14 @@ def test_windows_exe_runs_without_shell(monkeypatch, capsys):
     monkeypatch.setattr(worker, 'os', SimpleNamespace(name='nt'))
     monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(req)))
     def run(argv, **kwargs):
-        calls.append((argv, kwargs))
+        calls.append((argv, dict(kwargs, stdin=kwargs['stdin'].read().decode('utf-8'))))
         return SimpleNamespace(returncode=0, stdout=json.dumps(dict(structured_output={}, modelUsage={'model': {}})))
     monkeypatch.setattr(worker.subprocess, 'run', run)
     assert worker.main(['--model', 'model', '--claude', executable]) == 0
     argv, opts = calls[0]
     assert argv == worker.command(req, executable=executable, model='model')
-    assert opts == dict(input=req['input'][0]['content'], text=True, encoding='utf-8', capture_output=True, timeout=110, check=False)
+    # A real file, not a pipe: claude.exe under the task's console-less pythonw ignores piped stdin.
+    assert opts == dict(stdin=req['input'][0]['content'], text=True, encoding='utf-8', capture_output=True, timeout=110, check=False)
     assert json.loads(capsys.readouterr().out)['provider'] == 'anthropic/claude-code'
 
 

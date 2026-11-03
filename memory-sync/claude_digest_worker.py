@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from memory_sync import canonical, load_packet
 
@@ -178,6 +179,20 @@ def decode_result(result, model):
                 provider='anthropic/claude-code', model=model, api_calls=1)
 
 
+def run_cli(argv, content, timeout):
+    """Run the CLI with the prompt on stdin. On Windows the prompt goes in from a temporary file: under the scheduled
+    task's console-less pythonw, claude.exe does not see piped stdin ("Input must be provided ..."). The file is
+    deleted when closed."""
+    if os.name != 'nt':
+        return subprocess.run(argv, input=content, text=True, encoding='utf-8', capture_output=True,
+                              timeout=timeout, check=False)
+    with tempfile.TemporaryFile() as prompt:
+        prompt.write(content.encode('utf-8'))
+        prompt.seek(0)
+        return subprocess.run(argv, stdin=prompt, text=True, encoding='utf-8', capture_output=True,
+                              timeout=timeout, check=False)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--model', required=True, help='full Claude model ID, e.g. claude-sonnet-5-5')
@@ -189,9 +204,8 @@ def main(argv=None):
     try:
         request = load_packet(sys.stdin.read())
         content, _ = check_request(request)
-        process = subprocess.run(command(request, executable=args.claude, model=args.model, budget=args.budget),
-                                 input=content, text=True, encoding='utf-8', capture_output=True,
-                                 timeout=args.timeout, check=False)
+        process = run_cli(command(request, executable=args.claude, model=args.model, budget=args.budget),
+                          content, args.timeout)
         def failed():
             reason = failure_reason(process.stdout, process.stderr, process.returncode)
             log_failure(args.claude, process.returncode, process.stderr, reason, args.error_log)

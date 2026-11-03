@@ -59,6 +59,11 @@ project to `work/common`, which holds more than the 500 keyed heads the R2 `head
 move, so nothing was lost. Fixed by paging the list: `heads` without `memory_keys` returns 500 at a time with `next`,
 and the summarizer reads every page (`summarize.Heads`, at most `PAGES` pages).
 
+The next run reached the write and failed with `summarizer write failed: unavailable`: the summarizer passed the scope
+name as the client's `expected_scope`, but the unsigned event names the scope by id, so the client refused to sign
+(`invalid scope binding`) and nothing was written. The binding is dropped (the broker binds the named scope itself), and
+`test_write_through_broker_client` now drives the real `BrokerClient`, which the in-process test client had bypassed.
+
 ## Owner runbook (Mac Air)
 
 1. Merge and deploy `main` (the runtime needs `broker_digest.py` and `sqlite_cutover.py`; the dry run says so if not).

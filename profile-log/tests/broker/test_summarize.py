@@ -146,3 +146,18 @@ def test_stats_counts_only(tmp_path):
     assert stats['projects'] == [dict(project='demo', count=2), dict(project='mesh', count=1)]
     assert 'text' not in str(stats) and 'note' not in str(stats)
     assert client.request(dict(op='stats', scope='work/a')) == {'error': 'invalid_request'}
+
+
+def test_write_through_broker_client(tmp_path):
+    """The real client signs what the summarizer writes (the in-process Local skips the client's binding checks)."""
+    from .test_isolation import connect
+    b, state, _, agent = broker(tmp_path)
+    client, _, _ = connect(b, agent)
+    request = dict(project='demo', sessions=[], items=[item('k.one', 'first')], provenance=dict(batch_id='b'),
+                   related_digest=summarize.digest(summarize.related(client, MAPPING, 'demo', [])))
+    result = summarize.write(client, MAPPING, request)
+    assert [w['outcome'] for w in result['written']] == ['created'] and result['summaries'][0]['outcome'] == 'created'
+    request['related_digest'] = summarize.digest(summarize.related(client, MAPPING, 'demo', []))
+    request['items'] = [item('k.one', 'second')]
+    assert [w['outcome'] for w in summarize.write(client, MAPPING, request)['written']] == ['revised']
+    assert summarize.delete(client, 'work/a', 'k.one')['ok'] is True

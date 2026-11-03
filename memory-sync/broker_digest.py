@@ -222,6 +222,11 @@ class CliBackend:
         if type(value) is not dict or result.returncode or 'error' in value:
             code = value.get('error') if type(value) is dict else None
             code = code if type(code) is str and re.fullmatch(r'[a-z_]{1,40}', code) else 'unavailable'
+            if code == 'unavailable':
+                # No error code means the CLI itself broke; keep a redacted stderr tail in the worker's error log.
+                from claude_digest_worker import log_failure
+                log_failure('summary-' + action, result.returncode, result.stderr.decode('utf-8', 'replace'),
+                            'summary %s unavailable' % action)
             if action == 'related' and code == 'unmapped_project':
                 raise Unmapped(request.get('project'))
             raise ValidationError('summarizer %s failed: %s; cursor unchanged' % (action, code))

@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 
 import pytest
+from types import SimpleNamespace
 
 import broker_digest
 from bounded_protocol import ValidationError
@@ -240,6 +241,19 @@ def test_stale_window_is_redone_then_left_pending(setup):
     fake.stale = False
     assert broker_digest.tick(tmp_path / 'jobs', fake, **options)['status'] == 'completed'
     assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two']
+
+
+def test_unavailable_cli_logs_a_redacted_stderr_tail(tmp_path, monkeypatch):
+    """A summary CLI that breaks without an error code leaves its stderr tail in the worker's error log."""
+    log = tmp_path / 'claude-worker.err.log'
+    monkeypatch.setenv('AGENTMESH_WORKER_ERROR_LOG', str(log))
+    stderr = b'Traceback (most recent call last):\nConnectionResetError: broker went away sk-ant-abc123\n'
+    monkeypatch.setattr(broker_digest.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1, stdout=b'', stderr=stderr))
+    backend = broker_digest.CliBackend(['agentmesh-log'], str(tmp_path / 'k'), str(tmp_path / 'm'))
+    with pytest.raises(ValidationError, match='write failed: unavailable'): backend.write({})
+    record = json.loads(log.read_text())
+    assert (record['executable'], record['reason']) == ('summary-write', 'summary write unavailable')
+    assert record['stderr'] == ['ConnectionResetError: broker went away [masked]']
 
 
 def test_unmapped_project_waits_and_others_carry_on(setup):

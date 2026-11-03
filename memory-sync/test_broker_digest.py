@@ -37,9 +37,10 @@ def extractor(request, *, model):
 
 class Fake:
     def __init__(self):
-        self.heads, self.writes, self.fail, self.stale = {}, [], False, False
+        self.heads, self.writes, self.fail, self.stale, self.unmapped = {}, [], False, False, set()
 
     def related(self, project, sessions):
+        if project in self.unmapped: raise broker_digest.Unmapped(project)
         rows = [dict(memory_key=k, kind=v['kind'], scope=v['scope'], scope_key=v['scope_key'], project=v['project'],
                      content=v['content'], status=v['status'], confidence=v['confidence']) for k, v in sorted(self.heads.items())]
         return dict(related=rows, digest=str(len(self.writes)))
@@ -154,6 +155,8 @@ def test_cli_backend_errors(tmp_path):
     with pytest.raises(ValidationError, match='summarizer related failed: unavailable'): backend.related('demo', [])
     script.write_text('import sys,json\nsys.stdin.read()\nprint(json.dumps({"error": "unmapped_project"}))\nsys.exit(1)\n')
     with pytest.raises(ValidationError, match='unmapped_project'): backend.write({})
+    with pytest.raises(broker_digest.Unmapped) as raised: backend.related('newproj', [])
+    assert raised.value.project == 'newproj'
     script.write_text('import sys,json\nr=json.load(sys.stdin)\nprint(json.dumps({"related": [], "digest": sys.argv[1:4] == ["summary","related","--agent-key"] and r["project"]}))\n')
     assert backend.related('demo', []) == dict(related=[], digest='demo')
     with pytest.raises(ValidationError): broker_digest.CliBackend([sys.executable], 'relative', str(tmp_path))
@@ -196,3 +199,24 @@ def test_tick_metrics(setup):
     rows = [json.loads(line) for line in metrics.read_text().splitlines()]
     assert [(r['status'], r['events_processed']) for r in rows] == [('completed', 1), ('failed', 0)]
     assert rows[1]['errors'] == ['ValidationError'] and 'content' not in json.dumps(rows)
+
+
+def test_unmapped_project_waits_and_others_carry_on(setup):
+    """One project without a mapping holds back only its own events; once mapped, the next tick summarizes them."""
+    tmp_path, folder, fake = setup
+    other = tmp_path / 'omp' / '-Workspaces-newproj'; other.mkdir()
+    (other / 'n.jsonl').write_text(record('n1', 'nu one'))
+    (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
+    fake.unmapped = {'newproj'}
+    report = broker_digest.tick(tmp_path / 'jobs', fake, roots={'omp': tmp_path / 'omp'}, extractor=extractor, model='m', force=True)
+    assert report['status'] == 'completed' and report['events'] == 1 and report['unmapped'] == ['newproj']
+    assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one']
+    held = json.loads((tmp_path / 'jobs' / broker_digest.UNMAPPED).read_text())
+    assert held['format'] == broker_digest.UNMAPPED_FORMAT and held['projects'] == ['newproj']
+    files = cursors(tmp_path)
+    assert str((other / 'n.jsonl').resolve()) not in files  # its cursor never moved
+    fake.unmapped = set()
+    report = broker_digest.tick(tmp_path / 'jobs', fake, roots={'omp': tmp_path / 'omp'}, extractor=extractor, model='m', force=True)
+    assert report['events'] == 1 and report['unmapped'] == [] and len(fake.writes) == 2
+    assert cursors(tmp_path)[str((other / 'n.jsonl').resolve())]['offset'] == (other / 'n.jsonl').stat().st_size
+    assert json.loads((tmp_path / 'jobs' / broker_digest.UNMAPPED).read_text())['projects'] == []

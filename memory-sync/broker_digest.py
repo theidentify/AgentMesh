@@ -32,6 +32,15 @@ STATE = 'summary-state.json'
 CURSORS_FORMAT = 'agentmesh-transcript-cursors-v1'
 STATE_FORMAT = 'agentmesh-summary-state-v1'
 QUARANTINE_LIMIT = 500
+UNMAPPED = 'summary-unmapped.json'  # projects the last tick held back for want of a mapping; the owner maps them
+UNMAPPED_FORMAT = 'agentmesh-summary-unmapped-v1'
+
+
+class Unmapped(ValidationError):
+    """The migration mapping has no route for this project. Its events wait; other projects carry on."""
+    def __init__(self, project):
+        super().__init__('unmapped project; its events wait for a mapping')
+        self.project = project
 
 
 def load(path, fmt, empty):
@@ -209,6 +218,8 @@ class CliBackend:
         if type(value) is not dict or result.returncode or 'error' in value:
             code = value.get('error') if type(value) is dict else None
             code = code if type(code) is str and re.fullmatch(r'[a-z_]{1,40}', code) else 'unavailable'
+            if action == 'related' and code == 'unmapped_project':
+                raise Unmapped(request.get('project'))
             raise ValidationError('summarizer %s failed: %s; cursor unchanged' % (action, code))
         return value
 
@@ -303,10 +314,22 @@ def apply(state, batch, task, payload, backend, *, provider=None, model=None):
 
 
 def run_once(state, sources, backend, *, extractor=None, command=None, model='gpt-6-luna', conflict_model=None,
-             max_events=24, event_chars=20000, related_chars=28000, context_chars=60000):
+             max_events=24, event_chars=20000, related_chars=28000, context_chars=60000, held=None):
+    """One window. A project without a mapping is added to `held` and skipped: its cursors stay, so its events are
+    summarized once the owner maps it, and one new project never stops the others."""
+    held = set() if held is None else held
     chunks, report = scan(state, sources, start_at=state.summary['start_at'])
-    prepared = prepare(chunks, backend, max_events=max_events, event_chars=event_chars,
-                       related_chars=related_chars, context_chars=context_chars)
+    while True:
+        for chunk in chunks:
+            chunk['todo'] = [e for e in chunk['todo'] if e.project not in held]
+        try:
+            prepared = prepare(chunks, backend, max_events=max_events, event_chars=event_chars,
+                               related_chars=related_chars, context_chars=context_chars)
+            break
+        except Unmapped as exc:
+            if exc.project in held:
+                raise
+            held.add(exc.project)
     if prepared is None:
         state.save()
         return dict(status='idle', events=0, items=0, scan=report)
@@ -360,18 +383,23 @@ def _tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None,
         state.save()
         sources, walk_errors = discover(roots, home)
         batches = events = calls = 0
-        for _ in range(max_batches):
-            result = run_once(state, sources, backend, **options)
-            if result['status'] == 'idle':
-                break
-            if result['status'] != 'committed':
-                raise ValidationError('window batch did not commit')
-            batches += 1
-            events += result['events']
-            calls += result['llm_api_calls']
-        else:
-            return dict(status='pending', batches=batches, events=events, llm_api_calls=calls)
+        held = set()
+        try:
+            for _ in range(max_batches):
+                result = run_once(state, sources, backend, held=held, **options)
+                if result['status'] == 'idle':
+                    break
+                if result['status'] != 'committed':
+                    raise ValidationError('window batch did not commit')
+                batches += 1
+                events += result['events']
+                calls += result['llm_api_calls']
+            else:
+                return dict(status='pending', batches=batches, events=events, llm_api_calls=calls, unmapped=sorted(held, key=str))
+        finally:
+            save(Path(state_dir) / UNMAPPED, dict(format=UNMAPPED_FORMAT, at=instant.isoformat(),
+                                                  projects=sorted((p for p in held if p is not None), key=str)))
         state.summary.update(pending=False, success=dict(day=day, boot_id=boot_id, completed_at=instant.isoformat()))
         state.save()
         return dict(status='completed', batches=batches, events=events, llm_api_calls=calls, walk_errors=len(walk_errors),
-                    scan={k: v for k, v in result['scan'].items() if k != 'error_classes'})
+                    unmapped=sorted(held, key=str), scan={k: v for k, v in result['scan'].items() if k != 'error_classes'})

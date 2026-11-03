@@ -39,6 +39,16 @@ def test_pending_and_scopes(tmp_path):
     assert projects.scopes(layout)==['personal/common','work/common','skip']
 
 
+def test_pending_from_the_broker_summary(tmp_path):
+    """After the SQLite cutover catch-up imports nothing; the summary tick reports the projects it held back."""
+    layout,*_=setup(tmp_path,unmapped=())
+    path=layout.root/'jobs'/'summary-unmapped.json'; path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(dict(format='agentmesh-summary-unmapped-v1',at='t',projects=['Users-krisb','home','learn-x'])))
+    assert projects.pending(layout)==['Users-krisb','learn-x']
+    path.write_text(json.dumps(dict(format='other',projects=['x']))); assert projects.pending(layout)==[]
+    path.write_text('{'); assert projects.pending(layout)==[]
+
+
 def test_unreadable_state_means_none(tmp_path):
     layout,*_=setup(tmp_path); layout.profile_status.write_text('{')
     assert projects.pending(layout)==[]

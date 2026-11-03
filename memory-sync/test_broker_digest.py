@@ -47,7 +47,9 @@ class Fake:
 
     def write(self, request):
         if self.fail: raise ValidationError('summarizer write failed: unavailable; cursor unchanged')
-        if self.stale: return dict(status='stale')
+        if self.stale:  # True: always stale; a number: stale that many more times
+            if self.stale is not True: self.stale -= 1
+            return dict(status='stale')
         self.writes.append(request)
         for item in request['items']: self.heads[item['memory_key']] = item
         return dict(status='committed', written=[dict(memory_key=i['memory_key'], outcome='created', id='x') for i in request['items']],
@@ -219,6 +221,25 @@ def test_tick_metrics(setup):
     rows = [json.loads(line) for line in metrics.read_text().splitlines()]
     assert [(r['status'], r['events_processed']) for r in rows] == [('completed', 1), ('failed', 0)]
     assert rows[1]['errors'] == ['ValidationError'] and 'content' not in json.dumps(rows)
+
+
+def test_stale_window_is_redone_then_left_pending(setup):
+    """Another device changed the related memories mid-window: redo it once, then end pending without failing."""
+    tmp_path, folder, fake = setup
+    (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
+    options = dict(roots={'omp': tmp_path / 'omp'}, extractor=extractor, model='m', force=True)
+    fake.stale = 1
+    report = broker_digest.tick(tmp_path / 'jobs', fake, **options)
+    assert (report['status'], report['events'], report['llm_api_calls']) == ('completed', 1, 2)
+    assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one']
+    with (folder / 'a.jsonl').open('a') as handle: handle.write(record('u2', 'beta two'))
+    fake.stale = True
+    report = broker_digest.tick(tmp_path / 'jobs', fake, **options)
+    assert (report['status'], report['stale'], report['events']) == ('pending', 2, 0)
+    assert broker_digest.State(tmp_path / 'jobs').summary['pending'] is True
+    fake.stale = False
+    assert broker_digest.tick(tmp_path / 'jobs', fake, **options)['status'] == 'completed'
+    assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two']
 
 
 def test_unmapped_project_waits_and_others_carry_on(setup):

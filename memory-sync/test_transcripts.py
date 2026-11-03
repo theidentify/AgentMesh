@@ -45,6 +45,17 @@ class TranscriptReaderTests(unittest.TestCase):
         again = transcripts.read(self.path, 'omp', 'demo', done['cursor'])
         self.assertEqual((again['offset'], [e.source_event_id.split(':')[0] for e in again['events']]), (0, ['new']))
 
+    def test_renumbered_device_keeps_the_cursor(self):
+        """macOS renumbers APFS st_dev across reboots; the same inode is the same file and reads on from the cursor."""
+        self.path.write_text(record('one'), encoding='utf-8')
+        done = transcripts.read(self.path, 'omp', 'demo')
+        with self.path.open('a', encoding='utf-8') as handle: handle.write(record('two'))
+        stale = ('1:' + done['cursor'][0].rpartition(':')[2],) + done['cursor'][1:]
+        after = transcripts.read(self.path, 'omp', 'demo', stale)
+        self.assertEqual([e.source_event_id.split(':')[0] for e in after['events']], ['two'])
+        self.assertEqual(after['cursor'][0], transcripts.identity(self.path)[0])
+        self.assertFalse(transcripts.same_file(None, after['cursor'][0]))
+
     def test_invalid_json_is_reported_not_fatal(self):
         self.path.write_text('{not json\n' + record('ok'), encoding='utf-8')
         window = transcripts.read(self.path, 'omp', 'demo')

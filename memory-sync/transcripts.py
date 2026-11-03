@@ -42,6 +42,12 @@ def identity(transcript):
     return f'{stat.st_dev}:{stat.st_ino}', stat.st_size
 
 
+def same_file(stored, current):
+    """Whether a stored identity names the file `current` names. Compares the inode only: macOS renumbers APFS st_dev
+    across reboots, so a stored device number goes stale while the file is unchanged."""
+    return isinstance(stored, str) and stored.rpartition(':')[2] == current.rpartition(':')[2]
+
+
 def read(transcript, agent, project, cursor=None):
     """Parse the complete records after a cursor.
 
@@ -52,7 +58,7 @@ def read(transcript, agent, project, cursor=None):
     omp, codex, claude = parsers()
     current, size = identity(transcript)
     old_identity, offset, line_number = cursor or (None, 0, 0)
-    if old_identity != current or offset > size:
+    if not same_file(old_identity, current) or offset > size:
         offset, line_number = 0, 0
     with Path(transcript).open('rb') as handle:
         handle.seek(offset)

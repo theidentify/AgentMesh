@@ -6,8 +6,10 @@ and prints the same {payload, usage, provider, model, api_calls} envelope.
 Authentication is the local Claude Code login; no credentials are stored here.
 """
 import argparse
+from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -16,6 +18,18 @@ from memory_sync import canonical, load_packet
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 JS_SYNTAX = '^$\\.*+?()[]{}|/'
+ERROR_LOG_ENV = 'AGENTMESH_WORKER_ERROR_LOG'  # set by job_notify for scheduled jobs; unset means no log
+ERROR_LOG_MAX = 64 * 1024
+STDERR_LINES = 20
+LINE_CHARS = 300
+# Only lines that read like a CLI, auth, network or OS error are kept; anything else may echo the request.
+ERROR_LINE = re.compile(r'error|fail|denied|not found|unauthori|forbidden|timed? ?out|login|auth|credential|keychain|'
+                        r'token|rate limit|quota|network|ECONN|ENOTFOUND|EACCES|EPERM|ENOENT|certificate|proxy|'
+                        r'permission|\bstatus \d{3}\b|\b[45]\d\d\b', re.IGNORECASE)
+SECRET = re.compile(r'sk-ant-[A-Za-z0-9_-]+|(?i:bearer)\s+\S+|[A-Za-z0-9_-]{40,}')
+# Which of these are set says a lot about a task that fails only right after logon; values are never logged.
+ENV_NAMES = ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'PATH', 'CLAUDE_CONFIG_DIR',
+             'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'HTTPS_PROXY')
 
 
 def check_request(request):
@@ -124,6 +138,35 @@ def json_failure_reason(stdout):
     return None
 
 
+def stderr_tail(stderr):
+    """The last error-looking stderr lines, cut short and with anything token-like masked; never other text."""
+    lines = [line.strip()[:LINE_CHARS] for line in (stderr or '').splitlines() if line.strip()]
+    return [SECRET.sub('[masked]', line) for line in lines[-STDERR_LINES:] if ERROR_LINE.search(line)]
+
+
+def log_failure(executable, code, stderr, reason, path=None):
+    """Append one redacted record for a failed CLI run, so a failure seen only by a scheduled task can be read later."""
+    path = path or os.environ.get(ERROR_LOG_ENV)
+    if not path:
+        return
+    try:
+        path = Path(path)
+        record = dict(at=datetime.now(timezone.utc).isoformat(timespec='seconds'), exit=code, reason=reason,
+                      executable=Path(str(executable)).name, cwd_is_home=Path.cwd() == Path.home(),
+                      env_set=sorted(n for n in ENV_NAMES if os.environ.get(n)), stderr=stderr_tail(stderr))
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + '\n'
+        if path.is_symlink():
+            return
+        if path.exists() and path.stat().st_size + len(line) > ERROR_LOG_MAX:
+            kept = path.read_text(encoding='utf-8', errors='replace').splitlines(keepends=True)
+            path.write_text(''.join(kept[len(kept) // 2:]), encoding='utf-8')
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+            handle.write(line)
+    except (OSError, ValueError):
+        pass  # the log is a diagnostic; it never changes the worker's result
+
+
 def decode_result(result, model):
     if not isinstance(result, dict) or result.get('is_error') or result.get('subtype', 'success') != 'success':
         raise ValueError('Claude reported an unsuccessful result')
@@ -141,6 +184,7 @@ def main(argv=None):
     p.add_argument('--claude', default='claude', help='Claude Code executable')
     p.add_argument('--budget', type=float, default=1.0)
     p.add_argument('--timeout', type=int, default=110)
+    p.add_argument('--error-log', help='append a redacted record of each failed CLI run here (default: $%s)' % ERROR_LOG_ENV)
     args = p.parse_args(argv)
     try:
         request = load_packet(sys.stdin.read())
@@ -148,17 +192,23 @@ def main(argv=None):
         process = subprocess.run(command(request, executable=args.claude, model=args.model, budget=args.budget),
                                  input=content, text=True, encoding='utf-8', capture_output=True,
                                  timeout=args.timeout, check=False)
+        def failed():
+            reason = failure_reason(process.stdout, process.stderr, process.returncode)
+            log_failure(args.claude, process.returncode, process.stderr, reason, args.error_log)
+            return CLIFailure(reason)
         if process.returncode:
-            raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode))
+            raise failed()
         try: result = json.loads(process.stdout)
-        except ValueError: raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode)) from None
+        except ValueError: raise failed() from None
         if isinstance(result, dict) and result.get('is_error'):
-            raise CLIFailure(failure_reason(process.stdout, process.stderr, process.returncode))
+            raise failed()
         print(canonical(decode_result(result, args.model)))
         return 0
     except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError) as exc:
         reason = {subprocess.TimeoutExpired: 'claude timeout', FileNotFoundError: 'claude executable missing',
                   PermissionError: 'claude executable denied'}[type(exc)]
+        log_failure(args.claude, None, getattr(exc, 'stderr', None) if isinstance(getattr(exc, 'stderr', None), str) else '',
+                    reason, args.error_log)
         print(canonical(dict(error_class=type(exc).__name__, reason=reason)))
         return 1
     except CLIFailure as exc:

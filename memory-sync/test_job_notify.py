@@ -229,3 +229,17 @@ def test_quota_only_for_summary(tmp_path):
     status, control = control_home(tmp_path)
     job_notify.run('ingest', job(tmp_path, 1, QUOTA_FAIL), status, now=NOW)
     assert not (control / 'quota.json').exists()
+
+
+def test_job_gets_worker_error_log_path(tmp_path, monkeypatch):
+    seen = {}
+    def run(argv, **kw):
+        from types import SimpleNamespace
+        seen.update(kw['env']); return SimpleNamespace(returncode=0, stdout='', stderr='')
+    monkeypatch.setattr(job_notify.subprocess, 'run', run)
+    monkeypatch.delenv('AGENTMESH_WORKER_ERROR_LOG', raising=False)
+    assert job_notify.run('summary', ['fake'], tmp_path, now='fixed') == 0
+    assert seen['AGENTMESH_WORKER_ERROR_LOG'] == str(tmp_path / 'claude-worker.err.log')
+    monkeypatch.setenv('AGENTMESH_WORKER_ERROR_LOG', str(tmp_path / 'chosen.log'))
+    assert job_notify.run('summary', ['fake'], tmp_path, now='fixed') == 0
+    assert seen['AGENTMESH_WORKER_ERROR_LOG'] == str(tmp_path / 'chosen.log')

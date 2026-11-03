@@ -216,3 +216,72 @@ def test_launch_failure(kind, reason, monkeypatch, capsys):
     output = capsys.readouterr()
     assert json.loads(output.out)['reason'] == reason
     assert 'secret source line 42' not in output.out + output.err
+
+
+def fake_claude(tmp_path, code, stderr):
+    """A claude stand-in that works on every platform: a Python script launched through the interpreter."""
+    import sys
+    script = tmp_path / 'fake_claude.py'
+    script.write_text('import sys\nsys.stdin.read()\nprint("SECRET-EVIDENCE stdout")\nsys.stderr.write(%r)\nsys.exit(%d)\n'
+                      % (stderr, code), encoding='utf-8')
+    return [sys.executable, str(script)]
+
+
+def run_with(monkeypatch, argv, extra):
+    import io
+    import claude_digest_worker as worker
+    real = worker.command
+    monkeypatch.setattr(worker, 'command', lambda request, **kw: argv + real(request, **kw)[1:1])
+    monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
+    return worker.main(['--model', 'claude-haiku-5-5', *extra])
+
+
+def test_failure_log_is_redacted(tmp_path, monkeypatch, capsys):
+    stderr = ('quoting the transcript: SECRET-EVIDENCE user said hello\n'
+              'Error: OAuth token refresh failed (status 401) sk-ant-oat01-SECRETSECRET\n'
+              'Authorization: Bearer SECRET-BEARER-VALUE\n')
+    log = tmp_path / 'status' / 'claude-worker.err.log'; log.parent.mkdir()
+    monkeypatch.setenv('USERPROFILE', 'C:\\Users\\SECRET-PROFILE')
+    assert run_with(monkeypatch, fake_claude(tmp_path, 1, stderr), ['--error-log', str(log)]) == 1
+    capsys.readouterr()
+    text = log.read_text(encoding='utf-8')
+    record = json.loads(text)
+    assert record['exit'] == 1 and record['reason'] == 'claude auth failed'
+    assert record['stderr'] == ['Error: OAuth token refresh failed (status 401) [masked]', 'Authorization: [masked]']
+    assert 'USERPROFILE' in record['env_set'] and 'SECRET' not in text and 'hello' not in text
+    import os
+    if os.name != 'nt':
+        assert log.stat().st_mode & 0o777 == 0o600
+
+
+def test_failure_log_from_environment_and_capped(tmp_path, monkeypatch, capsys):
+    import claude_digest_worker as worker
+    log = tmp_path / 'claude-worker.err.log'
+    monkeypatch.setenv(worker.ERROR_LOG_ENV, str(log))
+    monkeypatch.setattr(worker, 'ERROR_LOG_MAX', 600)
+    for _ in range(12):
+        assert run_with(monkeypatch, fake_claude(tmp_path, 3, 'fatal error: spawn failed\n'), []) == 1
+    capsys.readouterr()
+    rows = log.read_text(encoding='utf-8').splitlines()
+    assert 1 <= len(rows) < 12 and log.stat().st_size <= 600
+    assert all(json.loads(r)['stderr'] == ['fatal error: spawn failed'] for r in rows)
+
+
+def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, capsys):
+    import claude_digest_worker as worker
+    monkeypatch.delenv(worker.ERROR_LOG_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert run_with(monkeypatch, fake_claude(tmp_path, 1, 'Error: boom\n'), []) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['fake_claude.py']
+    # A successful run writes nothing even with a path set.
+    result = dict(type='result', subtype='success', is_error=False, structured_output={'items': []},
+                  modelUsage={'claude-haiku-5-5': {}}, usage={})
+    script = tmp_path / 'ok_claude.py'
+    script.write_text('import sys, json\nsys.stdin.read()\nsys.stderr.write("Error: harmless warning\\n")\nprint(json.dumps(%r))\n' % result,
+                      encoding='utf-8')
+    log = tmp_path / 'claude-worker.err.log'
+    monkeypatch.setenv(worker.ERROR_LOG_ENV, str(log))
+    import sys
+    assert run_with(monkeypatch, [sys.executable, str(script)], []) == 0
+    capsys.readouterr()
+    assert not log.exists()

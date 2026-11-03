@@ -34,6 +34,9 @@ STATE_FORMAT = 'agentmesh-summary-state-v1'
 QUARANTINE_LIMIT = 500
 UNMAPPED = 'summary-unmapped.json'  # projects the last tick held back for want of a mapping; the owner maps them
 UNMAPPED_FORMAT = 'agentmesh-summary-unmapped-v1'
+# A window goes stale when another device changes its related memories while the model works; it is redone at once
+# this many times, then the tick ends pending and the next one tries again (the cursors never moved).
+STALE_RETRIES = 1
 
 
 class Unmapped(ValidationError):
@@ -219,6 +222,11 @@ class CliBackend:
         if type(value) is not dict or result.returncode or 'error' in value:
             code = value.get('error') if type(value) is dict else None
             code = code if type(code) is str and re.fullmatch(r'[a-z_]{1,40}', code) else 'unavailable'
+            if code == 'unavailable':
+                # No error code means the CLI itself broke; keep a redacted stderr tail in the worker's error log.
+                from claude_digest_worker import log_failure
+                log_failure('summary-' + action, result.returncode, result.stderr.decode('utf-8', 'replace'),
+                            'summary %s unavailable' % action)
             if action == 'related' and code == 'unmapped_project':
                 raise Unmapped(request.get('project'))
             raise ValidationError('summarizer %s failed: %s; cursor unchanged' % (action, code))
@@ -383,20 +391,28 @@ def _tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None,
         state.summary['pending'] = True
         state.save()
         sources, walk_errors = discover(roots, home)
-        batches = events = calls = 0
+        batches = events = calls = stale = 0
         held = set()
         try:
             for _ in range(max_batches):
                 result = run_once(state, sources, backend, held=held, **options)
                 if result['status'] == 'idle':
                     break
+                calls += result['llm_api_calls']
+                if result['status'] == 'stale':
+                    stale += 1
+                    if stale > STALE_RETRIES:
+                        return dict(status='pending', batches=batches, events=events, llm_api_calls=calls, stale=stale,
+                                    unmapped=sorted(held, key=str))
+                    continue
                 if result['status'] != 'committed':
                     raise ValidationError('window batch did not commit')
+                stale = 0
                 batches += 1
                 events += result['events']
-                calls += result['llm_api_calls']
             else:
-                return dict(status='pending', batches=batches, events=events, llm_api_calls=calls, unmapped=sorted(held, key=str))
+                return dict(status='pending', batches=batches, events=events, llm_api_calls=calls, stale=stale,
+                            unmapped=sorted(held, key=str))
         finally:
             save(Path(state_dir) / UNMAPPED, dict(format=UNMAPPED_FORMAT, at=instant.isoformat(),
                                                   projects=sorted((p for p in held if p is not None), key=str)))

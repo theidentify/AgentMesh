@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 
-from memory_sync import canonical, load_packet
+from memory_sync import canonical, load_packet, utf8_stdio
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 JS_SYNTAX = '^$\\.*+?()[]{}|/'
@@ -187,6 +187,7 @@ def main(argv=None):
     p.add_argument('--error-log', help='append a redacted record of each failed CLI run here (default: $%s)' % ERROR_LOG_ENV)
     args = p.parse_args(argv)
     try:
+        utf8_stdio()
         request = load_packet(sys.stdin.read())
         content, _ = check_request(request)
         process = subprocess.run(command(request, executable=args.claude, model=args.model, budget=args.budget),

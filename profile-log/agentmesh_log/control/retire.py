@@ -147,10 +147,10 @@ def summary_text(setup, result):
     seed=result['seed']
     return ('Retire the SQLite staging database on this device.\n'
             'Imports anything left, verifies nothing is missing, then switches the summary job to the broker.\n'
-            'Transcripts followed: %d (waiting events: %d, read again: %d)\n'
+            'Transcripts followed: %d (files read again: %d, waiting events: %d, re-keyed events: %d)\n'
             'Archived (not deleted): %s\n'
             'Undo for %d days: agentmesh-log control sqlite-rollback'
-            %(seed['transcripts'],seed['waiting_events'],seed['rekeyed_events'],', '.join(a['name'] for a in result['archive']),ROLLBACK_DAYS))
+            %(seed['transcripts'],seed['reread'],seed['waiting_events'],seed['rekeyed_events'],', '.join(a['name'] for a in result['archive']),ROLLBACK_DAYS))
 
 
 def lock_down(path):

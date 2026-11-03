@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 
 from bounded_protocol import normalize_usage
-from memory_sync import canonical, load_packet
+from memory_sync import canonical, load_packet, utf8_stdio
 
 
 def main(argv=None):
@@ -21,6 +21,7 @@ def main(argv=None):
     p.add_argument('--resolver-root', default=os.environ.get('HERMES_AGENT_ROOT'))
     args = p.parse_args(argv)
     try:
+        utf8_stdio()
         request = load_packet(sys.stdin.read())
         # Requests are built by the bounded protocol. Disallow tools/loop options.
         if not isinstance(request, dict) or set(request) != {'instructions','input','store','reasoning','text'} or request['store'] is not False:

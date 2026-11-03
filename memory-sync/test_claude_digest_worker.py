@@ -285,3 +285,22 @@ def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, caps
     assert run_with(monkeypatch, [sys.executable, str(script)], []) == 0
     capsys.readouterr()
     assert not log.exists()
+
+
+def test_worker_stdio_is_utf8_under_an_ansi_code_page():
+    """A Windows scheduled task starts Python with cp1252 stdio; packets must still cross the pipe as UTF-8."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    text = 'ภาษาไทย ✓ naïve'
+    # The child checks what it decoded from stdin, then writes the same text back for the parent to decode as UTF-8.
+    script = 'import sys, memory_sync\n{}ok = sys.stdin.read() == {}\nsys.stdout.write(("ok " if ok else "bad ") + {})\n'
+    env = dict(os.environ, PYTHONIOENCODING='cp1252', PYTHONUTF8='0')
+    def run(fix):
+        code = script.format('memory_sync.utf8_stdio()\n' if fix else '', ascii(text), ascii(text))
+        result = subprocess.run([sys.executable, '-c', code], input=text.encode('utf-8'), capture_output=True,
+                                env=env, cwd=Path(__file__).parent)
+        return result.returncode, result.stdout.decode('utf-8', 'replace')
+    assert run(False) != (0, 'ok ' + text)  # the failure the fix is for
+    assert run(True) == (0, 'ok ' + text)

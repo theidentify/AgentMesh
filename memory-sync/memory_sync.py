@@ -320,6 +320,15 @@ def publish(db, exchange, *, security=None):
 def valid_uuid(value):
     return isinstance(value,str) and str(uuid.UUID(value)) == value
 
+def utf8_stdio():
+    """Packets cross worker pipes as UTF-8. A Python started by a Windows scheduled task (no PYTHONIOENCODING) reads
+    stdin and writes stdout in the ANSI code page, which mangles every non-ASCII request and reply."""
+    import sys
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
+
+
 def load_packet(text):
     def pairs(items):
         result={}

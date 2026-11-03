@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from memory_sync import canonical, load_packet
+from memory_sync import canonical, load_packet, utf8_stdio
 
 ENVELOPE = ('payload', 'provider', 'model', 'api_calls', 'usage')
 
@@ -45,6 +45,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     try:
         token = Path(args.token_file).read_text(encoding='utf-8').strip() if args.token_file else None
+        utf8_stdio()
         result = digest(args.url, args.model, load_packet(sys.stdin.read()), token=token, timeout=args.timeout)
         print(canonical({k: result[k] for k in ENVELOPE}))
         return 0

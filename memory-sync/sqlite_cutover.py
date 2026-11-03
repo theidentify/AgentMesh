@@ -70,10 +70,15 @@ def plan(database, *, consumer=CONSUMER):
     files, missing, rekeyed = {}, [], 0
     for path, row in sorted(cursors.items()):
         waiting_here = pending.get(path)
+        current = transcripts.identity(path)[0] if Path(path).is_file() else None
+        # The seed stores today's identity for a file that is still the same one: the database's device number may
+        # predate a reboot (macOS renumbers APFS st_dev), and a stale one would only be refreshed by reading again.
+        same = current is not None and transcripts.same_file(row['file_identity'], current)
         if not waiting_here:
-            files[path] = dict(identity=row['file_identity'], offset=row['byte_offset'], line=row['line_number'], done=[])
+            files[path] = dict(identity=current if same else row['file_identity'], offset=row['byte_offset'],
+                               line=row['line_number'], done=[])
             continue
-        if not Path(path).is_file() or transcripts.identity(path)[0] != row['file_identity']:
+        if not same:
             missing.append(path)  # gone or replaced: its waiting events can no longer be read again
             continue
         taken = {e.event_key for e in events_until(path, waiting_here['agent'], waiting_here['project'], row['byte_offset'])}
@@ -82,7 +87,7 @@ def plan(database, *, consumer=CONSUMER):
         # a repeat is an unchanged upsert, a skip would lose a memory.
         done = (taken & known.get(path, set())) - waiting_here['keys']
         rekeyed += len(taken - known.get(path, set()))
-        files[path] = dict(identity=row['file_identity'], offset=0, line=0, done=sorted(done))
+        files[path] = dict(identity=current, offset=0, line=0, done=sorted(done))
     stray = sorted(set(pending) - set(cursors))
     summary = dict(start_at=start_at[0] if start_at else None,
                    success=dict(day=success.get('day'), boot_id=success.get('boot_id'), completed_at=success.get('completed_at'))

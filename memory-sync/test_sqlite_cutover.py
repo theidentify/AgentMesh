@@ -11,6 +11,7 @@ import ingest_sessions
 import memory_sync
 import sqlite_cutover
 import sqlite_memory
+import transcripts
 from test_broker_digest import Fake, extractor, record
 
 
@@ -52,6 +53,31 @@ def test_waiting_events_carry_over_exactly(staging):
     while broker_digest.run_once(state, sources, fake, extractor=extractor, model='m')['status'] != 'idle': pass
     assert sorted(summarized(fake)) == ['delta four', 'epsilon five', 'zeta six']
     with pytest.raises(ValueError, match='already exists'): sqlite_cutover.seed(db, jobs)
+
+
+def test_renumbered_device_is_the_same_transcript(staging):
+    """The ingest cursors hold a device number from before a reboot: no file is unreadable or read again from the start."""
+    tmp_path, folder, db = staging
+    (folder / 'done.jsonl').write_text(record('d1', 'alpha one'))
+    (folder / 'half.jsonl').write_text(record('h1', 'gamma three') + record('h2', 'delta four'))
+    roots = {'omp': tmp_path / 'omp'}
+    ingest_sessions.ingest(db, roots=roots)
+    for _ in range(2):
+        bounded_digest.run_once(db, extractor=extractor, model='m', max_events=1)
+    with memory_sync.connect(db) as c, c:
+        c.execute("UPDATE ingestion_cursors SET file_identity='1:'||substr(file_identity,instr(file_identity,':')+1)")
+    counts = sqlite_cutover.plan(db)['counts']
+    assert (counts['waiting_events'], counts['unreadable']) == (1, 0)
+    jobs = tmp_path / 'jobs'
+    sqlite_cutover.seed(db, jobs)
+    files = json.loads((jobs / broker_digest.CURSORS).read_text())['files']
+    for name in ('done.jsonl', 'half.jsonl'):
+        assert files[str((folder / name).resolve())]['identity'] == transcripts.identity(folder / name)[0]
+    fake = Fake()
+    state = broker_digest.State(jobs)
+    sources, _ = broker_digest.discover(roots)
+    while broker_digest.run_once(state, sources, fake, extractor=extractor, model='m')['status'] != 'idle': pass
+    assert summarized(fake) == ['delta four']
 
 
 def test_floor_schedule_and_quarantine_carry_over(staging):

@@ -122,7 +122,8 @@ def scan(state, sources, *, start_at=None):
         try:
             resolved, project, skipped = transcripts.resolve(path, agent)
             entry = files.get(str(resolved))
-            if skipped or (entry and not entry['done'] and (entry['identity'], entry['offset']) == transcripts.identity(resolved)):
+            current, size = transcripts.identity(resolved)
+            if skipped or (entry and not entry['done'] and entry['offset'] == size and transcripts.same_file(entry['identity'], current)):
                 report['skipped'] += 1
                 continue
             cursor = (entry['identity'], entry['offset'], entry['line']) if entry else None
@@ -131,7 +132,7 @@ def scan(state, sources, *, start_at=None):
             if not window['complete']:
                 continue
             report['invalid_json'] += len(window['errors'])
-            done = set(entry['done']) if entry and window['offset'] == entry['offset'] and cursor[0] == window['cursor'][0] else set()
+            done = set(entry['done']) if entry and window['offset'] == entry['offset'] and transcripts.same_file(cursor[0], window['cursor'][0]) else set()
             events = window['events']
             if floor is not None:
                 events = [e for e in events if _after(e, floor)]

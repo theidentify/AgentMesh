@@ -103,7 +103,9 @@ class LinuxSecretService:
 
     def _run(self, args, stdin=None):
         if self.tool is None: raise OSUnlockError(REFUSED) from None
-        env = {'PATH': '/usr/bin:/bin', 'HOME': home(), 'LANG': 'C'}
+        try: user_home = home()
+        except ImportError: user_home = os.path.expanduser('~')   # no pwd module (tests on Windows)
+        env = {'PATH': '/usr/bin:/bin', 'HOME': user_home, 'LANG': 'C'}
         for name in ('DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'):
             if self.environ.get(name): env[name] = self.environ[name]
         try:

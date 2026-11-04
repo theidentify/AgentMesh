@@ -66,8 +66,10 @@ class Federation:
         self.account_id = own.account_id
         self.recoveries = own.recoveries
         self.certificates, self.device_records, self.revocations, self._devices = {}, {}, {}, {}
+        self.device_classes = {}
         for registry in [own, *foreign.values()]:
             self._devices.update(registry._devices)
+            self.device_classes.update(getattr(registry, 'device_classes', {}))
             self.certificates.update(registry.certificates)
             self.device_records.update(registry.device_records)
             self.revocations.update(registry.revocations)

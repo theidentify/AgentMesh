@@ -118,18 +118,23 @@ def _account(registry, device_id, at):
     return registry.certificates[device_id]['account_id'], public
 
 
+def _workstation(registry, device_id):
+    """Servers and write-only devices never approve workspace changes (they have no person at them)."""
+    return getattr(registry, 'device_classes', {}).get(device_id, 'workstation') == 'workstation'
+
+
 def verified(registry, entry):
     """(issuer account, {co-signer accounts}) for a well-formed, correctly signed entry, else None."""
     try: shape(entry)
     except (ValueError, KeyError, TypeError): return None
     issuer = _account(registry, entry['issuer_device'], entry['issued_at'])
-    if issuer is None: return None
+    if issuer is None or not _workstation(registry, entry['issuer_device']): return None
     try: verify_signature(dict(_body(entry), signature=entry['signature']), issuer[1], DOMAIN)
     except IdentityError: return None
     cosigners = set()
     for c in entry['cosigners']:
         signer = _account(registry, c['device_id'], entry['issued_at'])
-        if signer is None: return None
+        if signer is None or not _workstation(registry, c['device_id']): return None
         try: verify_signature(dict(_body(entry), signature=c['signature']), signer[1], COSIGN_DOMAIN)
         except IdentityError: return None
         cosigners.add(signer[0])

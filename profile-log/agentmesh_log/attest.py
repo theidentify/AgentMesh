@@ -87,6 +87,7 @@ def valid(record, registry, ws):
     try:
         public = registry.device_public(record['issuer_device'], at=record['issued_at'])
         verify_signature(record, public, DOMAIN)
+        if getattr(registry, 'device_classes', {}).get(record['issuer_device'], 'workstation') != 'workstation': return None
     except (IdentityError, ValueError, KeyError): return None
     signer = registry.certificates[record['issuer_device']]['account_id']
     return signer if ws.role(signer, record['issued_at']) in MANAGERS else None

@@ -8,6 +8,7 @@ from .errors import IdentityError
 
 SCHEMAS = {
  'device-heartbeat': {'device_id','issued_at','age'},
+ 'device-class': {'device_id','device_class','issued_at','issuer_device'},
  'profile-recipient': {'device_id','profile_id','age_recipient','issued_at'},
  'profile-recovery': {'profile_id','recovery_key_id','age_recipient','issued_at','age'},
  'device-record': {'certificate','age_recipient','issued_at'},
@@ -23,6 +24,24 @@ SCHEMAS = {
 
 
 def now(): return time.time_ns() // 1_000_000
+
+# Device classes (team workspace W2). A device without a record is a workstation.
+DEVICE_CLASSES = ('workstation', 'server', 'write-only')
+
+
+def device_class_record(subject, signer, device_class, *, issued_at=None):
+    """``signer`` (a DeviceIdentity) states the class of ``subject`` (a device ID of the same account)."""
+    if device_class not in DEVICE_CLASSES: raise ValueError('invalid device class')
+    return signed('device-class',signer._private,device_id=subject,device_class=device_class,
+                  issued_at=now() if issued_at is None else issued_at,issuer_device=signer.device_id)
+
+
+def device_class_path(record):
+    return 'registry/device-classes/'+record['device_id']+'/'+hashlib.sha256(wire(record)).hexdigest()+'.json'
+
+
+def device_class(registry, device_id):
+    return getattr(registry,'device_classes',{}).get(device_id,'workstation')
 
 def domain(kind): return ('AgentMesh/'+kind+'/Ed25519/v1\x00').encode('ascii')
 
@@ -101,7 +120,34 @@ class RegistryStore:
         for record in sorted(revocations,key=lambda r:(r['revoked_at'],r['device_id'])):
             try: registry.add_revocation(record)
             except ValueError: continue
+        self._classes(registry)
         return registry
+
+    def _classes(self, registry):
+        """The newest valid class per device. A record counts when it is signed by the device that enrolled the
+        subject (its certificate issuer), or by an account- or recovery-certified device about itself, with the
+        signer's key valid at the time. Servers cannot enroll devices, so they never classify others."""
+        found = {}
+        for path in self.storage.list('registry/device-classes/'):
+            try:
+                record = shape(parse(self.storage.get(path)),'device-class')
+                if path != device_class_path(record) or record['device_class'] not in DEVICE_CLASSES: continue
+                subject, issuer = record['device_id'], record['issuer_device']
+                cert = registry.certificates.get(subject)
+                if cert is None or issuer not in registry.certificates: continue
+                if issuer == subject:
+                    if cert['issuer'] not in ('account','recovery'): continue
+                elif issuer != cert['issuer']: continue
+                verify_signature(record,registry.device_public(issuer,at=record['issued_at']),domain('device-class'))
+            except (ValueError,KeyError): continue
+            old = found.get(subject)
+            if old is None or (record['issued_at'],path) > (old[0]['issued_at'],old[1]): found[subject] = (record,path)
+        registry.device_classes = {d: r['device_class'] for d,(r,_) in found.items()}
+
+    def publish_device_class(self, record):
+        shape(record,'device-class')
+        if record['device_class'] not in DEVICE_CLASSES: raise ValueError('invalid device class')
+        self.storage.put(device_class_path(record),wire(record))
 
     @staticmethod
     def _device(registry, record):

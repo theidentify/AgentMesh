@@ -86,11 +86,62 @@ class MacKeychainFile:
             raise OSUnlockError(NOT_REMOVED) from None
 
 
+class LinuxSecretService:
+    """The desktop Secret Service (GNOME Keyring, KWallet) through libsecret's secret-tool. The secret goes over
+    stdin, never argv. Needs a logged-in session bus; headless servers without one get no backend (W2 gap)."""
+    name = 'linux-secret-service'
+    PATHS = ('/usr/bin/secret-tool', '/bin/secret-tool')
+
+    def __init__(self, tool=None, runner=subprocess.run, environ=None):
+        self.tool = tool or next((p for p in self.PATHS if os.path.exists(p)), None)
+        self.runner, self.environ = runner, os.environ if environ is None else environ
+
+    @classmethod
+    def available(cls, environ=None):
+        environ = os.environ if environ is None else environ
+        return any(os.path.exists(p) for p in cls.PATHS) and bool(environ.get('DBUS_SESSION_BUS_ADDRESS'))
+
+    def _run(self, args, stdin=None):
+        if self.tool is None: raise OSUnlockError(REFUSED) from None
+        env = {'PATH': '/usr/bin:/bin', 'HOME': home(), 'LANG': 'C'}
+        for name in ('DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'):
+            if self.environ.get(name): env[name] = self.environ[name]
+        try:
+            return self.runner([self.tool, *args], input=stdin, capture_output=True, text=True, encoding='utf-8',
+                               timeout=TIMEOUT, env=env)
+        except subprocess.TimeoutExpired:
+            reason = NO_RESPONSE
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            reason = REFUSED
+        raise OSUnlockError(reason) from None
+
+    def store(self, key_id, secret):
+        check_key_id(key_id)
+        if type(secret) is not bytes or len(secret) != 32: raise OSUnlockError(REFUSED) from None
+        self._run(['store', '--label', 'AgentMesh profile-log key', 'service', SERVICE, 'account', key_id], secret.hex())
+        if self.load(key_id) != secret: raise OSUnlockError(REFUSED) from None
+
+    def load(self, key_id):
+        check_key_id(key_id)
+        result = self._run(['lookup', 'service', SERVICE, 'account', key_id])
+        value = result.stdout.strip() if result.returncode == 0 else ''
+        if result.returncode != 0 and not result.stdout.strip(): return None   # no such item
+        if not re.fullmatch('[0-9a-f]{64}', value): raise OSUnlockError(REFUSED) from None
+        return bytes.fromhex(value)
+
+    def delete(self, key_id):
+        check_key_id(key_id)
+        result = self._run(['clear', 'service', SERVICE, 'account', key_id])
+        if result.returncode != 0 or self.load(key_id) is not None: raise OSUnlockError(NOT_REMOVED) from None
+
+
 def current_backend():
     if sys.platform == 'darwin':
         return MacKeychainFile()
     if sys.platform == 'win32':
         return WindowsCredential()
+    if sys.platform.startswith('linux') and LinuxSecretService.available():
+        return LinuxSecretService()
     return None
 
 class WindowsCredential:

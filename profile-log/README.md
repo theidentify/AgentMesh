@@ -562,6 +562,20 @@ python -m agentmesh_log.cli broker sync --home B --filesystem REMOTE
 - The joining device must not already have a scope with the same name as one in the workspace.
   Give each account's own profiles distinct names.
 
+### Device classes and Linux key store
+
+```sh
+python -m agentmesh_log.cli device class --home H DEVICE_ID --class server   # signed by the device that enrolled it
+python -m agentmesh_log.cli device list --home H                            # shows each device's class
+```
+
+- Classes are `workstation` (the default), `server` and `write-only`. Only the device that enrolled
+  a device can set its class. The first device may set its own.
+- A server or write-only device approves nothing. It can't pair devices, grant keys, change the
+  workspace, attest members or create `--allow-secret` agents. It can join a workspace and run agents.
+- On Linux desktops the OS key store is the Secret Service, through `secret-tool` (libsecret).
+  Headless servers without a session bus have no OS backend yet.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

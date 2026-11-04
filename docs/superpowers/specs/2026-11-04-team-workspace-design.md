@@ -393,13 +393,36 @@ workspace therefore syncs its own profiles through the company storage as well. 
 and unreadable to others, but the company can see that the objects exist. Use a work device for
 company workspaces. Per-profile remotes are deferred.
 
-### Not yet in W2
+### Known limits
 
 - **Backdated events.** Event times come from the author's ULID, so a removed member running modified
-  software could backdate an event to before the removal. Rotation (below) limits the damage: such an
-  event can use only key epochs the member already had.
-- **Recovery.** Shamir recovery shared among owners is not built.
-- **Devices and platforms.** Device classes and the Linux key store are not built.
+  software could backdate an event to before the removal. Rotation (see "What changes in
+  verification") limits the damage: such an event can use only key epochs the member already had.
+
+### Device classes (implemented)
+
+- A signed `device-class` record (`registry/device-classes/<device>/<hash>.json`) sets a device's
+  class: `workstation`, `server` or `write-only`. A device without a record is a workstation.
+- The record counts only if it is signed by the device that enrolled the subject (its certificate
+  issuer), or by the account- or recovery-certified first device about itself. The newest valid
+  record wins.
+- Servers and write-only devices approve nothing. Workspace entries, co-signatures and attestations
+  they sign are ignored, and the CLI refuses pairing approval, key grants, device classification,
+  workspace changes and `--allow-secret` agent grants on them. Joining a workspace is still allowed.
+
+### Linux key store (implemented)
+
+`LinuxSecretService` stores the key-store key in the desktop Secret Service (GNOME Keyring or
+KWallet) through `secret-tool`. The secret goes over stdin, never argv. It needs a session bus.
+Headless servers without one still have no OS backend, and `systemd-creds` with a TPM is the planned
+next step.
+
+### Deferred in W2
+
+- **Shamir recovery shared among owners.** With two or more owners holding the workspace keys on
+  their own devices, losing one owner's devices no longer loses the workspace, and each account
+  keeps its own Shamir recovery. A split workspace recovery key is deferred until a workspace needs
+  recovery with no owner device left.
 
 ## Owner decisions (2026-11-04)
 

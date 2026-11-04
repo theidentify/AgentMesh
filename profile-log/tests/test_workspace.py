@@ -120,8 +120,37 @@ def test_real_registry_and_storage(tmp_path):
     ws.publish(storage, genesis)
     storage.put(ws.PREFIX + profile + '/' + 'cd' * 32 + '.json', json.dumps(genesis).encode())   # wrong path: skipped
     w = ws.load(storage, profile, state.registry(), me)
-    assert w.exists and w.state.members == {me: 'owner'} and ws.describe(w)['members'] == [dict(account=me, role='owner')]
+    assert w.exists and w.state.members == {me: 'owner'} and ws.describe(w)['members'] == [dict(account=me, role='owner', pinned=False)]
     stranger = DeviceIdentity()
     fake = ws.create(stranger, profile, 'member', previous=w.head, subject='55' * 16, role='admin')
     ws.publish(storage, fake)
     assert ws.load(storage, profile, state.registry(), me).state.members == {me: 'owner'}
+
+
+def test_root_pins_cannot_change():
+    r, d = world()
+    base = chain(r, (d[O1], 'genesis', dict(subject=O1, role='owner')),
+                 (d[O1], 'member', dict(subject=M, role='member', account_root='aa' * 32)))
+    head = ws.entry_hash(base[-1])
+    swap = ws.create(d[O1], WS, 'member', previous=head, issued_at=2000, subject=M, role='admin', account_root='bb' * 32)
+    w = ws.replay(WS, base + [swap], r, O1)
+    assert w.roots() == {M: 'aa' * 32} and ws.entry_hash(swap) in w.ignored
+    with pytest.raises(ValueError): ws.create(d[O1], WS, 'member', previous=head, subject=M, role=None, account_root='aa' * 32)
+
+
+def test_federation_roles():
+    from agentmesh_log.federation import Federation, accepts, fingerprint
+    from agentmesh_log.identity import Registry
+    from agentmesh_log.model import Account
+    own = Registry(Account().public_record())
+    class Roles:
+        def role(self, account, at): return {O2: 'member', AD: 'contributor'}.get(account)
+    other = Registry(dict(Account().public_record()))
+    fed = Federation(own, {O2: other, AD: other}, {WS: O1}, {WS: Roles()})
+    assert fed.profile_owner(WS) == O1 and fed.profile_owner('cd' * 16) == own.account_id
+    assert fed.accepts(O1, WS, 0) and fed.accepts(O2, WS, 0)
+    assert not fed.accepts(AD, WS, 0) and not fed.may_hold(WS, AD, 0)   # contributors neither write nor read (W3)
+    assert not fed.accepts(M, WS, 0)                                      # unknown account
+    assert not fed.accepts(O2, 'cd' * 16, 0)                              # own profile: only this account
+    assert accepts(own, own.account_id, WS, 0) and not accepts(own, O2, WS, 0)
+    assert len(fingerprint('ab' * 32)) == 39

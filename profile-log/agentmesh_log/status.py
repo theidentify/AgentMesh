@@ -27,6 +27,7 @@ def overview(state, *, heartbeats=None, last_sync=None):
     from .broker.grants import names
     from .heartbeats import local, iso
     ns=names(state); registry=state.registry(); rows=[]
+    registry=getattr(registry,'own',registry)   # this account's devices only, not other workspace members'
     for d in sorted(registry._devices):
         own=d==state.device.device_id; revoked=d in registry.revocations
         value=local(d,last_sync) if own else (heartbeats or {}).get(d,{}) if not revoked else {}

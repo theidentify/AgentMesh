@@ -87,6 +87,12 @@ def parser():
     member=ws_sub.add_parser('member'); home(member); member.add_argument('--profile',required=True)
     member.add_argument('--account',required=True); member.add_argument('--role',choices=('owner','admin','member','contributor','none'),required=True)
     member.add_argument('--out',help='write the signed entry for another owner to co-sign instead of publishing it')
+    member.add_argument('--root-fingerprint',help="pin another account's root key (fingerprint checked out of band)")
+    account=ws_sub.add_parser('account',help='this account and its fingerprint, for others to pin'); home(account)
+    join=ws_sub.add_parser('join',help="trust another account's workspace (after broker sync)"); home(join)
+    join.add_argument('--profile-id',required=True); join.add_argument('--owner-account',required=True); join.add_argument('--owner-fingerprint',required=True)
+    wgrant=ws_sub.add_parser('grant',help="give a member's device the keys of workspace scopes"); home(wgrant)
+    wgrant.add_argument('--device',required=True); wgrant.add_argument('--scope',action='append',required=True)
     setting=ws_sub.add_parser('settings'); home(setting); setting.add_argument('--profile',required=True)
     setting.add_argument('--lease-default-minutes',type=int); setting.add_argument('--lease-max-minutes',type=int)
     setting.add_argument('--out')
@@ -453,7 +459,10 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
         sid=resolve(state,name)
         if next(s for t in state.trees for s in t.scopes.values() if s.scope_id==sid).kind!='profile': raise ValueError('invalid_request')
         return sid
-    def current(state,ws_id): return workspace.load(local,ws_id,state.registry(),state.account.account_id)
+    def current(state,ws_id):
+        registry=registry_of(local,state)
+        owner=registry.profile_owner(ws_id) if hasattr(registry,'profile_owner') else state.account.account_id
+        return workspace.load(local,ws_id,registry,owner)
     def finish(entry,out):
         if out:
             Path(out).write_text(json.dumps(entry,sort_keys=True),encoding='utf-8'); return {'ok':True,'written':out,'hash':workspace.entry_hash(entry)}
@@ -470,22 +479,34 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             if args.action=='cosign':
                 presence.require('workspace','approve',console=console,one_shot=True,summary='Co-sign workspace change: '+what+'.')
                 return finish(workspace.cosign(entry,state.device),args.out)
-            check=workspace.verified(state.registry(),entry)
+            check=workspace.verified(registry_of(local,state),entry)
             if check is None or not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
             presence.require('workspace','apply',console=console,one_shot=True,summary='Publish workspace change: '+what+'.')
             return finish(entry,None)
+        if args.action in ('account','join','grant'): return execute_federation(args,home,store,presence,local,state,console)
         ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
         if args.action=='show': return workspace.describe(ws)
         if args.action=='init':
             if ws.exists: raise ValueError('denied')
             presence.require('workspace','create',console=console,one_shot=True,summary='Create a workspace for profile '+args.profile+' with this account as owner.')
+            from . import federation
+            federation.publish_account(local,state.account.public_record())   # lets members pin this owner
             return finish(workspace.create(state.device,ws_id,'genesis',subject=state.account.account_id,role='owner'),None)
         if not ws.exists: raise ValueError('not_found')
         if args.action=='member':
             role=None if args.role=='none' else args.role
             presence.require('workspace','grant' if role else 'remove',console=console,one_shot=True,
                              summary=f'Set workspace role of {args.account} to {args.role}.')
-            entry=workspace.create(state.device,ws_id,'member',previous=ws.head,subject=args.account,role=role)
+            root=None
+            if args.root_fingerprint:
+                from . import federation
+                # Pin the other account's root key, checked against the fingerprint its owner gave out of band.
+                try: published=federation.read_account(local,args.account)
+                except (ValueError,KeyError): raise ValueError('not_found') from None
+                if federation.fingerprint(published['root_public_key'])!=args.root_fingerprint.strip().lower(): raise ValueError('denied')
+                if role is None: raise ValueError('invalid_request')
+                root=published['root_public_key']
+            entry=workspace.create(state.device,ws_id,'member',previous=ws.head,subject=args.account,role=role,account_root=root)
         else:
             settings={}
             if args.lease_default_minutes is not None: settings['task_lease.default_ms']=args.lease_default_minutes*60000
@@ -495,10 +516,13 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             presence.require('workspace','apply',console=console,one_shot=True,summary='Change workspace settings.')
             entry=workspace.create(state.device,ws_id,'settings',previous=ws.head,settings=settings)
         # Refuse locally what replay would ignore, so a mistake is caught before it is shared.
-        check=workspace.verified(state.registry(),entry)
+        check=workspace.verified(registry_of(local,state),entry)
         if check is None: raise ValueError('denied')
         if not args.out and not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
-        return finish(entry,args.out)
+        result=finish(entry,args.out)
+        if args.action=='member' and not args.out:
+            result.update(rotate_after_removal(store,state,local,ws_id,ws.state.members.get(args.account),role))
+        return result
 
 
 def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console):
@@ -520,7 +544,7 @@ def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,co
             json.dump(attest.token_file(ws_id,account,args.issuer,args.client_id,seed,token),stream)
         return {'ok':True,'written':str(out),'note':'contains your email; give it only to a workspace admin, then delete it'}
     with home.lock():
-        state=store.load(); registry=state.registry()
+        state=store.load(); registry=registry_of(local,state)
         if action=='oidc':
             record=attest.read_token_file(json.loads(Path(args.input).read_text(encoding='utf-8')))
             if (record['issuer'],record['client_id'])!=(args.issuer,args.client_id): raise ValueError('denied')
@@ -549,6 +573,64 @@ def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,co
             entry=attest.create(state.device,ws_id,record['account'],address,'oidc',issuer=args.issuer,token=record['id_token'])
         if attest.valid(entry,registry,ws) is None: raise ValueError('denied')
         return {'ok':True,'hash':attest.publish(local,entry),'note':'published locally; the broker sync uploads it'}
+
+
+def rotate_after_removal(store,state,local,ws_id,old,new):
+    """When an account loses read access (removed, or made a contributor), give the workspace scopes new key epochs
+    wrapped only to devices that may still hold them. Scopes whose keys this device lacks are reported, not rotated."""
+    from .federation import HOLDERS
+    from .lifecycle import rotate_scopes
+    if old not in HOLDERS or new in HOLDERS: return {}
+    tree=next((t for t in state.trees if t.root.scope_id==ws_id),None)
+    if tree is None: return {'rotated':[],'not_rotated':'no local keys for this workspace'}
+    held=sorted(sid for sid in tree.scopes if sid in tree.keys); missing=sorted(set(tree.scopes)-set(held))
+    rotate_scopes(state,local,set(held),reason='revoke'); store.save(state)
+    from .broker.grants import names
+    ns=names(state)
+    return {'rotated':[ns[s] for s in held],**({'not_rotated':[ns[s] for s in missing]} if missing else {}),
+            'note':'run broker sync so members receive the new epochs; the removed account keeps what it already read'}
+
+
+def registry_of(local,state):
+    """This device's registry over its local replica: one account, or a Federation for shared workspaces."""
+    from . import federation
+    return federation.load(local,state.account.public_record(),state.control.get('federation_pins'))
+
+
+def execute_federation(args,home,store,presence,local,state,console):
+    """W2: show this account for others to pin, join another account's workspace, grant keys to a member device."""
+    from . import federation
+    from .keyring import publish_recipient, regrant
+    from .encoding import hex_bytes
+    me=state.account.public_record()
+    if args.action=='account':
+        federation.publish_account(local,me)
+        return {'account':me['account_id'],'fingerprint':federation.fingerprint(me['root_public_key']),'device':state.device.device_id}
+    if args.action=='join':
+        hex_bytes(args.profile_id,16); hex_bytes(args.owner_account,16)
+        if args.owner_account==me['account_id']: raise ValueError('invalid_request')
+        try: owner=federation.read_account(local,args.owner_account)
+        except (ValueError,KeyError): raise ValueError('not_found') from None   # run broker sync first
+        if federation.fingerprint(owner['root_public_key'])!=args.owner_fingerprint.strip().lower(): raise ValueError('denied')
+        presence.require('workspace','trust',console=console,one_shot=True,
+                         summary=f'Trust account {args.owner_account} as owner of workspace {args.profile_id}.')
+        pins=state.control.setdefault('federation_pins',{})
+        old=pins.get(args.profile_id)
+        if old is not None and old!={'owner':args.owner_account,'root':owner['root_public_key']}: raise ValueError('denied')
+        pins[args.profile_id]={'owner':args.owner_account,'root':owner['root_public_key']}; store.save(state)
+        federation.publish_account(local,me)
+    else:
+        hex_bytes(args.device,16)
+        registry=registry_of(local,state)
+        cert=registry.certificates.get(args.device)
+        if cert is None: raise ValueError('not_found')   # the member's device records arrive with broker sync
+        presence.require('workspace','grant',console=console,one_shot=True,
+                         summary=f'Give device {args.device} of account {cert["account_id"]} keys for: {", ".join(args.scope)}.')
+        regrant(state,local,args.device,[resolve(state,name) for name in args.scope])
+        return {'ok':True,'note':'keys published locally; the broker sync uploads them'}
+    publish_recipient(home,store,local,args.profile_id)
+    return {'ok':True,'account':me['account_id'],'fingerprint':federation.fingerprint(me['root_public_key']),
+            'device':store.load().device.device_id,'note':'run broker sync, then give the admin your account and fingerprint'}
 
 
 def execute_phase4(args,backend,console,input_fn):

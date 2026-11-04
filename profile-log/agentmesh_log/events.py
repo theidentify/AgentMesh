@@ -70,7 +70,10 @@ def verify_event(data: bytes, registry) -> dict:
     decode_ciphertext(envelope['ciphertext']); hex_bytes(envelope['signature'], 64)
     cert = envelope['agent_cert']
     validate_agent_certificate(cert)
-    if envelope['account'] != registry.account_id: raise IdentityError('wrong account')
+    from .federation import accepts
+    # One account, or (W2) a workspace member who held a writing role when the event was created.
+    if not accepts(registry, envelope['account'], envelope['profile'], ulid.timestamp(envelope['id'])):
+        raise IdentityError('wrong account')
     public = registry.verify_historical_agent(cert,ulid.timestamp(envelope['id']))
     if (cert['account_id'], cert['device_id'], cert['agent_id']) != (envelope['account'], envelope['device'], envelope['agent']):
         raise IdentityError('event certificate binding mismatch')

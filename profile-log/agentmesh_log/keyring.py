@@ -57,6 +57,21 @@ class AgeKeyring:
         if record['recipient_device']=='recovery' and record['scope']!=record['profile']:
             raise KeyAccessError('recovery requires profile root')
 
+    def _anchor(self, device, profile):
+        """Whether ``device`` may self-grant ``profile``: an account- or recovery-certified device of the
+        account that owns the profile (only this account, unless a Federation says otherwise)."""
+        cert=self.registry.certificates.get(device,{})
+        if cert.get('issuer') not in ('account','recovery'): return False
+        owner=getattr(self.registry,'profile_owner',None)
+        return owner is None or cert.get('account_id')==owner(profile)
+
+    def _may_hold(self, device, profile, at):
+        """Whether the device's account may receive keys of ``profile`` at ``at`` (always, for one account)."""
+        may_hold=getattr(self.registry,'may_hold',None)
+        if may_hold is None or device=='recovery': return True
+        cert=self.registry.certificates.get(device)
+        return cert is not None and may_hold(profile,cert['account_id'],at)
+
     def authorized(self, device, profile, scope, at, seen=None):
         ancestors=self.ancestors(profile,scope)
         seen=set() if seen is None else seen
@@ -69,18 +84,20 @@ class AgeKeyring:
             try:
                 self._signature(record)
                 issuer=record['issuer_device']
-                # The account-certified first device (or recovery-certified replacement)
-                # anchors initial self-grants. Ordinary device certificates do not.
-                cert=self.registry.certificates.get(issuer,{})
-                if issuer==device and cert.get('issuer') in ('account','recovery'): return True
+                if not self._may_hold(device,profile,record['issued_at']): continue
+                # The account-certified first device (or recovery-certified replacement) of the
+                # profile's owner anchors initial self-grants. Ordinary device certificates do not.
+                if issuer==device and self._anchor(device,profile): return True
                 if self.authorized(issuer,profile,record['scope'],record['issued_at'],seen): return True
             except ValueError: continue
         return False
 
     def validate(self, record):
         self._signature(record)
-        issuer=record['issuer_device']; cert=self.registry.certificates[issuer]
-        bootstrap=issuer==record['recipient_device'] and cert['issuer'] in ('account','recovery')
+        issuer=record['issuer_device']; self.registry.certificates[issuer]
+        if not self._may_hold(record['recipient_device'],record['profile'],record['issued_at']):
+            raise KeyAccessError('recipient is not a workspace member')
+        bootstrap=issuer==record['recipient_device'] and self._anchor(issuer,record['profile'])
         if not bootstrap and not self.authorized(issuer,record['profile'],record['scope'],record['issued_at']):
             raise KeyAccessError('unauthorized key issuer')
         return record
@@ -213,9 +230,11 @@ def sync_control(home,store,remote,*,apply_lock=None):
     from contextlib import nullcontext
     with apply_lock() if apply_lock else nullcontext():
         state=store.load()
-        rs=RegistryStore(local,state.account.public_record()); registry=rs.load()
+        rs=RegistryStore(local,state.account.public_record()); own=rs.load()
         state.control['registry_records']=registry_cache(rs)
-        state.certificates=list(registry.certificates.values())
+        state.certificates=list(own.certificates.values())
+        from .federation import load as federation
+        registry=federation(local,state.account.public_record(),state.control.get('federation_pins'))
         import_metadata(state,local,registry)
         from .bridge.inboxes import import_inboxes
         import_inboxes(state,local,registry)
@@ -288,7 +307,9 @@ def regrant(state,storage,device,scopes):
     from dataclasses import asdict
     from .registry_store import RegistryStore,read_profile_recipient
     from .broker.grants import descendants
-    registry=RegistryStore(storage,state.account.public_record()).load(); registry.device_public(device)
+    from .federation import load as federation
+    registry=federation(storage,state.account.public_record(),state.control.get('federation_pins'))
+    registry.device_public(device)
     ring=AgeKeyring(storage,registry,[s for t in state.trees for s in t.scopes.values()])
     selected=descendants(state,set(scopes))
     if not selected: raise KeyAccessError('empty grant')
@@ -328,7 +349,10 @@ def import_metadata(state,storage,registry):
             meta=parse(identity.decrypt(decode_ciphertext(record['age'])))
             if set(meta)!={'root','scopes'} or meta['root']!=profile: raise KeyAccessError('invalid metadata')
             candidate=state.record(); candidate['trees']=candidate['trees']+[dict(root=profile,scopes=meta['scopes'],epochs={},wraps={})]
-            tree=BrokerState.from_record(candidate).trees[-1]
+            imported=BrokerState.from_record(candidate)
+            from .broker.grants import names
+            names(imported)   # a scope name already used here (e.g. two profiles called "work") is refused, not merged
+            tree=imported.trees[-1]
             ring=AgeKeyring(storage,registry,tree.scopes.values())
             for scope in tree.scopes: ring.ancestors(profile,scope)
             if not any(ring.authorized(record['issuer_device'],profile,sid,record['issued_at']) for sid in tree.scopes):

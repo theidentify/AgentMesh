@@ -530,6 +530,38 @@ python -m agentmesh_log.cli workspace attest check --home H --profile work
 - Signing either kind of attestation requires presence on the admin's device (class `workspace`).
   Delete the token file after use.
 
+### Several accounts in one workspace (W2)
+
+Every device involved syncs with the workspace's storage (one remote per device; see the design).
+
+```sh
+# Owner (Alice): create the workspace and share the account fingerprint out of band
+python -m agentmesh_log.cli workspace init --home A --profile work
+python -m agentmesh_log.cli workspace account --home A          # account, fingerprint, device
+python -m agentmesh_log.cli broker sync --home A --filesystem REMOTE
+# Member (Bob), on his own account: after one sync, trust Alice's workspace by her fingerprint
+python -m agentmesh_log.cli broker sync --home B --filesystem REMOTE
+python -m agentmesh_log.cli workspace join --home B --profile-id PROFILE_ID --owner-account ALICE --owner-fingerprint FP_A
+python -m agentmesh_log.cli broker sync --home B --filesystem REMOTE
+# Alice: add Bob with his fingerprint, then give his device the keys for the scopes he works in
+python -m agentmesh_log.cli broker sync --home A --filesystem REMOTE
+python -m agentmesh_log.cli workspace member --home A --profile work --account BOB --role member --root-fingerprint FP_B
+python -m agentmesh_log.cli workspace grant --home A --device BOB_DEVICE --scope work/mesh
+python -m agentmesh_log.cli broker sync --home A --filesystem REMOTE
+# Bob: the next sync imports the scope tree and keys; then grant his agents as usual
+python -m agentmesh_log.cli broker sync --home B --filesystem REMOTE
+```
+
+- A fingerprint that doesn't match is refused, both when joining and when pinning a member.
+- Key grants go only to devices whose account is the profile owner or a current `owner`, `admin` or
+  `member`. Events from accounts without a writing role at the event's time are ignored.
+- `workspace member --role none` (or demotion to `contributor`) rotates every workspace scope this
+  device holds keys for. New epochs go only to devices that may still hold them, and the CLI reports
+  any scope it could not rotate. The removed account keeps what it already read. Its broker refuses
+  new writes, because its epoch is no longer current, and other members ignore its later events.
+- The joining device must not already have a scope with the same name as one in the workspace.
+  Give each account's own profiles distinct names.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

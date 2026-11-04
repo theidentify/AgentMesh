@@ -564,7 +564,9 @@ class Broker:
         from . import tasks
         from .. import workspace
         profile=self.scope(sid).profile_id
-        ws=workspace.load(self.replica.storage,profile,self.state.registry(),self.state.account.account_id)
+        registry=self.state.registry()
+        owner=registry.profile_owner(profile) if hasattr(registry,'profile_owner') else self.state.account.account_id
+        ws=workspace.load(self.replica.storage,profile,registry,owner)
         return ws if ws.exists else tasks.FIXED
 
     def tasks(self, session, grant, req, audit, allowed, scope_names):

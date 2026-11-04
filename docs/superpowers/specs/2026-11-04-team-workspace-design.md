@@ -353,6 +353,54 @@ Approving devices one by one does not scale when many people join at once. An ad
 
 W0 needs no identity work and can ship first.
 
+## W2: several accounts (implementation design)
+
+Added 2026-11-04 with the first W2 change.
+
+### Trust in another account
+
+An account's root key is trusted from one of two places only:
+
+1. **Join pin.** The joining device's owner checks the workspace owner's fingerprint out of band
+   (`workspace join --owner-fingerprint`). The pin is stored in the device state.
+2. **Member entry.** An owner or admin who is already trusted adds the member with `account_root`.
+   The CLI fills it in only after `--root-fingerprint` matches the account's published record
+   (`registry/accounts/<account>.json`). Later entries cannot change a pinned root.
+
+Each trusted account's devices, revocations and recovery records are loaded by that account's own
+account-pinned `RegistryStore`, so no account can certify another account's devices. `Federation`
+puts the registries behind the `Registry` interface. A device with no workspace entries and no
+pins keeps the plain single-account `Registry`.
+
+### What changes in verification
+
+- **Events.** An author is accepted if they own the profile, or if they held `owner`, `admin` or
+  `member` in that profile's workspace at the event's time. Events written after a member's removal
+  are ignored by everyone who has synced the removal.
+- **Key grants.** A recipient device's account must own the profile or hold one of those roles at
+  grant time. Only the profile owner's account- or recovery-certified device can anchor self-grants.
+  Previously any such device anchored them, which was safe only while there was a single account.
+- **Removal.** When an account loses read access, the remover's device rotates the workspace
+  scopes it holds. New epochs are wrapped only to devices whose account may still hold keys.
+- **Imported scope trees.** A tree whose names collide with an existing scope on the device (for
+  example, two profiles named `work`) is refused rather than merged.
+
+### Storage
+
+Decision (2026-11-04, made during implementation, open to change): **one shared storage location
+per workspace**, and a device syncs with exactly one remote. A member's device that joins a company
+workspace therefore syncs its own profiles through the company storage as well. They stay encrypted
+and unreadable to others, but the company can see that the objects exist. Use a work device for
+company workspaces. Per-profile remotes are deferred.
+
+### Not yet in W2
+
+- **Backdated events.** Event times come from the author's ULID, so a removed member running modified
+  software could backdate an event to before the removal. Rotation (below) limits the damage: such an
+  event can use only key epochs the member already had.
+- **Recovery.** Shamir recovery shared among owners is not built.
+- **Devices and platforms.** Device classes and the Linux key store are not built.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

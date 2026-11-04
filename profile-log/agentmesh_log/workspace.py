@@ -49,12 +49,16 @@ def path(entry): return PREFIX + entry['workspace'] + '/' + entry_hash(entry) + 
 def _body(entry): return {k: v for k, v in entry.items() if k not in ('signature', 'cosigners')}
 
 
-def create(device, workspace, op, *, previous=None, subject=None, role=None, settings=None, issued_at=None):
-    """A new entry signed by ``device`` (a DeviceIdentity); co-signatures are added with ``cosign``."""
+def create(device, workspace, op, *, previous=None, subject=None, role=None, settings=None, issued_at=None,
+           account_root=None):
+    """A new entry signed by ``device`` (a DeviceIdentity); co-signatures are added with ``cosign``.
+
+    ``account_root`` (member entries only) pins another account's root key so its devices can be trusted (W2)."""
     from .registry_store import now
     entry = dict(format=FORMAT, workspace=workspace, op=op, subject=subject, role=role, settings=settings,
                  previous=previous, issued_at=now() if issued_at is None else issued_at,
                  issuer_device=device.device_id, cosigners=[])
+    if account_root is not None: entry['account_root'] = account_root
     shape(dict(entry, signature='00' * 64))
     signed = sign(_body(entry), device._private, DOMAIN)
     return dict(signed, cosigners=[])
@@ -77,7 +81,10 @@ def settings_valid(settings):
 
 
 def shape(entry):
-    fields(entry, ENTRY_FIELDS, FORMAT)
+    fields(entry, ENTRY_FIELDS | ({'account_root'} if type(entry) is dict and 'account_root' in entry else set()), FORMAT)
+    if 'account_root' in entry:
+        if entry['op'] != 'member' or entry['role'] is None: raise ValueError('account root only on role grants')
+        hex_bytes(entry['account_root'], 32)
     hex_bytes(entry['workspace'], 16); hex_bytes(entry['issuer_device'], 16); hex_bytes(entry['signature'], 64)
     milliseconds(entry['issued_at'])
     if entry['op'] not in OPS: raise ValueError('invalid workspace op')
@@ -133,6 +140,7 @@ def verified(registry, entry):
 class State:
     members: dict = field(default_factory=dict)   # account -> role
     settings: dict = field(default_factory=dict)
+    roots: dict = field(default_factory=dict)     # account -> pinned root key (hex), kept after removal
 
     def owners(self): return {a for a, r in self.members.items() if r == 'owner'}
 
@@ -149,7 +157,9 @@ def allowed(state, entry, issuer, cosigners):
     if entry['op'] == 'settings': return True
     subject, new = entry['subject'], entry['role']
     old = state.members.get(subject)
-    if old == new: return False
+    pinned = state.roots.get(subject)
+    if 'account_root' in entry and pinned is not None and pinned != entry['account_root']: return False
+    if old == new and ('account_root' not in entry or pinned is not None): return False
     if role == 'admin':
         return old in (None, 'member', 'contributor') and new in (None, 'member', 'contributor')
     if 'owner' in (old, new):
@@ -160,13 +170,14 @@ def allowed(state, entry, issuer, cosigners):
 
 
 def apply(state, entry):
-    members, settings = dict(state.members), dict(state.settings)
+    members, settings, roots = dict(state.members), dict(state.settings), dict(state.roots)
+    if 'account_root' in entry: roots.setdefault(entry['subject'], entry['account_root'])
     if entry['op'] == 'genesis': members = {entry['subject']: 'owner'}
     elif entry['op'] == 'member':
         if entry['role'] is None: members.pop(entry['subject'], None)
         else: members[entry['subject']] = entry['role']
     else: settings = dict(entry['settings'])
-    return State(members, settings)
+    return State(members, settings, roots)
 
 
 @dataclass
@@ -197,6 +208,8 @@ class Workspace:
     def role(self, account, when): return self.at(when).members.get(account)
 
     def lease(self, when): return self.at(when).lease()
+
+    def roots(self): return dict(self.state.roots)
 
 
 def replay(workspace, entries, registry, owner_account):
@@ -249,6 +262,6 @@ def publish(storage, entry):
 
 def describe(ws):
     return dict(workspace=ws.workspace, exists=ws.exists, head=ws.head,
-                members=[dict(account=a, role=r) for a, r in sorted(ws.state.members.items())],
+                members=[dict(account=a, role=r, pinned=a in ws.state.roots) for a, r in sorted(ws.state.members.items())],
                 settings=dict(ws.state.settings), lease=dict(zip(('default_ms', 'max_ms'), ws.state.lease())),
                 superseded=ws.superseded, ignored=ws.ignored)

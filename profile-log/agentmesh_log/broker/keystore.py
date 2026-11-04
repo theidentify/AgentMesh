@@ -159,7 +159,12 @@ class BrokerState:
             class Cached:
                 def list(self,prefix): return sorted(k for k in records if k.startswith(prefix))
                 def get(self,key): return wire(records[key])
-            return RegistryStore(Cached(),self.account.public_record()).load()
+            from ..federation import load as federation
+            key=(len(records),hash(tuple(sorted(records))),repr(sorted(self.control.get('federation_pins',{}).items())))
+            if getattr(self,'_federation_key',None)!=key:
+                self._federation=federation(Cached(),self.account.public_record(),self.control.get('federation_pins'))
+                self._federation_key=key
+            return self._federation
         for cert in self.certificates: registry.add_device(cert)
         return registry
 

@@ -75,11 +75,23 @@ def parser():
     tasks_cmd.add_argument('--scope'); tasks_cmd.add_argument('--task'); tasks_cmd.add_argument('--status',action='append')
     tasks_cmd.add_argument('--mine',action='store_true')
     task_cmd=commands.add_parser('task',help='create, claim or update a shared task')
-    task_cmd.add_argument('action',choices=('create','claim','update')); task_cmd.add_argument('task')
+    task_cmd.add_argument('action',choices=('create','claim','update','override')); task_cmd.add_argument('task')
     task_cmd.add_argument('--agent-key',required=True); task_cmd.add_argument('--scope',required=True)
     for flag in ('--project','--title','--next','--handoff','--status','--label'): task_cmd.add_argument(flag)
     task_cmd.add_argument('--blocked-on',action='append'); task_cmd.add_argument('--claim',action='store_true')
     task_cmd.add_argument('--lease-minutes',type=int)
+    ws=commands.add_parser('workspace',help='workspace registry: members, roles and settings (presence required to change)')
+    ws_sub=ws.add_subparsers(dest='action',required=True)
+    for action in ('init','show'):
+        cmd=ws_sub.add_parser(action); home(cmd); cmd.add_argument('--profile',required=True)
+    member=ws_sub.add_parser('member'); home(member); member.add_argument('--profile',required=True)
+    member.add_argument('--account',required=True); member.add_argument('--role',choices=('owner','admin','member','contributor','none'),required=True)
+    member.add_argument('--out',help='write the signed entry for another owner to co-sign instead of publishing it')
+    setting=ws_sub.add_parser('settings'); home(setting); setting.add_argument('--profile',required=True)
+    setting.add_argument('--lease-default-minutes',type=int); setting.add_argument('--lease-max-minutes',type=int)
+    setting.add_argument('--out')
+    cosign_cmd=ws_sub.add_parser('cosign'); home(cosign_cmd); cosign_cmd.add_argument('--in',dest='input',required=True); cosign_cmd.add_argument('--out',required=True)
+    publish_cmd=ws_sub.add_parser('publish'); home(publish_cmd); publish_cmd.add_argument('--in',dest='input',required=True)
     join=commands.add_parser('join'); home(join); remote(join,True); join.add_argument('--approver-fingerprint')
     pair=commands.add_parser('pair'); pair_sub=pair.add_subparsers(dest='action',required=True)
     for action in ('approve','regrant','recipient'):
@@ -204,6 +216,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         value=load()
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
+    if args.command=='workspace': return execute_workspace(args,backend=backend,console=console)
     if args.command=='summary': return execute_summary(args,backend=backend)
     if args.command not in ('broker','recall','remember','memory','stats','tasks','task'):
         return execute_phase4(args,backend,console,input_fn)
@@ -417,6 +430,59 @@ def wait_object(storage,path,deadline):
     raise ValueError('pairing_expired')
 
 
+def execute_workspace(args,*,backend=None,console=None):
+    """Workspace registry administration on this device. Every change requires presence (class `workspace`)."""
+    from . import workspace
+    from .storage.filesystem import FilesystemStorage
+    home=BrokerHome(args.home); store=select_store(home,backend); presence=PresenceManager(home,store)
+    local=FilesystemStorage(home.root/'replica')
+    def profile_id(state,name):
+        sid=resolve(state,name)
+        if next(s for t in state.trees for s in t.scopes.values() if s.scope_id==sid).kind!='profile': raise ValueError('invalid_request')
+        return sid
+    def current(state,ws_id): return workspace.load(local,ws_id,state.registry(),state.account.account_id)
+    def finish(entry,out):
+        if out:
+            Path(out).write_text(json.dumps(entry,sort_keys=True),encoding='utf-8'); return {'ok':True,'written':out,'hash':workspace.entry_hash(entry)}
+        ident=workspace.publish(local,entry); return {'ok':True,'hash':ident,'note':'published locally; the broker sync uploads it'}
+    with home.lock():
+        state=store.load()
+        if args.action in ('cosign','publish'):
+            entry=json.loads(Path(args.input).read_text(encoding='utf-8')); workspace.shape(entry)
+            ws=current(state,entry['workspace'])
+            if entry['previous']!=ws.head: raise ValueError('stale')  # the workspace changed since this entry was signed
+            if args.action=='cosign':
+                presence.require('workspace','approve',console=console,one_shot=True,summary='Co-sign a workspace '+entry['op']+' change.')
+                return finish(workspace.cosign(entry,state.device),args.out)
+            presence.require('workspace','apply',console=console,one_shot=True,summary='Publish a workspace '+entry['op']+' change.')
+            return finish(entry,None)
+        ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
+        if args.action=='show': return workspace.describe(ws)
+        if args.action=='init':
+            if ws.exists: raise ValueError('denied')
+            presence.require('workspace','create',console=console,one_shot=True,summary='Create a workspace for profile '+args.profile+' with this account as owner.')
+            return finish(workspace.create(state.device,ws_id,'genesis',subject=state.account.account_id,role='owner'),None)
+        if not ws.exists: raise ValueError('not_found')
+        if args.action=='member':
+            role=None if args.role=='none' else args.role
+            presence.require('workspace','grant' if role else 'remove',console=console,one_shot=True,
+                             summary=f'Set workspace role of {args.account} to {args.role}.')
+            entry=workspace.create(state.device,ws_id,'member',previous=ws.head,subject=args.account,role=role)
+        else:
+            settings={}
+            if args.lease_default_minutes is not None: settings['task_lease.default_ms']=args.lease_default_minutes*60000
+            if args.lease_max_minutes is not None: settings['task_lease.max_ms']=args.lease_max_minutes*60000
+            settings={**ws.state.settings,**settings}
+            if not workspace.settings_valid(settings): raise ValueError('invalid_request')
+            presence.require('workspace','apply',console=console,one_shot=True,summary='Change workspace settings.')
+            entry=workspace.create(state.device,ws_id,'settings',previous=ws.head,settings=settings)
+        # Refuse locally what replay would ignore, so a mistake is caught before it is shared.
+        check=workspace.verified(state.registry(),entry)
+        if check is None: raise ValueError('denied')
+        if not args.out and not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
+        return finish(entry,args.out)
+
+
 def execute_phase4(args,backend,console,input_fn):
     from .encoding import parse
     from .storage.filesystem import FilesystemStorage
@@ -520,7 +586,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'staging identity missing; initialize ingest before apply':'staging_identity_missing',
               'unmapped project':'unmapped_project','truncated':'truncated','denied':'denied','not_found':'not_found',
               'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
-        if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused') else 'unavailable'
+        if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy
         if code=='presence_required' and args.command=='migrate' and sys.stderr is not None:

@@ -473,6 +473,34 @@ python -m agentmesh_log.cli tasks --mine --agent-key AGENT_KEY
 - Task events are ordinary recall results. In the tree, a `tasks/<REF>/` folder is summarized by its state line.
   They are left out of the bounded project summary.
 
+### Workspace registry (team workspace W1)
+
+A workspace is a profile with a signed registry of member roles and settings, stored as immutable
+objects under `registry/workspace/<profile>/` and synchronized with the other control objects. Every
+change requires presence (class `workspace`).
+
+```sh
+python -m agentmesh_log.cli workspace init --home H --profile work
+python -m agentmesh_log.cli workspace member --home H --profile work --account ACCOUNT_ID --role admin
+python -m agentmesh_log.cli workspace settings --home H --profile work --lease-default-minutes 30 --lease-max-minutes 120
+python -m agentmesh_log.cli workspace show --home H --profile work
+```
+
+- Roles are `owner`, `admin`, `member` and `contributor`. `init` makes this account the only owner.
+- Owners may change any role. Admins may add, change or remove members and contributors only.
+- Once there are two or more owners, any change that touches an owner needs another owner's
+  co-signature. Write the entry with `member ... --out FILE`, have the other owner run
+  `workspace cosign --in FILE --out FILE2`, then run `workspace publish --in FILE2`. The last owner
+  cannot be removed.
+- At a fork, the entry whose issuer has the higher role wins, then the earlier entry. Entries from
+  revoked devices are ignored, and so are entries dated before the entry they build on.
+- Lease limits apply to task events from the time they are set. Without a workspace, the W0 limits
+  apply: default 1 hour, maximum 4 hours.
+- `task override` (presence class `workspace`) lets an owner or admin write over another agent's live
+  lease. Readers accept it only if the author had that role at the time, and `tasks` shows `override: true`.
+- Until W2, only this account's devices can sign entries. Roles for other accounts are recorded, but
+  those accounts cannot act yet.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

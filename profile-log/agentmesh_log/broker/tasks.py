@@ -62,27 +62,41 @@ def shape(state):
     return owner is None and lease is None
 
 
+class Fixed:
+    """The W0 policy: fixed lease limits and no roles (so no overrides). A workspace replaces it in W1."""
+    def lease(self, at): return DEFAULT_LEASE_MS, MAX_LEASE_MS
+    def role(self, account, at): return None
+
+
+FIXED = Fixed()
+MANAGERS = ('owner', 'admin')
+
+
 def live(state, at):
     """Whether a held state's lease is still running at time ``at`` (ms)."""
     return state['status'] in HELD and state['lease_until'] > at
 
 
-def valid(parent, row):
-    """Whether ``row`` is a valid successor of ``parent`` (None for a chain root)."""
+def valid(parent, row, policy=FIXED):
+    """Whether ``row`` is a valid successor of ``parent`` (None for a chain root).
+
+    ``policy`` gives the lease limits and roles in force at the event's time (a workspace, or FIXED)."""
     task = row.get('_task')
     if task is None or not shape(task['state']): return False
     state, at, author = task['state'], task['at'], row['_author']
+    override = task.get('override') is True
+    if override and (parent is None or policy.role(author['account'], at) not in MANAGERS): return False
     if state['status'] in HELD:
         if state['owner'] != author: return False
-        if not at < state['lease_until'] <= at + MAX_LEASE_MS: return False
+        if not at < state['lease_until'] <= at + policy.lease(at)[1]: return False
     if parent is None: return state['status'] in ROOT
     before = parent['_task']['state']
-    if live(before, at) and before['owner']['agent'] != author['agent']: return False
+    if live(before, at) and before['owner']['agent'] != author['agent'] and not override: return False
     if before['status'] in TERMINAL and state['status'] != 'open': return False
     return True
 
 
-def resolve(rows):
+def resolve(rows, policy=FIXED):
     """The effective head of one task from every event of its chains.
 
     Returns (head, superseded, ignored): superseded are the first events of losing branches and roots, ignored
@@ -92,13 +106,13 @@ def resolve(rows):
     for r in rows:
         if r.get('revises') in by_id: children.setdefault(r['revises'], []).append(r)
     roots = sorted((r for r in rows if r.get('revises') not in by_id), key=lambda r: r['id'])
-    good = [r for r in roots if valid(None, r)]
+    good = [r for r in roots if valid(None, r, policy)]
     ignored = [r['id'] for r in roots if r not in good]
     if not good: return None, [], ignored
     node, superseded = good[0], [r['id'] for r in good[1:]]
     while True:
         kids = sorted(children.get(node['id'], []), key=lambda r: r['id'])
-        ok = [k for k in kids if valid(node, k)]
+        ok = [k for k in kids if valid(node, k, policy)]
         ignored += [k['id'] for k in kids if k not in ok]
         if not ok: return node, superseded, ignored
         superseded += [k['id'] for k in ok[1:]]
@@ -121,16 +135,27 @@ def view(head, superseded, ignored, at, agent_id):
     return dict(task=head['task_ref'], scope=head['scope'], project=head.get('project'), id=head['id'],
         label=head['label'], updated_at=head['updated_at'], **state, lease_live=live(state, at),
         mine=owner is not None and owner['agent'] == agent_id and live(state, at),
-        conflict=bool(superseded), superseded=superseded, ignored=ignored)
+        conflict=bool(superseded), superseded=superseded, ignored=ignored,
+        override=head['_task'].get('override') is True)
 
 
-def successor(action, current, fields, author, at):
+def successor(action, current, fields, author, at, policy=FIXED):
     """The new state for a write action, or ValueError('denied'/'invalid_request').
 
-    ``current`` is the effective state (None when the task does not exist yet)."""
-    if action not in ('create', 'claim', 'update'): raise ValueError('invalid_request')
-    lease_ms = fields.get('lease_ms', DEFAULT_LEASE_MS)
-    if type(lease_ms) is not int or not MIN_LEASE_MS <= lease_ms <= MAX_LEASE_MS: raise ValueError('invalid_request')
+    ``current`` is the effective state (None when the task does not exist yet). ``override`` is an owner's or
+    admin's write over a live lease; the caller also requires presence for it."""
+    if action not in ('create', 'claim', 'update', 'override'): raise ValueError('invalid_request')
+    default, maximum = policy.lease(at)
+    lease_ms = fields.get('lease_ms', min(default, maximum))
+    if type(lease_ms) is not int or not MIN_LEASE_MS <= lease_ms <= maximum: raise ValueError('invalid_request')
+    if action == 'override':
+        if current is None or policy.role(author['account'], at) not in MANAGERS: raise ValueError('denied')
+        state = _apply(dict(current), fields)
+        status = fields.get('status', current['status'])
+        if status not in STATUSES: raise ValueError('invalid_request')
+        if status in HELD: state.update(status=status, owner=author, lease_until=at + lease_ms)
+        else: state.update(status=status, owner=None, lease_until=None)
+        return state
     if action == 'create':
         if current is not None: raise ValueError('denied')
         if type(fields.get('title')) is not str: raise ValueError('invalid_request')

@@ -555,8 +555,10 @@ python -m agentmesh_log.cli broker sync --home B --filesystem REMOTE
 - A fingerprint that doesn't match is refused, both when joining and when pinning a member.
 - Key grants go only to devices whose account is the profile owner or a current `owner`, `admin` or
   `member`. Events from accounts without a writing role at the event's time are ignored.
-- After `workspace member --role none`, the removed member's new events are ignored. Their scope
-  keys are **not rotated yet**, so they can still read what they already had.
+- `workspace member --role none` (or demotion to `contributor`) rotates every workspace scope this
+  device holds keys for. New epochs go only to devices that may still hold them, and the CLI reports
+  any scope it could not rotate. The removed account keeps what it already read. Its broker refuses
+  new writes, because its epoch is no longer current, and other members ignore its later events.
 - The joining device must not already have a scope with the same name as one in the workspace.
   Give each account's own profiles distinct names.
 

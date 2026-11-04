@@ -13,11 +13,13 @@ def scopes_of(state): return [s for tree in state.trees for s in tree.scopes.val
 
 
 def rotate_scopes(state,storage,scopes,*,reason='rotate',only_device=None,recovery_record=None):
-    registry=RegistryStore(storage,state.account.public_record()).load()
-    if recovery_record is not None: registry.add_recovery(recovery_record)
+    from .federation import load as federation
+    registry=federation(storage,state.account.public_record(),state.control.get('federation_pins'))
+    if recovery_record is not None: getattr(registry,'own',registry).add_recovery(recovery_record)
     from .registry_store import read_profile_recipient,read_profile_recovery,recovery_id
     ring=AgeKeyring(storage,registry,scopes_of(state))
-    grants=list(ring.records()); eligible={}
+    grants=list(ring.records()); eligible={}; at=now()
+    may_hold=getattr(registry,'may_hold',None)
     for record in grants:
         try: ring.validate(record)
         except ValueError: continue
@@ -25,6 +27,8 @@ def rotate_scopes(state,storage,scopes,*,reason='rotate',only_device=None,recove
         if device=='recovery': continue
         try: registry.device_public(device)
         except ValueError: continue
+        # W2: a device of an account that no longer holds a reading role gets no new epoch.
+        if may_hold is not None and not may_hold(record['profile'],registry.certificates[device]['account_id'],at): continue
         eligible.setdefault(device,set()).add(record['scope'])
     if only_device is not None: eligible={only_device:set(scopes)}
     for tree in state.trees:

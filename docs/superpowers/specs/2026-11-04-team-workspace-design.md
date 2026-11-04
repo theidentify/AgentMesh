@@ -380,6 +380,8 @@ pins keeps the plain single-account `Registry`.
 - **Key grants.** A recipient device's account must own the profile or hold one of those roles at
   grant time. Only the profile owner's account- or recovery-certified device can anchor self-grants.
   Previously any such device anchored them, which was safe only while there was a single account.
+- **Removal.** When an account loses read access, the remover's device rotates the workspace
+  scopes it holds. New epochs are wrapped only to devices whose account may still hold keys.
 - **Imported scope trees.** A tree whose names collide with an existing scope on the device (for
   example, two profiles named `work`) is refused rather than merged.
 
@@ -393,8 +395,9 @@ company workspaces. Per-profile remotes are deferred.
 
 ### Not yet in W2
 
-- **Rotation on removal.** Rotating scope keys away from a removed member's devices is not done
-  yet; today removal only stops their new events from being accepted.
+- **Backdated events.** Event times come from the author's ULID, so a removed member running modified
+  software could backdate an event to before the removal. Rotation (below) limits the damage: such an
+  event can use only key epochs the member already had.
 - **Recovery.** Shamir recovery shared among owners is not built.
 - **Devices and platforms.** Device classes and the Linux key store are not built.
 

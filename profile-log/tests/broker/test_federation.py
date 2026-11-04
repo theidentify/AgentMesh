@@ -43,7 +43,7 @@ def write(home, identity, scope, text):
     b = broker(home); s = Session(identity.certificate())
     try:
         r = b.request(s, dict(op='remember', body=dict(kind='fact', content=text), scope=scope, tags=[], task=None, label=None))
-        assert r.get('stage') == 'sign', r
+        if r.get('stage') != 'sign': return r
         return b.request(s, dict(op='sign', signature=identity._private.sign(EVENT_DOMAIN + typed(r['unsigned'])).hex()))
     finally: b.close()
 
@@ -97,9 +97,17 @@ def test_two_accounts_share_a_workspace(tmp_path):
     sync(alice, remote); sync(bob, remote)
     assert 'alice agrees migrate index' in recall(bob, bob_agent, 'migrate index')
     # After Bob is removed, Alice no longer accepts events he writes
-    run('workspace', 'member', '--home', alice, '--profile', 'work', '--account', joined['account'], '--role', 'none')
+    removed = run('workspace', 'member', '--home', alice, '--profile', 'work', '--account', joined['account'], '--role', 'none')
+    assert set(removed['rotated']) == {'work', 'work/common', 'work/mesh'} and 'not_rotated' not in removed
     sync(alice, remote); sync(bob, remote)
-    write(bob, bob_agent, 'work/mesh', 'bob late note about migrate index')
+    # Bob's own broker refuses: his key epoch is no longer current after the rotation
+    assert write(bob, bob_agent, 'work/mesh', 'bob late note about migrate index') == {'error': 'denied'}
     sync(bob, remote); sync(alice, remote)
     seen = recall(alice, alice_agent, 'migrate index')
     assert 'bob says migrate the index first' in seen and 'bob late note about migrate index' not in seen
+    # Alice's writes after the rotation use a key epoch Bob's device never received
+    open_windows(alice)
+    assert 'id' in write(alice, alice_agent, 'work/mesh', 'alice private plan to migrate index')
+    sync(alice, remote); sync(bob, remote); open_windows(bob)
+    assert 'alice private plan to migrate index' not in recall(bob, bob_agent, 'migrate index')
+    assert 'alice private plan to migrate index' in recall(alice, alice_agent, 'migrate index')

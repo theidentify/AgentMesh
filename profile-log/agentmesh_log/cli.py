@@ -519,7 +519,10 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
         check=workspace.verified(registry_of(local,state),entry)
         if check is None: raise ValueError('denied')
         if not args.out and not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
-        return finish(entry,args.out)
+        result=finish(entry,args.out)
+        if args.action=='member' and not args.out:
+            result.update(rotate_after_removal(store,state,local,ws_id,ws.state.members.get(args.account),role))
+        return result
 
 
 def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console):
@@ -570,6 +573,22 @@ def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,co
             entry=attest.create(state.device,ws_id,record['account'],address,'oidc',issuer=args.issuer,token=record['id_token'])
         if attest.valid(entry,registry,ws) is None: raise ValueError('denied')
         return {'ok':True,'hash':attest.publish(local,entry),'note':'published locally; the broker sync uploads it'}
+
+
+def rotate_after_removal(store,state,local,ws_id,old,new):
+    """When an account loses read access (removed, or made a contributor), give the workspace scopes new key epochs
+    wrapped only to devices that may still hold them. Scopes whose keys this device lacks are reported, not rotated."""
+    from .federation import HOLDERS
+    from .lifecycle import rotate_scopes
+    if old not in HOLDERS or new in HOLDERS: return {}
+    tree=next((t for t in state.trees if t.root.scope_id==ws_id),None)
+    if tree is None: return {'rotated':[],'not_rotated':'no local keys for this workspace'}
+    held=sorted(sid for sid in tree.scopes if sid in tree.keys); missing=sorted(set(tree.scopes)-set(held))
+    rotate_scopes(state,local,set(held),reason='revoke'); store.save(state)
+    from .broker.grants import names
+    ns=names(state)
+    return {'rotated':[ns[s] for s in held],**({'not_rotated':[ns[s] for s in missing]} if missing else {}),
+            'note':'run broker sync so members receive the new epochs; the removed account keeps what it already read'}
 
 
 def registry_of(local,state):

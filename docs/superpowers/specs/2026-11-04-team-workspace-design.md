@@ -1,6 +1,6 @@
 # Team workspace and shared task state for multiplayer agents: design
 
-Status: draft for owner review, 2026-11-04. Builds on the encrypted profile log
+Status: approved direction; W0 in review (theidentify/AgentMesh#165); owner decisions recorded 2026-11-04. Builds on the encrypted profile log
 ([2026-10-18](2026-10-18-encrypted-profile-log-design.md)), the memory tree
 ([2026-11-02](2026-11-02-memory-tree-design.md)) and the local control plane
 ([2026-10-23](2026-10-23-local-control-plane-design.md)). Nothing here is implemented.
@@ -111,7 +111,7 @@ A new durable kind `task_state`, one keyed chain per task in the project scope t
   "title": "Retire packet RANGES",
   "status": "in_progress",
   "owner": {"member": "<account-id>", "agent": "<agent-id>"},
-  "lease_until": 1793750400,
+  "lease_until": 1793750400000,
   "next": "Run r5b once the 2026-12-03 window opens",
   "blocked_on": [],
   "open_loops": ["<memory_key>", "..."],
@@ -128,7 +128,8 @@ Statuses: `open → claimed → in_progress ⇄ blocked → review → done`, pl
 The log has no global order, so claims are **advisory with a deterministic tie-break**:
 
 1. An agent claims by revising the head from `open` (or from an expired lease) to `claimed`,
-   with `lease_until` at most 4 hours ahead (configurable).
+   with `lease_until` (milliseconds, like `created_at`) at most 4 hours ahead; per-workspace
+   limits arrive in W1 (owner decision 2).
 2. Two concurrent claims produce two heads; `heads()` already reports `conflict: true`. The winner
    is the claim with the **lowest ULID**. Every agent applies the same rule, so all converge after
    sync. The loser must not continue work and should write nothing further on the task.
@@ -343,7 +344,7 @@ Approving devices one by one does not scale when many people join at once. An ad
 | Phase | Content | Writes |
 | --- | --- | --- |
 | **W0** | `task_state` kind, claim/lease rules, `tasks` op, tree page, single account. Useful today for several agents of one person. | yes |
-| **W1** | Member field on events, email attestation, workspace registry with roles. | yes |
+| **W1** | Member field on events, email attestation, workspace registry with roles; per-workspace lease limits; admin lease override with presence. | yes |
 | **W2** | Multi-account keyring wraps, add/remove member with epoch rotation, owner quorum, Shamir among owners; device class and capabilities in device records; Linux key store. | yes |
 | **W3** | Contributor inboxes and `task_request`; staged writes, review and promotion; provenance in recall; per-member quotas; signed invites. | yes |
 | **W4** | Insight workspace view; MCP gateway exposes `tasks` to remote apps under existing per-app policy. | no |
@@ -352,10 +353,23 @@ Approving devices one by one does not scale when many people join at once. An ad
 
 W0 needs no identity work and can ship first.
 
+## Owner decisions (2026-11-04)
+
+1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching
+   `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, stored upper-case). No external tracker is mirrored in v1;
+   a mirror can be added later as a separate link field without changing the key.
+2. **Lease limits are set per workspace.** W0 ships fixed values (default 1 hour, maximum 4 hours,
+   minimum 1 minute). From W1 the workspace registry carries signed `task_lease.default_ms` and
+   `task_lease.max_ms`; every reader validates leases against the value in force at the event's
+   time, so devices still agree. A change is a Tier 2 registry update by an admin.
+3. **Admins may override a live lease, with presence.** The override is a signed task event by an
+   admin agent, accepted by readers only when the registry shows the author's member as admin at
+   that time, and the admin's device required local presence to prepare it. It is audited and
+   shown in `tasks` as `override: true`. Lands with roles in W1.
+4. **`review` is a status label only.** Anyone allowed to write the task may move it from
+   `review` to `done`, including its previous owner.
+
 ## Open questions
 
-- Task reference source: own IDs, or mirror an external tracker (Linear, GitHub issues)?
-- Default lease length, and whether a lease can outlive an offline device.
-- Should `review` require a different member than the owner?
-- Admin override of a live lease: always allowed, or only after the lease expires?
+- Whether a lease can outlive an offline device (today it simply expires on its own clock).
 - Workspace billing and storage: one R2 bucket per workspace, or per owner?

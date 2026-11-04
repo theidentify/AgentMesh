@@ -151,3 +151,41 @@ def test_concurrent(tmp_path):
     assert 'id' in winner and 'id' in loser and winner['id'] < loser['id']
     [view] = bob.tasks(task='AM-9')['tasks']
     assert view['owner']['agent'] == alice.identity.agent_id and view['conflict'] and view['superseded'] == [loser['id']]
+
+
+def workspace_of(b, **settings):
+    from agentmesh_log import workspace as ws
+    profile = b.state.trees[0].root.scope_id; me = b.state.account.account_id
+    genesis = ws.create(b.state.device, profile, 'genesis', subject=me, role='owner')
+    ws.publish(b.replica.storage, genesis)
+    if settings:
+        ws.publish(b.replica.storage, ws.create(b.state.device, profile, 'settings', previous=ws.entry_hash(genesis),
+                                                settings=settings))
+
+
+def test_workspace_lease_limits(tmp_path):
+    b, alice, _, _ = shared(tmp_path)
+    assert 'id' in alice.task('create', 'AM-2', title='x', claim=True, lease_ms=3*3600*1000)
+    workspace_of(b, **{'task_lease.default_ms': 120_000, 'task_lease.max_ms': 600_000})
+    assert alice.task('create', 'AM-3', title='y', claim=True, lease_ms=3*3600*1000) == {'error': 'invalid_request'}
+    assert 'id' in alice.task('create', 'AM-3', title='y', claim=True)
+    [t] = alice.tasks(task='AM-3')['tasks']
+    assert t['status'] == 'claimed' and t['lease_until'] <= alice.tasks()['at'] + 600_000
+    # the older long lease stays valid: limits apply from their own time
+    [old] = alice.tasks(task='AM-2')['tasks']
+    assert old['status'] == 'claimed' and old['ignored'] == []
+
+
+def test_override_needs_role_and_presence(tmp_path):
+    b, alice, bob, _ = shared(tmp_path)
+    alice.task('create', 'AM-5', title='Stuck', claim=True)
+    assert bob.task('override', 'AM-5', status='open') == {'error': 'denied'}   # no workspace, no roles
+    workspace_of(b)
+    b.state.control['windows'].pop('workspace'); b.store.save(b.state)
+    assert bob.task('override', 'AM-5', status='open') == {'error': 'presence_required'}
+    from agentmesh_log.registry_store import now
+    b.state.control['windows']['workspace'] = now() + 600000; b.store.save(b.state)
+    done = bob.task('override', 'AM-5', status='open', handoff='freed by admin')
+    assert 'id' in done, done
+    [t] = alice.tasks(task='AM-5')['tasks']
+    assert t['status'] == 'open' and t['override'] and t['owner'] is None and t['ignored'] == []

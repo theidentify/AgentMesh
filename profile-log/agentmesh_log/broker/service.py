@@ -265,7 +265,8 @@ class Broker:
             item['status']=origin.get('status') if type(given) is str and type(origin.get('status')) is str else 'active'
         from . import tasks
         task_state=body.get('metadata',{}).get('task_state') if body['kind']==tasks.KIND and type(body.get('metadata')) is dict else None
-        extra={'_task':dict(state=task_state,at=payload['created_at'])} if task_state is not None else {}
+        extra={'_task':dict(state=task_state,at=payload['created_at'],override=body['metadata'].get('task_override') is True)} \
+            if task_state is not None else {}
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
@@ -558,6 +559,14 @@ class Broker:
             for row in index.component(head['id']): seen[row['id']]=row
         return [r for r in seen.values() if r.get('_task') is not None]
 
+    def task_policy(self, sid):
+        """The workspace of the scope's profile when one exists, else the fixed W0 rules."""
+        from . import tasks
+        from .. import workspace
+        profile=self.scope(sid).profile_id
+        ws=workspace.load(self.replica.storage,profile,self.state.registry(),self.state.account.account_id)
+        return ws if ws.exists else tasks.FIXED
+
     def tasks(self, session, grant, req, audit, allowed, scope_names):
         """Current state of shared tasks in the agent's readable scopes (team workspace W0)."""
         from . import tasks
@@ -576,9 +585,10 @@ class Broker:
         keys=sorted({(r['scope'],r['_memory_key']) for r in self.index(grant).rows() if r['kind']==tasks.KIND
                      and r['scope'] in scopes and str(r.get('_memory_key','')).startswith(tasks.PREFIX)
                      and (only is None or r['_memory_key']==tasks.PREFIX+only)})
-        at=now(); out=[]
+        at=now(); out=[]; policies={}
         for scope,key in keys:
-            head,superseded,ignored=tasks.resolve(self.task_chains(grant,scope,key))
+            if scope not in policies: policies[scope]=self.task_policy(resolve(self.state,scope))
+            head,superseded,ignored=tasks.resolve(self.task_chains(grant,scope,key),policies[scope])
             if head is None: continue
             item=tasks.view(head,superseded,ignored,at,session.agent_id)
             if status is not None and item['status'] not in status: continue
@@ -600,14 +610,16 @@ class Broker:
         if sid not in grant.write or sid not in allowed: raise ValueError('denied')
         cert=session.certificate
         author=dict(account=cert['account_id'],device=cert['device_id'],agent=cert['agent_id'])
-        key=tasks.PREFIX+ref; at=now()
-        head,_,_=tasks.resolve(self.task_chains(grant,scope_names[sid],key))
+        key=tasks.PREFIX+ref; at=now(); policy=self.task_policy(sid)
+        head,_,_=tasks.resolve(self.task_chains(grant,scope_names[sid],key),policy)
         fields={k:req[k] for k in ('title','next','blocked_on','handoff','status','claim','lease_ms') if k in req}
-        state=tasks.successor(action,None if head is None else head['_task']['state'],fields,author,at)
+        state=tasks.successor(action,None if head is None else head['_task']['state'],fields,author,at,policy)
+        # An override needs a person at this device as well as an owner or admin role (audited as presence).
+        if action=='override': self.presence.require('workspace','override')
         if not tasks.shape(state): raise ValueError('invalid_request')
         if head is not None and project is None: project=head.get('project')
         body=dict(kind=tasks.KIND,content=tasks.content(state,ref),project=project,task_ref=ref,confidence=1.0,
-                  metadata=dict(memory_key=key,task_state=state))
+                  metadata=dict(memory_key=key,task_state=state,**({'task_override':True} if action=='override' else {})))
         write=dict(op='remember' if head is None else 'revise',body=body,scope=name,tags=[],task=ref,label=req.get('label'))
         if head is not None: write['revises']=head['id']
         return self.write(session,grant,write,audit,allowed,scope_names,task_write=True,created_at=at)

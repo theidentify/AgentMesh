@@ -71,6 +71,15 @@ def parser():
     remember=commands.add_parser('remember'); remember.add_argument('content'); remember.add_argument('--agent-key',required=True)
     remember.add_argument('--scope'); remember.add_argument('--kind',default='fact'); remember.add_argument('--tag',action='append',default=[])
     remember.add_argument('--task')
+    tasks_cmd=commands.add_parser('tasks',help='list shared task state'); tasks_cmd.add_argument('--agent-key',required=True)
+    tasks_cmd.add_argument('--scope'); tasks_cmd.add_argument('--task'); tasks_cmd.add_argument('--status',action='append')
+    tasks_cmd.add_argument('--mine',action='store_true')
+    task_cmd=commands.add_parser('task',help='create, claim or update a shared task')
+    task_cmd.add_argument('action',choices=('create','claim','update')); task_cmd.add_argument('task')
+    task_cmd.add_argument('--agent-key',required=True); task_cmd.add_argument('--scope',required=True)
+    for flag in ('--project','--title','--next','--handoff','--status','--label'): task_cmd.add_argument(flag)
+    task_cmd.add_argument('--blocked-on',action='append'); task_cmd.add_argument('--claim',action='store_true')
+    task_cmd.add_argument('--lease-minutes',type=int)
     join=commands.add_parser('join'); home(join); remote(join,True); join.add_argument('--approver-fingerprint')
     pair=commands.add_parser('pair'); pair_sub=pair.add_subparsers(dest='action',required=True)
     for action in ('approve','regrant','recipient'):
@@ -196,7 +205,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='summary': return execute_summary(args,backend=backend)
-    if args.command not in ('broker','recall','remember','memory','stats'):
+    if args.command not in ('broker','recall','remember','memory','stats','tasks','task'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
@@ -208,6 +217,15 @@ def execute(args,*,backend=None,console=None,input_fn=None):
                 if args.action=='grep': request.update(query=args.query,limit=args.limit,**({'mode':args.mode} if args.mode else {}))
                 return client.request(request)
             if args.command=='stats': return client.request(dict(op='stats'))
+            if args.command=='tasks':
+                return client.request(dict(op='tasks',**{k:v for k,v in dict(scope=args.scope,task=args.task,status=args.status).items() if v},
+                                           **({'mine':True} if args.mine else {})))
+            if args.command=='task':
+                fields={k:v for k,v in dict(project=args.project,title=args.title,next=args.next,handoff=args.handoff,
+                        status=args.status,label=args.label,blocked_on=args.blocked_on).items() if v is not None}
+                if args.claim: fields['claim']=True
+                if args.lease_minutes is not None: fields['lease_ms']=args.lease_minutes*60000
+                return client.task(args.action,args.task,scope=args.scope,**fields)
             if args.command=='recall':
                 request=dict(op='recall',query=args.query,project=args.project,task=args.task,
                     limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat,

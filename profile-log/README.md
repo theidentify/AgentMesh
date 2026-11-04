@@ -449,6 +449,30 @@ freeze hybrid (`semantic.mode: keyword`) and retire the host. Weigh this with
 cost: the tree's cost is navigator calls at query time plus `memory build`,
 while hybrid's cost is the always-on embedding host.
 
+### Shared task state (team workspace W0)
+
+Several agents can coordinate one task through a keyed `task_state` chain (`task/<REF>`) in a scope they
+can all write. The broker computes each next state; agents only sign it. See the
+[team workspace design](../docs/superpowers/specs/2026-11-04-team-workspace-design.md).
+
+```sh
+python -m agentmesh_log.cli task create AM-142 --scope work/mesh --title "Retire packet RANGES" --claim --agent-key AGENT_KEY
+python -m agentmesh_log.cli task update AM-142 --scope work/mesh --status open --handoff "branch feat/r5b, tests green" --agent-key AGENT_KEY
+python -m agentmesh_log.cli task claim AM-142 --scope work/mesh --status in_progress --lease-minutes 120 --agent-key AGENT_KEY
+python -m agentmesh_log.cli tasks --mine --agent-key AGENT_KEY
+```
+
+- Statuses: `open`, `claimed`, `in_progress`, `blocked`, `review`, `done`, `abandoned`. The three held statuses
+  carry an owner (the writing agent) and a lease of at most 4 hours.
+- While a lease is live, only its owner may write the task. After it expires anyone may claim it.
+- Claims are advisory. When two claims revise the same head concurrently, the lowest ULID wins and `tasks`
+  reports `conflict` and `superseded`. Events that break the rules are listed as `ignored`. Every reader
+  applies the same rules, so all devices converge after sync.
+- Lease times use the writing device's clock. A skewed clock can end a lease early.
+- Task state is written only through `task`. `remember` and `revise` refuse `task_state` bodies and `task/` keys.
+- Task events are ordinary recall results. In the tree, a `tasks/<REF>/` folder is summarized by its state line.
+  They are left out of the bounded project summary.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

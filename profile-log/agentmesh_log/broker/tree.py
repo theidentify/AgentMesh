@@ -134,8 +134,10 @@ def _page(page, scope, f, events):
 
 def _dir(name, rows, kind='dir', page=None, stale=False):
     rows=_newest(rows)
+    # A task folder is summarized by its state line when it has one ("[in_progress] AM-1: ...").
+    first=[r for r in rows if r['kind']=='task_state']+[r for r in rows if r['kind']!='task_state']
     entry=dict(name=name+'/',type=kind,count=len(rows),updated=rows[0]['updated_at'] if rows else None,
-        summary=next((s for s in map(_line,rows) if s),None))
+        summary=next((s for s in map(_line,first) if s),None))
     if page is not None: entry.update(summary=_line(page),stale=stale)
     return entry
 

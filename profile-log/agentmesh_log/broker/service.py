@@ -28,7 +28,9 @@ from .transport import UnixServer, PipeServer
 SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
-    'heads': {'scope','memory_keys','after'}, 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
+    'heads': {'scope','memory_keys','after'},
+    'tasks': set('scope status task mine'.split()),
+    'task': set('action task scope project title next blocked_on handoff status claim lease_ms label'.split()), 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
 class _NotConfigured:
@@ -261,11 +263,15 @@ class Broker:
             origin=body['metadata'] if type(given) is str else meta.get('source',{})
             item={k:origin.get(k) if type(origin.get(k)) is str else None for k in ('scope','scope_key')}
             item['status']=origin.get('status') if type(given) is str and type(origin.get('status')) is str else 'active'
+        from . import tasks
+        task_state=body.get('metadata',{}).get('task_state') if body['kind']==tasks.KIND and type(body.get('metadata')) is dict else None
+        extra={'_task':dict(state=task_state,at=payload['created_at'])} if task_state is not None else {}
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
             tags=payload['tags'],created_at=instant,updated_at=instant,revises=payload['revises'],
-            _migration=meta, **({'_memory_key':key,'_item':item} if item is not None else {}), **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
+            _migration=meta, _author=dict(account=envelope['account'],device=envelope['device'],agent=envelope['agent']), **extra,
+            **({'_memory_key':key,'_item':item} if item is not None else {}), **({'_outbox':body['metadata']['outbox_id']} if type(body.get('metadata')) is dict and 'outbox_id' in body['metadata'] else {}))
 
     def index(self, grant):
         from .connectors import effective
@@ -523,46 +529,9 @@ class Broker:
         if op in ('ls','cat','grep'): return self.tree(session,grant,req,audit,allowed,scope_names)
         if op=='heads': return self.heads(grant,req,audit,allowed,scope_names)
         if op=='stats': return self.stats(grant,audit,allowed,scope_names)
-        if op in ('remember','revise'):
-            if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
-            from .imports import RESERVED
-            if type(req['body']) is dict and RESERVED & set(req['body'].get('metadata',{})): raise ValueError('invalid_request')
-            tags=req.get('tags',[]); task=req.get('task'); agent_label=req.get('label'); name=req.get('scope')
-            if type(tags) is not list or any(type(t) is not str for t in tags): raise ValueError('invalid_request')
-            if task is not None and type(task) is not str: raise ValueError('invalid_request')
-            if name is not None and type(name) is not str: raise ValueError('invalid_request')
-            if agent_label is not None and (type(agent_label) is not str or agent_label not in Label.__members__): raise ValueError('invalid_request')
-            sid=grant.default_write if name is None else resolve(self.state,name)
-            if sid not in grant.write or (name is None and self.scope(sid).kind=='common'): raise ValueError('denied')
-            self.check_write_epoch(sid)
-            previous=None; revises=req.get('revises')
-            if op=='revise':
-                from ..ulid import parse as parse_ulid
-                parse_ulid(revises)
-                old=self.index(grant).event(revises)
-                if old is None or old['scope']!=scope_names[sid] or sid not in allowed: raise ValueError('denied')
-                # An imported head is the importer's, except for the summarizer continuing the same memory key: after
-                # cutover (importer revoked) every staging memory is an imported head the summarizer must keep current.
-                from .connectors import effective
-                given=req['body'].get('metadata',{}).get('memory_key') if type(req['body']) is dict else None
-                if old.get('_migration') and not (effective(grant).allow_summarize and old.get('_memory_key')
-                                                  and given==old['_memory_key']): raise ValueError('denied')
-                if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
-                if (old['kind']=='page')!=(type(req['body']) is dict and req['body'].get('kind')=='page'): raise ValueError('denied')
-                previous=Label[old['label']]
-            floor=self.page_floor(grant,req,tags,sid,scope_names,revises)
-            from .connectors import outbox_body
-            body,duplicate=outbox_body(self,grant,req)
-            if duplicate is not None: return duplicate
-            body,tags,task,detected,redactions=sanitize(body,tags,task)
-            label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general,floor)
-            cert=session.certificate
-            agent=SimpleNamespace(account_id=cert['account_id'],device_id=cert['device_id'],agent_id=cert['agent_id'],certificate=lambda:dict(cert))
-            key=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
-            unsigned=prepare_event(key.write_key,agent,body,label=label,revises=revises,tags=tags,task=task,previous_label=previous)
-            session.pending=(unsigned,label.name,redactions,grant.digest())
-            audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],redactions=redactions,label=label.name)
-            return dict(stage='sign',unsigned=unsigned)
+        if op in ('remember','revise'): return self.write(session,grant,req,audit,allowed,scope_names)
+        if op=='tasks': return self.tasks(session,grant,req,audit,allowed,scope_names)
+        if op=='task': return self.task(session,grant,req,audit,allowed,scope_names)
         if op=='sign':
             if pending is None or set(req)!={'op','signature'}: raise ValueError('invalid_request')
             unsigned,label,redactions,digest=pending[:4]
@@ -581,6 +550,114 @@ class Broker:
                 if migration['next'] is not None: return self.imports.prepare(session,grant,migration['next'],audit)
             return result
         raise ValueError('invalid_request')
+
+    def task_chains(self, grant, scope, key):
+        """Every event of every chain of one task key in one scope (superseded and invalid events included)."""
+        index=self.index(grant); seen={}
+        for head in index.heads(scope,[key]):
+            for row in index.component(head['id']): seen[row['id']]=row
+        return [r for r in seen.values() if r.get('_task') is not None]
+
+    def tasks(self, session, grant, req, audit, allowed, scope_names):
+        """Current state of shared tasks in the agent's readable scopes (team workspace W0)."""
+        from . import tasks
+        from ..registry_store import now
+        status=req.get('status'); mine=req.get('mine',False); name=req.get('scope')
+        if status is not None and (type(status) is not list or not status or any(s not in tasks.STATUSES for s in status)):
+            raise ValueError('invalid_request')
+        if type(mine) is not bool or (name is not None and type(name) is not str): raise ValueError('invalid_request')
+        only=tasks.ref(req['task']) if req.get('task') is not None else None
+        if name is not None:
+            sid=resolve(self.state,name)
+            if sid not in allowed: raise ValueError('denied')
+            scopes={scope_names[s] for s in descendants(self.state,{sid}) if s in allowed}
+        else: scopes={scope_names[s] for s in allowed if self.scope(s).profile_id==grant.default_profile}
+        audit.update(scopes=sorted(s for s in allowed if scope_names[s] in scopes))
+        keys=sorted({(r['scope'],r['_memory_key']) for r in self.index(grant).rows() if r['kind']==tasks.KIND
+                     and r['scope'] in scopes and str(r.get('_memory_key','')).startswith(tasks.PREFIX)
+                     and (only is None or r['_memory_key']==tasks.PREFIX+only)})
+        at=now(); out=[]
+        for scope,key in keys:
+            head,superseded,ignored=tasks.resolve(self.task_chains(grant,scope,key))
+            if head is None: continue
+            item=tasks.view(head,superseded,ignored,at,session.agent_id)
+            if status is not None and item['status'] not in status: continue
+            if mine and not item['mine']: continue
+            out.append(item)
+        if any(t['label']=='secret' for t in out): self.secret_read(grant)
+        audit['result_ids']=[t['id'] for t in out]
+        return {'tasks':out,'at':at}
+
+    def task(self, session, grant, req, audit, allowed, scope_names):
+        """create / claim / update one task: the broker computes the next state and prepares the event to sign."""
+        from . import tasks
+        from ..registry_store import now
+        action=req.get('action'); name=req.get('scope'); ref=tasks.ref(req.get('task'))
+        if type(name) is not str: raise ValueError('invalid_request')
+        project=req.get('project')
+        if project is not None and type(project) is not str: raise ValueError('invalid_request')
+        sid=resolve(self.state,name)
+        if sid not in grant.write or sid not in allowed: raise ValueError('denied')
+        cert=session.certificate
+        author=dict(account=cert['account_id'],device=cert['device_id'],agent=cert['agent_id'])
+        key=tasks.PREFIX+ref; at=now()
+        head,_,_=tasks.resolve(self.task_chains(grant,scope_names[sid],key))
+        fields={k:req[k] for k in ('title','next','blocked_on','handoff','status','claim','lease_ms') if k in req}
+        state=tasks.successor(action,None if head is None else head['_task']['state'],fields,author,at)
+        if not tasks.shape(state): raise ValueError('invalid_request')
+        if head is not None and project is None: project=head.get('project')
+        body=dict(kind=tasks.KIND,content=tasks.content(state,ref),project=project,task_ref=ref,confidence=1.0,
+                  metadata=dict(memory_key=key,task_state=state))
+        write=dict(op='remember' if head is None else 'revise',body=body,scope=name,tags=[],task=ref,label=req.get('label'))
+        if head is not None: write['revises']=head['id']
+        return self.write(session,grant,write,audit,allowed,scope_names,task_write=True,created_at=at)
+
+    def write(self, session, grant, req, audit, allowed, scope_names, *, task_write=False, created_at=None):
+        """remember/revise: prepare the unsigned event for the agent to sign. Task state goes only through `task`."""
+        op=req['op']
+        from . import tasks
+        if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
+        if tasks.is_task_body(req['body'])!=task_write: raise ValueError('denied')
+        from .imports import RESERVED
+        if type(req['body']) is dict and RESERVED & set(req['body'].get('metadata',{})): raise ValueError('invalid_request')
+        tags=req.get('tags',[]); task=req.get('task'); agent_label=req.get('label'); name=req.get('scope')
+        if type(tags) is not list or any(type(t) is not str for t in tags): raise ValueError('invalid_request')
+        if task is not None and type(task) is not str: raise ValueError('invalid_request')
+        if name is not None and type(name) is not str: raise ValueError('invalid_request')
+        if agent_label is not None and (type(agent_label) is not str or agent_label not in Label.__members__): raise ValueError('invalid_request')
+        sid=grant.default_write if name is None else resolve(self.state,name)
+        if sid not in grant.write or (name is None and self.scope(sid).kind=='common'): raise ValueError('denied')
+        self.check_write_epoch(sid)
+        previous=None; revises=req.get('revises')
+        if op=='revise':
+            from ..ulid import parse as parse_ulid
+            parse_ulid(revises)
+            old=self.index(grant).event(revises)
+            if old is None or old['scope']!=scope_names[sid] or sid not in allowed: raise ValueError('denied')
+            # An imported head is the importer's, except for the summarizer continuing the same memory key: after
+            # cutover (importer revoked) every staging memory is an imported head the summarizer must keep current.
+            from .connectors import effective
+            given=req['body'].get('metadata',{}).get('memory_key') if type(req['body']) is dict else None
+            if old.get('_migration') and not (effective(grant).allow_summarize and old.get('_memory_key')
+                                              and given==old['_memory_key']): raise ValueError('denied')
+            if old['label']=='secret' and not grant.allow_secret: raise ValueError('denied')
+            if (old['kind']=='page')!=(type(req['body']) is dict and req['body'].get('kind')=='page'): raise ValueError('denied')
+            if (old['kind']==tasks.KIND)!=task_write: raise ValueError('denied')
+            previous=Label[old['label']]
+        floor=self.page_floor(grant,req,tags,sid,scope_names,revises)
+        from .connectors import outbox_body
+        body,duplicate=outbox_body(self,grant,req)
+        if duplicate is not None: return duplicate
+        body,tags,task,detected,redactions=sanitize(body,tags,task)
+        label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general,floor)
+        cert=session.certificate
+        agent=SimpleNamespace(account_id=cert['account_id'],device_id=cert['device_id'],agent_id=cert['agent_id'],certificate=lambda:dict(cert))
+        key=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
+        unsigned=prepare_event(key.write_key,agent,body,label=label,revises=revises,tags=tags,task=task,previous_label=previous,
+                               created_at=created_at)
+        session.pending=(unsigned,label.name,redactions,grant.digest())
+        audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],redactions=redactions,label=label.name)
+        return dict(stage='sign',unsigned=unsigned)
 
     def check_write_epoch(self,sid,key_id=None):
         profile=self.scope(sid).profile_id

@@ -451,10 +451,14 @@ def execute_workspace(args,*,backend=None,console=None):
             entry=json.loads(Path(args.input).read_text(encoding='utf-8')); workspace.shape(entry)
             ws=current(state,entry['workspace'])
             if entry['previous']!=ws.head: raise ValueError('stale')  # the workspace changed since this entry was signed
+            what=(f"set role of {entry['subject']} to {entry['role'] or 'none'}" if entry['op']=='member'
+                  else f"settings {json.dumps(entry['settings'],sort_keys=True)}")
             if args.action=='cosign':
-                presence.require('workspace','approve',console=console,one_shot=True,summary='Co-sign a workspace '+entry['op']+' change.')
+                presence.require('workspace','approve',console=console,one_shot=True,summary='Co-sign workspace change: '+what+'.')
                 return finish(workspace.cosign(entry,state.device),args.out)
-            presence.require('workspace','apply',console=console,one_shot=True,summary='Publish a workspace '+entry['op']+' change.')
+            check=workspace.verified(state.registry(),entry)
+            if check is None or not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
+            presence.require('workspace','apply',console=console,one_shot=True,summary='Publish workspace change: '+what+'.')
             return finish(entry,None)
         ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
         if args.action=='show': return workspace.describe(ws)

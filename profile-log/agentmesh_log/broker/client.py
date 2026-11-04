@@ -55,12 +55,13 @@ class BrokerClient:
         response=self.request(req)
         if 'error' in response: return response
         if outbox_id is not None and set(response)=={'id','label','redactions'}: return response
-        if set(response)!={'stage','unsigned'} or response['stage']!='sign': raise ValueError('invalid response')
-        unsigned=response['unsigned']; fields(unsigned,EVENT_FIELDS-{'signature'},'agentmesh-event-v1')
-        if unsigned['agent_cert']!=self.agent.certificate() or (unsigned['account'],unsigned['device'],unsigned['agent'])!=(self.agent.account_id,self.agent.device_id,self.agent.agent_id):
-            raise ValueError('invalid author binding')
-        if expected_scope is not None and unsigned['scope']!=expected_scope: raise ValueError('invalid scope binding')
-        return self.request(dict(op='sign',signature=self.agent._private.sign(EVENT_DOMAIN+typed(unsigned)).hex()))
+        return sign_prepared(self,response,expected_scope)
+
+    def task(self, action, task, *, scope, **fields):
+        """create / claim / update a shared task; the broker computes the state, this agent signs the event."""
+        response=self.request(dict(op='task',action=action,task=task,scope=scope,**fields))
+        if 'error' in response: return response
+        return sign_prepared(self,response,None)
 
     def import_row(self, **fields):
         response=self.request(dict(op='import',**fields))
@@ -77,3 +78,13 @@ class BrokerClient:
         return response
 
     def close(self): self.channel.close()
+
+
+def sign_prepared(client, response, expected_scope):
+    """Sign the broker's prepared event after checking it names this agent (and the expected scope)."""
+    if set(response)!={'stage','unsigned'} or response['stage']!='sign': raise ValueError('invalid response')
+    unsigned=response['unsigned']; fields(unsigned,EVENT_FIELDS-{'signature'},'agentmesh-event-v1')
+    if unsigned['agent_cert']!=client.agent.certificate() or (unsigned['account'],unsigned['device'],unsigned['agent'])!=(client.agent.account_id,client.agent.device_id,client.agent.agent_id):
+        raise ValueError('invalid author binding')
+    if expected_scope is not None and unsigned['scope']!=expected_scope: raise ValueError('invalid scope binding')
+    return client.request(dict(op='sign',signature=client.agent._private.sign(EVENT_DOMAIN+typed(unsigned)).hex()))

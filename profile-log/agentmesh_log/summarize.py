@@ -10,6 +10,7 @@ import hashlib
 from .encoding import typed
 
 GENERATOR='agentmesh-bounded-v1'
+TASK_PREFIX='task/'  # shared task state (broker/tasks.py) has its own `tasks` view, not the summary
 SUMMARY_PREFIX='summary/'  # '/' is outside the model's key alphabet, so a project summary never collides with an item
 MARKER_START='<!-- BOUNDED-CURRENT:START -->'
 MARKER_END='<!-- BOUNDED-CURRENT:END -->'
@@ -107,7 +108,7 @@ def summary(heads, mapping, project):
     old=current.get(SUMMARY_PREFIX+project)
     base=old['content'].split(MARKER_START)[0].rstrip() if old else ''
     lines=[f"- [{h['kind']}] {k}: {h['content']}" for k,h in sorted(current.items())
-           if not k.startswith(SUMMARY_PREFIX) and h['project']==project and h['status']=='active']
+           if not k.startswith((SUMMARY_PREFIX,TASK_PREFIX)) and h['project']==project and h['status']=='active']
     content='\n'.join([base,'',MARKER_START,'## Current durable memory',*lines,MARKER_END])
     return name,dict(memory_key=SUMMARY_PREFIX+project,kind='summary',scope='project',scope_key=project,project=project,
                      content=content,status='active',confidence=1.0)

@@ -34,3 +34,38 @@ def test_workspace_cli(tmp_path):
     assert out(cli('workspace', 'publish', '--home', home, '--in', entry))['ok']
     assert out(cli('workspace', 'publish', '--home', home, '--in', entry)) == {'error': 'stale'}
     assert out(cli('workspace', 'show', '--home', home, '--profile', 'work'))['head'] is not None
+
+
+def test_attest_cli(tmp_path, monkeypatch):
+    from agentmesh_log import attest
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location('attest_fixtures', pathlib.Path(__file__).parents[1]/'test_attest.py')
+    fixtures = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixtures)
+    token, JWKS, ISS, AUD = fixtures.token, fixtures.JWKS, fixtures.ISS, fixtures.AUD
+    home = tmp_path/'home'
+    assert cli('broker', 'init', '--home', home, '--profile', 'work').returncode == 0
+    base = ('--home', home, '--profile', 'work')
+    assert out(cli('workspace', 'attest', 'admin', *base, '--account', '55'*16, '--channel', 'video',
+                   '--email', 'a@example.com')) == {'error': 'not_found'}
+    assert out(cli('workspace', 'init', *base))['ok']
+    result = cli('workspace', 'attest', 'admin', *base, '--account', '55'*16, '--channel', 'video', '--email', 'Ann@Example.com')
+    assert out(result)['ok'] and 'example.com' not in result.stdout.lower()
+    listed = out(cli('workspace', 'attest', 'list', *base))['attestations']
+    assert [(a['account'], a['method'], a['channel']) for a in listed] == [('55'*16, 'admin', 'video')]
+    assert out(cli('workspace', 'attest', 'check', *base, '--email', 'ann@example.com'))['accounts'] == ['55'*16]
+    assert out(cli('workspace', 'attest', 'check', *base, '--email', 'bob@example.com'))['accounts'] == []
+    # OIDC: a member's token file, verified here against the provider keys (provider calls replaced)
+    workspace_id = out(cli('workspace', 'show', *base))['workspace']
+    seed = 's' * 32
+    nonce = attest.nonce(workspace_id, '66'*16, seed)
+    good = dict(issuer=ISS, authorization_endpoint=ISS+'/a', token_endpoint=ISS+'/t', jwks_uri=ISS+'/k')
+    monkeypatch.setattr(attest, 'discover', lambda issuer, **_: good)
+    monkeypatch.setattr(attest, 'fetch_json', lambda url, **_: JWKS)
+    path = tmp_path/'token.json'
+    path.write_text(json.dumps(attest.token_file(workspace_id, '66'*16, ISS, AUD, seed, token(nonce=nonce, email='cat@example.com'))))
+    assert out(cli('workspace', 'attest', 'oidc', '--home', home, '--in', path, '--issuer', ISS, '--client-id', 'other')) == {'error': 'denied'}
+    assert out(cli('workspace', 'attest', 'oidc', '--home', home, '--in', path, '--issuer', ISS, '--client-id', AUD))['ok']
+    assert out(cli('workspace', 'attest', 'check', *base, '--email', 'cat@example.com'))['accounts'] == ['66'*16]
+    wrong = tmp_path/'wrong.json'   # token bound to another account
+    wrong.write_text(json.dumps(attest.token_file(workspace_id, '77'*16, ISS, AUD, seed, token(nonce=nonce))))
+    assert out(cli('workspace', 'attest', 'oidc', '--home', home, '--in', wrong, '--issuer', ISS, '--client-id', AUD)) == {'error': 'token_rejected'}

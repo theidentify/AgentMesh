@@ -282,6 +282,53 @@ Before W2 ships, Linux needs a key store (for example libsecret on desktops, `sy
 TPM on servers) and a server-class presence path. Windows needs a control-plane backend; Windows
 Hello is wanted for workstations but not blocking.
 
+## Many members, each with their own bots
+
+### Quotas per member and per agent
+
+The control plane's quota guard counts per host. In a workspace, one looping bot could flood a
+shared scope. Each device's broker therefore enforces, per agent and per member, a daily cap on
+writes and bytes per scope (defaults in workspace settings, overrides per role). Because a member
+controls their own device, peers also apply the cap when building indexes and pages: events past a
+member's cap for the day are kept but marked `over_quota`, excluded from default recall and pages,
+and shown to admins in Insight.
+
+### Staged writes and promotion
+
+Agent writes to a shared scope default to **staged**:
+
+- A staged event carries `review: "pending"` and is visible to recall only with an explicit
+  `include_pending` flag; pages and summaries never cite it.
+- A member with write on the scope (or a reviewer the scope names) **promotes** it by writing a
+  signed `review` event (`approved` / `rejected`, reference to the source ULID). Promotion is a
+  person's act: it requires console or OS presence on a workstation and cannot be done by an
+  agent grant.
+- Per scope, admins may allow trusted agents to write `durable` directly, for example the tree
+  writer on the workspace server, or low-risk kinds such as `task_note`.
+- `task_state` updates are not staged; they are governed by the claim rules.
+
+### Provenance in recall
+
+Every recall result reports `author` (member, agent, device class) and `review` (`approved`,
+`pending`, `direct`). Default recall ranks human-written and approved items above unreviewed agent
+output, and agents are instructed (through the shared-memory rules) to treat unreviewed agent
+claims as hypotheses, not facts. An event derived from another agent's unreviewed event inherits
+`pending` until its source is approved.
+
+### Bulk onboarding with signed invites
+
+Approving devices one by one does not scale when many people join at once. An admin issues a
+**signed invite**:
+
+- Fields: workspace, scopes, role (member or contributor), `max_uses`, `expires_at` (at most 7
+  days), optional email domain for the attestation step.
+- The admin's device pre-wraps nothing. A joining device presents the invite plus its email
+  attestation; any admin device online verifies both and wraps the scope keys. With no admin
+  device online the join waits; the workspace server may verify but may not wrap (server class
+  cannot approve).
+- Invites are revocable, and every use is audited. Raising a role still needs a separate Tier 2
+  approval.
+
 ## Security notes
 
 - Workspace and personal profiles never share keys. An agent granted both still recalls one by
@@ -298,7 +345,7 @@ Hello is wanted for workstations but not blocking.
 | **W0** | `task_state` kind, claim/lease rules, `tasks` op, tree page, single account. Useful today for several agents of one person. | yes |
 | **W1** | Member field on events, email attestation, workspace registry with roles. | yes |
 | **W2** | Multi-account keyring wraps, add/remove member with epoch rotation, owner quorum, Shamir among owners; device class and capabilities in device records; Linux key store. | yes |
-| **W3** | Contributor inboxes and `task_request`. | yes |
+| **W3** | Contributor inboxes and `task_request`; staged writes, review and promotion; provenance in recall; per-member quotas; signed invites. | yes |
 | **W4** | Insight workspace view; MCP gateway exposes `tasks` to remote apps under existing per-app policy. | no |
 | **W5** | Deferred (needs cloud): strong claim via a conditional write on an opaque per-task claim object. | yes |
 | **W6** | `task_note`; channel adapters (Slack first, then Discord, Teams, LINE) with chat-identity linking. | yes |

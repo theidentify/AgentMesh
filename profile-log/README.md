@@ -501,6 +501,35 @@ python -m agentmesh_log.cli workspace show --home H --profile work
 - Until W2, only this account's devices can sign entries. Roles for other accounts are recorded, but
   those accounts cannot act yet.
 
+### Email attestation of members
+
+An owner or admin can vouch that an account belongs to an email address. Records live under
+`registry/attestations/<profile>/`. They hold only `email_hash`, a SHA-256 over the workspace ID and
+the normalized address, never the address itself. Anyone who can read the registry, including the
+storage provider, can test a guessed address against the hash. A record counts only if its signer
+was an owner or admin at the time, and the newest valid record per account wins.
+
+```sh
+# Checked directly (in person, video call or a shared code); the email is prompted for if --email is omitted
+python -m agentmesh_log.cli workspace attest admin --home H --profile work --account ACCOUNT_ID --channel in_person
+# OIDC, member side: sign in with the provider in a browser and write a token file (contains the email)
+python -m agentmesh_log.cli workspace attest oidc-login --home H --profile work --issuer https://accounts.google.com --client-id CLIENT_ID --out token.json
+# OIDC, admin side: verify the token against the provider's keys and sign the attestation
+python -m agentmesh_log.cli workspace attest oidc --home H --in token.json --issuer https://accounts.google.com --client-id CLIENT_ID
+python -m agentmesh_log.cli workspace attest list --home H --profile work
+python -m agentmesh_log.cli workspace attest check --home H --profile work
+```
+
+- Signing in uses authorization code with PKCE and a loopback redirect, so it needs a browser and
+  internet access to the provider. No AgentMesh service is involved. Register a desktop or installed
+  OAuth client with the provider yourself. Some providers require `--client-secret-file` even for
+  installed apps.
+- The ID token's nonce binds it to the member's account and workspace, so a token issued for another
+  account is rejected. The admin's device checks the signature (RS256 or ES256, RSA keys of at least
+  2048 bits), `iss`, `aud`/`azp`, `exp`, `iat`, the nonce and `email_verified`.
+- Signing either kind of attestation requires presence on the admin's device (class `workspace`).
+  Delete the token file after use.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

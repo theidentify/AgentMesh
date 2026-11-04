@@ -92,6 +92,19 @@ def parser():
     setting.add_argument('--out')
     cosign_cmd=ws_sub.add_parser('cosign'); home(cosign_cmd); cosign_cmd.add_argument('--in',dest='input',required=True); cosign_cmd.add_argument('--out',required=True)
     publish_cmd=ws_sub.add_parser('publish'); home(publish_cmd); publish_cmd.add_argument('--in',dest='input',required=True)
+    attest=ws_sub.add_parser('attest',help='email attestation of members (admin-signed or OIDC)')
+    attest_sub=attest.add_subparsers(dest='attest_action',required=True)
+    a=attest_sub.add_parser('admin',help='vouch for an account after checking the person directly'); home(a)
+    a.add_argument('--profile',required=True); a.add_argument('--account',required=True)
+    a.add_argument('--channel',choices=('in_person','video','code'),required=True); a.add_argument('--email')
+    a=attest_sub.add_parser('oidc-login',help='member: sign in with the email provider and write a token file'); home(a)
+    a.add_argument('--profile',required=True); a.add_argument('--issuer',required=True); a.add_argument('--client-id',required=True)
+    a.add_argument('--client-secret-file'); a.add_argument('--out',required=True)
+    a=attest_sub.add_parser('oidc',help='admin: verify a member token file and sign the attestation'); home(a)
+    a.add_argument('--in',dest='input',required=True); a.add_argument('--issuer',required=True); a.add_argument('--client-id',required=True)
+    for action in ('list','check'):
+        a=attest_sub.add_parser(action); home(a); a.add_argument('--profile',required=True)
+        if action=='check': a.add_argument('--email')
     join=commands.add_parser('join'); home(join); remote(join,True); join.add_argument('--approver-fingerprint')
     pair=commands.add_parser('pair'); pair_sub=pair.add_subparsers(dest='action',required=True)
     for action in ('approve','regrant','recipient'):
@@ -216,7 +229,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         value=load()
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
-    if args.command=='workspace': return execute_workspace(args,backend=backend,console=console)
+    if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
     if args.command=='summary': return execute_summary(args,backend=backend)
     if args.command not in ('broker','recall','remember','memory','stats','tasks','task'):
         return execute_phase4(args,backend,console,input_fn)
@@ -430,7 +443,7 @@ def wait_object(storage,path,deadline):
     raise ValueError('pairing_expired')
 
 
-def execute_workspace(args,*,backend=None,console=None):
+def execute_workspace(args,*,backend=None,console=None,input_fn=input):
     """Workspace registry administration on this device. Every change requires presence (class `workspace`)."""
     from . import workspace
     from .storage.filesystem import FilesystemStorage
@@ -445,6 +458,7 @@ def execute_workspace(args,*,backend=None,console=None):
         if out:
             Path(out).write_text(json.dumps(entry,sort_keys=True),encoding='utf-8'); return {'ok':True,'written':out,'hash':workspace.entry_hash(entry)}
         ident=workspace.publish(local,entry); return {'ok':True,'hash':ident,'note':'published locally; the broker sync uploads it'}
+    if args.action=='attest': return execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console)
     with home.lock():
         state=store.load()
         if args.action in ('cosign','publish'):
@@ -485,6 +499,56 @@ def execute_workspace(args,*,backend=None,console=None):
         if check is None: raise ValueError('denied')
         if not args.out and not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
         return finish(entry,args.out)
+
+
+def execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console):
+    """Email attestations. The email is read from --email or a prompt and is never stored or printed."""
+    from . import attest
+    import os, secrets
+    def email():
+        value=args.email if getattr(args,'email',None) else input_fn('Email address: ')
+        return attest.normalize(value)
+    action=args.attest_action
+    if action=='oidc-login':
+        state=store.load(); ws_id=profile_id(state,args.profile)
+        secret=Path(args.client_secret_file).read_text(encoding='utf-8').strip() if args.client_secret_file else None
+        seed=attest._b64(secrets.token_bytes(24)); account=state.account.account_id
+        token=attest.login(args.issuer,args.client_id,attest.nonce(ws_id,account,seed),client_secret=secret,
+                           output=lambda text:print(text,file=sys.stderr))
+        out=Path(args.out); fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8') as stream:
+            json.dump(attest.token_file(ws_id,account,args.issuer,args.client_id,seed,token),stream)
+        return {'ok':True,'written':str(out),'note':'contains your email; give it only to a workspace admin, then delete it'}
+    with home.lock():
+        state=store.load(); registry=state.registry()
+        if action=='oidc':
+            record=attest.read_token_file(json.loads(Path(args.input).read_text(encoding='utf-8')))
+            if (record['issuer'],record['client_id'])!=(args.issuer,args.client_id): raise ValueError('denied')
+            ws_id=record['workspace']
+        else: ws_id=profile_id(state,args.profile)
+        ws=current(state,ws_id)
+        if not ws.exists: raise ValueError('not_found')
+        if action in ('list','check'):
+            records,ignored=attest.load(local,ws_id,registry,ws)
+            if action=='list': return {'attestations':[attest.summary(r) for _,r in sorted(records.items())],'ignored':ignored}
+            wanted=attest.email_hash(ws_id,email())
+            return {'accounts':sorted(a for a,r in records.items() if r['email_hash']==wanted)}
+        from .registry_store import now
+        if ws.role(state.account.account_id,now()) not in attest.MANAGERS: raise ValueError('denied')
+        if action=='admin':
+            address=email()
+            presence.require('workspace','approve',console=console,one_shot=True,
+                             summary=f'Attest that account {args.account} belongs to {address} (checked: {args.channel}).')
+            entry=attest.create(state.device,ws_id,args.account,address,'admin',channel=args.channel)
+        else:
+            meta=attest.discover(args.issuer); jwks=attest.fetch_json(meta['jwks_uri'])
+            address=attest.verify_id_token(record['id_token'],jwks,issuer=args.issuer,audience=args.client_id,
+                expected_nonce=attest.nonce(ws_id,record['account'],record['seed']))
+            presence.require('workspace','approve',console=console,one_shot=True,
+                             summary=f'Attest that account {record["account"]} belongs to {address} (verified by {args.issuer}).')
+            entry=attest.create(state.device,ws_id,record['account'],address,'oidc',issuer=args.issuer,token=record['id_token'])
+        if attest.valid(entry,registry,ws) is None: raise ValueError('denied')
+        return {'ok':True,'hash':attest.publish(local,entry),'note':'published locally; the broker sync uploads it'}
 
 
 def execute_phase4(args,backend,console,input_fn):
@@ -589,7 +653,9 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'staging node differs from binding':'staging_binding_node_mismatch',
               'staging identity missing; initialize ingest before apply':'staging_identity_missing',
               'unmapped project':'unmapped_project','truncated':'truncated','denied':'denied','not_found':'not_found',
-              'invalid staging identity':'staging_identity_invalid'}.get(str(exc))
+              'invalid staging identity':'staging_identity_invalid',
+              'invalid token':'token_rejected','token expired':'token_expired','email not verified':'email_not_verified',
+              'issuer mismatch':'issuer_mismatch','https required':'https_required'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy

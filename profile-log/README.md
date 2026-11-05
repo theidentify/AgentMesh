@@ -652,6 +652,21 @@ python -m agentmesh_log.cli broker grant --home C --name drop --write work/inbox
   through the app's own read grant, like `recall`, so an app sees only the tasks in scopes its policy
   allows. It needs no remember inbox. Task changes stay local to agents with a broker grant.
 
+### Task notes (W6)
+
+```sh
+python -m agentmesh_log.cli task note AM-142 --scope work/mesh --text "Rebuild snapshots first?" --to OTHER_AGENT_ID --agent-key AGENT_KEY
+python -m agentmesh_log.cli notes AM-142 --agent-key AGENT_KEY
+```
+
+- A note is an encrypted, signed `task_note` event in the task's scope. It can be written only through
+  `note`, and only for an existing task the agent can read.
+- `to` addresses an account or agent, and `notes` marks those as `for_me`. It routes attention only;
+  every reader of the scope can read the note.
+- Notes are exempt from staged review, like task state, but count towards quotas. They also turn up
+  in recall.
+- Delivery takes as long as sync. Notes are for asynchronous coordination, not chat.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

@@ -79,11 +79,14 @@ def parser():
     tasks_cmd.add_argument('--scope'); tasks_cmd.add_argument('--task'); tasks_cmd.add_argument('--status',action='append')
     tasks_cmd.add_argument('--mine',action='store_true')
     task_cmd=commands.add_parser('task',help='create, claim or update a shared task')
-    task_cmd.add_argument('action',choices=('create','claim','update','override')); task_cmd.add_argument('task')
+    task_cmd.add_argument('action',choices=('create','claim','update','override','note')); task_cmd.add_argument('task')
     task_cmd.add_argument('--agent-key',required=True); task_cmd.add_argument('--scope',required=True)
     for flag in ('--project','--title','--next','--handoff','--status','--label'): task_cmd.add_argument(flag)
     task_cmd.add_argument('--blocked-on',action='append'); task_cmd.add_argument('--claim',action='store_true')
     task_cmd.add_argument('--lease-minutes',type=int)
+    task_cmd.add_argument('--text',help='note text (action note)'); task_cmd.add_argument('--to',help='address a note to an account or agent ID')
+    notes_cmd=commands.add_parser('notes',help="read a task's notes"); notes_cmd.add_argument('task'); notes_cmd.add_argument('--agent-key',required=True)
+    notes_cmd.add_argument('--scope'); notes_cmd.add_argument('--limit',type=int,default=50); notes_cmd.add_argument('--include-pending',action='store_true')
     ws=commands.add_parser('workspace',help='workspace registry: members, roles and settings (presence required to change)')
     ws_sub=ws.add_subparsers(dest='action',required=True)
     for action in ('init','show'):
@@ -257,7 +260,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
     if args.command=='summary': return execute_summary(args,backend=backend)
-    if args.command not in ('broker','recall','remember','memory','stats','tasks','task','review'):
+    if args.command not in ('broker','recall','remember','memory','stats','tasks','task','review','notes'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
@@ -276,6 +279,13 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             if args.command=='tasks':
                 return client.request(dict(op='tasks',**{k:v for k,v in dict(scope=args.scope,task=args.task,status=args.status).items() if v},
                                            **({'mine':True} if args.mine else {})))
+            if args.command=='notes':
+                return client.request(dict(op='notes',task=args.task,limit=args.limit,**({'scope':args.scope} if args.scope else {}),
+                                           **({'include_pending':True} if args.include_pending else {})))
+            if args.command=='task' and args.action=='note':
+                from .broker.client import sign_prepared
+                response=client.request(dict(op='note',task=args.task,scope=args.scope,text=args.text,to=args.to))
+                return response if 'error' in response else sign_prepared(client,response,None)
             if args.command=='task':
                 fields={k:v for k,v in dict(project=args.project,title=args.title,next=args.next,handoff=args.handoff,
                         status=args.status,label=args.label,blocked_on=args.blocked_on).items() if v is not None}

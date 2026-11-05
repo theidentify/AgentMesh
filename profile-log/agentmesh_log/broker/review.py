@@ -16,7 +16,7 @@ Default recall shows only ``direct`` and ``approved`` events that are within quo
 from .. import ulid
 
 KIND = 'review'
-EXEMPT = ('task_state', 'page', KIND)
+EXEMPT = ('task_state', 'task_note', 'page', KIND)
 VERDICTS = ('approved', 'rejected')
 REVIEWERS = ('owner', 'admin', 'member')
 DAY_MS = 86_400_000

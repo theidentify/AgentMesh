@@ -190,6 +190,7 @@ class AgentIndex:
             row.pop('_author',None)
             row.pop('_task',None)
             row.pop('_review',None)
+            row.pop('_note',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
         return candidates
@@ -235,6 +236,7 @@ class AgentIndex:
             row.pop('_author',None)
             row.pop('_task',None)
             row.pop('_review',None)
+            row.pop('_note',None)
             meta=row.pop('_migration',{})
             source=meta.get('source')
             row['source_ref']={k:source[k] for k in ('device','table','id') if k in source} if source else None

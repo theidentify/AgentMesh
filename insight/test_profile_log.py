@@ -58,6 +58,14 @@ class ProfileLogTests(unittest.TestCase):
         v=fixture(); v['overview']['profiles'][0]['scopes']*=501
         out=self.read(v); self.assertTrue(out['truncated']); self.assertEqual(len(out['overview']['profiles'][0]['scopes']),500)
 
+    def test_workspaces_projection(self):
+        value=fixture(); value['workspaces']=dict(generated_at='2026-11-05T00:00:00Z',items=[dict(profile='work',
+            members={'owner':1,'member':2,'stranger':9},tasks={'open':3,'claimed':1,'bogus':4},leases_live=1,leases_expired=0,
+            conflicts=0,pending_reviews=2,over_quota=0,invite_uses_waiting=1,title='PRIVATE')])
+        item=self.read(value)['workspaces']['items'][0]
+        self.assertEqual(item['members'],{'owner':1,'member':2}); self.assertEqual(item['tasks'],{'open':3,'claimed':1})
+        self.assertEqual(item['pending_reviews'],2); self.assertNotIn('PRIVATE',json.dumps(self.read(value)))
+
     def test_remote_sync_projection_and_freshness(self):
         value=fixture(); self.assertNotIn('last_sync',self.read(value))
         row=dict(at='2026-10-20T00:00:00Z',outcome='ok',interval_s=60,backend='s3',last_ok_at='2026-10-19T23:59:00Z',

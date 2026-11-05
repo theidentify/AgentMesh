@@ -461,6 +461,14 @@ Differences from "Many members, each with their own bots" above, chosen while im
 - **Not built:** a dedicated `task_request` kind. Contributors write ordinary events into the inbox,
   and members turn them into tasks.
 
+## W4: Insight view and tasks over MCP (implemented)
+
+- **Status snapshot.** The `workspaces` section holds counts only, computed over the scopes this
+  device's agents can read. Insight's rule of no memory content still holds.
+- **MCP.** The MCP gateway and the device bridge add a read-only `tasks` tool, governed by the same
+  per-app read policy as `recall`. Remote apps cannot create, claim or update tasks. That needs a
+  local agent with presence-backed grants.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

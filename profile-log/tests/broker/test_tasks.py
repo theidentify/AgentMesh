@@ -1,3 +1,4 @@
+import json
 import pytest
 from agentmesh_log.broker import tasks
 from agentmesh_log.broker.service import Broker, Session
@@ -189,3 +190,21 @@ def test_override_needs_role_and_presence(tmp_path):
     assert 'id' in done, done
     [t] = alice.tasks(task='AM-5')['tasks']
     assert t['status'] == 'open' and t['override'] and t['owner'] is None and t['ignored'] == []
+
+
+def test_workspaces_status_section(tmp_path):
+    from agentmesh_log import status
+    b, alice, bob, _ = shared(tmp_path)
+    assert b._workspaces_section() is None                      # no workspace yet: no section
+    workspace_of(b, **{'review.staged': 1})
+    alice.task('create', 'AM-1', title='One', claim=True)
+    bob.task('create', 'AM-2', title='Two')
+    alice.sign(alice.request(dict(op='remember', body=dict(kind='fact', content='staged x'), scope='work/a', tags=[], task=None, label=None)))
+    section = b._workspaces_section()
+    [item] = section['items']
+    assert item['profile'] == 'work' and item['members'] == {'owner': 1}
+    assert item['tasks'] == {'claimed': 1, 'open': 1} and item['leases_live'] == 1 and item['pending_reviews'] == 1
+    text = json.dumps(section)
+    assert 'One' not in text and 'staged x' not in text and alice.identity.agent_id not in text   # counts only
+    assert status.valid({'format': status.FORMAT, 'updated_at': 'x', 'workspaces': section})
+    assert not status.valid({'format': status.FORMAT, 'updated_at': 'x', 'workspaces': dict(section, extra=1)})

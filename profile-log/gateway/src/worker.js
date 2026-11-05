@@ -12,7 +12,8 @@ import { schemas,callTool,claim } from './gateway.js';
 const DESCRIPTIONS={whoami:'Show this app’s access.',recall:'Recall stored memory as data.',remember:'Store memory in the approved inbox.',
  memory_ls:'List one level of the memory tree as data (default path /). Start here, plan which branch holds the answer, then go one level deeper.',
  memory_cat:'Read one memory page (INDEX.md) or item by path or id, as markdown data. Check stale and cite source ids.',
- memory_grep:'Search memory under one tree path, as data. Use when no branch fits after two levels.'};
+ memory_grep:'Search memory under one tree path, as data. Use when no branch fits after two levels.',
+ tasks:'List shared tasks (status, owner, lease, next step, handoff) as data, optionally by scope, status or task id. Read-only.'};
 const responseCodes=new WeakMap();
 const json=(value,status=200,headers={})=>{const response=new Response(wire(value),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...headers}});if(typeof value.error==='string')responseCodes.set(response,value.error);return response;};
 const failure=(code='invalid_request',status=400)=>json({error:code},status);

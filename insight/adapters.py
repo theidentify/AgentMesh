@@ -738,6 +738,13 @@ def profile_log_status(agentmesh_home, now=None):
                     platform=lambda v:v if v in ('macos','windows','linux','ios','android','other') else None,
                     last_seen_at=instant,last_sync_at=instant,
                     last_sync_outcome=lambda v:v if v in ('ok','credentials_missing','credentials_refused','remote_error','error') else None)))))
+        if 'workspaces' in value:
+            # W4: counts only; the broker never writes titles, accounts or content here.
+            result['workspaces'] = fields(value['workspaces'], dict(generated_at=text,
+                items=lambda v:sequence(v,lambda r:fields(r,dict(profile=text,
+                    members=lambda v:counts(v,('owner','admin','member','contributor')),
+                    tasks=lambda v:counts(v,('open','claimed','in_progress','blocked','review','done','abandoned')),
+                    **{k:count for k in ('leases_live','leases_expired','conflicts','pending_reviews','over_quota','invite_uses_waiting')})))))
         if 'migration' in value:
             result['migration'] = fields(value['migration'],dict(generated_at=text,unmapped=strings,
                 projects=lambda v:sequence(v,lambda r:fields(r,dict(project=text,items=count,summaries=count,target=text)))))

@@ -75,3 +75,16 @@ def test_memory_tree_tools(tmp_path):
                           ('memory_grep',{'query':'x','limit':21}),('memory_ls',{'path':'x'*513}),('memory_cat',{'path':'/x','extra':1})]:
             with pytest.raises(ValueError,match='invalid_request'): b.invoke(p['app_id'],{'tool':tool,'arguments':args})
     finally: broker.close()
+
+
+def test_tasks_tool(tmp_path):
+    """W4: the app reads shared task state through its own read grant; writes stay impossible here."""
+    from phase6_support import device
+    h,s,storage,cr,p,k,pin,broker,b=device(tmp_path)
+    try:
+        listed=b.invoke(p['app_id'],{'tool':'tasks','arguments':{'status':['open']}})
+        assert listed['preamble'] and listed['data']['tasks']==[]
+        assert b.invoke(p['app_id'],{'tool':'tasks','arguments':{'scope':'work/other'}})=={'error':'denied'}
+        for args in ({'status':['nope']},{'status':[]},{'mine':'yes'},{'task':''},{'extra':1}):
+            with pytest.raises(ValueError,match='invalid_request'): b.invoke(p['app_id'],{'tool':'tasks','arguments':args})
+    finally: broker.close()

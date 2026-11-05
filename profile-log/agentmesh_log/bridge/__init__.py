@@ -52,6 +52,15 @@ def validate_tool(tool,args):
         if 'depth' in args and (type(args['depth']) is not int or args['depth'] not in (1,2)): raise ValueError('invalid_request')
         if tool=='memory_grep' and (not isinstance(args.get('query'),str) or not 1<=len(args['query'])<=2048 or not args['query'].strip()): raise ValueError('invalid_request')
         if 'limit' in args and (type(args['limit']) is not int or not 1<=args['limit']<=20): raise ValueError('invalid_request')
+    elif tool=='tasks':
+        # W4: read-only shared task state, filtered by the app's own read grant like recall.
+        if set(args)-{'scope','status','task','mine'}: raise ValueError('invalid_request')
+        if 'scope' in args and (type(args['scope']) is not str or not 1<=len(args['scope'])<=512): raise ValueError('invalid_request')
+        if 'task' in args and (type(args['task']) is not str or not 1<=len(args['task'])<=64): raise ValueError('invalid_request')
+        if 'mine' in args and type(args['mine']) is not bool: raise ValueError('invalid_request')
+        from ..broker.tasks import STATUSES
+        if 'status' in args and (type(args['status']) is not list or not 1<=len(args['status'])<=len(STATUSES)
+                                 or any(s not in STATUSES for s in args['status'])): raise ValueError('invalid_request')
     elif tool=='remember':
         if set(args)-{'body','tags','task','label'} or type(args.get('body')) is not str or len(args['body'].encode('utf-8'))>32768: raise ValueError('invalid_request')
         if 'tags' in args and (type(args['tags']) is not list or len(args['tags'])>100 or any(type(x) is not str or len(x)>256 for x in args['tags'])): raise ValueError('invalid_request')
@@ -139,6 +148,7 @@ class Bridge:
             args['profiles']=[scope_names[profile]]
             args['limit']=min(args.get('limit',12),policy['limits']['recall_limit_max'])
         elif tool=='memory_grep': args['limit']=min(args.get('limit',12),policy['limits']['recall_limit_max'])
+        elif tool=='tasks': pass
         elif tool not in MEMORY_TOOLS:
             if policy['remember'] is None or current['remember']!=policy['remember']: return {'error':'denied'}
             args['scope']=scope_names[policy['remember']['scope']]
@@ -151,8 +161,9 @@ class Bridge:
             finally: control.close()
         client=self.client_factory(path)
         try:
-            if tool=='recall' or tool in MEMORY_TOOLS:
-                result=client.request({'op':'recall' if tool=='recall' else tool[len('memory_'):],**args})
+            if tool=='recall' or tool in MEMORY_TOOLS or tool=='tasks':
+                op='recall' if tool=='recall' else 'tasks' if tool=='tasks' else tool[len('memory_'):]
+                result=client.request({'op':op,**args})
                 return result if 'error' in result else {'preamble':PREAMBLE,'data':result}
             if outbox_id is not None: args['outbox_id']=outbox_id
             result=client.write(**args)

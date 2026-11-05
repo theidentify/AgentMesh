@@ -864,8 +864,46 @@ class Broker:
                 value=dict(overview=overview(self.state,heartbeats=self.heartbeats.rows,last_sync=self._sync_row),keys=keys(self.state))
                 passkeys=self._passkeys()
                 if passkeys is not None: value['passkeys']=passkeys
+                spaces=self._workspaces_section()
+                if spaces is not None: value['workspaces']=spaces
             self.on_overview(value)
         except Exception: pass
+
+    def _workspaces_section(self):
+        """W4 status: counts per workspace over the scopes this device's agents can read. No titles or content."""
+        from . import tasks as T, review
+        from .. import invites
+        from ..registry_store import now
+        from ..status import timestamp
+        spaces=self.workspaces_by_name()
+        if not spaces: return None
+        at=now(); rows={}; heads={}
+        for grant in self.state.grants.values():
+            index=self.index(grant)
+            for row in index.rows():
+                rows.setdefault(row['id'],row)
+                if row['kind']==T.KIND and str(row.get('_memory_key','')).startswith(T.PREFIX):
+                    heads.setdefault((row['scope'],row['_memory_key']),grant)
+        standing,over=review.standing(list(rows.values()),spaces.get)
+        items=[]
+        for name,ws in sorted(spaces.items()):
+            profile=resolve(self.state,name); state=ws.state
+            members={}
+            for role in state.members.values(): members[role]=members.get(role,0)+1
+            counts=dict(tasks={},leases_live=0,leases_expired=0,conflicts=0)
+            for (scope,key),grant in heads.items():
+                if scope.split('/')[0]!=name: continue
+                head,superseded,_=T.resolve(self.task_chains(grant,scope,key),ws)
+                if head is None: continue
+                st=head['_task']['state']; counts['tasks'][st['status']]=counts['tasks'].get(st['status'],0)+1
+                if st['status'] in T.HELD: counts['leases_live' if T.live(st,at) else 'leases_expired']+=1
+                counts['conflicts']+=bool(superseded)
+            mine=[r for r in rows.values() if r['profile']==name]
+            waiting=sum(1 for u in invites.pending_uses(self.replica.storage,profile) if u['account'] not in state.members)
+            items.append(dict(profile=name,members=members,**counts,
+                pending_reviews=sum(1 for r in mine if standing.get(r['id'])=='pending'),
+                over_quota=sum(1 for r in mine if r['id'] in over),invite_uses_waiting=waiting))
+        return dict(generated_at=timestamp(),items=items)
 
     def _passkeys(self):
         # Verifying passkey records is too slow for every minute: recount only when a record, a device record or the

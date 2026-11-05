@@ -125,6 +125,11 @@ def valid(value):
         # The label rule is the passkey record's own, so a label the broker accepted never invalidates the whole file.
         'passkeys':obj(dict(generated_at=text,items=seq(obj(dict(ref=hexa(16),label=label_valid,created_at=iso_valid,issuer_device=hexa(32)))))),
         'last_backup':obj(dict(at=iso_valid,files=count,bytes=count)),
+        # W4: per-workspace counts only (no titles, accounts or content), from scopes this device can read.
+        'workspaces':obj(dict(generated_at=text,items=seq(obj(dict(profile=text,
+            members=counts(('owner','admin','member','contributor')),
+            tasks=counts(('open','claimed','in_progress','blocked','review','done','abandoned')),
+            leases_live=count,leases_expired=count,conflicts=count,pending_reviews=count,over_quota=count,invite_uses_waiting=count))))),
         'migration':obj(dict(generated_at=text,projects=seq(obj(dict(project=nullable,items=count,summaries=count,target=text))),unmapped=seq(text))),
         'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update')))),
         'last_catch_up':obj(dict(at=text,outcome=text,outcomes=counts(OUTCOMES),skipped=counts(SKIPPED),

@@ -642,6 +642,16 @@ python -m agentmesh_log.cli broker grant --home C --name drop --write work/inbox
   time. Members triage them like any other event; with `review.staged` on, they start `pending`.
 - `workspace grant` and `invite accept` give contributors write-only access automatically.
 
+### Workspaces in Insight and over MCP (W4)
+
+- The broker's status snapshot gains a `workspaces` section with **counts only** per workspace:
+  members by role, tasks by status, live and expired leases, claim conflicts, events waiting for
+  review, events over quota, and invite uses waiting to be accepted. It never holds titles, account
+  IDs or content. Insight shows it under Profile log → Workspaces.
+- Remote AI apps get a read-only `tasks` MCP tool (`scope`, `status`, `task`, `mine`). It goes
+  through the app's own read grant, like `recall`, so an app sees only the tasks in scopes its policy
+  allows. It needs no remember inbox. Task changes stay local to agents with a broker grant.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

@@ -30,6 +30,7 @@ SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles sco
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
     'heads': {'scope','memory_keys','after'},
     'tasks': set('scope status task mine'.split()), 'review': {'target','verdict'},
+    'note': {'task','scope','text','to'}, 'notes': {'task','scope','limit','include_pending'},
     'task': set('action task scope project title next blocked_on handoff status claim lease_ms label'.split()), 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
@@ -269,6 +270,8 @@ class Broker:
             if task_state is not None else {}
         if body['kind']=='review' and type(body.get('metadata')) is dict and type(body['metadata'].get('review')) is dict:
             extra['_review']=dict(body['metadata']['review'])
+        if body['kind']=='task_note' and type(body.get('metadata')) is dict and type(body['metadata'].get('task_note')) is dict:
+            extra['_note']=dict(body['metadata']['task_note'])
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
@@ -551,6 +554,8 @@ class Broker:
         if op in ('remember','revise'): return self.write(session,grant,req,audit,allowed,scope_names)
         if op=='tasks': return self.tasks(session,grant,req,audit,allowed,scope_names)
         if op=='review': return self.review(session,grant,req,audit,allowed,scope_names)
+        if op=='note': return self.note(session,grant,req,audit,allowed,scope_names)
+        if op=='notes': return self.notes(session,grant,req,audit,allowed,scope_names)
         if op=='task': return self.task(session,grant,req,audit,allowed,scope_names)
         if op=='sign':
             if pending is None or set(req)!={'op','signature'}: raise ValueError('invalid_request')
@@ -610,6 +615,42 @@ class Broker:
         self.presence.require('workspace','approve')
         write=dict(op='remember',body=review.body(target,verdict),scope=row['scope'],tags=[],task=None,label=None)
         return self.write(session,grant,write,audit,allowed,scope_names,review_write=True)
+
+    def note(self, session, grant, req, audit, allowed, scope_names):
+        """W6: an async message on a task (question, answer, review comment), optionally addressed to a member or
+        agent. ``to`` is routing only, not secrecy: everyone who can read the scope reads the note."""
+        from . import tasks, notes
+        ref=tasks.ref(req.get('task')); name=req.get('scope')
+        if type(name) is not str: raise ValueError('invalid_request')
+        sid=resolve(self.state,name)
+        if sid not in grant.write or sid not in allowed: raise ValueError('denied')
+        head,_,_=tasks.resolve(self.task_chains(grant,scope_names[sid],tasks.PREFIX+ref),self.task_policy(sid))
+        if head is None: raise ValueError('denied')   # notes attach to an existing task the agent can read
+        body=notes.body(ref,req.get('text'),req.get('to'))
+        write=dict(op='remember',body=body,scope=name,tags=[],task=ref,label=None)
+        return self.write(session,grant,write,audit,allowed,scope_names,note_write=True)
+
+    def notes(self, session, grant, req, audit, allowed, scope_names):
+        """The notes of one task in the agent's readable scopes, oldest first; staged or over-quota ones are hidden
+        unless include_pending."""
+        from . import tasks, notes
+        ref=tasks.ref(req.get('task')); limit=req.get('limit',50); include=req.get('include_pending',False)
+        if type(limit) is not int or not 1<=limit<=200 or type(include) is not bool: raise ValueError('invalid_request')
+        name=req.get('scope')
+        if name is not None:
+            if type(name) is not str: raise ValueError('invalid_request')
+            sid=resolve(self.state,name)
+            if sid not in allowed: raise ValueError('denied')
+            scopes={scope_names[s] for s in descendants(self.state,{sid}) if s in allowed}
+        else: scopes={scope_names[s] for s in allowed}
+        rows=self.index(grant).rows(); standing,over=self.standing(rows)
+        cert=session.certificate; me={cert['agent_id'],cert['account_id']}
+        found=[r for r in rows if r['kind']==notes.KIND and r['scope'] in scopes and (r.get('task_ref') or '').upper()==ref]
+        if not include: found=[r for r in found if standing.get(r['id'],'direct') in ('direct','approved') and r['id'] not in over]
+        found=sorted(found,key=lambda r:r['id'])[-limit:]
+        if any(r['label']=='secret' for r in found): self.secret_read(grant)
+        audit.update(scopes=sorted(resolve(self.state,s) for s in scopes),result_ids=[r['id'] for r in found])
+        return {'task':ref,'notes':[notes.view(r,standing,me) for r in found]}
 
     def task_policy(self, sid):
         """The workspace of the scope's profile when one exists, else the fixed W0 rules."""
@@ -678,7 +719,8 @@ class Broker:
         if head is not None: write['revises']=head['id']
         return self.write(session,grant,write,audit,allowed,scope_names,task_write=True,created_at=at)
 
-    def write(self, session, grant, req, audit, allowed, scope_names, *, task_write=False, created_at=None, review_write=False):
+    def write(self, session, grant, req, audit, allowed, scope_names, *, task_write=False, created_at=None, review_write=False,
+              note_write=False):
         """remember/revise: prepare the unsigned event for the agent to sign. Task state goes only through `task`."""
         op=req['op']
         from . import tasks
@@ -686,6 +728,8 @@ class Broker:
         if tasks.is_task_body(req['body'])!=task_write: raise ValueError('denied')
         from . import review
         if review.is_review_body(req['body'])!=review_write: raise ValueError('denied')
+        from . import notes as task_notes
+        if task_notes.is_note_body(req['body'])!=note_write: raise ValueError('denied')
         from .imports import RESERVED
         if type(req['body']) is dict and RESERVED & set(req['body'].get('metadata',{})): raise ValueError('invalid_request')
         tags=req.get('tags',[]); task=req.get('task'); agent_label=req.get('label'); name=req.get('scope')

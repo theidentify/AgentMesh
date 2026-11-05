@@ -25,11 +25,11 @@ from .query import analyze_query
 from .handshake import Challenge
 from .transport import UnixServer, PipeServer
 
-SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode'.split()),
+SCHEMAS = {'whoami': set(), 'recall': set('query project task limit profiles scopes compat mode include_pending'.split()),
     'remember':set('body scope tags task label outbox_id'.split()), 'revise':set('body scope tags task label revises'.split()),
     'connector_window': {'app_id'}, 'connector_close_secret': {'app_id'}, 'sign': {'signature'}, 'import': set('source row_hash created_at scope body'.split()), 'import_ledger': set(),
     'heads': {'scope','memory_keys','after'},
-    'tasks': set('scope status task mine'.split()),
+    'tasks': set('scope status task mine'.split()), 'review': {'target','verdict'},
     'task': set('action task scope project title next blocked_on handoff status claim lease_ms label'.split()), 'stats': set(), 'ls': {'path','depth','offset'}, 'cat': {'path'}, 'grep': set('query path limit mode'.split())}
 
 
@@ -267,6 +267,8 @@ class Broker:
         task_state=body.get('metadata',{}).get('task_state') if body['kind']==tasks.KIND and type(body.get('metadata')) is dict else None
         extra={'_task':dict(state=task_state,at=payload['created_at'],override=body['metadata'].get('task_override') is True)} \
             if task_state is not None else {}
+        if body['kind']=='review' and type(body.get('metadata')) is dict and type(body['metadata'].get('review')) is dict:
+            extra['_review']=dict(body['metadata']['review'])
         return dict(id=envelope['id'],source_type='durable',kind=body['kind'],content=body['content'],
             project=body.get('project'),task_ref=body.get('task_ref') or payload['task'],confidence=body.get('confidence',.6),
             scope=scope_names[envelope['scope']],profile=scope_names[envelope['profile']],label=payload['label'],
@@ -301,6 +303,7 @@ class Broker:
         if page is None: return Label.general
         if not grant.allow_pages: raise ValueError('denied')
         rel,sources=page; scope=scope_names[sid]; rows=self.index(grant).rows(); by_id={r['id']:r for r in rows}
+        standing,_=self.standing(rows)
         heads={r['id']:r for r in rows if r['scope']==scope and tree.page_rel(r)==rel}
         if (req['op']=='remember' and heads) or (req['op']=='revise' and revises not in heads): raise ValueError('denied')
         # A page never lowers its own label; lowering stays a user decision.
@@ -308,6 +311,7 @@ class Broker:
         for identifier in sources:
             source=by_id.get(identifier)
             if source is None or source['scope']!=scope or source['kind']=='page' or source['label']=='secret': raise ValueError('denied')
+            if standing.get(identifier) not in ('direct','approved'): raise ValueError('denied')   # pages never cite staged events
             floor=max(floor,Label[source['label']])
         return floor
 
@@ -464,7 +468,7 @@ class Broker:
             except LabelLoweringRequiresConfirmation:
                 response={'error':'label_lowering_requires_confirmation'}; audit['outcome']='denied'
             except ValueError as exc:
-                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable','presence_required','busy') else 'invalid_request'
+                code=str(exc) if str(exc) in ('denied','invalid_request','unavailable','presence_required','busy','quota_exceeded') else 'invalid_request'
                 response={'error':code}; audit['outcome']='denied' if code in ('denied','presence_required') else ('error' if code=='unavailable' else 'invalid')
             except Exception:
                 response={'error':'internal'}; audit['outcome']='error'
@@ -521,8 +525,22 @@ class Broker:
             audit.update(profiles=sorted(profiles),scopes=sorted(scopes))
             semantic=None if mode=='keyword' else self.semantic
             if mode=='hybrid' and semantic is None: semantic=_NOT_CONFIGURED
-            result=self.index(grant).recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
-                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False),semantic=semantic)
+            include_pending=req.get('include_pending',False)
+            if type(include_pending) is not bool: raise ValueError('invalid_request')
+            index=self.index(grant); spaces=self.workspaces_by_name()
+            from . import review as _review
+            standing,over=_review.standing(index.rows(),spaces.get)
+            hidden=frozenset() if include_pending else frozenset(
+                [i for i,s in standing.items() if s not in ('direct','approved')]+list(over))
+            result=index.recall(analyze_query(query,project=req.get('project'),task=req.get('task')),
+                limit,{scope_names[s] for s in scopes},{scope_names[p] for p in profiles},compat=req.get('compat',False),semantic=semantic,
+                exclude=hidden)
+            authors={r['id']:r.get('_author') for r in index.rows()}
+            # Provenance only for workspace profiles, so single-user results keep their documented shape.
+            for r in (r for r in result['results'] if r['profile'] in spaces):
+                author=authors.get(r['id']) or {}
+                r['author']={'account':author.get('account'),'agent':author.get('agent')}
+                r['review']=standing.get(r['id'],'direct'); r['over_quota']=r['id'] in over
             audit['mode']=result['query_plan'].get('retrieval',{}).get('effective','keyword')
             if any(r['label']=='secret' for r in result['results']): self.secret_read(grant)
             audit['result_ids']=[r['id'] for r in result['results']]
@@ -532,6 +550,7 @@ class Broker:
         if op=='stats': return self.stats(grant,audit,allowed,scope_names)
         if op in ('remember','revise'): return self.write(session,grant,req,audit,allowed,scope_names)
         if op=='tasks': return self.tasks(session,grant,req,audit,allowed,scope_names)
+        if op=='review': return self.review(session,grant,req,audit,allowed,scope_names)
         if op=='task': return self.task(session,grant,req,audit,allowed,scope_names)
         if op=='sign':
             if pending is None or set(req)!={'op','signature'}: raise ValueError('invalid_request')
@@ -558,6 +577,39 @@ class Broker:
         for head in index.heads(scope,[key]):
             for row in index.component(head['id']): seen[row['id']]=row
         return [r for r in seen.values() if r.get('_task') is not None]
+
+    def workspaces_by_name(self):
+        """{profile name: Workspace} for the profiles that have a workspace (for review and quota standing)."""
+        from .. import workspace
+        registry=self.state.registry(); ns=names(self.state); out={}
+        for tree in self.state.trees:
+            profile=tree.root.scope_id
+            owner=registry.profile_owner(profile) if hasattr(registry,'profile_owner') else self.state.account.account_id
+            ws=workspace.load(self.replica.storage,profile,registry,owner)
+            if ws.exists: out[ns[profile]]=ws
+        return out
+
+    def standing(self, rows):
+        from . import review
+        spaces=self.workspaces_by_name()
+        return review.standing(rows,spaces.get)
+
+    def review(self, session, grant, req, audit, allowed, scope_names):
+        """A person approves or rejects a staged event; the broker requires presence before preparing it."""
+        from . import review
+        from ..ulid import parse as parse_ulid
+        target,verdict=req.get('target'),req.get('verdict')
+        if type(target) is not str or verdict not in review.VERDICTS: raise ValueError('invalid_request')
+        parse_ulid(target)
+        index=self.index(grant); row=next((r for r in index.rows() if r['id']==target),None)
+        if row is None or row['kind']==review.KIND: raise ValueError('denied')
+        sid=resolve(self.state,row['scope'])
+        if sid not in grant.write or sid not in allowed: raise ValueError('denied')
+        standing,_=self.standing(index.rows())
+        if standing.get(target)!='pending': raise ValueError('denied')   # only staged events are reviewed
+        self.presence.require('workspace','approve')
+        write=dict(op='remember',body=review.body(target,verdict),scope=row['scope'],tags=[],task=None,label=None)
+        return self.write(session,grant,write,audit,allowed,scope_names,review_write=True)
 
     def task_policy(self, sid):
         """The workspace of the scope's profile when one exists, else the fixed W0 rules."""
@@ -626,12 +678,14 @@ class Broker:
         if head is not None: write['revises']=head['id']
         return self.write(session,grant,write,audit,allowed,scope_names,task_write=True,created_at=at)
 
-    def write(self, session, grant, req, audit, allowed, scope_names, *, task_write=False, created_at=None):
+    def write(self, session, grant, req, audit, allowed, scope_names, *, task_write=False, created_at=None, review_write=False):
         """remember/revise: prepare the unsigned event for the agent to sign. Task state goes only through `task`."""
         op=req['op']
         from . import tasks
         if 'body' not in req or not body_valid(req['body']): raise ValueError('invalid_request')
         if tasks.is_task_body(req['body'])!=task_write: raise ValueError('denied')
+        from . import review
+        if review.is_review_body(req['body'])!=review_write: raise ValueError('denied')
         from .imports import RESERVED
         if type(req['body']) is dict and RESERVED & set(req['body'].get('metadata',{})): raise ValueError('invalid_request')
         tags=req.get('tags',[]); task=req.get('task'); agent_label=req.get('label'); name=req.get('scope')
@@ -642,6 +696,7 @@ class Broker:
         sid=grant.default_write if name is None else resolve(self.state,name)
         if sid not in grant.write or (name is None and self.scope(sid).kind=='common'): raise ValueError('denied')
         self.check_write_epoch(sid)
+        if not review_write: self.check_quota(session,grant,sid,scope_names)
         previous=None; revises=req.get('revises')
         if op=='revise':
             from ..ulid import parse as parse_ulid
@@ -672,6 +727,19 @@ class Broker:
         session.pending=(unsigned,label.name,redactions,grant.digest())
         audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],redactions=redactions,label=label.name)
         return dict(stage='sign',unsigned=unsigned)
+
+    def check_quota(self, session, grant, sid, scope_names):
+        """Refuse a write past the workspace's daily cap for this agent or its account in the scope (W3)."""
+        from . import review
+        from ..registry_store import now
+        ws=self.workspaces_by_name().get(scope_names[self.scope(sid).profile_id])
+        if ws is None: return
+        at=now(); settings=ws.at(at).settings; rows=self.index(grant).rows()
+        cert=session.certificate
+        for field,value,key in (('agent',cert['agent_id'],'quota.agent_events_per_day'),
+                                ('account',cert['account_id'],'quota.member_events_per_day')):
+            cap=settings.get(key)
+            if cap is not None and review.used_today(rows,scope_names[sid],field,value,at)>=cap: raise ValueError('quota_exceeded')
 
     def check_write_epoch(self,sid,key_id=None):
         profile=self.scope(sid).profile_id

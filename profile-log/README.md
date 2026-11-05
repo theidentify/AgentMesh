@@ -576,6 +576,29 @@ python -m agentmesh_log.cli device list --home H                            # sh
 - On Linux desktops the OS key store is the Secret Service, through `secret-tool` (libsecret).
   Headless servers without a session bus have no OS backend yet.
 
+### Review, provenance and quotas (W3)
+
+```sh
+python -m agentmesh_log.cli workspace settings --home H --profile work --review-staged on --direct-agent TREE_WRITER_AGENT
+python -m agentmesh_log.cli workspace settings --home H --profile work --quota-agent 200 --quota-member 500
+python -m agentmesh_log.cli recall 'index migration' --agent-key AGENT_KEY --include-pending
+python -m agentmesh_log.cli review EVENT_ID --verdict approved --agent-key AGENT_KEY   # needs presence (class workspace)
+```
+
+- With `review.staged` on, each agent event in the workspace is `pending` until a person approves
+  it. Exceptions are task state, pages, reviews and agents listed in `review.direct_agents`.
+- Default recall shows only `direct` and `approved` events. `--include-pending` also shows `pending`,
+  `rejected` and over-quota events.
+- In workspace profiles, results carry `author` (account and agent), `review` and `over_quota`.
+  Results from other profiles keep their existing shape.
+- A review counts when its author's account was an owner, admin or member at the time. The broker
+  also requires presence before it prepares one, and refuses review bodies sent through `remember`.
+- Every reader computes this standing from the workspace settings in force at each event's ULID time
+  and from signed review events. No flag set by the author is trusted.
+- Quotas count events per agent and per member, per scope, per UTC day. The broker refuses writes
+  past the cap (`quota_exceeded`), and readers hide events past it even if another device wrote them.
+- Pages never cite staged or rejected events.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

@@ -36,7 +36,12 @@ DOMAIN = b'AgentMesh/workspace-entry/Ed25519/v1\x00'
 COSIGN_DOMAIN = b'AgentMesh/workspace-cosign/Ed25519/v1\x00'
 PREFIX = 'registry/workspace/'
 MIN_LEASE_MS, DEFAULT_LEASE_MS, MAX_LEASE_MS, HARD_MAX_LEASE_MS = 60_000, 3_600_000, 4 * 3_600_000, 24 * 3_600_000
-SETTINGS = {'task_lease.default_ms', 'task_lease.max_ms'}
+SETTINGS = {'task_lease.default_ms', 'task_lease.max_ms',
+            # W3: agent writes need a person's review; agents listed here write directly (e.g. the tree writer)
+            'review.staged', 'review.direct_agents',
+            # W3: daily event caps per agent and per member, in each scope of the workspace
+            'quota.agent_events_per_day', 'quota.member_events_per_day'}
+INT_SETTINGS = {'task_lease.default_ms', 'task_lease.max_ms', 'quota.agent_events_per_day', 'quota.member_events_per_day'}
 
 
 def entry_hash(entry):
@@ -74,7 +79,15 @@ def cosign(entry, device):
 
 def settings_valid(settings):
     if type(settings) is not dict or not settings or set(settings) - SETTINGS: return False
-    if any(type(v) is not int for v in settings.values()): return False
+    if any(type(settings[k]) is not int for k in INT_SETTINGS & set(settings)): return False
+    if settings.get('review.staged', 0) not in (0, 1) or type(settings.get('review.staged', 0)) is not int: return False
+    agents = settings.get('review.direct_agents', [])
+    if type(agents) is not list or len(agents) > 50 or len(set(map(str, agents))) != len(agents): return False
+    try:
+        for agent in agents: hex_bytes(agent, 16)
+    except (ValueError, TypeError): return False
+    for key in ('quota.agent_events_per_day', 'quota.member_events_per_day'):
+        if key in settings and not 1 <= settings[key] <= 100_000: return False
     default = settings.get('task_lease.default_ms', DEFAULT_LEASE_MS)
     maximum = settings.get('task_lease.max_ms', MAX_LEASE_MS)
     return MIN_LEASE_MS <= default <= maximum <= HARD_MAX_LEASE_MS

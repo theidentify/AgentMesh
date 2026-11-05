@@ -82,3 +82,17 @@ def test_server_refuses(tmp_path):
     assert out(cli('broker', 'grant', '--home', home, '--name', 'x', '--read', 'work/a', '--write', 'work/a',
                    '--allow-secret')) == {'error': 'denied'}
     assert 'agent_key' in out(cli('broker', 'grant', '--home', home, '--name', 'y', '--read', 'work/a', '--write', 'work/a'))
+
+
+def test_review_settings_cli(tmp_path):
+    home = tmp_path/'home'
+    assert cli('broker', 'init', '--home', home, '--profile', 'work').returncode == 0
+    base = ('--home', home, '--profile', 'work')
+    assert out(cli('workspace', 'init', *base))['ok']
+    agent = 'ab' * 16
+    assert out(cli('workspace', 'settings', *base, '--review-staged', 'on', '--direct-agent', agent, '--quota-agent', '50'))['ok']
+    settings = out(cli('workspace', 'show', *base))['settings']
+    assert settings == {'review.staged': 1, 'review.direct_agents': [agent], 'quota.agent_events_per_day': 50}
+    assert out(cli('workspace', 'settings', *base, '--quota-agent', '0')) == {'error': 'invalid_request'}
+    assert out(cli('workspace', 'settings', *base, '--review-staged', 'off', '--no-direct-agents'))['ok']
+    assert out(cli('workspace', 'show', *base))['settings'] == {'review.staged': 0, 'quota.agent_events_per_day': 50}

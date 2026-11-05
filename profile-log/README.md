@@ -599,6 +599,31 @@ python -m agentmesh_log.cli review EVENT_ID --verdict approved --agent-key AGENT
   past the cap (`quota_exceeded`), and readers hide events past it even if another device wrote them.
 - Pages never cite staged or rejected events.
 
+### Signed invites (W3)
+
+```sh
+# Owner or admin: invite up to 5 members to work/mesh for 3 days; hand out the token file (it holds a secret)
+python -m agentmesh_log.cli workspace invite create --home A --profile work --scope work/mesh --max-uses 5 --days 3 --out invite.json
+# Joiner, after one broker sync with the workspace storage
+python -m agentmesh_log.cli workspace join --home B --invite invite.json
+# Any owner or admin, after syncing the joiners' records
+python -m agentmesh_log.cli workspace invite accept --home A --profile work
+python -m agentmesh_log.cli workspace invite list --home A --profile work
+python -m agentmesh_log.cli workspace invite revoke --home A --profile work --id INVITE_ID
+```
+
+- An invite is a signed workspace entry. It holds the role (`member` or `contributor`), the scopes,
+  the maximum uses, an expiry of at most 7 days, and the public half of an Ed25519 key made from
+  the token's secret.
+- When the joiner runs `join --invite`, their device pins the owner by the fingerprint in the token
+  and publishes an invite use. The use is signed by the joiner's device and by the invite key, so the
+  storage provider cannot make one.
+- `accept` checks each use: both signatures, not revoked, not expired at the use's time, and uses
+  left. It then adds the member with an entry that names the invite, so uses are counted on the
+  chain, and grants the invite's scopes. The role and scopes always come from the signed invite.
+- The only change an invite allows after creation is revocation. Accepting needs presence.
+  Attestation stays a separate step (`workspace attest`).
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

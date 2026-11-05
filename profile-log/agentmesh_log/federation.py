@@ -102,18 +102,24 @@ class Federation:
 
     def known(self, account): return account == self.own.account_id or account in self.foreign
 
-    def accepts(self, account, profile, at):
+    def accepts(self, account, profile, at, scope=None):
         if account == self.profile_owner(profile): return True
-        return self.known(account) and self.role(profile, account, at) in WRITERS
+        if not self.known(account): return False
+        role = self.role(profile, account, at)
+        if role in WRITERS: return True
+        # W3: a contributor writes only into the workspace's inbox scopes, as set at the event's time.
+        ws = self.workspaces.get(profile)
+        return role == 'contributor' and scope is not None and ws is not None \
+            and scope in ws.at(at).settings.get('inbox.scopes', [])
 
     def may_hold(self, profile, account, at):
         if account == self.profile_owner(profile): return True
         return self.known(account) and self.role(profile, account, at) in HOLDERS
 
 
-def accepts(registry, account, profile, at):
+def accepts(registry, account, profile, at, scope=None):
     """Event-author acceptance for either registry kind (a plain Registry accepts only its own account)."""
-    if isinstance(registry, Federation): return registry.accepts(account, profile, at)
+    if isinstance(registry, Federation): return registry.accepts(account, profile, at, scope)
     return account == registry.account_id
 
 

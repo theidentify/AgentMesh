@@ -721,8 +721,7 @@ class Broker:
         label=max(self.scope(sid).default_label,detected,Label[agent_label] if agent_label else Label.general,floor)
         cert=session.certificate
         agent=SimpleNamespace(account_id=cert['account_id'],device_id=cert['device_id'],agent_id=cert['agent_id'],certificate=lambda:dict(cert))
-        key=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
-        unsigned=prepare_event(key.write_key,agent,body,label=label,revises=revises,tags=tags,task=task,previous_label=previous,
+        unsigned=prepare_event(self.write_key(sid),agent,body,label=label,revises=revises,tags=tags,task=task,previous_label=previous,
                                created_at=created_at)
         session.pending=(unsigned,label.name,redactions,grant.digest())
         audit.update(scopes=[sid],profiles=[self.scope(sid).profile_id],redactions=redactions,label=label.name)
@@ -741,6 +740,18 @@ class Broker:
             cap=settings.get(key)
             if cap is not None and review.used_today(rows,scope_names[sid],field,value,at)>=cap: raise ValueError('quota_exceeded')
 
+    def write_key(self, sid):
+        """The scope's current public key: from the read key when held, else (W3 contributors) the verified
+        write-only key imported at sync. Raises denied when this device can do neither."""
+        from ..keys import ScopeWriteKey
+        held=next((t.keys[sid] for t in self.state.trees if sid in t.keys),None)
+        if held is not None: return held.write_key
+        record=self.state.control.get('write_keys',{}).get(sid)
+        if record is None: raise ValueError('denied')
+        key=ScopeWriteKey(record['profile'],sid,bytes.fromhex(record['public']))
+        if key.key_id!=record['key_id']: raise ValueError('denied')
+        return key
+
     def check_write_epoch(self,sid,key_id=None):
         profile=self.scope(sid).profile_id
         if profile in self.state.control.get('deleted',[]) or self.state.control.get('profile_states',{}).get(profile,'active')!='active':
@@ -749,8 +760,7 @@ class Broker:
             from ..keyring import AgeKeyring
             ring=AgeKeyring(self.replica.storage,self.state.registry(),[s for t in self.state.trees for s in t.scopes.values()])
             current=ring.current(profile,sid)['key_id']
-            local=next(t.keys[sid] for t in self.state.trees if sid in t.keys)
-            if current!=local.key_id or (key_id is not None and key_id!=current): raise ValueError('denied')
+            if current!=self.write_key(sid).key_id or (key_id is not None and key_id!=current): raise ValueError('denied')
 
     def local_keys(self):
         prefixes=dict.fromkeys(REPLICA_PREFIXES+keyring.CONTROL_PREFIXES)

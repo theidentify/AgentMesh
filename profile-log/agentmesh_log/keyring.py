@@ -43,7 +43,7 @@ class AgeKeyring:
 
     def records(self):
         for path in self.storage.list('keyring/'):
-            if '/epochs/' in path or '/metadata/' in path or '/recovery/' in path: continue
+            if '/epochs/' in path or '/metadata/' in path or '/recovery/' in path or '/public/' in path: continue
             try:
                 record=shape(parse(self.storage.get(path)),'keyring-grant')
                 if grant_path(record)==path: yield record
@@ -278,6 +278,7 @@ def sync_control(home,store,remote,*,apply_lock=None):
                 if matches:
                     tree.keys[sid]=matches[0]
                     tree.epochs[sid]=[k for k in epochs if k.key_id!=current]+matches
+        import_write_keys(state,local,registry)   # W3: write-only (contributor) scopes
         from .recovery import collect_alerts
         collect_alerts(state,local,registry)
         store.save(state)
@@ -328,6 +329,75 @@ def regrant(state,storage,device,scopes):
             record=signed('scope-meta',state.device._private,profile=tree.root.scope_id,recipient_device=device,
                 issuer_device=state.device.device_id,issued_at=now(),age=b64(encrypt(wire(meta),recipient)))
             storage.put(path,wire(record))
+
+
+def public_path(record): return f"keyring/{record['profile']}/public/{record['scope']}/{record['key_id']}.json"
+
+
+def publish_write_key(storage,issuer,key):
+    """Publish the public (write-only) half of a scope epoch for contributors. Not secret, so it is not wrapped."""
+    pub=key.write_key
+    record=signed('scope-public',issuer._private,profile=pub.profile_id,scope=pub.scope_id,key_id=pub.key_id,
+                  public_key=pub.public_bytes.hex(),issuer_device=issuer.device_id,issued_at=now())
+    path=public_path(record)
+    if path not in set(storage.list(path)): storage.put(path,wire(record))
+    return record
+
+
+def current_write_key(storage,registry,scopes,profile,scope):
+    """The verified public key of the scope's current epoch, or None: signed by a device authorized for the scope,
+    key ID matching, and equal to the current epoch, so a stale or forged key is never used for writing."""
+    from .keys import ScopeWriteKey
+    ring=AgeKeyring(storage,registry,scopes)
+    try: current=ring.current(profile,scope)['key_id']
+    except (ValueError,KeyError): return None
+    for path in storage.list(f'keyring/{profile}/public/{scope}/'):
+        try:
+            record=shape(parse(storage.get(path)),'scope-public')
+            if public_path(record)!=path or record['key_id']!=current: continue
+            verify_signature(record,registry.device_public(record['issuer_device'],at=record['issued_at']),domain('scope-public'))
+            if not ring.authorized(record['issuer_device'],profile,scope,record['issued_at']): continue
+            key=ScopeWriteKey(profile,scope,bytes.fromhex(record['public_key']))
+            if key.key_id==current: return key
+        except (ValueError,KeyError): continue
+    return None
+
+
+def grant_write(state,storage,device,scopes):
+    """Give a contributor's device write-only access: the scopes' topology (encrypted to the device) and the
+    current public key of each scope. No read key is ever wrapped to it."""
+    from dataclasses import asdict
+    from .registry_store import read_profile_recipient
+    from .federation import load as federation
+    registry=federation(storage,state.account.public_record(),state.control.get('federation_pins'))
+    registry.device_public(device)
+    for tree in state.trees:
+        chosen=[sid for sid in scopes if sid in tree.scopes]
+        if not chosen: continue
+        if any(sid not in tree.keys for sid in chosen): raise KeyAccessError('scope key not held here')
+        keep=set()
+        for sid in chosen:
+            while sid is not None: keep.add(sid); sid=tree.scopes[sid].parent
+        recipient=read_profile_recipient(storage,registry,tree.root.scope_id,device)
+        for sid in chosen: publish_write_key(storage,state.device,tree.keys[sid])
+        path=f'keyring/{tree.root.scope_id}/metadata/{device}.json'
+        if path not in set(storage.list(path)):
+            meta=dict(root=tree.root.scope_id,scopes=[{**asdict(s),'default_label':s.default_label.name} for s in tree.scopes.values() if s.scope_id in keep])
+            record=signed('scope-meta',state.device._private,profile=tree.root.scope_id,recipient_device=device,
+                issuer_device=state.device.device_id,issued_at=now(),age=b64(encrypt(wire(meta),recipient)))
+            storage.put(path,wire(record))
+
+
+def import_write_keys(state,storage,registry):
+    """Remember the current public key of every imported scope this device cannot read (contributor scopes)."""
+    keys={}
+    scopes=[s for t in state.trees for s in t.scopes.values()]
+    for tree in state.trees:
+        for sid in tree.scopes:
+            if sid in tree.keys: continue
+            key=current_write_key(storage,registry,scopes,tree.root.scope_id,sid)
+            if key is not None: keys[sid]=dict(profile=key.profile_id,public=key.public_bytes.hex(),key_id=key.key_id)
+    state.control['write_keys']=keys
 
 
 def import_metadata(state,storage,registry):

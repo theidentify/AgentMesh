@@ -111,6 +111,8 @@ def parser():
     setting.add_argument('--no-direct-agents',action='store_true')
     setting.add_argument('--quota-agent',type=int,help='events per agent per scope per day')
     setting.add_argument('--quota-member',type=int,help='events per member per scope per day')
+    setting.add_argument('--inbox-scope',action='append',help='a scope contributors may write into')
+    setting.add_argument('--no-inbox-scopes',action='store_true')
     setting.add_argument('--out')
     cosign_cmd=ws_sub.add_parser('cosign'); home(cosign_cmd); cosign_cmd.add_argument('--in',dest='input',required=True); cosign_cmd.add_argument('--out',required=True)
     publish_cmd=ws_sub.add_parser('publish'); home(publish_cmd); publish_cmd.add_argument('--in',dest='input',required=True)
@@ -547,6 +549,12 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             if args.quota_member is not None: settings['quota.member_events_per_day']=args.quota_member
             settings={**ws.state.settings,**settings}
             if args.no_direct_agents: settings.pop('review.direct_agents',None)
+            if args.no_inbox_scopes: settings.pop('inbox.scopes',None)
+            if args.inbox_scope:
+                ids=[resolve(state,n) for n in args.inbox_scope]
+                if any(next(x for t in state.trees for x in t.scopes.values() if x.scope_id==i).profile_id!=ws_id for i in ids):
+                    raise ValueError('invalid_request')   # inbox scopes must belong to this workspace
+                settings['inbox.scopes']=sorted(set(settings.get('inbox.scopes',[]))|set(ids))
             if args.direct_agent: settings['review.direct_agents']=sorted(set(settings.get('review.direct_agents',[]))|set(args.direct_agent))
             if not workspace.settings_valid(settings): raise ValueError('invalid_request')
             presence.require('workspace','apply',console=console,one_shot=True,summary='Change workspace settings.')
@@ -674,7 +682,13 @@ def execute_federation(args,home,store,presence,local,state,console):
         if cert is None: raise ValueError('not_found')   # the member's device records arrive with broker sync
         presence.require('workspace','grant',console=console,one_shot=True,
                          summary=f'Give device {args.device} of account {cert["account_id"]} keys for: {", ".join(args.scope)}.')
-        regrant(state,local,args.device,[resolve(state,name) for name in args.scope])
+        scopes=[resolve(state,name) for name in args.scope]
+        from .registry_store import now
+        if write_only(registry,state,scopes,cert['account_id'],now()):
+            from .keyring import grant_write
+            grant_write(state,local,args.device,scopes)
+            return {'ok':True,'write_only':True,'note':'contributor: public write keys and topology published; run broker sync'}
+        regrant(state,local,args.device,scopes)
         return {'ok':True,'note':'keys published locally; the broker sync uploads them'}
     publish_recipient(home,store,local,args.profile_id)
     if token is not None:
@@ -745,8 +759,18 @@ def execute_invite(args,home,store,presence,local,state,console,profile_id,curre
             skipped.append(dict(account=use['account'],device=use['device_id'],reason='not allowed')); continue
         workspace.publish(local,entry)
         if invite['role'] in federation.HOLDERS: regrant(state,local,use['device_id'],invite['scopes'])
+        else:
+            from .keyring import grant_write
+            grant_write(state,local,use['device_id'],invite['scopes'])   # contributors: write-only
         accepted.append(dict(account=use['account'],device=use['device_id'],role=invite['role']))
     return {'accepted':accepted,'skipped':skipped,'note':'run broker sync so joiners receive their keys'}
+
+
+def write_only(registry,state,scopes,account,at):
+    """Whether ``account`` is a contributor in the workspaces of ``scopes`` (gets write-only keys, never read keys)."""
+    if not hasattr(registry,'role'): return False
+    profiles={next(s for t in state.trees for s in t.scopes.values() if s.scope_id==sid).profile_id for sid in scopes}
+    return any(registry.role(p,account,at)=='contributor' for p in profiles)
 
 
 def ws_owner(local,state,ws_id):

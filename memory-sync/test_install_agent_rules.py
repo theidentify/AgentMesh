@@ -227,6 +227,15 @@ class BrokerRulesTests(unittest.TestCase):
             args=parser().parse_args(argv[3:]+['query with spaces','--limit','12','--project','P'])
         self.assertEqual((args.query,args.limit,args.project,args.agent_key,args.compat,args.per_profile,args.profile),('query with spaces',12,'P',str(key),True,True,['work','personal']))
 
+    def test_broker_failure_guidance(self):
+        key=self.root/'agent.json'
+        text=self.mod.install(home=self.home,agents=['claude'],python=self.root/'python',broker_agent_key=key,broker_profiles=['work'])['claude'].read_text(encoding='utf-8')
+        self.assertIn('broker_permission_denied',text)
+        self.assertIn('sandbox',text)
+        self.assertIn('broker_unreachable',text)
+        self.assertNotIn('This does not replace legacy',text)
+        self.assertIn('do not fall back to them',text)
+
     def test_broker_memory_tree_argv(self):
         key=self.root/'key'
         target=self.mod.install(home=self.home,agents=['claude'],python=sys.executable,broker_agent_key=key,broker_profiles=['work'])['claude']

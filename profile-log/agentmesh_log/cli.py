@@ -11,7 +11,7 @@ from .model import Label
 from .broker.keystore import BrokerHome, BrokerState, FileKeyStore, atomic_write
 from .broker.grants import Grant, resolve, names
 from .broker.service import Broker
-from .broker.client import BrokerClient, BrokerUnreachable
+from .broker.client import BrokerClient, BrokerPermissionDenied, BrokerUnreachable
 from .oskeystore import select_store, OsKeyStore, initialize, migrate
 from .presence import PresenceManager, ConsolePresence
 
@@ -774,6 +774,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'issuer mismatch':'issuer_mismatch','https required':'https_required'}.get(str(exc))
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
+        if isinstance(exc,BrokerPermissionDenied): code='broker_permission_denied'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy
         if code=='presence_required' and args.command=='migrate' and sys.stderr is not None:
             from .settings import root

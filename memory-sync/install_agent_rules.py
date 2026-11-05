@@ -56,11 +56,21 @@ PowerShell example (not cmd.exe):
 def instructions(argv, memory=None):
     examples = shell_examples(argv + ['QUERY', '--limit', '12'])
     browse = navigation(memory) if memory else ''
+    # Database-mode bytes stay pinned; only broker mode gets the failure guidance.
+    legacy = ('Legacy shared-memory.rules and omp-shared-memory no longer serve recall;\n'
+              'do not fall back to them when the broker fails.'
+              if memory else 'This does not replace legacy shared-memory.rules or omp-shared-memory.')
+    failures = ('''
+Error codes: broker_permission_denied means this process may not connect to
+the broker socket, usually an agent sandbox; rerun the same argv with your
+tool's permission to run outside the sandbox, or ask the user to allow it.
+broker_unreachable means the broker is not running; report it.
+''' if memory else '')
     return f'''# [o-A-o] AgentMesh shared memory (encrypted profile log)
 
 ## When to Use
 Recall prior project decisions or context only when relevant to the task.
-This does not replace legacy shared-memory.rules or omp-shared-memory.
+{legacy}
 
 ## Prerequisites
 Configured Python executable, AgentMesh runtime, and local broker.
@@ -96,7 +106,7 @@ Do not modify PostgreSQL, credentials, provider settings, or other profiles.
 ## Verification
 Check recall output and source IDs before using it. If recall fails or the
 runtime is unavailable, report the limitation and continue without memory.
-'''
+{failures}'''
 
 
 def _absolute(value, label):

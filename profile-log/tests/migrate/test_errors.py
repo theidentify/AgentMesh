@@ -92,8 +92,10 @@ def test_connect(tmp_path,monkeypatch,capsys,command,kind):
     argv=[command,'hello'] if command!='migrate' else ['migrate','catch-up','--db',str(tmp_path/'db'),'--mapping','unused']
     assert cli.main([*argv,'--agent-key',str(key)])==1
     output=capsys.readouterr()
-    # A busy pipe means the broker is running, so it stays 'unavailable'.
-    assert json.loads(output.out)==dict(error='unavailable' if kind in ('other','busy') else 'broker_unreachable')
+    # A busy pipe means the broker is running, so it stays 'unavailable'. A refused
+    # permission (EPERM/EACCES, e.g. an agent sandbox) gets its own code.
+    expected=dict(missing='broker_unreachable',refused='broker_unreachable',busy='unavailable',other='broker_permission_denied')[kind]
+    assert json.loads(output.out)==dict(error=expected)
     assert not output.err
 
 

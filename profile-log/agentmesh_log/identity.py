@@ -102,6 +102,7 @@ class Registry:
         self.device_records = {}
         self.revocations = {}
         self.recoveries = {}
+        self.device_classes = {}
 
     def add_device(self, cert):
         fields(cert, DEVICE_FIELDS, 'agentmesh-device-cert-v1')

@@ -119,6 +119,8 @@ def parser():
     device=commands.add_parser('device'); device_sub=device.add_subparsers(dest='action',required=True)
     listing=device_sub.add_parser('list'); home(listing)
     remove=device_sub.add_parser('remove'); home(remove); remote(remove); remove.add_argument('identifier')
+    dclass=device_sub.add_parser('class',help='state the class of another device of this account'); home(dclass)
+    dclass.add_argument('identifier'); dclass.add_argument('--class',dest='device_class',choices=('workstation','server','write-only'),required=True)
     recovery=commands.add_parser('recovery'); recovery_sub=recovery.add_subparsers(dest='action',required=True)
     for action in ('create','test','use'):
         cmd=recovery_sub.add_parser(action); home(cmd); remote(cmd)
@@ -306,6 +308,11 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             return {'ok':True}
         if args.action=='grant':
             PresenceManager(home,store).require('agent','grant',console=console); state=store.load()
+            from .registry_store import device_class,RegistryStore
+            from .storage.filesystem import FilesystemStorage
+            local_registry=RegistryStore(FilesystemStorage(home.root/'replica'),state.account.public_record()).load()
+            if args.allow_secret and device_class(local_registry,state.device.device_id)!='workstation':
+                raise ValueError('denied')   # secret windows need a person at the device
             from .admin import create_agent
             path,grant=create_agent(home,state,args.name,args.read,args.write,args.default_write,
                 args.allow_secret,args.allow_cross_profile,args.allow_import,args.allow_pages,args.allow_summarize)
@@ -467,9 +474,12 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
         if out:
             Path(out).write_text(json.dumps(entry,sort_keys=True),encoding='utf-8'); return {'ok':True,'written':out,'hash':workspace.entry_hash(entry)}
         ident=workspace.publish(local,entry); return {'ok':True,'hash':ident,'note':'published locally; the broker sync uploads it'}
-    if args.action=='attest': return execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console)
+    if args.action=='attest':
+        if args.attest_action in ('admin','oidc'): refuse_unattended(registry_of(local,store.load()),store.load())
+        return execute_attest(args,home,store,presence,local,profile_id,current,input_fn,console)
     with home.lock():
         state=store.load()
+        if args.action not in ('show','account','join'): refuse_unattended(registry_of(local,state),state)
         if args.action in ('cosign','publish'):
             entry=json.loads(Path(args.input).read_text(encoding='utf-8')); workspace.shape(entry)
             ws=current(state,entry['workspace'])
@@ -591,6 +601,12 @@ def rotate_after_removal(store,state,local,ws_id,old,new):
             'note':'run broker sync so members receive the new epochs; the removed account keeps what it already read'}
 
 
+def refuse_unattended(registry,state):
+    """Servers and write-only devices approve nothing: no devices, members, key grants or classes."""
+    from .registry_store import device_class
+    if device_class(registry,state.device.device_id)!='workstation': raise ValueError('denied')
+
+
 def registry_of(local,state):
     """This device's registry over its local replica: one account, or a Federation for shared workspaces."""
     from . import federation
@@ -650,8 +666,24 @@ def execute_phase4(args,backend,console,input_fn):
     storage=LazyStorage(args,home) if hasattr(args,'filesystem') else FilesystemStorage(home.root/'replica')
     if args.command=='device':
         if args.action=='remove': remove_device(home,store,storage,args.identifier,console=console); return {'ok':True}
-        registry=store.load().registry()
-        return {'devices':[{'device_id':d,'revoked':d in registry.revocations} for d in sorted(registry.device_records)]}
+        if args.action=='class':
+            from .registry_store import RegistryStore,device_class_record
+            from .encoding import hex_bytes
+            hex_bytes(args.identifier,16); state=store.load(); local=FilesystemStorage(home.root/'replica')
+            registry=RegistryStore(local,state.account.public_record()).load()
+            refuse_unattended(registry,state)
+            cert=registry.certificates.get(args.identifier)
+            if cert is None: raise ValueError('not_found')
+            if args.identifier==state.device.device_id and cert['issuer'] not in ('account','recovery'): raise ValueError('denied')
+            presence.require('device','approve',console=console,one_shot=True,
+                             summary=f'Mark device {args.identifier} as {args.device_class}.')
+            RegistryStore(local,state.account.public_record()).publish_device_class(
+                device_class_record(args.identifier,state.device,args.device_class))
+            return {'ok':True,'note':'published locally; the broker sync uploads it'}
+        from .registry_store import device_class,RegistryStore
+        state=store.load(); registry=RegistryStore(FilesystemStorage(home.root/'replica'),state.account.public_record()).load()
+        return {'devices':[{'device_id':d,'revoked':d in registry.revocations,'class':device_class(registry,d)}
+                           for d in sorted(registry.device_records)]}
     if args.command=='profile':
         state=store.load(); profile=resolve(state,args.name)
         confirmation=args.confirm_name
@@ -686,9 +718,11 @@ def execute_phase4(args,backend,console,input_fn):
             publish_recipient(home,store,storage,args.identifier)
             return {'ok':True}
         if args.action=='regrant':
+            refuse_unattended(registry,state)
             from .keyring import regrant
             regrant(state,storage,args.identifier,[resolve(state,name) for name in args.scope])
             return {'ok':True}
+        refuse_unattended(registry,state)
         print('Approver fingerprint: '+approver_fingerprint(registry,state.device.device_id),file=sys.stderr)
         approver=Approver(storage,state.device,registry,state.control.setdefault('pairing_used',{}),persist=lambda:store.save(state))
         approval=approver.begin(args.identifier)

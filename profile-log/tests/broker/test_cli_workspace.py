@@ -69,3 +69,16 @@ def test_attest_cli(tmp_path, monkeypatch):
     wrong = tmp_path/'wrong.json'   # token bound to another account
     wrong.write_text(json.dumps(attest.token_file(workspace_id, '77'*16, ISS, AUD, seed, token(nonce=nonce))))
     assert out(cli('workspace', 'attest', 'oidc', '--home', home, '--in', wrong, '--issuer', ISS, '--client-id', AUD)) == {'error': 'token_rejected'}
+
+
+def test_server_refuses(tmp_path):
+    home = tmp_path/'home'
+    assert cli('broker', 'init', '--home', home, '--profile', 'work').returncode == 0
+    assert cli('broker', 'scope', 'add', '--home', home, 'work/a').returncode == 0
+    device = out(cli('device', 'list', '--home', home))['devices'][0]['device_id']
+    assert out(cli('device', 'class', '--home', home, device, '--class', 'server'))['ok']
+    assert out(cli('device', 'list', '--home', home))['devices'][0]['class'] == 'server'
+    assert out(cli('workspace', 'init', '--home', home, '--profile', 'work')) == {'error': 'denied'}
+    assert out(cli('broker', 'grant', '--home', home, '--name', 'x', '--read', 'work/a', '--write', 'work/a',
+                   '--allow-secret')) == {'error': 'denied'}
+    assert 'agent_key' in out(cli('broker', 'grant', '--home', home, '--name', 'y', '--read', 'work/a', '--write', 'work/a'))

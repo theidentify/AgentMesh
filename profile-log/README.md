@@ -667,6 +667,47 @@ python -m agentmesh_log.cli notes AM-142 --agent-key AGENT_KEY
   in recall.
 - Delivery takes as long as sync. Notes are for asynchronous coordination, not chat.
 
+### Slack adapter (W6)
+
+The adapter runs on a trusted device of the workspace (a workstation or a workspace server) and talks
+to Slack over **Socket Mode**. That is an outbound WebSocket, so the device needs no public URL or
+tunnel. It uses the pinned `websockets` dependency.
+
+1. **Create a Slack app.** Enable Socket Mode and create an app-level token with
+   `connections:write` (`xapp-…`). Add the bot scopes `app_mentions:read`, `chat:write` and
+   `channels:read` (plus `groups:read` for private channels), subscribe to the bot event
+   `app_mention`, install the app, and invite the bot to the channels you map.
+2. **Give the adapter its own agent.** Grant it only the channel scopes, and never `--allow-secret`;
+   the adapter refuses to start with a secret grant.
+   ```sh
+   python -m agentmesh_log.cli broker grant --home H --name slack --read work/mesh --write work/mesh --write work/inbox --read work/inbox
+   ```
+3. **Map channels to scopes** in a config file:
+   `{"profile": "work", "channels": {"C0123MESH": "work/mesh", "C0456INBOX": "work/inbox"}}`.
+   Add `"allow_shared_channels": true` only if Slack Connect channels may get answers.
+4. **Link people.** An owner or admin links each Slack user ID to a workspace member, with presence:
+   ```sh
+   python -m agentmesh_log.cli workspace chat-link --home H --profile work --platform slack --user U012ABC --account ACCOUNT_ID
+   ```
+5. **Run it.** Tokens come from the environment only and are never written to disk or logged.
+   ```sh
+   AGENTMESH_SLACK_APP_TOKEN=xapp-… AGENTMESH_SLACK_BOT_TOKEN=xoxb-… python -m agentmesh_log.cli adapter slack --home H --config slack.json --agent-key SLACK_AGENT_KEY
+   ```
+
+Mention the bot with `recall <query>`, `tasks [status]`, `task <ID>`, `note <ID> <text>`,
+`remember <text>` or `help`.
+
+- **Linked members** (owner, admin or member) can use every command, limited to the channel's scope.
+- **Unlinked users and contributors** can only use `remember`, and only in inbox channels.
+- **Role checks are live.** The sender's role is resolved from links on every message, so a removal
+  or unlink applies right away.
+- **Shared channels:** with Slack Connect, the bot stays silent unless the config allows it.
+- **What Slack sees:** replies are short, show only `general` and `internal` memory, and are stored by
+  Slack under its own retention. Notes and memories written from Slack are attributed to the
+  adapter's agent, with the sender's account prefix in the text.
+- **Platforms:** `chat-link` already accepts `discord`, `teams` and `line`, but only the Slack
+  transport exists so far.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

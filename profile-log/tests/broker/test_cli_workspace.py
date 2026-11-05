@@ -96,3 +96,15 @@ def test_review_settings_cli(tmp_path):
     assert out(cli('workspace', 'settings', *base, '--quota-agent', '0')) == {'error': 'invalid_request'}
     assert out(cli('workspace', 'settings', *base, '--review-staged', 'off', '--no-direct-agents'))['ok']
     assert out(cli('workspace', 'show', *base))['settings'] == {'review.staged': 0, 'quota.agent_events_per_day': 50}
+
+
+def test_chat_link_cli(tmp_path):
+    home = tmp_path/'home'
+    assert cli('broker', 'init', '--home', home, '--profile', 'work').returncode == 0
+    base = ('--home', home, '--profile', 'work')
+    link = ('workspace', 'chat-link', *base, '--platform', 'slack', '--user', 'U123')
+    assert out(cli(*link, '--account', 'ab'*16)) == {'error': 'not_found'}     # no workspace yet
+    assert out(cli('workspace', 'init', *base))['ok']
+    me = next(m['account'] for m in out(cli('workspace', 'show', *base))['members'])
+    assert out(cli(*link, '--account', 'ab'*16)) == {'error': 'denied'}        # only members can be linked
+    assert out(cli(*link, '--account', me))['ok'] and out(cli(*link, '--account', 'none'))['ok']

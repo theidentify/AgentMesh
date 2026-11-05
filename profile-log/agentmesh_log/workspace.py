@@ -28,7 +28,9 @@ from .errors import IdentityError
 FORMAT = 'agentmesh-workspace-entry-v1'
 ENTRY_FIELDS = {'format', 'workspace', 'op', 'subject', 'role', 'settings', 'previous', 'issued_at', 'issuer_device',
                 'cosigners', 'signature'}
-OPS = ('genesis', 'member', 'settings')
+OPS = ('genesis', 'member', 'settings', 'invite')
+INVITE_ROLES = ('member', 'contributor')
+INVITE_MAX_MS = 7 * 86_400_000
 ROLES = ('owner', 'admin', 'member', 'contributor')
 RANK = {'owner': 3, 'admin': 2, 'member': 1, 'contributor': 0}
 MANAGERS = ('owner', 'admin')
@@ -55,7 +57,7 @@ def _body(entry): return {k: v for k, v in entry.items() if k not in ('signature
 
 
 def create(device, workspace, op, *, previous=None, subject=None, role=None, settings=None, issued_at=None,
-           account_root=None):
+           account_root=None, invite=None):
     """A new entry signed by ``device`` (a DeviceIdentity); co-signatures are added with ``cosign``.
 
     ``account_root`` (member entries only) pins another account's root key so its devices can be trusted (W2)."""
@@ -64,6 +66,7 @@ def create(device, workspace, op, *, previous=None, subject=None, role=None, set
                  previous=previous, issued_at=now() if issued_at is None else issued_at,
                  issuer_device=device.device_id, cosigners=[])
     if account_root is not None: entry['account_root'] = account_root
+    if invite is not None: entry['invite'] = invite
     shape(dict(entry, signature='00' * 64))
     signed = sign(_body(entry), device._private, DOMAIN)
     return dict(signed, cosigners=[])
@@ -94,7 +97,8 @@ def settings_valid(settings):
 
 
 def shape(entry):
-    fields(entry, ENTRY_FIELDS | ({'account_root'} if type(entry) is dict and 'account_root' in entry else set()), FORMAT)
+    optional = {k for k in ('account_root', 'invite') if type(entry) is dict and k in entry}
+    fields(entry, ENTRY_FIELDS | optional, FORMAT)
     if 'account_root' in entry:
         if entry['op'] != 'member' or entry['role'] is None: raise ValueError('account root only on role grants')
         hex_bytes(entry['account_root'], 32)
@@ -110,6 +114,20 @@ def shape(entry):
         hex_bytes(entry['subject'], 16)
         if entry['previous'] is None or entry['settings'] is not None or entry['role'] not in ROLES + (None,):
             raise ValueError('invalid member entry')
+        if 'invite' in entry:
+            if type(entry['invite']) is not dict or set(entry['invite']) != {'id'} or entry['role'] is None: raise ValueError('invalid invite use')
+            hex_bytes(entry['invite']['id'], 16)
+    elif entry['op'] == 'invite':
+        invite = entry.get('invite')
+        if entry['previous'] is None or entry['subject'] is not None or entry['settings'] is not None \
+                or entry['role'] not in INVITE_ROLES or type(invite) is not dict \
+                or set(invite) != {'id', 'scopes', 'max_uses', 'expires_at', 'invite_key', 'revoked'}:
+            raise ValueError('invalid invite')
+        hex_bytes(invite['id'], 16); hex_bytes(invite['invite_key'], 32); milliseconds(invite['expires_at'])
+        if type(invite['scopes']) is not list or not 1 <= len(invite['scopes']) <= 64: raise ValueError('invalid invite')
+        for scope in invite['scopes']: hex_bytes(scope, 16)
+        if type(invite['max_uses']) is not int or not 1 <= invite['max_uses'] <= 100 or type(invite['revoked']) is not bool:
+            raise ValueError('invalid invite')
     else:
         if entry['previous'] is None or entry['subject'] is not None or entry['role'] is not None \
                 or not settings_valid(entry['settings']):
@@ -159,6 +177,7 @@ class State:
     members: dict = field(default_factory=dict)   # account -> role
     settings: dict = field(default_factory=dict)
     roots: dict = field(default_factory=dict)     # account -> pinned root key (hex), kept after removal
+    invites: dict = field(default_factory=dict)   # invite id -> dict(role, scopes, max_uses, expires_at, invite_key, revoked, used)
 
     def owners(self): return {a for a, r in self.members.items() if r == 'owner'}
 
@@ -173,6 +192,16 @@ def allowed(state, entry, issuer, cosigners):
     if entry['op'] == 'genesis': return False   # roots are handled by replay
     if role not in MANAGERS: return False
     if entry['op'] == 'settings': return True
+    if entry['op'] == 'invite':
+        invite = entry['invite']; old_invite = state.invites.get(invite['id'])
+        if old_invite is None:   # a new invite: short-lived, never revoked at birth
+            return not invite['revoked'] and entry['issued_at'] < invite['expires_at'] <= entry['issued_at'] + INVITE_MAX_MS
+        same = all(old_invite[k] == invite[k] for k in ('scopes', 'max_uses', 'expires_at', 'invite_key')) and old_invite['role'] == entry['role']
+        return same and invite['revoked'] and not old_invite['revoked']   # the only change allowed is revocation
+    if 'invite' in entry:
+        used = state.invites.get(entry['invite']['id'])
+        if used is None or used['revoked'] or entry['issued_at'] > used['expires_at'] or used['used'] >= used['max_uses'] \
+                or entry['role'] != used['role']: return False
     subject, new = entry['subject'], entry['role']
     old = state.members.get(subject)
     pinned = state.roots.get(subject)
@@ -189,13 +218,20 @@ def allowed(state, entry, issuer, cosigners):
 
 def apply(state, entry):
     members, settings, roots = dict(state.members), dict(state.settings), dict(state.roots)
+    invites = {k: dict(v) for k, v in state.invites.items()}
     if 'account_root' in entry: roots.setdefault(entry['subject'], entry['account_root'])
+    if entry['op'] == 'invite':
+        invite = entry['invite']; old = invites.get(invite['id'])
+        invites[invite['id']] = dict({k: invite[k] for k in ('scopes', 'max_uses', 'expires_at', 'invite_key', 'revoked')},
+                                     role=entry['role'], used=old['used'] if old else 0)
+        return State(members, settings, roots, invites)
+    if entry['op'] == 'member' and 'invite' in entry: invites[entry['invite']['id']]['used'] += 1
     if entry['op'] == 'genesis': members = {entry['subject']: 'owner'}
     elif entry['op'] == 'member':
         if entry['role'] is None: members.pop(entry['subject'], None)
         else: members[entry['subject']] = entry['role']
     else: settings = dict(entry['settings'])
-    return State(members, settings, roots)
+    return State(members, settings, roots, invites)
 
 
 @dataclass

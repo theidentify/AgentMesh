@@ -94,7 +94,15 @@ def parser():
     member.add_argument('--root-fingerprint',help="pin another account's root key (fingerprint checked out of band)")
     account=ws_sub.add_parser('account',help='this account and its fingerprint, for others to pin'); home(account)
     join=ws_sub.add_parser('join',help="trust another account's workspace (after broker sync)"); home(join)
-    join.add_argument('--profile-id',required=True); join.add_argument('--owner-account',required=True); join.add_argument('--owner-fingerprint',required=True)
+    join.add_argument('--profile-id'); join.add_argument('--owner-account'); join.add_argument('--owner-fingerprint')
+    join.add_argument('--invite',help='invite token file (gives the three values above and requests membership)')
+    inv=ws_sub.add_parser('invite',help='signed invites: create, list, revoke, accept joiners'); inv_sub=inv.add_subparsers(dest='invite_action',required=True)
+    a=inv_sub.add_parser('create'); home(a); a.add_argument('--profile',required=True); a.add_argument('--scope',action='append',required=True)
+    a.add_argument('--role',choices=('member','contributor'),default='member'); a.add_argument('--max-uses',type=int,default=1)
+    a.add_argument('--days',type=int,default=7); a.add_argument('--out',required=True)
+    for action in ('list','accept'):
+        a=inv_sub.add_parser(action); home(a); a.add_argument('--profile',required=True)
+    a=inv_sub.add_parser('revoke'); home(a); a.add_argument('--profile',required=True); a.add_argument('--id',required=True)
     wgrant=ws_sub.add_parser('grant',help="give a member's device the keys of workspace scopes"); home(wgrant)
     wgrant.add_argument('--device',required=True); wgrant.add_argument('--scope',action='append',required=True)
     setting=ws_sub.add_parser('settings'); home(setting); setting.add_argument('--profile',required=True)
@@ -506,6 +514,7 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             presence.require('workspace','apply',console=console,one_shot=True,summary='Publish workspace change: '+what+'.')
             return finish(entry,None)
         if args.action in ('account','join','grant'): return execute_federation(args,home,store,presence,local,state,console)
+        if args.action=='invite': return execute_invite(args,home,store,presence,local,state,console,profile_id,current)
         ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
         if args.action=='show': return workspace.describe(ws)
         if args.action=='init':
@@ -640,6 +649,12 @@ def execute_federation(args,home,store,presence,local,state,console):
         federation.publish_account(local,me)
         return {'account':me['account_id'],'fingerprint':federation.fingerprint(me['root_public_key']),'device':state.device.device_id}
     if args.action=='join':
+        token=None
+        if args.invite:
+            from . import invites
+            token=invites.read_token(json.loads(Path(args.invite).read_text(encoding='utf-8')))
+            args.profile_id,args.owner_account,args.owner_fingerprint=token['workspace'],token['owner_account'],token['owner_fingerprint']
+        if not (args.profile_id and args.owner_account and args.owner_fingerprint): raise ValueError('invalid_request')
         hex_bytes(args.profile_id,16); hex_bytes(args.owner_account,16)
         if args.owner_account==me['account_id']: raise ValueError('invalid_request')
         try: owner=federation.read_account(local,args.owner_account)
@@ -662,8 +677,81 @@ def execute_federation(args,home,store,presence,local,state,console):
         regrant(state,local,args.device,[resolve(state,name) for name in args.scope])
         return {'ok':True,'note':'keys published locally; the broker sync uploads them'}
     publish_recipient(home,store,local,args.profile_id)
+    if token is not None:
+        from . import invites
+        invites.publish_use(local,invites.use_record(state.device,me['account_id'],me['root_public_key'],token))
+        return {'ok':True,'account':me['account_id'],'device':state.device.device_id,'invite':token['invite'],
+                'note':'run broker sync; an admin accepts the invite use, then sync again to receive the keys'}
     return {'ok':True,'account':me['account_id'],'fingerprint':federation.fingerprint(me['root_public_key']),
             'device':store.load().device.device_id,'note':'run broker sync, then give the admin your account and fingerprint'}
+
+
+def execute_invite(args,home,store,presence,local,state,console,profile_id,current):
+    """Create, list, revoke and accept signed workspace invites (W3)."""
+    import os, secrets
+    from . import invites, workspace, federation
+    from .keyring import regrant
+    from .registry_store import now
+    ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
+    if not ws.exists: raise ValueError('not_found')
+    ns=names(state); action=args.invite_action
+    if action=='list':
+        return {'invites':[dict(id=i,role=v['role'],scopes=[ns.get(s,s) for s in v['scopes']],max_uses=v['max_uses'],used=v['used'],
+                                expires_at=v['expires_at'],revoked=v['revoked']) for i,v in sorted(ws.state.invites.items())]}
+    if ws.role(state.account.account_id,now()) not in workspace.MANAGERS: raise ValueError('denied')
+    if action=='create':
+        scopes=[resolve(state,n) for n in args.scope]
+        if any(next(s for t in state.trees for s in t.scopes.values() if s.scope_id==sid).profile_id!=ws_id for sid in scopes):
+            raise ValueError('invalid_request')
+        if not 1<=args.days<=7 or not 1<=args.max_uses<=100: raise ValueError('invalid_request')
+        secret=invites.new_secret(); invite_id=secrets.token_hex(16); at=now(); expires=at+args.days*86_400_000
+        entry=workspace.create(state.device,ws_id,'invite',previous=ws.head,role=args.role,issued_at=at,invite=dict(
+            id=invite_id,scopes=sorted(scopes),max_uses=args.max_uses,expires_at=expires,invite_key=invites.invite_key(secret),revoked=False))
+        check=workspace.verified(registry_of(local,state),entry)
+        if check is None or not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
+        presence.require('workspace','grant',console=console,one_shot=True,
+                         summary=f'Invite up to {args.max_uses} {args.role}(s) to {", ".join(args.scope)} for {args.days} day(s).')
+        # The token carries the workspace owner's fingerprint (this account, or the owner this device pinned).
+        owner=ws_owner(local,state,ws_id)
+        root=state.account.public_record()['root_public_key'] if owner==state.account.account_id else state.control['federation_pins'][ws_id]['root']
+        workspace.publish(local,entry)
+        out=Path(args.out); fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8') as stream:
+            json.dump(invites.token(ws_id,invite_id,secret,owner,federation.fingerprint(root),args.role,expires),stream)
+        return {'ok':True,'invite':invite_id,'written':str(out),'note':'give the token file only to the people invited; run broker sync'}
+    if action=='revoke':
+        old=ws.state.invites.get(args.id)
+        if old is None: raise ValueError('not_found')
+        entry=workspace.create(state.device,ws_id,'invite',previous=ws.head,role=old['role'],invite=dict(
+            id=args.id,scopes=old['scopes'],max_uses=old['max_uses'],expires_at=old['expires_at'],invite_key=old['invite_key'],revoked=True))
+        check=workspace.verified(registry_of(local,state),entry)
+        if check is None or not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
+        presence.require('workspace','revoke',console=console,one_shot=True,summary=f'Revoke invite {args.id}.')
+        workspace.publish(local,entry); return {'ok':True}
+    accepted,skipped=[],[]
+    uses=[u for u in invites.pending_uses(local,ws_id) if u['account'] not in ws.state.members]
+    if not uses: return {'accepted':[],'skipped':[]}
+    presence.require('workspace','grant',console=console,one_shot=True,summary=f'Accept up to {len(uses)} invite use(s) after checking them.')
+    for use in uses:
+        ws=current(state,ws_id)
+        if use['account'] in ws.state.members: continue
+        reason=invites.check_use(use,local,ws.state.invites.get(use['invite']))
+        if reason is not None: skipped.append(dict(account=use['account'],device=use['device_id'],reason=reason)); continue
+        invite=ws.state.invites[use['invite']]
+        entry=workspace.create(state.device,ws_id,'member',previous=ws.head,subject=use['account'],role=invite['role'],
+                               account_root=use['account_root'],invite={'id':use['invite']})
+        check=workspace.verified(registry_of(local,state),entry)
+        if check is None or not workspace.allowed(ws.state,entry,*check):
+            skipped.append(dict(account=use['account'],device=use['device_id'],reason='not allowed')); continue
+        workspace.publish(local,entry)
+        if invite['role'] in federation.HOLDERS: regrant(state,local,use['device_id'],invite['scopes'])
+        accepted.append(dict(account=use['account'],device=use['device_id'],role=invite['role']))
+    return {'accepted':accepted,'skipped':skipped,'note':'run broker sync so joiners receive their keys'}
+
+
+def ws_owner(local,state,ws_id):
+    registry=registry_of(local,state)
+    return registry.profile_owner(ws_id) if hasattr(registry,'profile_owner') else state.account.account_id
 
 
 def execute_phase4(args,backend,console,input_fn):

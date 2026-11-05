@@ -438,6 +438,18 @@ Differences from "Many members, each with their own bots" above, chosen while im
 - **Derived events** do not yet inherit `pending` from their sources. Pages already refuse to cite
   staged or rejected events.
 
+### Signed invites (implemented)
+
+- **Proof key.** The invite entry holds an Ed25519 public key made from a random secret, instead of
+  `secret_hash`. The joiner signs its use with the matching private key from the token. Any owner or
+  admin device can then verify a use, not only the device that created the invite, and nobody
+  without the token can make one.
+- **Counting uses.** Each member entry that names the invite counts as one use on the chain. Replay
+  refuses a use past `max_uses`, after `expires_at`, after revocation, or with a role other than the
+  invite's.
+- **Accepting.** Acceptance is a person's step (`workspace invite accept`, with presence). It is not
+  automatic, so an invite never adds members while nobody is watching.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

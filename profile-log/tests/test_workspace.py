@@ -154,3 +154,27 @@ def test_federation_roles():
     assert not fed.accepts(O2, 'cd' * 16, 0)                              # own profile: only this account
     assert accepts(own, own.account_id, WS, 0) and not accepts(own, O2, WS, 0)
     assert len(fingerprint('ab' * 32)) == 39
+
+
+def test_invite_entries():
+    r, d = world()
+    base = chain(r, (d[O1], 'genesis', dict(subject=O1, role='owner')),
+                 (d[O1], 'member', dict(subject=AD, role='admin')))
+    inv = dict(id='99'*16, scopes=['ab'*16], max_uses=1, expires_at=5000, invite_key='aa'*32, revoked=False)
+    made = ws.create(d[AD], WS, 'invite', previous=ws.entry_hash(base[-1]), issued_at=2000, role='member', invite=inv)
+    use = ws.create(d[AD], WS, 'member', previous=ws.entry_hash(made), issued_at=2100, subject=M, role='member',
+                    account_root='bb'*32, invite={'id': '99'*16})
+    again = ws.create(d[AD], WS, 'member', previous=ws.entry_hash(use), issued_at=2200, subject=O2, role='member',
+                      invite={'id': '99'*16})
+    w = ws.replay(WS, base + [made, use, again], r, O1)
+    assert w.state.members[M] == 'member' and O2 not in w.state.members and w.state.invites['99'*16]['used'] == 1
+    too_long = ws.create(d[AD], WS, 'invite', previous=ws.entry_hash(base[-1]), issued_at=2000, role='member',
+                         invite=dict(inv, id='98'*16, expires_at=2000 + ws.INVITE_MAX_MS + 1))
+    wrong_role = ws.create(d[AD], WS, 'member', previous=ws.entry_hash(made), issued_at=2100, subject=M, role='admin',
+                           invite={'id': '99'*16})
+    w2 = ws.replay(WS, base + [too_long, made, wrong_role], r, O1)
+    assert '98'*16 not in w2.state.invites and M not in w2.state.members
+    revoke = ws.create(d[AD], WS, 'invite', previous=ws.entry_hash(made), issued_at=2050, role='member', invite=dict(inv, revoked=True))
+    late = ws.create(d[AD], WS, 'member', previous=ws.entry_hash(revoke), issued_at=2100, subject=M, role='member', invite={'id': '99'*16})
+    w3 = ws.replay(WS, base + [made, revoke, late], r, O1)
+    assert w3.state.invites['99'*16]['revoked'] and M not in w3.state.members

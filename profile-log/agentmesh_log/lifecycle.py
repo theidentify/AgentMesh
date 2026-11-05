@@ -39,6 +39,9 @@ def rotate_scopes(state,storage,scopes,*,reason='rotate',only_device=None,recove
             age=read_profile_recipient(storage,registry,tree.root.scope_id,state.device.device_id)
             ring.publish(key,state.device,state.device.device_id,age)
             ring.epoch(key,state.device,previous=old.key_id,reason=reason)
+            if list(storage.list(f'keyring/{tree.root.scope_id}/public/{sid}/')):
+                from .keyring import publish_write_key
+                publish_write_key(storage,state.device,key)   # contributors write with the new epoch's public key
         for wrap in tree.wraps.values(): storage.put(wrap_path(wrap),wire(wrap))
         for sid in ordered:
             key=tree.keys[sid]

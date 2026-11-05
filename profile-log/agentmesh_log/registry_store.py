@@ -8,6 +8,7 @@ from .errors import IdentityError
 
 SCHEMAS = {
  'device-heartbeat': {'device_id','issued_at','age'},
+ 'scope-public': {'profile','scope','key_id','public_key','issuer_device','issued_at'},
  'device-class': {'device_id','device_class','issued_at','issuer_device'},
  'profile-recipient': {'device_id','profile_id','age_recipient','issued_at'},
  'profile-recovery': {'profile_id','recovery_key_id','age_recipient','issued_at','age'},

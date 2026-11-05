@@ -42,7 +42,9 @@ SETTINGS = {'task_lease.default_ms', 'task_lease.max_ms',
             # W3: agent writes need a person's review; agents listed here write directly (e.g. the tree writer)
             'review.staged', 'review.direct_agents',
             # W3: daily event caps per agent and per member, in each scope of the workspace
-            'quota.agent_events_per_day', 'quota.member_events_per_day'}
+            'quota.agent_events_per_day', 'quota.member_events_per_day',
+            # W3: scopes contributors may write into (write-only; they never receive read keys)
+            'inbox.scopes'}
 INT_SETTINGS = {'task_lease.default_ms', 'task_lease.max_ms', 'quota.agent_events_per_day', 'quota.member_events_per_day'}
 
 
@@ -84,6 +86,11 @@ def settings_valid(settings):
     if type(settings) is not dict or not settings or set(settings) - SETTINGS: return False
     if any(type(settings[k]) is not int for k in INT_SETTINGS & set(settings)): return False
     if settings.get('review.staged', 0) not in (0, 1) or type(settings.get('review.staged', 0)) is not int: return False
+    inbox = settings.get('inbox.scopes', [])
+    if type(inbox) is not list or len(inbox) > 64 or len(set(map(str, inbox))) != len(inbox): return False
+    try:
+        for scope in inbox: hex_bytes(scope, 16)
+    except (ValueError, TypeError): return False
     agents = settings.get('review.direct_agents', [])
     if type(agents) is not list or len(agents) > 50 or len(set(map(str, agents))) != len(agents): return False
     try:

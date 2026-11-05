@@ -624,6 +624,24 @@ python -m agentmesh_log.cli workspace invite revoke --home A --profile work --id
 - The only change an invite allows after creation is revocation. Accepting needs presence.
   Attestation stays a separate step (`workspace attest`).
 
+### Contributor inboxes (W3)
+
+```sh
+python -m agentmesh_log.cli workspace settings --home A --profile work --inbox-scope work/inbox
+python -m agentmesh_log.cli workspace invite create --home A --profile work --scope work/inbox --role contributor --out invite.json
+# contributor: join --invite, sync; admin: invite accept, sync; contributor: sync, then
+python -m agentmesh_log.cli broker grant --home C --name drop --write work/inbox
+```
+
+- A contributor's device receives the topology of the inbox scope and its ancestors, encrypted to
+  that device, plus a signed record of each inbox scope's current **public** write key. It never
+  receives a read key, so it cannot read anything, including its own writes.
+- The public key is accepted only if a device authorized for the scope signed it and it matches the
+  current epoch. After a rotation, the new key is published for contributors automatically.
+- Readers accept a contributor's events only in the workspace's `inbox.scopes` as set at the event's
+  time. Members triage them like any other event; with `review.staged` on, they start `pending`.
+- `workspace grant` and `invite accept` give contributors write-only access automatically.
+
 ## Devices and recovery
 
 Run commands below from `profile-log/` using the prepared interpreter. Administration

@@ -450,6 +450,17 @@ Differences from "Many members, each with their own bots" above, chosen while im
 - **Accepting.** Acceptance is a person's step (`workspace invite accept`, with presence). It is not
   automatic, so an invite never adds members while nobody is watching.
 
+### Contributor inboxes (implemented)
+
+- Inbox scopes are a workspace setting (`inbox.scopes`). A contributor's events are accepted only in
+  those scopes, as set at the event's time.
+- A contributor's device gets the inbox topology and signed `scope-public` records
+  (`keyring/<profile>/public/<scope>/<key_id>.json`). Each record is the scope epoch's public key,
+  accepted only from an authorized device and only for the current epoch. No read key is ever
+  wrapped to a contributor.
+- **Not built:** a dedicated `task_request` kind. Contributors write ordinary events into the inbox,
+  and members turn them into tasks.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

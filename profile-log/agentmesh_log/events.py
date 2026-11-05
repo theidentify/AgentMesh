@@ -72,7 +72,7 @@ def verify_event(data: bytes, registry) -> dict:
     validate_agent_certificate(cert)
     from .federation import accepts
     # One account, or (W2) a workspace member who held a writing role when the event was created.
-    if not accepts(registry, envelope['account'], envelope['profile'], ulid.timestamp(envelope['id'])):
+    if not accepts(registry, envelope['account'], envelope['profile'], ulid.timestamp(envelope['id']), envelope['scope']):
         raise IdentityError('wrong account')
     public = registry.verify_historical_agent(cert,ulid.timestamp(envelope['id']))
     if (cert['account_id'], cert['device_id'], cert['agent_id']) != (envelope['account'], envelope['device'], envelope['agent']):

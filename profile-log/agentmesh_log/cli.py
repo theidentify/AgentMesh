@@ -57,6 +57,10 @@ def parser():
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
     recall.add_argument('--profile',action='append'); recall.add_argument('--scope',action='append')
     recall.add_argument('--mode',choices=('keyword','hybrid'))
+    recall.add_argument('--include-pending',action='store_true',help='also show staged, rejected and over-quota events')
+    review_cmd=commands.add_parser('review',help='approve or reject a staged event (needs presence at this device)')
+    review_cmd.add_argument('target'); review_cmd.add_argument('--verdict',choices=('approved','rejected'),required=True)
+    review_cmd.add_argument('--agent-key',required=True)
     recall.add_argument('--per-profile',action='store_true',help='one request per --profile, merged like the bridge (no cross-profile grant needed)')
     memory=commands.add_parser('memory'); tree=memory.add_subparsers(dest='action',required=True)
     for action in ('ls','cat','grep'):
@@ -95,6 +99,10 @@ def parser():
     wgrant.add_argument('--device',required=True); wgrant.add_argument('--scope',action='append',required=True)
     setting=ws_sub.add_parser('settings'); home(setting); setting.add_argument('--profile',required=True)
     setting.add_argument('--lease-default-minutes',type=int); setting.add_argument('--lease-max-minutes',type=int)
+    setting.add_argument('--review-staged',choices=('on','off')); setting.add_argument('--direct-agent',action='append')
+    setting.add_argument('--no-direct-agents',action='store_true')
+    setting.add_argument('--quota-agent',type=int,help='events per agent per scope per day')
+    setting.add_argument('--quota-member',type=int,help='events per member per scope per day')
     setting.add_argument('--out')
     cosign_cmd=ws_sub.add_parser('cosign'); home(cosign_cmd); cosign_cmd.add_argument('--in',dest='input',required=True); cosign_cmd.add_argument('--out',required=True)
     publish_cmd=ws_sub.add_parser('publish'); home(publish_cmd); publish_cmd.add_argument('--in',dest='input',required=True)
@@ -239,7 +247,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
     if args.command=='summary': return execute_summary(args,backend=backend)
-    if args.command not in ('broker','recall','remember','memory','stats','tasks','task'):
+    if args.command not in ('broker','recall','remember','memory','stats','tasks','task','review'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
         client=BrokerClient.from_file(args.agent_key)
@@ -251,6 +259,10 @@ def execute(args,*,backend=None,console=None,input_fn=None):
                 if args.action=='grep': request.update(query=args.query,limit=args.limit,**({'mode':args.mode} if args.mode else {}))
                 return client.request(request)
             if args.command=='stats': return client.request(dict(op='stats'))
+            if args.command=='review':
+                from .broker.client import sign_prepared
+                response=client.request(dict(op='review',target=args.target,verdict=args.verdict))
+                return response if 'error' in response else sign_prepared(client,response,None)
             if args.command=='tasks':
                 return client.request(dict(op='tasks',**{k:v for k,v in dict(scope=args.scope,task=args.task,status=args.status).items() if v},
                                            **({'mine':True} if args.mine else {})))
@@ -263,7 +275,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             if args.command=='recall':
                 request=dict(op='recall',query=args.query,project=args.project,task=args.task,
                     limit=args.limit,profiles=args.profile,scopes=args.scope,compat=args.compat,
-                    **({'mode':args.mode} if args.mode else {}))
+                    **({'mode':args.mode} if args.mode else {}),**({'include_pending':True} if args.include_pending else {}))
                 if not args.per_profile: return client.request(request)
                 if not args.profile or len(set(args.profile))!=len(args.profile) or args.scope: raise ValueError('invalid_request')
                 return merge_profiles([client.request({**request,'profiles':[p]}) for p in args.profile],args.limit)
@@ -521,7 +533,12 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             settings={}
             if args.lease_default_minutes is not None: settings['task_lease.default_ms']=args.lease_default_minutes*60000
             if args.lease_max_minutes is not None: settings['task_lease.max_ms']=args.lease_max_minutes*60000
+            if args.review_staged is not None: settings['review.staged']=1 if args.review_staged=='on' else 0
+            if args.quota_agent is not None: settings['quota.agent_events_per_day']=args.quota_agent
+            if args.quota_member is not None: settings['quota.member_events_per_day']=args.quota_member
             settings={**ws.state.settings,**settings}
+            if args.no_direct_agents: settings.pop('review.direct_agents',None)
+            if args.direct_agent: settings['review.direct_agents']=sorted(set(settings.get('review.direct_agents',[]))|set(args.direct_agent))
             if not workspace.settings_valid(settings): raise ValueError('invalid_request')
             presence.require('workspace','apply',console=console,one_shot=True,summary='Change workspace settings.')
             entry=workspace.create(state.device,ws_id,'settings',previous=ws.head,settings=settings)

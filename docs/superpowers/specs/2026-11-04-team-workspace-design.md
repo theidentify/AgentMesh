@@ -424,6 +424,20 @@ next step.
   keeps its own Shamir recovery. A split workspace recovery key is deferred until a workspace needs
   recovery with no owner device left.
 
+## W3: review, provenance and quotas (implemented)
+
+Differences from "Many members, each with their own bots" above, chosen while implementing:
+
+- **Staging is opt-in** (`review.staged`, default off) rather than the default. Turning it on is one
+  settings change, and existing workspaces keep working unchanged.
+- **Standing is computed by readers**, from the settings in force at each event's ULID time and from
+  signed `review` events. Authors set no flag, so a modified client cannot mark its own events as
+  reviewed.
+- **Review authority:** a review counts when its author's account was an owner, admin or member at
+  the time. Presence is required by the preparing broker but cannot be checked by other readers.
+- **Derived events** do not yet inherit `pending` from their sources. Pages already refuse to cite
+  staged or rejected events.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

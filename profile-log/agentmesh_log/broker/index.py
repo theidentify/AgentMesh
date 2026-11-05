@@ -146,8 +146,10 @@ class AgentIndex:
             self.connection.close(); self._connect()
             return False
 
-    def recall(self, plan, limit, scopes, profiles, compat=False, semantic=None):
-        build=self._compat_candidates if compat else self._candidates
+    def recall(self, plan, limit, scopes, profiles, compat=False, semantic=None, exclude=frozenset()):
+        raw=self._compat_candidates if compat else self._candidates
+        # W3: events still under review or over quota are left out before ranking (``exclude``).
+        build=(lambda *a,**k:[r for r in raw(*a,**k) if r['id'] not in exclude]) if exclude else raw
         candidates=build(plan,scopes,profiles,cap=limit)
         selected=[r for r in candidates if (compat and r['source_type']=='summary')
             or len(plan.terms)<2 or plan.task_refs or r['matched_terms']>=2]
@@ -187,6 +189,7 @@ class AgentIndex:
             row.pop('_item',None)
             row.pop('_author',None)
             row.pop('_task',None)
+            row.pop('_review',None)
             _score(row,plan)
         candidates.sort(key=lambda r:(r['score'],r['updated_at'],r['id']), reverse=True)
         return candidates
@@ -231,6 +234,7 @@ class AgentIndex:
             row.pop('_item',None)
             row.pop('_author',None)
             row.pop('_task',None)
+            row.pop('_review',None)
             meta=row.pop('_migration',{})
             source=meta.get('source')
             row['source_ref']={k:source[k] for k in ('device','table','id') if k in source} if source else None

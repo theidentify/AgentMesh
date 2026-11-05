@@ -469,6 +469,21 @@ Differences from "Many members, each with their own bots" above, chosen while im
   per-app read policy as `recall`. Remote apps cannot create, claim or update tasks. That needs a
   local agent with presence-backed grants.
 
+## W6: notes and the Slack adapter (implemented)
+
+- **`task_note`** is written through the `note` op only. `to` is routing, not secrecy, and notes are
+  exempt from staged review.
+- **Slack transport.** Owner decision (2026-11-05): Slack uses **Socket Mode** (outbound WebSocket)
+  rather than the Events API. Nothing on the internet calls into the device, consistent with "no
+  central cloud service". The client is the pinned `websockets` dependency.
+- **Chat links.** `registry/chat-links/<ws>/<hash>.json` maps a hashed chat user ID to an account.
+  A link counts when an owner or admin signed it from a workstation, and the newest link wins.
+  Links are resolved on every message.
+- **Effective permission.** The adapter grant ∩ the channel's scope ∩ the sender's role. Unlinked
+  users and contributors may only `remember`, in inbox scopes.
+- **Not built:** Discord, Teams and LINE transports. The core and the links are platform-neutral;
+  each still needs its own transport and verification.
+
 ## Owner decisions (2026-11-04)
 
 1. **Task references are AgentMesh's own IDs** (for example `AM-142`, matching

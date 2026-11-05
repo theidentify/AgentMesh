@@ -106,6 +106,12 @@ def parser():
     for action in ('list','accept'):
         a=inv_sub.add_parser(action); home(a); a.add_argument('--profile',required=True)
     a=inv_sub.add_parser('revoke'); home(a); a.add_argument('--profile',required=True); a.add_argument('--id',required=True)
+    clink=ws_sub.add_parser('chat-link',help='link a chat user to a workspace account (admin, presence)'); home(clink)
+    clink.add_argument('--profile',required=True); clink.add_argument('--platform',choices=('slack','discord','teams','line'),required=True)
+    clink.add_argument('--user',required=True); clink.add_argument('--account',required=True,help="account ID, or 'none' to unlink")
+    adapter=commands.add_parser('adapter',help='run a chat adapter on this device'); adapter_sub=adapter.add_subparsers(dest='action',required=True)
+    a=adapter_sub.add_parser('slack',help='Slack Socket Mode (tokens from AGENTMESH_SLACK_APP_TOKEN / AGENTMESH_SLACK_BOT_TOKEN)'); home(a)
+    a.add_argument('--config',required=True); a.add_argument('--agent-key',required=True)
     wgrant=ws_sub.add_parser('grant',help="give a member's device the keys of workspace scopes"); home(wgrant)
     wgrant.add_argument('--device',required=True); wgrant.add_argument('--scope',action='append',required=True)
     setting=ws_sub.add_parser('settings'); home(setting); setting.add_argument('--profile',required=True)
@@ -259,6 +265,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         return value if args.action=='show' else {'ok':True}
     if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
+    if args.command=='adapter': return execute_adapter(args,backend=backend)
     if args.command=='summary': return execute_summary(args,backend=backend)
     if args.command not in ('broker','recall','remember','memory','stats','tasks','task','review','notes'):
         return execute_phase4(args,backend,console,input_fn)
@@ -527,6 +534,18 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
             return finish(entry,None)
         if args.action in ('account','join','grant'): return execute_federation(args,home,store,presence,local,state,console)
         if args.action=='invite': return execute_invite(args,home,store,presence,local,state,console,profile_id,current)
+        if args.action=='chat-link':
+            from .adapters import links
+            from .registry_store import now
+            ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
+            if not ws.exists: raise ValueError('not_found')
+            if ws.role(state.account.account_id,now()) not in workspace.MANAGERS: raise ValueError('denied')
+            account=None if args.account=='none' else args.account
+            if account is not None and account not in ws.state.members: raise ValueError('denied')   # members only
+            presence.require('workspace','grant',console=console,one_shot=True,
+                             summary=f'Link {args.platform} user {args.user} to account {args.account}.')
+            links.publish(local,links.create(state.device,ws_id,args.platform,args.user,account))
+            return {'ok':True,'note':'published locally; the broker sync uploads it'}
         ws_id=profile_id(state,args.profile); ws=current(state,ws_id)
         if args.action=='show': return workspace.describe(ws)
         if args.action=='init':
@@ -649,6 +668,41 @@ def refuse_unattended(registry,state):
     """Servers and write-only devices approve nothing: no devices, members, key grants or classes."""
     from .registry_store import device_class
     if device_class(registry,state.device.device_id)!='workstation': raise ValueError('denied')
+
+
+def execute_adapter(args,*,backend=None):
+    """Run a chat adapter until interrupted. The sender's role is resolved from chat links on every message."""
+    import os, threading
+    from . import workspace
+    from .adapters import links
+    from .adapters.core import Adapter
+    from .adapters.slack import SlackSocket
+    from .registry_store import now
+    from .storage.filesystem import FilesystemStorage
+    home=BrokerHome(args.home); store=select_store(home,backend); local=FilesystemStorage(home.root/'replica')
+    config=json.loads(Path(args.config).read_text(encoding='utf-8'))
+    if type(config) is not dict or set(config)-{'profile','channels','allow_shared_channels'} or type(config.get('profile')) is not str:
+        raise ValueError('invalid_request')
+    def context():
+        state=store.load(); registry=registry_of(local,state); ws_id=resolve(state,config['profile'])
+        owner=registry.profile_owner(ws_id) if hasattr(registry,'profile_owner') else state.account.account_id
+        return state,registry,ws_id,workspace.load(local,ws_id,registry,owner)
+    def identify(user):
+        state,registry,ws_id,ws=context()
+        account=links.resolve(local,ws_id,registry,ws,'slack',user)
+        return account,(ws.role(account,now()) if account else None)
+    def inbox_scopes():
+        state,registry,ws_id,ws=context(); ns=names(state)
+        return {ns[s] for s in ws.at(now()).settings.get('inbox.scopes',[]) if s in ns}
+    client=BrokerClient.from_file(args.agent_key)
+    try:
+        socket=SlackSocket(Adapter(client,config,identify,inbox_scopes,'slack'),
+                           os.environ.get('AGENTMESH_SLACK_APP_TOKEN'),os.environ.get('AGENTMESH_SLACK_BOT_TOKEN'))
+        stop=threading.Event()
+        try: socket.run(stop)
+        except KeyboardInterrupt: stop.set()
+        return {'ok':True}
+    finally: client.close()
 
 
 def registry_of(local,state):

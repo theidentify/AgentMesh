@@ -437,6 +437,10 @@ Differences from "Many members, each with their own bots" above, chosen while im
   the time. Presence is required by the preparing broker but cannot be checked by other readers.
 - **Derived events** do not yet inherit `pending` from their sources. Pages already refuse to cite
   staged or rejected events.
+- **Quotas count events, not bytes, and skip task state.** Claims, handoffs and releases neither
+  count toward the daily cap nor get refused by it (writer and reader side alike): a cap that blocked
+  a release would leave the task leased until its lease ran out. Notes and memories count. (Found in
+  the real-use test, 2026-11-08.)
 
 ### Signed invites (implemented)
 

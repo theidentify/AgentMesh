@@ -143,7 +143,28 @@ public struct Device: Equatable, Sendable, Decodable, Identifiable {
     public let platform: String?
     public let lastSeenAt: String?
     public let lastSyncAt: String?
+    /// workstation, server or write-only; nil from an older broker (treated as a workstation).
+    public var deviceClass: String? = nil
     public var id: String { deviceId }
+}
+
+/// One shared workspace, as counts only: the broker never puts titles, accounts or content in this section.
+public struct WorkspaceSummary: Equatable, Sendable, Decodable, Identifiable {
+    public let profile: String
+    public let members: [String: Int]
+    public let tasks: [String: Int]
+    public let leasesLive: Int
+    public let leasesExpired: Int
+    public let conflicts: Int
+    public let pendingReviews: Int
+    public let overQuota: Int
+    public let inviteUsesWaiting: Int
+    public var id: String { profile }
+}
+
+public struct Workspaces: Equatable, Sendable, Decodable {
+    public let generatedAt: String
+    public let items: [WorkspaceSummary]
 }
 
 public struct AgentGrant: Equatable, Sendable, Decodable {
@@ -209,4 +230,6 @@ public struct Inventory: Equatable, Sendable, Decodable {
     public let findings: [Finding]
     /// nil from an older supervisor or broker; an empty list means none are set up.
     public var passkeys: Passkeys? = nil
+    /// nil without a shared workspace on this device, or from an older supervisor.
+    public var workspaces: Workspaces? = nil
 }

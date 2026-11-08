@@ -34,7 +34,9 @@ def sections(**change):
         keys=dict(generated_at=at(60),agents=[dict(name='reader',key_ref=status.key_ref(AID),secret_until=None)],
             recoveries=dict(count=1,latest_issued_at=at(30*DAY))),
         last_backup=dict(at=at(DAY),files=3,bytes=100),
-        passkeys=dict(generated_at=at(60),items=[dict(ref='ef'*8,label='iPhone',created_at=at(10*DAY),issuer_device='d1'*16)]))
+        passkeys=dict(generated_at=at(60),items=[dict(ref='ef'*8,label='iPhone',created_at=at(10*DAY),issuer_device='d1'*16)]),
+        workspaces=dict(generated_at=at(60),items=[dict(profile='work',members={'owner':1,'member':2},tasks={'open':2,'claimed':1},
+            leases_live=1,leases_expired=0,conflicts=0,pending_reviews=0,over_quota=0,invite_uses_waiting=0)]))
     value.update(change)
     return {k:v for k,v in value.items() if v is not None}
 
@@ -260,3 +262,28 @@ def test_op(home):
     assert response['ok'] and response['result']['findings']==[]
     refused=Control(layout,FakeBackend()).handle(dict(v=1,id='x',op='keys.inventory',args=dict(path='/')),{})
     assert refused['error']['code']=='bad_args'
+
+
+def test_workspace_findings(home):
+    layout, write = home
+    items = [dict(profile='acme', members={'owner': 1}, tasks={'claimed': 1}, leases_live=0, leases_expired=1, conflicts=2,
+                  pending_reviews=3, over_quota=1, invite_uses_waiting=1)]
+    write(workspaces=dict(generated_at=at(60), items=items))
+    result = inventory.inventory(layout, NOW)
+    kinds = {(f['severity'], f['kind'], f['subject']) for f in result['findings'] if f['kind'].startswith('workspace_')}
+    assert kinds == {('warning', 'workspace_invites_waiting', 'acme'), ('warning', 'workspace_reviews_waiting', 'acme'),
+                     ('warning', 'workspace_leases_expired', 'acme'), ('info', 'workspace_conflicts', 'acme'),
+                     ('info', 'workspace_over_quota', 'acme')}
+    assert result['workspaces']['items'][0]['profile'] == 'acme'
+    write(workspaces=None)
+    assert inventory.inventory(layout, NOW)["workspaces"] is None
+
+
+def test_device_class_passes_through(home):
+    layout, write = home
+    rows = [dict(device('d1', this=True), device_class='workstation'), dict(device('d2', seen=DAY), device_class='server')]
+    overview = sections()['overview']
+    write(overview=dict(overview, devices=rows))
+    assert [d['device_class'] for d in inventory.inventory(layout, NOW)['devices']] == ['workstation', 'server']
+    write(overview=dict(overview, devices=[dict(device('d1', this=True), device_class='boss')]))
+    assert inventory.inventory(layout, NOW)['devices'] is None          # an unknown class invalidates the section

@@ -25,6 +25,10 @@ struct MenuView: View {
                 if model.inventorySupported {
                     Divider()
                     KeysView(model: model)
+                    if let workspaces = model.inventory?.workspaces, !workspaces.items.isEmpty {
+                        Divider()
+                        WorkspacesView(model: model, workspaces: workspaces)
+                    }
                 }
                 Divider()
                 maintenance(status.maintenance)
@@ -35,6 +39,7 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 400)
+        .background(MenuBarAnchor())  // keep the panel attached to the menu bar when sections expand or collapse
     }
 
     private var header: some View {

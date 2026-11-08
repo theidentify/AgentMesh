@@ -86,6 +86,19 @@ and shows when the inventory was taken. Inside, findings come first, then:
 Each new warning notifies once and turns the icon orange; info findings never notify. Against a supervisor older than
 M3b (`unknown_op`), the section hides itself.
 
+## Workspaces
+
+When the device belongs to a shared workspace, a **Workspaces** section appears below Keys & devices. It shows counts
+from the broker's content-free status section: members by role, tasks by status, live and expired leases, claim
+conflicts, writes waiting for review, invite uses waiting, and writes over quota. It never shows task titles, account
+IDs or memory text.
+
+Workspace findings appear there instead of under Keys & devices. Accepting invites and reviewing writes stay in the
+`agentmesh-log` CLI, where the broker asks for presence; the section only points at them. Devices show their class when
+it is not `workstation` (for example `server`).
+
+The menu panel keeps its top edge under the menu bar when a section is expanded or collapsed.
+
 ## Notifications
 
 The installed app posts macOS notifications. It is the alert channel on a Mac without a Discord webhook
@@ -99,6 +112,7 @@ The installed app posts macOS notifications. It is the alert channel on a Mac wi
 | `control.sock` does not answer for 2 minutes | Once, and once more when it answers again |
 | catch-up holds back a new project with no scope | Once per project, with a button per scope (Personal, Work, Skip) |
 | A new warning appears in Keys & devices | Once per finding; it can notify again after it clears and comes back |
+| A shared workspace needs a person: invite uses waiting, writes waiting for review, a lease expired while claimed | Once per workspace and kind, the same way |
 
 The app checks every 30 s with its menu closed and every 5 s with it open.
 

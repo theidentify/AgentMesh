@@ -15,7 +15,7 @@ struct KeysView: View {
         } label: { label }
     }
 
-    private var warnings: Int { model.inventory?.findings.filter { $0.severity == "warning" }.count ?? 0 }
+    private var warnings: Int { model.inventory?.findings.filter { $0.severity == "warning" && !isWorkspaceFinding($0) }.count ?? 0 }
 
     private var label: some View {
         HStack(spacing: 6) {
@@ -35,7 +35,7 @@ struct KeysView: View {
 
     private func details(_ inventory: Inventory) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            let findings = sortedFindings(inventory.findings)
+            let findings = sortedFindings(inventory.findings.filter { !isWorkspaceFinding($0) })
             if findings.isEmpty {
                 Label("Nothing needs attention", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.green)
             } else {

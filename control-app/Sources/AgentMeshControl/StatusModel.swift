@@ -20,6 +20,7 @@ final class StatusModel {
     /// false once the supervisor answers unknown_op (older than M3b): the Keys & devices section then hides.
     var inventorySupported = true
     var keysOpen = false
+    var workspacesOpen = false
     private var inventoryAt: Date?
     static let inventoryInterval: TimeInterval = 60
     var menuOpen = false { didSet { if menuOpen { Task { await refresh(inventory: true) } } } }

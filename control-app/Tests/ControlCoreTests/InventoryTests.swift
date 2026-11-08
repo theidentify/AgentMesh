@@ -28,7 +28,11 @@ func inventory(_ findings: [Finding], devices: [Device]? = nil) -> Inventory {
     #expect(value.keyFiles.count == 3 && value.keyFiles.first?.mode == 0o600 && value.keyFiles.first?.agent == "reader")
     #expect(value.keystore.path == "profile-log/keystore.sealed" && value.keystore.agent == nil)
     #expect(value.recovery?.count == 1 && value.backup == nil)
-    #expect(value.findings.map(\.kind) == ["backup_never", "key_file_orphan"])
+    #expect(value.findings.map(\.kind) == ["backup_never", "key_file_orphan", "workspace_invites_waiting"])
+    #expect(value.devices?.map(\.deviceClass) == ["workstation", nil])
+    let space = try #require(value.workspaces?.items.first)
+    #expect(space.profile == "work" && space.members == ["owner": 1, "member": 2] && space.pendingReviews == 2)
+    #expect(space.inviteUsesWaiting == 1 && space.leasesExpired == 1)
     #expect(value.keyFiles.map { $0.keyRef?.count } == [32, nil, nil] && value.keystore.keyRef == nil)
     let passkey = try #require(value.passkeys?.items.first)
     #expect(passkey.ref == "efefefefefefefef" && passkey.label == "iPhone" && passkey.issuerDevice.count == 32)
@@ -136,4 +140,17 @@ func inventory(_ findings: [Finding], devices: [Device]? = nil) -> Inventory {
     _ = watch.update(inventory: inventory([finding("no_recovery", "profile")]))
     #expect(watch.update(inventory: inventory([])).isEmpty)
     #expect(watch.update(inventory: inventory([finding("no_recovery", "profile")])).count == 1)
+}
+
+
+@Test func workspacePresentation() {
+    let value = inventory([finding("workspace_invites_waiting", "acme"), finding("workspace_conflicts", "acme", "info")])
+    #expect(findingText(finding("workspace_invites_waiting", "acme"), in: value) == "acme: people are waiting for an invite to be accepted")
+    #expect(findingText(finding("workspace_reviews_waiting", "acme"), in: value) == "acme: agent writes are waiting for review")
+    #expect(isWorkspaceFinding(finding("workspace_conflicts", "acme")) && !isWorkspaceFinding(finding("backup_never", "profile")))
+    #expect(countsLine(["claimed": 1, "open": 2, "in_progress": 0], order: taskOrder) == "2 open, 1 claimed")
+    #expect(countsLine([:], order: roleOrder) == "none")
+    let server = Device(deviceId: "d4", revoked: false, thisDevice: false, name: "mini", platform: "linux", lastSeenAt: nil,
+                        lastSyncAt: nil, deviceClass: "server")
+    #expect(deviceLine(server) == "mini · linux · server · never seen")
 }

@@ -21,6 +21,7 @@ A, B, C, D = ROOT / 'alice', ROOT / 'bob', ROOT / 'carol', ROOT / 'dave'
 REMOTE = ROOT / 'remote'
 CLI = [sys.executable, '-m', 'agentmesh_log.cli']
 LOG, RESULTS = ROOT / 'run.log', ROOT / 'results.jsonl'
+REMOTE_FLAGS = ['--filesystem', str(REMOTE)]      # amtest_cross.py swaps in the R2 flags
 BOLD, GREEN, RED, DIM, END = '\033[1m', '\033[32m', '\033[31m', '\033[2m', '\033[0m'
 brokers, ids, tally = {}, {}, {'pass': 0, 'fail': 0}
 
@@ -39,8 +40,16 @@ def last_json(text):
     return best
 
 
-def run(*args, label=None):
-    """Run one CLI command in a pseudo-terminal (so presence prompts reach you) and return its JSON."""
+def run(*args, label=None, tries=3):
+    """Run one CLI command in a pseudo-terminal (so presence prompts reach you) and return its JSON. When a
+    typed presence word was refused (a typo, or a non-English keyboard layout), ask again, up to ``tries``."""
+    for attempt in range(tries):
+        result, prompted = _run_once(args)
+        if not (prompted and result.get('error') == 'presence_required') or attempt == tries - 1: return result
+        print(f'  {RED}Not accepted.{END} Switch the keyboard to English and type the word exactly; asking again.', flush=True)
+
+
+def _run_once(args):
     argv = CLI + [str(a) for a in args]
     shown = ' '.join(str(a) for a in args).replace(str(ROOT), '~/amtest')
     print(f'{DIM}$ cli {shown}{END}', flush=True)
@@ -50,7 +59,7 @@ def run(*args, label=None):
     pty.spawn(argv, read)
     text = b''.join(chunks).decode('utf-8', 'replace').replace('\r\n', '\n')
     with LOG.open('a') as log: log.write(f'$ cli {shown}\n{text}\n')
-    return last_json(text) or {'error': 'no_json_output'}
+    return last_json(text) or {'error': 'no_json_output'}, 'AgentMesh presence:' in text
 
 
 def check(name, ok, detail=None):
@@ -74,7 +83,7 @@ def ok(result): return isinstance(result, dict) and 'error' not in result
 def denied(result, code='denied'): return isinstance(result, dict) and result.get('error') == code
 def sync(*homes):
     for home in homes:
-        result = run('broker', 'sync', '--home', home, '--filesystem', REMOTE)
+        result = run('broker', 'sync', '--home', home, *REMOTE_FLAGS)
         if not ok(result): check(f'sync {home.name}', False, result)
     time.sleep(2.5)          # running brokers look for synced objects every 2 s
 

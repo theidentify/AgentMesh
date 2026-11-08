@@ -62,7 +62,9 @@ cli broker sync --home $C $R
 
 1. Send Bob Alice's **account ID**, **fingerprint** and **workspace ID** over a channel you trust
    (in person or a call).
-2. Bob, first with a deliberately wrong fingerprint, then the right one:
+2. Bob, first with a deliberately wrong fingerprint, then the right one. `join` asks for presence
+   (type `grant`). Use the English keyboard for every presence word: a word typed in another layout
+   is refused as `presence_required`.
    ```powershell
    cli workspace join --home $B --profile-id WORKSPACE --owner-account ALICE --owner-fingerprint 0000-0000-0000-0000-0000-0000-0000-0000
    cli workspace join --home $B --profile-id WORKSPACE --owner-account ALICE --owner-fingerprint FP_ALICE
@@ -273,3 +275,21 @@ signs it must be an owner or admin at that time.)
 
 The checklist with ✅ / ❌ / ⏭️, and for each ❌ the command, its JSON output, and the broker log
 lines around that time (`broker run --log-dir` if you used it).
+
+## Results, 2026-11-08
+
+- **Steps 1–6 on one Mac** (three or four accounts, a folder as the remote, `scripts/amtest_guided.py`):
+  run 4 passed 60 of 62. The two failures were a mistyped presence word and a check aimed at the
+  wrong task; the check is now fixed. Earlier runs found two bugs, both fixed in #181: a running
+  broker ignored objects a one-shot `broker sync` downloaded, and task state counted toward quotas.
+- **Steps 1–6 across machines** (Alice, Carol and Dave on the Mac, Bob on Windows, real R2 under
+  `ws-test/`, `scripts/amtest_cross.py`): 64 of 69 passed. All five failures came from presence words
+  typed with a Thai keyboard layout in the first attempt. Four of them passed when redone; the
+  wrong-root-fingerprint check went undecided here but passed in the Mac-only run. Everything run on
+  Windows passed:
+  - join by fingerprint;
+  - leases, notes and the claim race (same owner on both machines, `conflict: true`);
+  - staging and quota (including release while over quota);
+  - after removal: writes denied and new events unreadable.
+- **Not yet run:** 7 (Insight), 8 (gateway), 9 (Slack), 10 (OIDC) and 11 (clean-up of `ws-test/`,
+  the test homes and their key store items).

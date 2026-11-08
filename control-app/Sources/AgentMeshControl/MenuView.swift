@@ -141,6 +141,12 @@ struct MenuView: View {
     }
 
     private func setLoginItem(_ on: Bool) {
+        // Unbundled, SMAppService registers the bare executable as a legacy login item, which macOS then opens in
+        // Terminal at every login. Only the installed bundle may register; unregistering stays allowed everywhere.
+        if on && Bundle.main.bundleIdentifier == nil {
+            model.loginError = "Launch at login needs the installed app (control-app/bundle.sh)."
+            return
+        }
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             model.loginError = nil

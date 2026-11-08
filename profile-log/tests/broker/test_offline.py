@@ -26,3 +26,20 @@ def test_p3_9_offline(tmp_path):
     remote.put(f"events/{state.trees[0].root.scope_id}/{state.grants[agents[0].agent_id].default_write}/tampered.json",b'{}')
     assert c.sync_once(remote)['invalid']==1
     assert f"events/{state.trees[0].root.scope_id}/{state.grants[agents[0].agent_id].default_write}/tampered.json" not in list(c.replica.storage.list('events/'))
+
+
+def test_live_broker_adopts_sync(tmp_path, monkeypatch):
+    """A one-shot `broker sync` (another process) downloads into the replica of a running broker; the running
+    broker must see those events on its next request, and must not adopt objects that fail verification."""
+    import agentmesh_log.broker.service as service
+    monkeypatch.setattr(service, 'ADOPT_INTERVAL', 0)
+    home,state,store,agents=setup_home(tmp_path); b=Broker(home); s=Session(agents[0].certificate())
+    remote=FilesystemStorage(tmp_path/'remote')
+    second=BrokerHome(tmp_path/'second'); FileKeyStore(second).save(state)
+    running=Broker(second); assert recall(running,s)['results']==[]          # started before anything was synced
+    remember(b,s,agents[0]); assert b.sync_once(remote)['errors']==0
+    assert Broker(second).sync_once(remote)['downloaded']==1                    # the one-shot sync process
+    assert recall(running,s)['results'][0]['content']=='migrate database'
+    scope=f"events/{state.trees[0].root.scope_id}/{state.grants[agents[0].agent_id].default_write}/"
+    running.replica.storage.put(scope+'tampered.json',b'{}')
+    assert running.adopt_local(force=True)==0 and scope+'tampered.json' not in running.replica.keys()

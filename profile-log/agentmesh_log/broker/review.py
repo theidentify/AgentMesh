@@ -17,6 +17,9 @@ from .. import ulid
 
 KIND = 'review'
 EXEMPT = ('task_state', 'task_note', 'page', KIND)
+# Task state changes (claim, handoff, release) never count toward a daily quota and are never refused by one: a cap
+# that blocked a release would leave the task leased until its lease ran out. Notes and memories still count.
+QUOTA_FREE = ('task_state', KIND)
 VERDICTS = ('approved', 'rejected')
 REVIEWERS = ('owner', 'admin', 'member')
 DAY_MS = 86_400_000
@@ -73,7 +76,7 @@ def over_quota(rows, workspace_of):
     counts, over = {}, set()
     for row in sorted(rows, key=lambda r: r['id']):
         ws = workspace_of(row['profile'])
-        if ws is None or row['kind'] == KIND: continue
+        if ws is None or row['kind'] in QUOTA_FREE: continue
         settings = ws.at(_at(row)).settings
         author = row.get('_author') or {}; day = _at(row) // DAY_MS
         for field, key in (('agent', 'quota.agent_events_per_day'), ('account', 'quota.member_events_per_day')):
@@ -88,5 +91,5 @@ def over_quota(rows, workspace_of):
 def used_today(rows, scope, field, value, now_ms):
     """How many events ``value`` (an agent or account) wrote in ``scope`` today, for the writer-side check."""
     day = now_ms // DAY_MS
-    return sum(1 for r in rows if r['scope'] == scope and r['kind'] != KIND and _at(r) // DAY_MS == day
+    return sum(1 for r in rows if r['scope'] == scope and r['kind'] not in QUOTA_FREE and _at(r) // DAY_MS == day
                and (r.get('_author') or {}).get(field) == value)

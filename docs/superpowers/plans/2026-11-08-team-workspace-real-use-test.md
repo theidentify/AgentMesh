@@ -94,6 +94,14 @@ cli broker grant --home $A --name alice-agent --read acme/mesh --write acme/mesh
 ```powershell
 cli broker grant --home $B --name bob-agent --read acme/mesh --write acme/mesh
 ```
+A new agent's first request needs a `first_access` presence window on its home; without one every
+agent command returns `presence_required`. Open it on each home after creating its key (type `open`):
+```sh
+cli presence open --home $A
+```
+```powershell
+cli presence open --home $B
+```
 Then:
 ```sh
 cli task create AM-1 --scope acme/mesh --title "Real-use test" --claim --next "check leases" --agent-key ALICE_KEY
@@ -128,15 +136,21 @@ Bob syncs, then runs `task claim AM-1 ... --status in_progress`.
 ## 4. Review and quotas (W3)
 
 ```sh
-cli workspace settings --home $A --profile acme --review-staged on --quota-agent 3
+cli workspace settings --home $A --profile acme --review-staged on --quota-agent 5
 cli broker sync --home $A $R
 ```
-Bob syncs, writes 4 facts with `remember ... --scope acme/mesh`, then syncs again.
+Bob syncs, adds a note to AM-1, writes 4 facts with `remember ... --scope acme/mesh`, then creates
+and releases a task of his own (`task create AM-2 ... --claim`, then `task update AM-2 --status open`;
+AM-1 is Alice's after the race), then syncs again. Notes and memories count toward the
+daily cap; task state changes don't, so a capped agent can still release or hand off. With his
+note from step 3, the cap of 5 is reached at the third fact.
 
-- [ ] Bob's 4th write returns `quota_exceeded`.
+- [ ] Bob's 4th fact returns `quota_exceeded`, and the AM-2 claim and release after it succeed.
 - [ ] Alice, after syncing: a plain `recall` does not show Bob's facts, and `recall --include-pending`
   shows them as `review: pending`.
-- [ ] `review EVENT_ID --verdict approved --agent-key ALICE_KEY` asks for presence. Afterwards plain
+- [ ] `review EVENT_ID --verdict approved --agent-key ALICE_KEY` runs through Alice's broker, so it
+  needs a workspace presence window first: `cli presence open --home $A --class workspace`
+  (without it, `presence_required`). Afterwards plain
   recall shows that fact as `approved`.
 - [ ] Task notes and task changes are not staged.
 
@@ -155,6 +169,7 @@ cli workspace invite accept --home $A --profile acme
 cli broker sync --home $A $R
 cli broker sync --home $C $R
 cli broker grant --home $C --name drop --write acme/inbox
+cli presence open --home $C        # first access of the new key
 ```
 With Carol's broker running:
 ```sh
@@ -162,8 +177,10 @@ cli remember "contractor report" --scope acme/inbox --agent-key CAROL_KEY
 cli recall "contractor report" --agent-key CAROL_KEY              # expect denied (write-only)
 cli broker sync --home $C $R && cli broker sync --home $A $R
 ```
-- [ ] `invite accept` admits Carol as `contributor`. Using the same token from Bob's home is
-  refused with `no uses left`.
+- [ ] `invite accept` admits Carol as `contributor`. Using the same token from a **new** account
+  (a fourth test home: `broker init`, sync, `workspace join --invite`, sync, then `invite accept` on Alice)
+  is skipped with reason `no uses left`. Don't use Bob for this: `accept` ignores uses from accounts
+  that are already members, so his use is dropped without a reason.
 - [ ] Carol's write succeeds, her recall is `denied`, and Alice recalls the report from `acme/inbox`.
 - [ ] Carol's home has no read keys for `acme`, and only `acme` and `acme/inbox` in its tree.
 

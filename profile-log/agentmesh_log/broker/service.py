@@ -18,6 +18,7 @@ from .. import keyring
 from ..presence import PresenceManager
 from .grants import names, resolve, readable, descendants
 from .replica import Replica
+ADOPT_INTERVAL=2    # seconds between checks for replica objects written by another process
 from .audit import Audit
 from .detect import sanitize
 from .index import AgentIndex
@@ -190,6 +191,7 @@ class Broker:
         self.on_overview=on_overview; self._overview_written=None; self._passkey_cache=None
         self._remote_keys=set(); self.sync_thread=None
         self._sync_lock=threading.Lock(); self._attempt_lock=threading.Lock()
+        self._adopted_at=None
         from .imports import Imports
         self.imports=Imports(self)
         self.semantic=None; self._semantic_wake=threading.Event()
@@ -399,6 +401,16 @@ class Broker:
         audit.update(result_ids=[row['id']],label=row['label'])
         return dict(path=tree.canonical(row),event=row,markdown=tree.markdown(row),stale=tree.stale(row,rows))
 
+    def adopt_local(self, *, force=False):
+        """Index replica objects another process wrote while this broker runs (a one-shot ``broker sync``
+        downloads into the same replica). Checked at most every ADOPT_INTERVAL seconds; call under self.lock."""
+        now=time.monotonic()
+        if not force and self._adopted_at is not None and now-self._adopted_at<ADOPT_INTERVAL: return 0
+        self._adopted_at=now
+        for grant in self.state.grants.values(): self.index(grant)
+        try: return self.replica.adopt(self.ingest)
+        except StorageError: return 0
+
     def ingest(self, envelope, data):
         try: _,payload=self._open(envelope,data)
         except (ValueError,KeyError,StopIteration): return
@@ -450,7 +462,7 @@ class Broker:
             pending=session.pending; session.pending=None
             if not isinstance(request,dict) or request.get('op')!='sign': self.imports.release(session)
             try:
-                self.refresh()
+                self.refresh(); self.adopt_local()
                 if type(request) is not dict: raise ValueError('invalid_request')
                 op=request.get('op')
                 if type(op) is not str or op not in SCHEMAS: raise ValueError('invalid_request')
@@ -740,7 +752,7 @@ class Broker:
         sid=grant.default_write if name is None else resolve(self.state,name)
         if sid not in grant.write or (name is None and self.scope(sid).kind=='common'): raise ValueError('denied')
         self.check_write_epoch(sid)
-        if not review_write: self.check_quota(session,grant,sid,scope_names)
+        if not review_write and not task_write: self.check_quota(session,grant,sid,scope_names)   # see review.QUOTA_FREE
         previous=None; revises=req.get('revises')
         if op=='revise':
             from ..ulid import parse as parse_ulid

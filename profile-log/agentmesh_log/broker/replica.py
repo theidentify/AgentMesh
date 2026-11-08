@@ -101,6 +101,35 @@ class Replica:
             remote_keys |= p['remote']
         return dict(full=p['full'],now=now,keys=remote_keys,skip=p['skip'])
 
+    def _verify(self, key, data):
+        """The verified event for an ``events/`` object (None for a key wrap); raises when the object is invalid."""
+        if key.startswith('events/'):
+            event = verify_event(data,self.state.registry())
+            if event_path(event) != key: raise ValueError('invalid object path')
+            return event
+        wrap = parse(data)
+        if wrap_path(wrap) != key: raise ValueError('invalid object path')
+        parents = [k for t in self.state.trees for epochs in t.epochs.values() for k in epochs
+                   if k.scope_id == wrap['parent_scope'] and k.key_id == wrap['parent_key_id']]
+        if not parents: raise ValueError('unknown wrap parent')
+        unwrap_key(wrap,parents[0])
+        return None
+
+    def adopt(self, on_event=None):
+        """Take in objects that another process wrote into this replica after it was opened (a one-shot
+        ``broker sync`` beside a running broker). They get the same checks as downloads. An object that fails
+        is left out and tried again on the next call, since it may still be half written or need keys that
+        arrive later. Returns how many objects were adopted."""
+        adopted = 0
+        for prefix in ('events/','keys/'):
+            for key in self.storage.list(prefix):
+                if key in self._hashes: continue
+                try: data = self.storage.get(key); event = self._verify(key,data)
+                except Exception: continue
+                self._hashes[key] = hashlib.sha256(data).digest(); self._watermark = None; adopted += 1
+                if event is not None and on_event is not None: on_event(event,data)
+        return adopted
+
     def sync_once(self, remote, on_event=None, *, full=False, plan=None):
         result = dict(uploaded=0,downloaded=0,invalid=0,errors=0,skipped=0)
         if plan is None:
@@ -119,17 +148,7 @@ class Replica:
             if key in plan['skip']: result['skipped'] += 1; continue
             try: data = remote.get(key)
             except Exception: result['errors'] += 1; continue
-            try:
-                if key.startswith('events/'):
-                    event = verify_event(data,self.state.registry())
-                    if event_path(event) != key: raise ValueError('invalid object path')
-                else:
-                    wrap = parse(data)
-                    if wrap_path(wrap) != key: raise ValueError('invalid object path')
-                    parents = [k for t in self.state.trees for epochs in t.epochs.values() for k in epochs
-                               if k.scope_id == wrap['parent_scope'] and k.key_id == wrap['parent_key_id']]
-                    if not parents: raise ValueError('unknown wrap parent')
-                    unwrap_key(wrap,parents[0])
+            try: event = self._verify(key,data)
             except Exception:
                 self._invalid[key] = hashlib.sha256(data).hexdigest(); result['invalid'] += 1; continue
             try:

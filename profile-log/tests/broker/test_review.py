@@ -60,6 +60,18 @@ def test_writer_quota(tmp_path):
     assert fact(alice, 'three') == {'error': 'quota_exceeded'}
     assert 'id' in fact(bob, 'bob one')                      # same account: member total is now 3
     assert fact(bob, 'bob two') == {'error': 'quota_exceeded'}
+    # Task state changes neither count nor get refused: a capped agent can still release or hand off.
+    assert 'id' in alice.task('create', 'AM-9', title='Capped', claim=True)
+    assert 'id' in alice.task('update', 'AM-9', status='open', handoff='over')
+    assert fact(alice, 'four') == {'error': 'quota_exceeded'}
+
+
+def test_task_state_not_over_quota():
+    a, b, c = sorted(ids(3))
+    ws = WS({'quota.agent_events_per_day': 1})
+    _, over = review.standing([row(a, kind='task_state'), row(b), row(c, kind='task_state')], {'p': ws}.get)
+    assert over == set()
+    assert review.used_today([row(a, kind='task_state'), row(b)], 's', 'agent', 'A', ulid.timestamp(b)) == 1
 
 
 class WS:

@@ -80,7 +80,8 @@ def inventory(layout, now):
         devices=[]
         for d in overview['devices']:
             row=dict(device_id=d['device_id'],revoked=d['revoked'],this_device=d.get('this_device',False),name=d.get('name'),
-                platform=d.get('platform'),last_seen_at=d.get('last_seen_at'),last_sync_at=d.get('last_sync_at'))
+                platform=d.get('platform'),last_seen_at=d.get('last_seen_at'),last_sync_at=d.get('last_sync_at'),
+                device_class=d.get('device_class'))
             seen=seconds(row['last_seen_at'])
             if not row['this_device'] and not row['revoked'] and (seen is None or now-seen>DEVICE_STALE_S):
                 found.append(('warning','device_stale',row['device_id']))
@@ -103,6 +104,16 @@ def inventory(layout, now):
     # is already inventory_stale, so it gives no finding of its own.
     if passkeys is not None and not passkeys['items']: found.append(('info','no_passkey','profile'))
 
+    # Shared workspaces (counts only, from the broker's content-free section): what needs a person.
+    workspaces=status_.get('workspaces')
+    for item in (workspaces or {}).get('items',[]):
+        name=item['profile']
+        if item['invite_uses_waiting']: found.append(('warning','workspace_invites_waiting',name))
+        if item['pending_reviews']: found.append(('warning','workspace_reviews_waiting',name))
+        if item['leases_expired']: found.append(('warning','workspace_leases_expired',name))
+        if item['conflicts']: found.append(('info','workspace_conflicts',name))
+        if item['over_quota']: found.append(('info','workspace_over_quota',name))
+
     taken=seconds(backup['at']) if backup else None
     if taken is None: found.append(('warning','backup_never','profile'))
     elif now-taken>BACKUP_MAX_S: found.append(('warning','backup_old','profile'))
@@ -110,4 +121,4 @@ def inventory(layout, now):
     findings=[dict(id=kind+':'+subject,severity=severity,kind=kind,subject=subject)
         for severity,kind,subject in sorted(set(found),key=lambda f:(ORDER[f[0]],f[1],f[2]))]
     return dict(generated_at=iso(int(now*1000)),devices=devices,agents=agents,key_files=files,keystore=keystore,
-        recovery=recovery,backup=dict(backup) if backup else None,passkeys=passkeys,findings=findings)
+        recovery=recovery,backup=dict(backup) if backup else None,passkeys=passkeys,workspaces=workspaces,findings=findings)

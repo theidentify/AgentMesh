@@ -31,9 +31,10 @@ def overview(state, *, heartbeats=None, last_sync=None):
     for d in sorted(registry._devices):
         own=d==state.device.device_id; revoked=d in registry.revocations
         value=local(d,last_sync) if own else (heartbeats or {}).get(d,{}) if not revoked else {}
+        from .registry_store import device_class
         rows.append(dict(device_id=d,revoked=revoked,this_device=own,name=value.get('name'),platform=value.get('platform'),
             last_seen_at=timestamp() if own else iso(value.get('issued_at')),last_sync_at=iso(value.get('last_sync_at')),
-            last_sync_outcome=value.get('last_sync_outcome')))
+            last_sync_outcome=value.get('last_sync_outcome'),device_class=device_class(registry,d)))
         if own and last_sync: rows[-1]['last_sync_at']=last_sync['at']
     return dict(generated_at=timestamp(),
         profiles=[dict(name=t.root.name,scopes=[dict(path=ns[s.scope_id],label=s.default_label.name) for s in t.scopes.values()]) for t in state.trees],
@@ -105,6 +106,7 @@ def valid(value):
     def seq(f): return lambda v:type(v) is list and all(f(x) for x in v)
     def counts(allowed): return lambda v:type(v) is dict and set(v)<=set(allowed) and all(count(n) for n in v.values())
     from .heartbeats import name_valid, iso_valid, PLATFORMS, OUTCOMES as SYNC_OUTCOMES
+    from .registry_store import DEVICE_CLASSES
     when=lambda v:v is None or iso_valid(v)
     hexa=lambda n:lambda v:type(v) is str and re.fullmatch('[0-9a-f]{%d}'%n,v) is not None
     agent=dict(name=text,read=seq(text),write=seq(text),default_write=nullable,allow_secret=boolean,allow_cross_profile=boolean,allow_import=boolean)
@@ -115,10 +117,12 @@ def valid(value):
             agents=seq(lambda v:type(v) is dict and set(agent)<=set(v)<=set(agent)|{'allow_pages','allow_summarize'}
                 and all(({**agent,'allow_pages':boolean,'allow_summarize':boolean})[k](x) for k,x in v.items())),
             # Legacy {device_id,revoked} rows stay valid so an upgrade or rollback never drops other sections.
-            devices=seq(lambda v:obj(dict(device_id=text,revoked=boolean))(v) or obj(dict(device_id=text,revoked=boolean,this_device=boolean,
+            # W2 device_class is optional too, so rows written before it stay valid.
+            devices=seq(lambda v:obj(dict(device_id=text,revoked=boolean))(v) or (lambda row:obj(dict(device_id=text,revoked=boolean,this_device=boolean,
                 name=lambda v:v is None or name_valid(v),platform=lambda v:v is None or v in PLATFORMS,
                 last_seen_at=lambda v:v is None or iso_valid(v),last_sync_at=lambda v:v is None or iso_valid(v),
-                last_sync_outcome=lambda v:v is None or v in SYNC_OUTCOMES))(v)))),
+                last_sync_outcome=lambda v:v is None or v in SYNC_OUTCOMES))({k:x for k,x in row.items() if k!='device_class'})
+                and (('device_class' not in row) or row['device_class'] in DEVICE_CLASSES))(v) if type(v) is dict else False))),
         'keys':obj(dict(generated_at=text,
             agents=seq(obj(dict(name=nullable,key_ref=hexa(32),secret_until=when))),
             recoveries=obj(dict(count=count,latest_issued_at=when)))),

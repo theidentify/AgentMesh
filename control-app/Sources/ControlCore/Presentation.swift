@@ -160,6 +160,18 @@ public func modeText(_ mode: Int?) -> String {
     return String(repeating: "0", count: max(0, 4 - digits.count)) + digits
 }
 
+/// Workspace findings have their own section; the Keys section lists the rest.
+public func isWorkspaceFinding(_ finding: Finding) -> Bool { finding.kind.hasPrefix("workspace_") }
+
+/// "2 open, 1 claimed" in a fixed status order; "none" when empty.
+public func countsLine(_ counts: [String: Int], order: [String]) -> String {
+    let known = order.compactMap { key in counts[key].flatMap { $0 > 0 ? "\($0) \(key.replacingOccurrences(of: "_", with: " "))" : nil } }
+    return known.isEmpty ? "none" : known.joined(separator: ", ")
+}
+
+public let taskOrder = ["open", "claimed", "in_progress", "blocked", "review", "done", "abandoned"]
+public let roleOrder = ["owner", "admin", "member", "contributor"]
+
 public func sortedFindings(_ findings: [Finding]) -> [Finding] {
     let rank = ["warning": 0, "info": 1]
     return findings.enumerated().sorted { (rank[$0.element.severity] ?? 2, $0.offset) < (rank[$1.element.severity] ?? 2, $1.offset) }
@@ -184,6 +196,11 @@ public func findingText(_ finding: Finding, in inventory: Inventory) -> String {
     case "backup_old": return "The last backup is over 30 days old"
     case "inventory_stale": return "The broker has not refreshed the key inventory for a day"
     case "no_passkey": return "No passkey is set up for approvals"
+    case "workspace_invites_waiting": return "\(s): people are waiting for an invite to be accepted"
+    case "workspace_reviews_waiting": return "\(s): agent writes are waiting for review"
+    case "workspace_leases_expired": return "\(s): a task lease expired while claimed"
+    case "workspace_conflicts": return "\(s): two agents claimed the same task"
+    case "workspace_over_quota": return "\(s): some writes went over the daily quota"
     default: return "\(finding.kind): \(s)"
     }
 }
@@ -210,6 +227,7 @@ public func passkeyLine(_ passkey: Passkey, in inventory: Inventory, now: Date =
 public func deviceLine(_ device: Device, now: Date = Date()) -> String {
     var parts = [device.name ?? device.deviceId]
     if let platform = device.platform { parts.append(platform) }
+    if let kind = device.deviceClass, kind != "workstation" { parts.append(kind) }
     if device.thisDevice { parts.append("this Mac") }
     else if device.revoked { parts.append("revoked") }
     else { parts.append(age(device.lastSeenAt, now: now).map { "seen " + $0 } ?? "never seen") }

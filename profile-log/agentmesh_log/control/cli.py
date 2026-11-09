@@ -4,6 +4,8 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+
+WINDOWS=os.name=='nt'  # tests of the launchd paths set this False on a Windows runner
 from .layout import Layout
 
 CALLS={
@@ -96,7 +98,7 @@ def serve_windows(layout, folder=None):
 
 
 def serve(layout, folder=None):
-    if os.name=='nt': return serve_windows(layout,folder)
+    if WINDOWS: return serve_windows(layout,folder)
     if sys.platform!='darwin': return {'error':'unsupported_platform'}
     import json
     import signal
@@ -203,7 +205,7 @@ def local(args, layout, call, console, launchd, agents, tasks=None, windows=Fals
 
     A test home (AGENTMESH_HOME other than ~/.agentmesh) must name its LaunchAgents folder: the default is the real one,
     whose plists belong to the real supervisor."""
-    if os.name=='nt' or windows: return local_windows(args,layout,call,console,tasks)
+    if WINDOWS or windows: return local_windows(args,layout,call,console,tasks)
     from . import migrate
     from .store import Store
     if agents is None and getattr(args,'agents',None): agents=Path(args.agents).expanduser().absolute()

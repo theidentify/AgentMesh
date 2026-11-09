@@ -29,7 +29,7 @@ def device(tmp_path, extra=()):
     return layout,store,tasks
 
 
-def test_dry_run_lists_every_task_and_changes_nothing(tmp_path):
+def test_dry_run(tmp_path):
     other=('\\AgentMesh-9b6b3962c37aa75426290216','Ready',rendered_job([PY,r'C:\o\.omp_memory\agentmesh.py','sync'],60))
     layout,store,tasks=device(tmp_path,[other])
     result=winmigrate.consolidate(layout,store,console=Console(),call=dead,tasks=tasks)
@@ -40,7 +40,7 @@ def test_dry_run_lists_every_task_and_changes_nothing(tmp_path):
     assert tasks.calls==[] and store.native_units()=={}
 
 
-def test_apply_moves_units_and_removes_their_tasks(tmp_path):
+def test_apply(tmp_path):
     layout,store,tasks=device(tmp_path)
     console=Console()
     result=winmigrate.consolidate(layout,store,console=console,call=alive,tasks=tasks,apply=True)
@@ -62,14 +62,14 @@ def test_apply_moves_units_and_removes_their_tasks(tmp_path):
     assert [r['outcome'] for r in rows]==['requested','ok','ok','ok','ok']
 
 
-def test_apply_needs_the_supervisor_and_presence(tmp_path):
+def test_apply_refusals(tmp_path):
     layout,store,tasks=device(tmp_path)
     assert winmigrate.consolidate(layout,store,console=Console(),call=dead,tasks=tasks,apply=True)=={'error':'supervisor_unavailable'}
     assert winmigrate.consolidate(layout,store,console=Console(False),call=alive,tasks=tasks,apply=True)=={'error':'presence_required'}
     assert tasks.calls==[] and store.native_units()=={}
 
 
-def test_a_busy_job_waits_then_is_left_alone(tmp_path):
+def test_busy_job(tmp_path):
     layout,store,tasks=device(tmp_path)
     tasks.rows['\\org.agentmesh.ingest']['state']='Running'
     naps=[]
@@ -79,7 +79,7 @@ def test_a_busy_job_waits_then_is_left_alone(tmp_path):
     assert result['moved']==['summary','broker']
 
 
-def test_a_failed_save_puts_the_task_back(tmp_path):
+def test_failed_save(tmp_path):
     layout,store,tasks=device(tmp_path)
     winmigrate.save(layout,'broker',dict(task='\\old',xml='<x/>'))  # a file from an earlier run is never overwritten
     result=winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
@@ -88,7 +88,7 @@ def test_a_failed_save_puts_the_task_back(tmp_path):
     assert 'broker' not in store.native_units() and result['moved']==['ingest','summary']
 
 
-def test_duplicates_and_unsupported_tasks_are_skipped(tmp_path):
+def test_skips(tmp_path):
     twin=('\\copy of ingest','Ready',rendered_job(job_argv('ingest'),60))
     odd=('\\bridge','Ready',rendered_job([PY,'-m','agentmesh_log.cli','bridge','serve'],60).replace('</Interval>','</Interval><Duration>P1D</Duration>'))
     layout,store,tasks=device(tmp_path,[twin,odd])
@@ -97,7 +97,7 @@ def test_duplicates_and_unsupported_tasks_are_skipped(tmp_path):
     assert plan['\\bridge']['reason']=='unsupported_task'
 
 
-def test_release_registers_the_saved_task(tmp_path):
+def test_release(tmp_path):
     layout,store,tasks=device(tmp_path)
     winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
     calls=[]
@@ -111,7 +111,7 @@ def test_release_registers_the_saved_task(tmp_path):
     assert winmigrate.release(layout,store,'broker',console=Console(),call=call,tasks=tasks)=={'error':'not_native'}
 
 
-def test_panic_revert_restores_every_task(tmp_path):
+def test_panic_revert(tmp_path):
     layout,store,tasks=device(tmp_path)
     winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
     store.start_run('broker',999999,'gone',1)
@@ -124,7 +124,7 @@ def test_panic_revert_restores_every_task(tmp_path):
     assert store.native_units()=={} and store.open_runs()==[]
 
 
-def test_supervisor_start_disables_a_reimported_task(tmp_path):
+def test_evict(tmp_path):
     layout,store,tasks=device(tmp_path)
     assert winmigrate.evict_reloaded(layout,store,tasks)==[]
     store.set_backend('ingest','native',{},1)
@@ -138,7 +138,7 @@ def args(action, **kw):
     return argparse.Namespace(action=action,**dict(dict(apply=False,unit=None,agents=None,task_folder=None,label=None),**kw))
 
 
-def test_cli_dispatches_windows_moves(tmp_path):
+def test_cli_moves(tmp_path):
     layout,store,tasks=device(tmp_path); store.close()
     common=dict(layout=layout,call=alive,console=Console(),tasks=tasks,windows=True)
     assert cli.execute(args('consolidate'),**common)['apply'] is False
@@ -148,7 +148,7 @@ def test_cli_dispatches_windows_moves(tmp_path):
     assert cli.execute(args('panic-revert'),**common)['reverted']==['broker','summary']
 
 
-def test_cli_task_folder_keeps_tests_off_the_real_install(tmp_path, monkeypatch):
+def test_task_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.Path,'home',classmethod(lambda cls:tmp_path))
     assert cli.task_folder(Layout(tmp_path/'.agentmesh')) is None
     assert cli.task_folder(Layout(tmp_path/'.agentmesh'),'AgentMeshTest-x')=='\\AgentMeshTest-x\\'
@@ -156,7 +156,7 @@ def test_cli_task_folder_keeps_tests_off_the_real_install(tmp_path, monkeypatch)
     assert folder.startswith('\\AgentMeshTest-') and folder.endswith('\\') and folder!=cli.task_folder(Layout(tmp_path/'o2'))
 
 
-def test_cli_writes_the_supervisor_task(tmp_path):
+def test_cli_task(tmp_path):
     layout=Layout(tmp_path/'home'); out=tmp_path/'control.xml'
     result=cli.execute(argparse.Namespace(action='task',out=str(out),python=PYW),layout=layout)
     assert result=={'ok':True,'path':str(out),'task':wintasks.TASK_NAME}

@@ -64,8 +64,8 @@ def test_read_spec(tmp_path):
 
 def test_child_env():
     parent={'HOME':'/h','USER':'u','TMPDIR':'/t/','AGENTMESH_HOME':'/x','PATH':'/evil','SECRET':'s'}
-    assert child_env(dict(env={'PATH':'/p'}),parent)=={'HOME':'/h','USER':'u','TMPDIR':'/t/','PATH':'/p'}
-    assert child_env(dict(env={}),parent)['PATH']==DEFAULT_PATH
+    assert child_env(dict(env={'PATH':'/p'}),parent,windows=False)=={'HOME':'/h','USER':'u','TMPDIR':'/t/','PATH':'/p'}
+    assert child_env(dict(env={}),parent,windows=False)['PATH']==DEFAULT_PATH
 
 
 def test_due_interval():

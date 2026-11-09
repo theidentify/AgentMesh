@@ -38,7 +38,7 @@ def wait_for(check, seconds=20):
     return False
 
 
-def test_runs_a_job_with_the_user_environment(tmp_path):
+def test_job_env(tmp_path):
     store,native=make(tmp_path)
     code='import os,sys; print("AGENTMESH_HOME" in os.environ, "ANTHROPIC_API_KEY" in os.environ, os.getcwd()); sys.exit(3)'
     store.set_backend('ingest','native',spec(tmp_path,code),1)
@@ -47,7 +47,7 @@ def test_runs_a_job_with_the_user_environment(tmp_path):
     assert store.last_exit('ingest')==3
 
 
-def test_stop_ends_the_whole_tree_and_tokens_follow_the_process(tmp_path):
+def test_stop_tree(tmp_path):
     store,native=make(tmp_path)
     child=tmp_path/'child.pid'
     code=('import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(300)"]); '
@@ -63,7 +63,7 @@ def test_stop_ends_the_whole_tree_and_tokens_follow_the_process(tmp_path):
     native.tick(); assert 'broker' not in native.running  # held down after stop
 
 
-def test_reconcile_ends_an_orphan_of_a_previous_supervisor(tmp_path, monkeypatch):
+def test_reconcile(tmp_path, monkeypatch):
     monkeypatch.setattr(native_module,'KILL_GRACE_S',2)
     store,native=make(tmp_path)
     orphan=subprocess.Popen([sys.executable,'-c','import time; time.sleep(300)'],**procs.spawn_options({}))
@@ -75,7 +75,7 @@ def test_reconcile_ends_an_orphan_of_a_previous_supervisor(tmp_path, monkeypatch
         if orphan.poll() is None: orphan.kill()
 
 
-def test_control_pipe_round_trip(tmp_path):
+def test_pipe(tmp_path):
     layout=Layout(tmp_path/'home')
 
     class Control:
@@ -93,11 +93,11 @@ class Console:
     def confirm(self, action, summary): return True
 
 
-def test_consolidate_and_release_a_real_task(tmp_path):
+def test_real_task(tmp_path):
     folder='\\AgentMeshTest-'+uuid.uuid4().hex[:12]+'\\'
     tasks=TaskSchedulerBackend(folder=folder)
     task=folder+'ingest'
-    argv=[sys.executable,str(tmp_path/'job_notify.py'),'--name','ingest','--',sys.executable,'-c','pass']
+    argv=[sys.executable,str(tmp_path/'agentmesh'/'job_notify.py'),'--name','ingest','--',sys.executable,'-c','pass']
     layout=Layout(tmp_path/'home'); layout.ensure(); store=Store(layout.state)
     try:
         tasks.act('register',task,rendered_job(argv,300,cwd=str(tmp_path)))
@@ -110,6 +110,7 @@ def test_consolidate_and_release_a_real_task(tmp_path):
         assert [(r['task'],r['state']) for r in tasks.tasks(fresh=True)]==[(task,'Ready')]
     finally:
         for row in tasks.tasks(fresh=True): tasks.act('delete',row['task'])
-        tasks.powershell('$s=New-Object -ComObject Schedule.Service; $s.Connect(); '
+        try: tasks.powershell('$s=New-Object -ComObject Schedule.Service; $s.Connect(); '
             '$s.GetFolder("\\").DeleteFolder($env:AGENTMESH_TASK_FOLDER.Trim("\\"),0)')
+        except RuntimeError: pass  # an empty test folder left behind is harmless
         store.close()

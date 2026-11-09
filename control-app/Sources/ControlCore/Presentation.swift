@@ -67,7 +67,8 @@ public enum Action: Equatable, Sendable, Hashable {
 public func actions(for row: UnitRow, info: UnitInfo?) -> [Action] {
     if row.move != nil || row.health == .missing { return [] }  // nothing to start on a unit that is not installed
     var list: [Action] = [.start, .restart]
-    if row.kind == "job" { list.append(.stop) }
+    // launchd restarts a KeepAlive service at once; the supervisor holds a native one down until start.
+    if row.kind == "job" || row.backend == "native" { list.append(.stop) }
     if row.health == .failed { list.append(.reset) }
     if info?.nativeOk == true { list.append(.move(to: row.backend == "native" ? "launchd" : "native")) }
     return list

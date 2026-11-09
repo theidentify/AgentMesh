@@ -12,6 +12,9 @@ Deploy (--rev <merge sha> --apply):
   4. point org.agentmesh.insight at the release and drop HERMES_HOME from its plist;
   5. restart the agent and check /health (skip with --no-restart).
 
+After `agentmesh-log control consolidate` the supervisor runs Insight: the plist is parked at
+<home>/control/units/org.agentmesh.insight.plist, and the restart is `agentmesh-log control reload insight`.
+
 Rollback (--rollback --rev <old sha> --apply): restore omp-memory from the newest Trash entry when absent,
 point the plist back and set HERMES_HOME again, restart. The archive copies stay (read-only history).
 """
@@ -108,10 +111,27 @@ def set_plist(plist, release, hermes_home=None):
     os.replace(tmp, plist)
 
 
-def restart(plist, port):
-    domain = 'gui/'+str(os.getuid())
-    subprocess.run(['launchctl', 'bootout', domain+'/'+LABEL], capture_output=True)
-    subprocess.run(['launchctl', 'bootstrap', domain, str(plist)], check=True)
+def default_plist(agentmesh_home, launch_agents):
+    """LaunchAgents, unless the supervisor runs Insight (control consolidate parked its plist)."""
+    plist = Path(launch_agents)/(LABEL+'.plist')
+    parked = Path(agentmesh_home)/'control'/'units'/(LABEL+'.plist')
+    return parked if not plist.exists() and parked.exists() else plist
+
+
+def supervised(plist, agentmesh_home):
+    return Path(plist).parent == Path(agentmesh_home)/'control'/'units'
+
+
+def restart(plist, port, agentmesh_home=None, run=subprocess.run):
+    if agentmesh_home is not None and supervised(plist, agentmesh_home):
+        # The supervisor re-reads the parked plist and restarts its child (asks for the typed confirmation).
+        env = dict(os.environ, AGENTMESH_HOME=str(agentmesh_home))
+        run([str(Path(agentmesh_home)/'venv'/'bin'/'python'), '-m', 'agentmesh_log.cli', 'control', 'reload', 'insight'],
+            check=True, env=env)
+    else:
+        domain = 'gui/'+str(os.getuid())
+        run(['launchctl', 'bootout', domain+'/'+LABEL], capture_output=True)
+        run(['launchctl', 'bootstrap', domain, str(plist)], check=True)
     for _ in range(15):
         try:
             with urllib.request.urlopen('http://127.0.0.1:'+str(port)+'/health', timeout=2) as r:
@@ -128,7 +148,7 @@ def main(argv=None):
     p.add_argument('--repo', type=Path, default=Path(__file__).resolve().parent.parent)
     p.add_argument('--agentmesh-home', type=Path, default=home/'.agentmesh')
     p.add_argument('--hermes-home', type=Path, default=home/'.hermes')
-    p.add_argument('--plist', type=Path, default=home/'Library/LaunchAgents'/(LABEL+'.plist'))
+    p.add_argument('--plist', type=Path, default=None, help='default: LaunchAgents, or the parked plist under the supervisor')
     p.add_argument('--trash', type=Path, default=home/'.Trash')
     p.add_argument('--launch-agents', type=Path, default=home/'Library/LaunchAgents')
     p.add_argument('--port', type=int, default=51877)
@@ -136,6 +156,7 @@ def main(argv=None):
     p.add_argument('--apply', action='store_true', help='perform the plan (default: dry run)')
     p.add_argument('--no-restart', action='store_true')
     a = p.parse_args(argv)
+    if a.plist is None: a.plist = default_plist(a.agentmesh_home, a.launch_agents)
     rev = subprocess.run(['git', '-C', str(a.repo), 'rev-parse', a.rev+'^{commit}'], check=True, capture_output=True, text=True).stdout.strip()
     am, hermes = a.agentmesh_home, a.hermes_home
     releases, archive, omp = am/'status', am/'backups/archive', hermes/'omp-memory'
@@ -190,7 +211,7 @@ def main(argv=None):
         return 0
     if a.no_restart:
         return 0
-    print('health:', restart(a.plist, a.port))
+    print('health:', restart(a.plist, a.port, a.agentmesh_home))
     try:
         with urllib.request.urlopen('http://127.0.0.1:'+str(a.port)+'/api/metrics', timeout=10) as r:
             d = json.load(r)

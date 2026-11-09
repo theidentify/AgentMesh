@@ -265,8 +265,22 @@ def ps_seconds(value):
     return d*DAY+hours*3600+minutes*60+seconds+float('0.'+(cc or '0'))
 
 
-def services(runner=None):
+SUPERVISED={'broker':'broker','bridge':'bridge','Insight':'insight'}
+
+
+def supervised_pids(root):
+    """Pids of units the AgentMesh supervisor runs itself (control consolidate), from <home>/status/supervisor.json."""
+    try: value=json.loads((Path(root)/'status'/'supervisor.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError): return {}
+    units=value.get('units') if isinstance(value,dict) else None
+    if not isinstance(units,dict): return {}
+    return {name:str(row['pid']) for name,row in units.items()
+        if isinstance(row,dict) and type(row.get('pid')) is int and 0<row['pid']<2**31}
+
+
+def services(runner=None, root=None):
     runner=runner or subprocess.run
+    supervised=supervised_pids(root) if root is not None else {}
     def call(argv):
         try:
             p=runner(argv,capture_output=True,text=True,timeout=5)
@@ -276,7 +290,9 @@ def services(runner=None):
     for name,label in [('broker','org.agentmesh.profile-log.broker'),('bridge','org.agentmesh.profile-log.bridge'),('Insight','org.agentmesh.insight'),('cloudflared',None)]:
         raw=call(['launchctl','list',label]) if label else call(['pgrep','-x','cloudflared'])
         pids=re.findall(r'"PID"\s*=\s*(\d+)',raw) if label else re.findall(r'^\d+$',raw,re.M)
-        pids=[p for p in pids if 0<int(p)<2**31]; ids.append(pids)
+        pids=[p for p in pids if 0<int(p)<2**31]
+        if not pids and SUPERVISED.get(name) in supervised: pids=[supervised[SUPERVISED[name]]]
+        ids.append(pids)
         rows.append(dict(service=name,state='not running' if not pids else 'unknown',cpu_s=None,cpu_day=None,rss_mb=None,estimate=True))
     allids=sorted({p for group in ids for p in group}); parsed={}
     if allids:
@@ -413,7 +429,7 @@ class Observer:
         pricing=load_pricing(self.root); prices=pricing['prices']; runs,available=self.runs()
         summary=summary_cost(runs,prices,now)
         if not available: summary.update(month=None,week=None,projection=None)
-        jobs=job_stats(self.root,now); local=services(self.runner)
+        jobs=job_stats(self.root,now); local=services(self.runner,self.root)
         config=read_json(self.root/'insight-config.json'); port=config.get('cloudflared_metrics_port',20241)
         if type(port) is not int or not 1<=port<=65535: port=20241
         tunnel=dict(available=False,requests=None,responses={},bytes={},per_day=None,projection=None)

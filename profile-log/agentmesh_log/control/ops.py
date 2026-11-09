@@ -126,7 +126,9 @@ class Control:
 
     def op_unit_stop(self, unit):
         unit=self.unit(unit)
-        if unit.kind!='job': raise OpError('bad_args','service_keepalive')
+        # launchd restarts a KeepAlive service at once; the native backend holds it down until start.
+        if unit.kind!='job' and getattr(self.backend,'backend_of',lambda u:'launchd')(unit)!='native':
+            raise OpError('bad_args','service_keepalive')
         self.backend.stop(unit)
         return dict(unit=unit.name,action='stop')
 

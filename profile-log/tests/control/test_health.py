@@ -21,7 +21,7 @@ def test_observe_reads_job_state(tmp_path):
     layout=Layout(tmp_path); layout.status.mkdir()
     (layout.status/'job-summary.json').write_text('{"ok": false, "at": "a", "since": "s", "alerted": true}')
     rows={row['name']:row for row in observe(layout,FakeBackend(),UNITS)}
-    assert len(rows)==7
+    assert len(rows)==len(UNITS)
     assert rows['summary']['health']=='failing' and rows['summary']['job']==dict(ok=False,at='a',since='s')
     assert rows['broker']['health']=='down' and rows['retention']['job'] is None
 

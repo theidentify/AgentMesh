@@ -10,6 +10,8 @@ from .transport import UnixClient, PipeClient
 
 
 class BrokerUnreachable(ValueError): pass
+# The socket exists but this process may not connect, e.g. a macOS agent sandbox (EPERM).
+class BrokerPermissionDenied(ValueError): pass
 
 
 class PresenceRequired(ValueError):
@@ -39,6 +41,7 @@ class BrokerClient:
         except OSError as exc:
             if isinstance(exc,(FileNotFoundError,ConnectionRefusedError)) or getattr(exc,'winerror',None) in (2,3):
                 raise BrokerUnreachable('broker_unreachable') from None
+            if isinstance(exc,PermissionError): raise BrokerPermissionDenied('broker_permission_denied') from None
             raise
         return cls(agent,pinned,channel)
 

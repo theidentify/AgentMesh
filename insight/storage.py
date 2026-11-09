@@ -7,7 +7,6 @@ import math
 import os
 from pathlib import Path
 import re
-import sqlite3
 import socket
 import stat
 import subprocess
@@ -116,32 +115,6 @@ def summarizer_state(root):
     day=success.get('day')
     result['last_completed_day']=day if isinstance(day,str) and len(day)==10 else None
     result['pending']=state.get('pending') if type(state.get('pending')) is bool else None
-    return result
-
-
-def sqlite_stats(path):
-    result=dict(available=False,dbstat=None,rows={},tables=[])
-    if path is None or not safe_path(path): return result
-    result.update(db_bytes=file_size(path),wal_bytes=file_size(str(path)+'-wal'),shm_bytes=file_size(str(path)+'-shm'))
-    try:
-        with adapters.sqlite_ro(path) as c:
-            for key in ('page_size','page_count','freelist_count'): result[key]=c.execute('PRAGMA '+key).fetchone()[0]
-            result['reclaimable_bytes']=result['page_size']*result['freelist_count']
-            names=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-            def count(name): return c.execute('SELECT COUNT(*) FROM "'+name.replace('"','""')+'"').fetchone()[0]
-            result['rows']={n:count(n) if n in names else None for n in ('observation_events','memory_items','memory_summaries','summary_state')}
-            try:
-                sizes=[dict(name=r[0],bytes=r[1],rows=None) for r in c.execute('SELECT name,SUM(pgsize) FROM dbstat GROUP BY name ORDER BY SUM(pgsize) DESC')]
-                result['dbstat']=True
-            except sqlite3.OperationalError:
-                sizes=[dict(name=n,bytes=None,rows=count(n)) for n in names]; result['dbstat']=False
-            for row in sizes:
-                row.update(retired=row['name'].startswith(('_sync_','_pg_','pg_')),note=None)
-                if row['retired']: row['note']='removed in 7b'
-            result['tables']=sizes[:15] if result['dbstat'] else sizes
-            result['retired']=[dict(category=prefix,bytes=sum(r['bytes'] for r in sizes if r['name'].startswith(prefix)) if result['dbstat'] else None,retired=True,note='removed in 7b') for prefix in ('_sync_','_pg_','pg_')]
-            result['available']=True
-    except (OSError,sqlite3.Error): pass
     return result
 
 
@@ -339,7 +312,6 @@ def job_stats(root,now):
         today=totals([(r,t) for r,t in rows if t.date()==now.date()]); week=totals(rows)
         wall,cpu=week['wall_s'],week['cpu_s']
         result.append(dict(job=name,today=today,week=week,projection={k:v*30/7 if v is not None else None for k,v in week.items()},runs_day=len(rows)/7 if available else None,cpu_share=cpu/wall if cpu is not None and wall else None,waiting_s=max(0,wall-cpu) if name=='summary' and wall is not None and cpu is not None else None,estimate=True))
-    result.append(dict(job='org.agentmesh.profile-log.catch-up',state='not recorded'))
     return result
 
 
@@ -381,8 +353,8 @@ def fetch_tunnel(url,connection=None,clock=time.monotonic):
 
 
 class Observer:
-    def __init__(self,root,sqlite,metrics_logs=None,*,runner=None,fetcher=None,clock=None,running=None):
-        self.root,self.sqlite=Path(root),sqlite
+    def __init__(self,root,metrics_logs=None,*,runner=None,fetcher=None,clock=None,running=None):
+        self.root=Path(root)
         self.metrics_logs=metrics_logs; self.runner=runner; self.fetcher=fetcher or fetch_tunnel
         self.clock=clock or (lambda:datetime.now(timezone.utc)); self.running=running
         self.previous={}; self.tunnel=None
@@ -395,7 +367,7 @@ class Observer:
             return list({r['run_id']:r for r in read_jsonl(paths) if r.get('record_type')=='run'}.values()),bool(paths)
         except (OSError,ValueError,KeyError,AttributeError): return [],False
 
-    def buffers(self,sql,disk,sync,runs,now):
+    def buffers(self,disk,sync,runs,now):
         rows=[]; previous=self.previous
         def add(category,count=None,size=None,at=None,threshold=None,note=None):
             t=instant(at); age=max(0,(now-t).total_seconds()) if t else None
@@ -410,26 +382,12 @@ class Observer:
         state=read_json(adapters.layout(self.root)['coordinator']['path']); pending=state.get('pending')
         ids=(pending or {}).get('pending_ids') if type(pending) is dict else state.get('pending_ids')
         count=len(ids) if type(ids) is list else 0 if 'pending' in state and pending is None else next((number(r.get('events_pending_after')) for r in reversed(runs) if number(r.get('events_pending_after')) is not None),None)
-        oldest=None; ingest=[]; cursor=None; cursors=[]
-        if self.sqlite and safe_path(self.sqlite):
-            try:
-                with adapters.sqlite_ro(self.sqlite) as c:
-                    if type(ids) is list and ids and len(ids)<=500 and all(type(i) is int for i in ids):
-                        oldest=c.execute('SELECT MIN(occurred_at) FROM observation_events WHERE id IN ('+','.join('?' for _ in ids)+')',ids).fetchone()[0]
-                    ingest=[dict(r) for r in c.execute('SELECT source_agent,MAX(occurred_at) AS at FROM observation_events GROUP BY source_agent')]
-                    cursor=c.execute('SELECT MAX(updated_at) FROM ingestion_cursors').fetchone()[0]
-                    cursors=[dict(r) for r in c.execute('SELECT s.source_agent,MAX(c.updated_at) AS at FROM ingestion_cursors c JOIN source_sessions s ON s.source_path=c.source_path GROUP BY s.source_agent')]
-            except sqlite3.Error: pass
-        add('Summary backlog',count,at=oldest,threshold=DAY)
-        known={'codex','claude','hermes','omp','chatgpt'}
-        for r in ingest: add('Ingest '+(r['source_agent'] if r['source_agent'] in known else 'other'),at=r['at'],threshold=DAY)
-        if not ingest: add('Ingest latest event')
-        for r in cursors: add('Ingest cursor '+(r['source_agent'] if r['source_agent'] in known else 'other'),at=r['at'],threshold=DAY)
-        add('Ingest cursors',at=cursor,threshold=DAY)
+        add('Summary backlog',count,threshold=DAY)
+        # The broker summary's per-tool transcript activity (the staging tables are gone since R5b).
+        tools=adapters.summary_status(self.root).get('tools',[])
+        for r in tools: add('Ingest '+r['tool'],at=r['latest_at'],threshold=DAY)
+        if not tools: add('Ingest latest transcript')
         job=read_json(self.root/'status/job-ingest.json'); add('Ingest last ok',at=job.get('at') if job.get('ok') is True else None)
-        caught=read_json(self.root/'profile-log-status.json').get('last_catch_up') or {}
-        add('Catch-up waiting rows',number(caught.get('waiting')),note='unknown unless waiting is recorded; outcomes and skipped are not waiting counts')
-        wal=add('Staging WAL',size=sql.get('wal_bytes')); wal['warning']|=(wal['bytes'] or 0)>64*1024*1024
         audit=disk['profile']['audit_bytes']; old=previous.get('audit_sample'); growth=None
         if old and audit is not None and old[0] is not None and now>old[1]: growth=max(0,audit-old[0])*DAY/(now-old[1]).total_seconds()
         else:
@@ -449,7 +407,7 @@ class Observer:
         return rows
 
     def compute(self):
-        now=self.clock(); sql=sqlite_stats(self.sqlite); disk=disk_stats(self.root,running=self.running)
+        now=self.clock(); disk=disk_stats(self.root,running=self.running)
         sync=read_json(self.root/'profile-log/sync-status.json'); profile=disk['profile']
         r2=r2_stats(sync,profile['replica']['bytes'] if not disk['truncated'] else None,profile['prefixes'] if not disk['truncated'] else None,now)
         pricing=load_pricing(self.root); prices=pricing['prices']; runs,available=self.runs()
@@ -476,7 +434,7 @@ class Observer:
         claude.update({k.replace('_day','_month'):v*30 if v is not None else None for k,v in list(claude.items())}); claude['bytes_note']='Bytes are not recorded'; claude['estimate']=True
         cpu=[r['cpu_day'] for r in local]+[r.get('week',{}).get('cpu_s')/7 if r.get('week',{}).get('cpu_s') is not None else None for r in jobs[:2]]
         kwh=sum(cpu)/3600*prices['energy']['watts_per_core']/1000 if all(v is not None for v in cpu) else None
-        return dict(available=True,computed_at=now.isoformat(),refresh_seconds=600,sqlite=sql,summarizer=summarizer_state(self.root),disk=disk,profile=profile,r2=r2,
+        return dict(available=True,computed_at=now.isoformat(),refresh_seconds=600,summarizer=summarizer_state(self.root),disk=disk,profile=profile,r2=r2,
             costs=dict(pricing=pricing,r2=r2_cost(r2,prices),summary=summary),compute=dict(services=local,jobs=jobs,summary_duration_day=daily('duration_seconds'),energy=dict(kwh_day=kwh,cost_day=kwh*prices['energy']['price_per_kwh'] if kwh is not None and prices['energy']['price_per_kwh'] is not None else None,estimate=True)),
-            buffers=self.buffers(sql,disk,sync,runs,now),network=dict(r2=r2['network'],tunnel=tunnel,claude=claude,nettop='not measured: requires sampling; unstable macOS format; root-owned cloudflared cannot be attributed reliably without sudo'),
-            followups=['bridge writes drain status','catch-up waiting count','catch-up job resource recording','audit log rotation','orphan index snapshots: likely pruning bug'])
+            buffers=self.buffers(disk,sync,runs,now),network=dict(r2=r2['network'],tunnel=tunnel,claude=claude,nettop='not measured: requires sampling; unstable macOS format; root-owned cloudflared cannot be attributed reliably without sudo'),
+            followups=['bridge writes drain status','audit log rotation','orphan index snapshots: likely pruning bug'])

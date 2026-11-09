@@ -86,9 +86,8 @@ def test_apply_moves_inputs_into_agentmesh_and_rollback_restores(scratch):
     rows = [json.loads(l) for l in (archive/'digest-cron/cron/usage_audit.jsonl').read_text().splitlines()]
     assert [r['fire_id'] for r in rows] == ['f1'] and rows[0]['error'] is True
     assert 'PRIVATE' not in (archive/'digest-cron/cron/usage_audit.jsonl').read_text()
-    with sqlite3.connect(archive/'digest-cron/state.db') as c:
-        assert c.execute('SELECT id FROM sessions').fetchall() == [('cron_%s_1' % deploy_insight.JOB,)]
-        assert 'title' not in {r[1] for r in c.execute('PRAGMA table_info(sessions)')}
+    # The Hermes session table is no longer copied (SQLite retirement R5b); only the audit rows move.
+    assert not (archive/'digest-cron/state.db').exists()
     value = plistlib.loads(s['plist'].read_bytes())
     assert value['ProgramArguments'] == ['/venv/python', '-u', str(release/'server.py'), '--port', '51877']
     assert value['WorkingDirectory'] == str(release)
@@ -97,7 +96,7 @@ def test_apply_moves_inputs_into_agentmesh_and_rollback_restores(scratch):
     data = adapters.metrics(s['am'])
     assert [r['run_id'] for r in data['runs']['bounded']] == ['stray']
     assert [r['run_id'] for r in data['runs']['historical']] == ['f1']
-    assert data['report']['baseline_matched_sessions'] == 1
+    assert data['report']['baseline_matched_sessions'] == 0
     # Re-running is idempotent.
     assert deploy_insight.main(s['args']+['--apply']) == 0
     assert len(list(s['trash'].glob('agentmesh-omp-memory-*'))) == 1

@@ -3,7 +3,6 @@ import io
 import json
 import os
 from pathlib import Path
-import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,31 +16,22 @@ class RelocationTests(unittest.TestCase):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         self.root=Path(tmp.name).resolve(); self.am=self.root/'agentmesh'; self.home=adapters.cron_archive(self.am)
         self.legacy=self.root/'hermes'; (self.legacy/'omp-memory').mkdir(parents=True); self.home.mkdir(parents=True)
-        self.put(self.am/'packet-sync-status.json',dict(format='agentmesh-packet-sync-status-v1',packet_sync='enabled'))
         (self.home/'cron').mkdir()
         self.put(self.home/'cron/jobs.json',{'jobs':[{'id':adapters.JOB,'last_status':'ok'}]})
         (self.home/'cron/usage_audit.jsonl').write_text('')
-        with sqlite3.connect(self.home/'state.db') as c:
-            c.execute('CREATE TABLE sessions(id TEXT, started_at REAL, source TEXT,last_activity_at REAL,ended_at REAL)')
-            c.execute("INSERT INTO sessions VALUES ('fixture',0,'fixture',123,124)")
-        c.close()
 
     def put(self,path,value):
         path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(value))
 
     def install(self,new=True):
-        status=self.am/'exchange/status' if new else self.legacy/'omp-memory/sync/status'
         coordinator=self.am/'jobs/.bounded_digest_state.json' if new else self.legacy/'omp-memory/.bounded_digest_state.json'
-        for node in ('mac','windows'): self.put(status/(node+'.json'),dict(format='agentmesh-status-v1',node=node))
         self.put(coordinator,dict(pending={'phase':'fixture'},success={'day':'2026-10-20'}))
-        return status,coordinator
+        return coordinator
 
     def operations(self):
-        return adapters.operations(adapters.MemoryReader(),None,{'status':'unknown'},self.am)
+        return adapters.operations(self.am)
 
     def check_layout(self,source):
-        peers=adapters.peer_status(agentmesh_home=self.am)['rows']
-        self.assertTrue(all(p['available'] and p['source']==source for p in peers))
         coordinator=self.operations()['pipeline']['coordinator']
         self.assertEqual((coordinator['available'],coordinator['source'],coordinator['phase']),(True,source,'fixture'))
         cron=adapters.metrics(self.am)['cron']
@@ -53,14 +43,12 @@ class RelocationTests(unittest.TestCase):
 
     def test_g2_legacy_omp_memory_is_never_read(self):
         self.install(False)
-        self.assertTrue(all(p['source']=='missing' and not p['available'] for p in adapters.peer_status(agentmesh_home=self.am)['rows']))
         self.assertEqual(self.operations()['pipeline']['coordinator']['source'],'missing')
         self.put(self.legacy/'omp-memory/summary-metrics.jsonl',dict(record_type='run',run_id='legacy',status='committed'))
         self.assertEqual(adapters.metrics(self.am)['runs']['bounded'],[])
 
     def test_g3_mixed_missing(self):
-        self.install()[1].unlink()
-        self.assertEqual(adapters.peer_status(agentmesh_home=self.am)['rows'][0]['source'],'agentmesh')
+        self.install().unlink()
         coordinator=self.operations()['pipeline']['coordinator']
         self.assertEqual(coordinator['source'],'missing'); self.assertFalse(coordinator['available']); self.assertIsNone(coordinator['pending'])
         cron=adapters.metrics(self.am)['cron']
@@ -91,21 +79,12 @@ class RelocationTests(unittest.TestCase):
         override=self.root/'override.jsonl'; self.put(override,dict(record_type='run',run_id='override',status='applied'))
         self.assertEqual([r['run_id'] for r in adapters.metrics(self.am,[override])['runs']['bounded']],['override'])
         self.assertEqual(metrics.report(self.home/'cron/usage_audit.jsonl',self.home/'state.db',override)['new']['sample_count'],1)
+        self.assertEqual(metrics.report(self.home/'cron/usage_audit.jsonl',None,override)['baseline_sessions_available'],0)
         with patch('sys.stdout',new_callable=io.StringIO) as out:
             metrics.main(['--audit',str(self.home/'cron/usage_audit.jsonl'),'--state',str(self.home/'state.db'),'--metrics-log',str(override),'--metrics-log',str(override),'--json'])
             self.assertEqual(json.loads(out.getvalue())['new']['sample_count'],1)
         override.write_text('{invalid}')
         with self.assertRaises(json.JSONDecodeError): adapters.metrics(self.am,[override])
-
-    def test_g6_layout_containment(self):
-        for new in (True,):
-            with self.subTest(new=new):
-                root,_=self.install(new); path=root/'mac.json'; path.unlink(); path.symlink_to(root/'windows.json')
-                self.assertEqual(adapters.peer_status(agentmesh_home=self.am)['rows'][0]['availability'],'unavailable or malformed')
-                path.unlink(); (root/'windows.json').unlink(); root.rmdir()
-                outside=self.root/('outside-'+str(new)); outside.mkdir(); root.symlink_to(outside,target_is_directory=True)
-                self.assertTrue(all(r['availability']=='unavailable or malformed' for r in adapters.peer_status(agentmesh_home=self.am)['rows']))
-                root.unlink()
 
     def test_g12_adapters_never_open_secrets(self):
         self.install()
@@ -119,11 +98,7 @@ class RelocationTests(unittest.TestCase):
         def os_open(path,*args,**kwargs): check(path); return original(path,*args,**kwargs)
         def io_open(path,*args,**kwargs): check(path); return original_io(path,*args,**kwargs)
         with patch('os.open',os_open),patch('io.open',io_open),patch('builtins.open',io_open):
-            adapters.profile_log_status(self.am); adapters.peer_status(agentmesh_home=self.am)
+            adapters.profile_log_status(self.am)
             self.operations(); adapters.metrics(self.am)
-            import syncthing_transport
-            config=self.root/'missing-config.xml'
-            with patch.object(syncthing_transport,'config_path',return_value=config):
-                syncthing_transport.observe(self.am,adapters.layout(self.am)['exchange']['path'])
         self.assertIn(self.am/'profile-log-status.json',opened)
-        self.assertIn(self.am/'exchange/status/mac.json',opened)
+        self.assertIn(self.am/'status/last-ingest.json',opened)

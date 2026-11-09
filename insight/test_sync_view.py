@@ -13,24 +13,22 @@ function element(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',class
 const context={console,Intl,Date,Object,String,Number,URLSearchParams,location:{hash:''},localStorage:{getItem(){},setItem(){}},setInterval(){},fetch:()=>new Promise(()=>{}),document:{getElementById:element,body:element('body'),addEventListener(){},querySelector:element,querySelectorAll(){return []}},window:{scrollTo(){},addEventListener(){}}};
 vm.createContext(context);
 vm.runInContext(SCRIPT,context);
-const peer=(name,fresh,age)=>({peer:name,ack_at:'2026-10-22T09:00:00Z',age_seconds:age,freshness:fresh,has_error:false,sync:{received:5,pending:0,conflict:0,invalid:0},counts:{memory_items:10},cycle:{published:1,applied:0}});
-function run(sync,log){context.SYNC=sync;context.LOG=log;vm.runInContext('ops={sync:SYNC};profileLog=LOG;renderSyncSummary();',context);return [element('sync-headline'),element('sync-devices').innerHTML]}
-let [head,devices]=run({node:'mac',peers:{rows:[peer('Mac','fresh',30),peer('Windows','fresh',40)]},transport_status:{rows:[{peer:'Windows',status:'connected'}]}},{last_sync:{outcome:'ok',stale:false,age_seconds:20,outbox:0,local_objects:3,remote_objects:3}});
+// SETUP ends here.
+function run(log){context.LOG=log;vm.runInContext('ops={};profileLog=LOG;renderSyncSummary();',context);return element('sync-headline')}
+let head=run({last_sync:{outcome:'ok',stale:false,age_seconds:20,outbox:0,local_objects:3,remote_objects:3}});
 assert.equal(head.className,'sync-headline');
 assert.match(head.innerHTML,/Everything is in sync/);
-assert.match(devices,/this device/);
 assert.match(element('sync-profile').innerHTML,/Backup to R2/);assert.match(element('sync-profile').innerHTML,/Desktop, web and mobile/);
-[head,devices]=run({node:'mac',peers:{rows:[peer('Mac','fresh',30),peer('Windows','stale',5*86400)]},transport_status:{rows:[{peer:'Windows',status:'disconnected'}]}},{last_sync:{outcome:'remote_error',last_ok_at:'x',last_ok_age_seconds:7200}});
+head=run({last_sync:{outcome:'remote_error',last_ok_at:'x',last_ok_age_seconds:7200}});
 assert.equal(head.className,'sync-headline bad');
-assert.match(head.innerHTML,/3 things need attention/);
-assert.match(head.innerHTML,/Old sync: Windows last finished a sync cycle 5d ago/);
-assert.match(head.innerHTML,/Old sync: Syncthing cannot reach Windows \(disconnected\)/);
+assert.match(head.innerHTML,/1 thing needs attention/);
 assert.match(head.innerHTML,/remote error; last success 2h ago/);
-assert.match(devices,/Last synced 5d ago/);
-[head]=run({node:'mac',peers:{rows:[{...peer('Mac','fresh',30),sync:{pending:2,conflict:1,invalid:0}}]}},{last_sync:null});
+head=run({last_sync:{outcome:'ok',stale:true,age_seconds:9000,outbox:0,local_objects:3,remote_objects:3,last_ok_at:'x',last_ok_age_seconds:9000}});
 assert.equal(head.className,'sync-headline warn');
-assert.match(head.innerHTML,/Old sync: Mac has 3 packets waiting/);
+assert.ok(!/Old sync|Syncthing/.test(head.innerHTML+element('sync-profile').innerHTML));
 '''
+
+SETUP = HARNESS.split('// SETUP ends here.')[0]
 
 
 def test_sync_summary_plain_language():
@@ -76,7 +74,7 @@ def test_operations_launchd_jobs(tmp_path, monkeypatch, missing):
             (status/('job-'+name+'.json')).write_text(json.dumps({'ok':True,'at':'2026-10-22T09:00:00+00:00'}))
         if missing not in (name+'-plist', name+'-both'):
             (agents/('org.agentmesh.'+name+'.plist')).write_bytes(plistlib.dumps({'StartInterval':300}))
-    pipeline = adapters.operations(adapters.MemoryReader(), None, agentmesh_home=tmp_path)['pipeline']
+    pipeline = adapters.operations(tmp_path)['pipeline']
     assert pipeline['available']
     jobs = pipeline['jobs']
     names = ['Ingest', 'Retention'] if missing == 'summary-both' else ['Ingest', 'Summary'] if missing in ('retention-state', 'retention-both') else ['Ingest', 'Summary', 'Retention']
@@ -125,10 +123,10 @@ def test_overview_verdict_lists_job_failures():
     if not node:
         pytest.skip('Node unavailable for UI script check')
     script = Path(__file__).with_name('index.html').read_text(encoding='utf-8').split('<script>')[1].split('</script>')[0]
-    harness = HARNESS.split("const peer=")[0] + r'''
+    harness = SETUP + r'''
 const recent=new Date(Date.now()-3600e3).toISOString();
-context.DATA={pipeline:{jobs:[{name:'Ingest',has_error:false},{name:'Summary',has_error:true}],failures:{counts:{ingest:{day:60,day_failed:2,week_failed:3},summary:{day:10,day_failed:4,week_failed:4}},rows:[{job:'Summary',at:recent,exit:1,error_class:'ValidationError',status:'blocked',detail:'model worker unavailable'},{job:'Ingest',at:recent,exit:1,error_class:'ValueError',status:'blocked'}]}},agents:{rows:[]}};
-vm.runInContext("ops=DATA;connections={rows:[{id:'sqlite',label:'SQLite',available:true,items:5,summaries:2}]};syncProblems=['Windows last finished a sync cycle 5d ago.'];renderOverview();",context);
+context.DATA={pipeline:{jobs:[{name:'Ingest',has_error:false},{name:'Summary',has_error:true}],failures:{counts:{ingest:{day:60,day_failed:2,week_failed:3},summary:{day:10,day_failed:4,week_failed:4}},rows:[{job:'Summary',at:recent,exit:1,error_class:'ValidationError',status:'blocked',detail:'model worker unavailable'},{job:'Ingest',at:recent,exit:1,error_class:'ValueError',status:'blocked'}]}},summary:{tools:[]}};
+vm.runInContext("ops=DATA;memoryStats={available:true,total:5};syncProblems=['Profile log backup to R2 is stale.'];renderOverview();",context);
 const head=element('overview-headline').innerHTML;
 assert.equal(element('overview-headline').className,'sync-headline bad');
 assert.match(head,/3 things need attention/);

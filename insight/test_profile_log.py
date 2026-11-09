@@ -20,9 +20,7 @@ def fixture():
         overview=dict(generated_at=stamp,profiles=[dict(name='work',scopes=[dict(path='work/common',label='general')])],
             agents=[dict(name='codex',read=['work/common'],write=['work/common'],default_write='work/common',allow_secret=False,allow_cross_profile=False,allow_import=True)],
             devices=[dict(device_id='123456789012PRIVATE',revoked=False)]),
-        migration=dict(generated_at=stamp,projects=[dict(project='AgentMesh',items=3,summaries=1,target='work/common')],unmapped=['unmapped']),
-        last_apply=dict(at=stamp,outcome='approved',changes={'agent_widen':1}),
-        last_catch_up=dict(at=stamp,outcome='ok',outcomes={'created':2},skipped={'mapping_skip':1},unmapped=[],errors=['ValueError'],busy_retries=0,timestamp_fallback=0,secret_labelled=0))
+        last_apply=dict(at=stamp,outcome='approved',changes={'agent_widen':1}))
 
 
 class ProfileLogTests(unittest.TestCase):
@@ -36,21 +34,18 @@ class ProfileLogTests(unittest.TestCase):
 
     def test_g10_projection_age_redaction_and_bounds(self):
         value=fixture(); value.update(key='PRIVATE',content='PRIVATE',agent_key='PRIVATE',path='PRIVATE')
-        for section in ('overview','migration','last_apply','last_catch_up'): value[section]['key']='PRIVATE'
+        for section in ('overview','last_apply'): value[section]['key']='PRIVATE'
         value['overview']['agents'][0].update(content='PRIVATE',name='password=sensitive',path='PRIVATE')
         result=self.read(value)
         self.assertTrue(result['available']); self.assertEqual(result['age_seconds'],60)
-        self.assertEqual(result['last_apply']['age_seconds'],60); self.assertEqual(result['last_catch_up']['age_seconds'],60)
+        self.assertEqual(result['last_apply']['age_seconds'],60)
         self.assertEqual(result['overview']['devices'][0]['device_id'],'123456789012')
         self.assertNotIn('PRIVATE',json.dumps(result)); self.assertNotIn('sensitive',json.dumps(result))
         self.assertEqual(result['overview']['profiles'][0]['scopes'][0]['path'],'work/common')
-        for bad in (True,1.5,'3',-1,2**53,None):
-            value['migration']['projects'][0]['items']=bad
-            self.assertIsNone(self.read(value)['migration']['projects'][0]['items'])
-        for bad in ('bad\x00name','bad\x7fname','bad\x85name','x'*257,42,{}):
-            value['migration']['projects'][0]['project']=bad
-            self.assertIsNone(self.read(value)['migration']['projects'][0]['project'])
-        for section,key in [('overview','profiles'),('overview','agents'),('overview','devices'),('migration','projects'),('migration','unmapped'),('last_catch_up','errors')]:
+        # SQLite retirement R5b: the catch-up's sections are no longer projected, even from an older file.
+        old=fixture(); old['migration']=dict(generated_at='x',projects=[],unmapped=['PRIVATE']); old['last_catch_up']=dict(at='x',outcome='ok')
+        out=self.read(old); self.assertNotIn('migration',out); self.assertNotIn('last_catch_up',out); self.assertNotIn('PRIVATE',json.dumps(out))
+        for section,key in [('overview','profiles'),('overview','agents'),('overview','devices')]:
             v=fixture(); v[section][key]*=501; out=self.read(v)
             self.assertTrue(out['truncated']); self.assertEqual(len(out[section][key]),500)
         v=fixture(); v['overview']['agents'][0]['read']=['work']*501

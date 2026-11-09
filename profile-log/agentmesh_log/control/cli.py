@@ -27,7 +27,11 @@ def add_parsers(commands):
     for action in ('start','stop','restart','reset','adopt','release','reload'): sub.add_parser(action).add_argument('unit')
     consolidate=sub.add_parser('consolidate',help='run every unit under the supervisor: one background item (dry run unless --apply)')
     consolidate.add_argument('--apply',action='store_true')
-    for name in ('consolidate','adopt','release','reload','panic-revert'):
+    handover=sub.add_parser('handover',help='hand the supervisor to AgentMesh Control as its login item (--back to undo)')
+    handover.add_argument('--back',action='store_true')
+    handover.add_argument('--app',default=None,help='the AgentMesh Control bundle (default ~/Applications)')
+    handover.add_argument('--label',default=None,help='another label, for a test supervisor beside the real one')
+    for name in ('consolidate','adopt','release','reload','panic-revert','handover'):
         sub.choices[name].add_argument('--agents',help='the LaunchAgents folder (required with a non-default AGENTMESH_HOME)')
         sub.choices[name].add_argument('--task-folder',help='Windows: only tasks in this Task Scheduler folder '
             '(a non-default AGENTMESH_HOME gets its own folder when this is not given)')
@@ -178,7 +182,8 @@ def execute(args, *, layout=None, call=None, console=None, launchd=None, agents=
     if args.action=='task': return write_task(layout,args.out,args.python)
     if args.action=='plist': return write_plist(layout,args.out,args.python,args.label)
     if call is None: from .client import call
-    if args.action in ('adopt','release','panic-revert','consolidate','reload'): return local(args,layout,call,console,launchd,agents,tasks,windows)
+    if args.action in ('adopt','release','panic-revert','consolidate','reload','handover'):
+        return local(args,layout,call,console,launchd,agents,tasks,windows)
     if args.action.startswith('sqlite-'): return sqlite(args,layout,console,helper)
     op,params=CALLS[args.action](args)
     try: response=call(layout,op,params)
@@ -217,6 +222,11 @@ def local(args, layout, call, console, launchd, agents, tasks=None, windows=Fals
         console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     layout.ensure(); store=Store(layout.state)
     try:
+        if args.action=='handover':
+            from . import handover
+            label=args.label or handover.LABEL
+            if args.back: return handover.hand_back(layout,console=console,agents=agents,label=label,launchd=launchd)
+            return handover.handover(layout,console=console,agents=agents,app=args.app,label=label,launchd=launchd)
         if args.action=='panic-revert':
             return migrate.panic_revert(layout,store,launchd=launchd,agents=agents,label=getattr(args,'label',None))
         if args.action=='adopt':
@@ -232,7 +242,8 @@ def local_windows(args, layout, call, console, tasks):
     """The Windows moves: Task Scheduler instead of launchd, the same typed presence, against the same state.db."""
     from . import winmigrate
     from .store import Store
-    if args.action in ('adopt','reload'): return {'error':'unsupported_platform'}  # consolidate moves every unit at once
+    # consolidate moves every unit at once; handover is the macOS login item
+    if args.action in ('adopt','reload','handover'): return {'error':'unsupported_platform'}
     if tasks is None:
         from .taskscheduler import TaskSchedulerBackend
         tasks=TaskSchedulerBackend(folder=task_folder(layout,getattr(args,'task_folder',None)))

@@ -31,6 +31,7 @@ final class StatusModel {
     var confirmingScope: [String: String] = [:]
     var projectErrors: [String: String] = [:]
     var loginError: String?
+    let supervisorItem = SupervisorLoginItem()
     /// The running ring's angle, 0..<1; nil when nothing spins (not running, or Reduce Motion is on).
     var spinPhase: CGFloat?
     private var spinner: Task<Void, Never>?
@@ -85,6 +86,7 @@ final class StatusModel {
     /// inventory: true fetches keys.inventory now (the menu just opened); otherwise at most once a minute.
     func refresh(inventory force: Bool = false) async {
         let client = client
+        if menuOpen && !supervisorItem.working { await supervisorItem.refresh() }  // launchctl print: only while it shows
         switch await run({ try client.status() }) {
         case .success(let value): status = value; lastError = nil
         case .failure(let error): status = nil; lastError = describe(error)

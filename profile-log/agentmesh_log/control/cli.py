@@ -43,6 +43,7 @@ def serve(layout):
     from .ops import Control
     from .presence_helper import HelperPresence
     from .memory import Memory
+    from .connector import Connector
     from .projects import Mappings
     from .router import Router
     from .server import Supervisor
@@ -57,7 +58,7 @@ def serve(layout):
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=launchd)
     control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves),
-        memory=Memory(layout,presence,moves))
+        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves))
     supervisor=Supervisor(control,layout,ticker=native.tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()

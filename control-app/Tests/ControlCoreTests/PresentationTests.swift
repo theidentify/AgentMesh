@@ -84,7 +84,7 @@ func status(_ rows: [UnitRow]) -> Status {
 @Test func mappingText() {
     #expect(mappingSummary("learn-x", to: "work/common").contains("Agents that may read work/common will see it"))
     #expect(mappingSummary("learn-x", to: "skip").hasPrefix("Keep learn-x out of the profile log."))
-    #expect(ControlClient.presenceOps == ["unit.backend", "mapping.set", "memory.unlock"])
+    #expect(ControlClient.presenceOps == ["unit.backend", "mapping.set", "memory.unlock", "connector.approve"])
 }
 
 func jobRow(_ name: String, pid: Int?, health: Health = .running, kind: String = "job", move: Move? = nil) -> UnitRow {

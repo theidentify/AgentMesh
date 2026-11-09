@@ -40,7 +40,7 @@ def test_p6_3_approve_no_writes(tmp_path):
         def put(self,*args): raise AssertionError('must refuse before writes')
     console=ConsolePresence(input_fn=lambda _: 'approve',isatty=lambda:True,output=lambda _:None)
     before={p:p.read_bytes() for p in home.root.rglob('*') if p.is_file()}
-    with pytest.raises(ValueError,match='denied'):
+    with pytest.raises(ValueError,match='not_authorized'):
         approve(home,store,NoGrants(),'123456',['personal'],'personal/inbox',console,admin=lambda *args:{'client_id':'client','client_name':'Claude'})
     assert before=={p:p.read_bytes() for p in home.root.rglob('*') if p.is_file()}
 
@@ -111,7 +111,7 @@ def test_connector_name_resolution(tmp_path,monkeypatch,action,states,expected):
     monkeypatch.setattr(cli,'select_store',lambda *args:store)
     prompts=[];writes=[]
     monkeypatch.setattr(cli.PresenceManager,'require',lambda *args,**kwargs:prompts.append(1))
-    monkeypatch.setattr(cli,'admin_request',lambda *args:{'ok':True})
+    monkeypatch.setattr(cli,'admin_request',lambda *args,**kwargs:{'ok':True})
     original=storage.put
     def put(*args,**kwargs):writes.append(1);return original(*args,**kwargs)
     monkeypatch.setattr(storage,'put',put)
@@ -161,6 +161,6 @@ def test_connector_exact_id(tmp_path,monkeypatch,action):
         cr.publish(policy_record(state.device,identifier,'Claude','client',read=[{'profile':state.trees[0].root.scope_id,'scopes':None}],remember=None))
     monkeypatch.setattr(cli,'select_store',lambda *args:store)
     monkeypatch.setattr(cli.PresenceManager,'require',lambda *args,**kwargs:None)
-    monkeypatch.setattr(cli,'admin_request',lambda *args:{'ok':True})
+    monkeypatch.setattr(cli,'admin_request',lambda *args,**kwargs:{'ok':True})
     args=parser().parse_args(['connector',action,'--home',str(home.root),'--app',app])
     assert cli.execute(args,backend=None,console=None)['app_id']==app

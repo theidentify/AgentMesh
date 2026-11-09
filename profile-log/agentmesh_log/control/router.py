@@ -5,7 +5,8 @@ class Router:
     def __init__(self, store, launchd, native):
         self.store,self.launchd,self.native=store,launchd,native
 
-    def pick(self, unit): return self.native if self.store.backend(unit.name)=='native' else self.launchd
+    def backend_of(self, unit): return self.store.backend(unit.name)
+    def pick(self, unit): return self.native if self.backend_of(unit)=='native' else self.launchd
 
     def status(self, unit):
         """A native unit that launchd has loaded too is a `conflict`: both would schedule it."""

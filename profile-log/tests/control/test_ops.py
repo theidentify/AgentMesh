@@ -3,6 +3,7 @@ import os
 import pytest
 from agentmesh_log.control.layout import Layout
 from agentmesh_log.control.ops import Control
+from agentmesh_log.control.units import UNITS
 from .support import FakeBackend
 
 CALLER=dict(pid=7,exe='/usr/bin/agent')
@@ -17,7 +18,7 @@ def audit_rows(tmp_path):
 
 def test_status_is_tier0_and_not_audited(tmp_path):
     response=Control(Layout(tmp_path),FakeBackend()).handle(request('status'),CALLER)
-    assert response['ok'] and response['id']=='r1' and len(response['result']['units'])==7
+    assert response['ok'] and response['id']=='r1' and len(response['result']['units'])==len(UNITS)
     assert response['result']['maintenance']['on'] is False and response['result']['quota']['calls']==0
     assert not Layout(tmp_path).audit.exists()
 

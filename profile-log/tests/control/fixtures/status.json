@@ -113,6 +113,39 @@
     "name": "insight-tunnel",
     "pid": null,
     "runtime_s": null
+   },
+   {
+    "backend": "launchd",
+    "health": "missing",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "bridge-tunnel",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "launchd",
+    "health": "missing",
+    "job": null,
+    "kind": "service",
+    "last_exit": null,
+    "move": null,
+    "name": "embed-tunnel",
+    "pid": null,
+    "runtime_s": null
+   },
+   {
+    "backend": "native",
+    "health": "idle",
+    "job": null,
+    "kind": "job",
+    "last_exit": 0,
+    "move": null,
+    "name": "ollama-env",
+    "pid": null,
+    "runtime_s": null
    }
   ]
  }

@@ -36,18 +36,15 @@ Install and operate the broker as described in the [profile-log README](profile-
 
 ## AgentMesh Insight
 
-`insight/` is the integrated local, read-only workspace for memory and operations.
-It includes Overview, Metrics, Memory Browser, Agents, Pipeline (ingest and
-summary), and Sync views, with explicit PostgreSQL-authority versus SQLite-staging
-connections. It does not change memory, cron jobs, provider configuration or sync
-algorithms, and it does not infer agent or transport liveness from file existence.
+`insight/` is the local, read-only status workspace. It has Overview, Metrics, Agents, Pipeline, Sync, Profile log and
+Storage views, built from the profile-log status snapshot, the summary jobs' own status files and this device's
+disk. It shows counts, states and times, never memory content, and it changes nothing.
 
 ```sh
 python3 -u insight/server.py --port 0
 ```
 
-The server prints its loopback URL. Optional runtime paths and a PostgreSQL DSN
-are configured outside Git; absent sources are shown as unavailable. See
+The server prints its loopback URL. See
 [Insight setup, privacy boundaries and verification](insight/README.md).
 
 ## Control plane (macOS)

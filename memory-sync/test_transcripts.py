@@ -69,10 +69,8 @@ class SqliteInventoryTests(unittest.TestCase):
     # In-memory indexes and the supervisor's own state.db, not the staging database; they stay.
     KEEP = {'profile-log/agentmesh_log/broker/index.py', 'profile-log/agentmesh_log/broker/vector_store.py',
             'profile-log/agentmesh_log/control/store.py'}
-    # SQLite retirement R5b removed every memory-sync entry; Insight and profile-log follow in their own changes.
-    RETIRE = {
-        'insight/adapters.py', 'insight/deploy_insight.py', 'insight/metrics.py', 'insight/storage.py',
-        }
+    # SQLite retirement R5b removed every entry. Nothing outside KEEP may touch SQLite again.
+    RETIRE = set()
     MARKERS = ('import sqlite3', 'sqlite3.connect', 'open_readonly', 'sqlite_memory')
 
     def test_no_new_sqlite_users(self):

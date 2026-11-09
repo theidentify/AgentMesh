@@ -1,5 +1,7 @@
 """Control-plane paths under the AgentMesh home; state files are owner-only JSON."""
+import hashlib
 import json
+import os
 from pathlib import Path
 from .. import settings
 from ..broker.keystore import atomic_write
@@ -10,7 +12,7 @@ class Layout:
     def __init__(self, root=None):
         self.root=Path(root) if root is not None else settings.root()
         self.control=self.root/'control'; self.status=self.root/'status'; self.run=self.root/'run'
-        self.socket=self.run/'control.sock'; self.audit=self.control/'audit.jsonl'
+        self.socket=pipe(self.root) if os.name=='nt' else self.run/'control.sock'; self.audit=self.control/'audit.jsonl'
         self.maintenance=self.control/'maintenance.json'
         self.quota=self.control/'quota.json'; self.quota_policy=self.control/'quota-policy.json'
         self.state=self.control/'state.db'; self.units=self.control/'units'; self.presence_helper=self.root/'bin'/'agentmesh-presence'
@@ -23,6 +25,12 @@ class Layout:
         for directory in (self.control,self.run):
             _check(directory); directory.mkdir(mode=0o700,parents=True,exist_ok=True)
         return self
+
+
+def pipe(root):
+    """Windows has no Unix socket: the control endpoint is a named pipe, one per AgentMesh home. multiprocessing creates
+    it with FILE_FLAG_FIRST_PIPE_INSTANCE, so another process cannot take the name while the supervisor holds it."""
+    return r'\\.\pipe\agentmesh-control-'+hashlib.sha256(str(root).lower().encode('utf-8')).hexdigest()[:16]
 
 
 def read_json(path):

@@ -3,13 +3,17 @@ thread (the native backend's once-a-second tick). close() is idempotent and safe
 import json
 import sys
 import threading
-from ..broker.transport import UnixServer, UnixClient
+import os
+from ..broker.transport import PipeClient, PipeServer, UnixServer, UnixClient
 from .peer import peer_pid, executable
 
 
 class Supervisor:
-    def __init__(self, control, layout, server_factory=UnixServer, *, ticker=None, on_close=None, tick_s=1.0):
-        self.control,self.layout,self.server_factory=control,layout,server_factory
+    def __init__(self, control, layout, server_factory=None, *, ticker=None, on_close=None, tick_s=1.0, client_factory=None):
+        windows=os.name=='nt'
+        self.control,self.layout=control,layout
+        self.server_factory=server_factory or (PipeServer if windows else UnixServer)
+        self.client_factory=client_factory or (PipeClient if windows else UnixClient)
         self.ticker,self.on_close,self.tick_s=ticker,on_close,tick_s
         self.stopped=threading.Event(); self.server=None; self.tick_thread=None
         self.closed=False; self.close_lock=threading.Lock()
@@ -48,7 +52,8 @@ class Supervisor:
         if self.tick_thread is not None and self.tick_thread is not threading.current_thread(): self.tick_thread.join(30)
         if self.on_close is not None: self.on_close()
         if self.server:
-            # Closing a listening socket does not wake a thread blocked in accept() on macOS or Linux.
-            try: UnixClient(str(self.layout.socket)).close()
+            # Closing a listening socket does not wake a thread blocked in accept() on macOS or Linux, nor a pipe listener
+            # on Windows: connect once so accept() returns and sees `stopped`.
+            try: self.client_factory(str(self.layout.socket)).close()
             except OSError: pass
             self.server.close()

@@ -1,12 +1,13 @@
 import os
+import os
 import stat
-from agentmesh_log.control.layout import Layout, read_json, write_json
+from agentmesh_log.control.layout import pipe, Layout, read_json, write_json
 
 
 def test_layout_defaults_to_agentmesh_home(monkeypatch, tmp_path):
     monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path))
     layout=Layout()
-    assert layout.socket==tmp_path/'run'/'control.sock'
+    assert layout.socket==(pipe(tmp_path) if os.name=='nt' else tmp_path/'run'/'control.sock')
     assert layout.maintenance==tmp_path/'control'/'maintenance.json'
     assert layout.audit==tmp_path/'control'/'audit.jsonl'
     assert layout.status==tmp_path/'status'

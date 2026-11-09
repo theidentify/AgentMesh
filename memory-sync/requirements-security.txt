@@ -1,2 +1,0 @@
-# Optional strict signing only. Tested release; deliberate upgrades, no vendored crypto.
-cryptography==50.0.2

@@ -18,18 +18,18 @@ func units(_ pairs: (String, Health)...) -> Status { status(pairs.map { row($0.0
 
 @Test func briefFailingStaysQuiet() {
     var watch = Watch()
-    #expect(watch.update(units(("catch-up", .failing)), now: at(0)).isEmpty)
-    #expect(watch.update(units(("catch-up", .failing)), now: at(599)).isEmpty)
-    #expect(watch.update(units(("catch-up", .idle)), now: at(600)).isEmpty)
-    #expect(watch.update(units(("catch-up", .failing)), now: at(900)).isEmpty)  // the clock restarts after a clean poll
+    #expect(watch.update(units(("summary", .failing)), now: at(0)).isEmpty)
+    #expect(watch.update(units(("summary", .failing)), now: at(599)).isEmpty)
+    #expect(watch.update(units(("summary", .idle)), now: at(600)).isEmpty)
+    #expect(watch.update(units(("summary", .failing)), now: at(900)).isEmpty)  // the clock restarts after a clean poll
 }
 
 @Test func lastingFailingNotifiesOnce() {
     var watch = Watch()
-    _ = watch.update(units(("catch-up", .failing)), now: at(0))
-    #expect(watch.update(units(("catch-up", .failing)), now: at(600)).map(\.title) == ["AgentMesh: catch-up is failing"])
-    #expect(watch.update(units(("catch-up", .stuck)), now: at(900)).isEmpty)
-    #expect(watch.update(units(("catch-up", .failed)), now: at(1200)).isEmpty)  // already notified for this episode
+    _ = watch.update(units(("summary", .failing)), now: at(0))
+    #expect(watch.update(units(("summary", .failing)), now: at(600)).map(\.title) == ["AgentMesh: summary is failing"])
+    #expect(watch.update(units(("summary", .stuck)), now: at(900)).isEmpty)
+    #expect(watch.update(units(("summary", .failed)), now: at(1200)).isEmpty)  // already notified for this episode
 }
 
 @Test func missingNeverNotifies() {

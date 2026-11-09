@@ -95,8 +95,8 @@ func jobRow(_ name: String, pid: Int?, health: Health = .running, kind: String =
     #expect(iconState(nil) == .offline)
     #expect(iconState(status([row(health: .idle)])) == .ok)
     #expect(iconState(status([jobRow("broker", pid: 9, kind: "service")])) == .ok)  // services always run
-    #expect(iconState(status([jobRow("catch-up", pid: 9)])) == .running)
-    var maintenance = status([jobRow("catch-up", pid: 9)])
+    #expect(iconState(status([jobRow("summary", pid: 9)])) == .running)
+    var maintenance = status([jobRow("summary", pid: 9)])
     maintenance = Status(units: maintenance.units, maintenance: Maintenance(on: true, reason: "x", since: nil), quota: maintenance.quota)
     #expect(iconState(maintenance) == .maintenance)
     #expect(iconState(status([jobRow("ingest", pid: nil, health: .idle, move: Move(moveId: "m", to: "native", state: "moving"))])) == .moving)

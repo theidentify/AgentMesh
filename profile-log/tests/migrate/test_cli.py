@@ -1,8 +1,9 @@
+import pytest
 from agentmesh_log.cli import parser
 
 
 def test_phase5_cli():
-    assert parser().parse_args(['migrate','plan','--db','/synthetic.db']).action=='plan'
+    with pytest.raises(SystemExit): parser().parse_args(['migrate','plan','--db','/synthetic.db'])  # retired in R5b
     assert parser().parse_args(['recall','synthetic','--compat','--agent-key','/agent']).compat
     assert parser().parse_args(['broker','init','--home','/tmp/test','--profile','work','--file-keystore']).file_keystore
 

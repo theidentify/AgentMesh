@@ -1,7 +1,7 @@
 """New projects waiting for a scope, and mapping.set: the owner picks one, proved by the supervisor's presence check.
 
-catch-up (before the SQLite cutover) and the broker summary (after it) hold back a project the migration mapping does
-not cover and report it, in profile-log-status.json and jobs/summary-unmapped.json. mapping.set only adds a mapping for such a pending project and only to a scope the mapping
+The broker summary holds back a project the migration mapping does not cover and reports it in
+jobs/summary-unmapped.json. mapping.set only adds a mapping for such a pending project and only to a scope the mapping
 already uses (or skip): it never changes an existing mapping, so an agent cannot widen who reads a project's memory,
 and every addition needs the owner's Touch ID or Mac password. The file is replaced atomically, owner-only.
 """
@@ -21,11 +21,8 @@ def covered(mapping, name):
 
 
 def held(layout):
-    """Project names held back for want of a mapping: by the last catch-up (before the SQLite cutover) and by the last
-    broker summary tick (after it, catch-up imports nothing). An unreadable source contributes none."""
+    """Project names the last broker summary tick held back for want of a mapping; an unreadable file gives none."""
     names=[]
-    try: names+=parse(layout.profile_status.read_bytes()).get('last_catch_up',{}).get('unmapped',[])
-    except Exception: pass
     try:
         value=parse((layout.root/'jobs'/'summary-unmapped.json').read_bytes())
         if value.get('format')=='agentmesh-summary-unmapped-v1': names+=value.get('projects',[])
@@ -65,7 +62,7 @@ class Mappings:
             value=parse(self.layout.mapping.read_bytes())
             if project in value['projects']: raise MoveError('not_pending')
             value['projects'][project]=target
-            Mapping(value)  # refuse to write a mapping catch-up could not load
+            Mapping(value)  # refuse to write a mapping the summary could not load
             atomic_write(self.layout.mapping,wire(value))
         finally: self.moves.unhold()
         return dict(project=project,target=target)

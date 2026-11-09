@@ -7,8 +7,6 @@ import sys
 
 import pytest
 
-import job_notify
-import sqlite_memory
 
 HERE = Path(__file__).resolve().parent
 
@@ -18,58 +16,37 @@ def production(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location('agentmesh_production_under_test', HERE / 'jobs/agentmesh_production.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    db = tmp_path / 'mac.db'
-    sqlite_memory.init_database(db)
     config = tmp_path / 'agentmesh-production.json'
-    config.write_text(json.dumps(dict(primary_backend='sqlite', retention='disabled', database=str(db),
-                                      runtime=str(HERE), export_root=str(tmp_path / 'export'),
-                                      status_dir=str(tmp_path / 'status'), roots={'omp': str(tmp_path / 'omp')})))
+    broker = dict(cli_argv=['agentmesh-log'], agent_key=str(tmp_path / 'summarizer.key'),
+                  mapping=str(tmp_path / 'mapping.json'), state_dir=str(tmp_path / 'state'))
+    config.write_text(json.dumps(dict(backend='broker', broker=broker, runtime=str(HERE), status_dir=str(tmp_path / 'status'),
+                                      roots={'omp': str(tmp_path / 'omp')}, summary={})))
     monkeypatch.setattr(module, 'CONFIG', config)
     monkeypatch.setattr(sys, 'path', list(sys.path))
     return module, tmp_path
 
 
-def blocked(module, capsys):
-    assert module.execute('ingest', []) == 1
-    line = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-    return line
+def error(module, capsys, action):
+    assert module.execute(action, []) == 1
+    return json.loads(capsys.readouterr().err.strip().splitlines()[-1])
 
 
-def test_ingest_errors_report_a_notifier_safe_detail(production, capsys, monkeypatch):
+@pytest.mark.parametrize('config', [
+    dict(primary_backend='sqlite', retention='disabled', database='/db', runtime='/rt'),
+    dict(backend='sqlite', primary_backend='sqlite', retention='disabled', database='/db', runtime='/rt')], ids=['implicit', 'named'])
+def test_sqlite_backend_is_refused(production, capsys, config):
+    """SQLite retirement R5b: a config that still selects the staging database never runs."""
     module, tmp_path = production
-    import ingest_sessions
-    monkeypatch.setattr(ingest_sessions, 'ingest', lambda database, roots: dict(
-        found=2, processed=2, skipped=0, inserted=0, errors=2, error_classes=['OperationalError', 'OperationalError']))
-    line = blocked(module, capsys)
-    assert line['detail'] == 'native ingestion errors: OperationalError=2'
-    assert line['error_class'] == 'ValidationError' and line['status'] == 'blocked'
-    assert job_notify.summary_fields(json.dumps(line))['detail'] == line['detail']
-    saved = json.loads((tmp_path / 'status/last-ingest.json').read_text())
-    assert saved['error_classes'] == ['OperationalError', 'OperationalError']
+    module.CONFIG.write_text(json.dumps(config))
+    line = error(module, capsys, 'ingest')
+    assert line['status'] == 'blocked' and line['error_class'] == 'ValueError'
+    assert not (tmp_path / 'status').exists()
 
 
-def test_ingest_no_longer_exports(production, capsys):
-    """SQLite retirement R3: the plaintext Markdown projection is not written; a manual note there is left alone."""
-    module, tmp_path = production
-    root = tmp_path / 'export'
-    root.mkdir()
-    (root / '_Index.md').write_text('# Manual note with the generated name\n')
-    assert module.execute('ingest', []) == 0
-    assert sorted(p.name for p in root.iterdir()) == ['_Index.md']
-    assert not (tmp_path / 'status/last-export.json').exists()
-
-
-@pytest.mark.parametrize('action', ['context', 'recall', 'export', 'retention'], ids=['context', 'recall', 'export', 'retention'])
+@pytest.mark.parametrize('action', ['context', 'recall', 'export', 'retention', 'blocked'])
 def test_legacy_actions_removed(production, capsys, action):
     module, _ = production
-    assert module.execute(action, []) == 1
-    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])['error_class'] == 'ValueError'
-
-
-def test_clean_ingest_still_succeeds(production, capsys):
-    module, tmp_path = production
-    assert module.execute('ingest', []) == 0
-    assert json.loads((tmp_path / 'status/last-ingest.json').read_text())['errors'] == 0
+    assert error(module, capsys, action)['error_class'] == 'ValueError'
 
 
 @pytest.mark.parametrize('name,action', [
@@ -128,16 +105,3 @@ def test_boot_id_macos_preserves_sysctl(production, monkeypatch):
     monkeypatch.setattr(module.subprocess, 'run', run)
     assert module.boot_id() == 'boot value'
     assert calls == [(['/usr/sbin/sysctl', '-n', 'kern.boottime'], dict(capture_output=True, text=True, check=True))]
-
-
-def test_summary_uses_boot_helper(production, monkeypatch):
-    import digest_scheduler
-    module, _ = production
-    config = module.load(); config['summary'] = {}
-    monkeypatch.setattr(module, 'load', lambda: config)
-    monkeypatch.setattr(module, 'boot_id', lambda: 'test-boot')
-    calls = []
-    monkeypatch.setattr(digest_scheduler, 'tick', lambda *a, **k: calls.append(k) or {})
-    monkeypatch.setattr(digest_scheduler, 'read_state', lambda *a: {})
-    assert module.execute('summary', []) == 0
-    assert calls[0]['boot_id'] == 'test-boot'

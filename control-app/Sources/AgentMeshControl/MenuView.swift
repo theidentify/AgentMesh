@@ -79,7 +79,7 @@ struct MenuView: View {
     private func pendingProjects(_ projects: Projects) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("New project needs a scope").font(.callout.weight(.semibold))
-            Text("catch-up holds back its memory until you choose.").font(.caption).foregroundStyle(.secondary)
+            Text("The summary holds back its memory until you choose.").font(.caption).foregroundStyle(.secondary)
             ForEach(projects.pending, id: \.self) { project in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {

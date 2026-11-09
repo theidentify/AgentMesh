@@ -16,7 +16,7 @@ def live(tmp_path):
     layout=Layout(tmp_path).ensure(); layout.status.mkdir(exist_ok=True)
     write_json(layout.status/'job-ingest.json',dict(ok=True,at='2026-10-29T05:00:00+00:00',since='2026-10-29T05:00:00+00:00'))
     moves=Moves(layout,Store(layout.state),None)
-    moves.moves['m']=dict(move_id='m',unit='catch-up',to='launchd',state='moving',started_at=0,ended_at=None); moves.active='m'
+    moves.moves['m']=dict(move_id='m',unit='retention',to='launchd',state='moving',started_at=0,ended_at=None); moves.active='m'
     return Control(layout,FakeBackend(),moves=moves).handle(dict(v=1,id='fixture',op='status',args={}),{})
 
 

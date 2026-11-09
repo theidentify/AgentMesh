@@ -34,50 +34,7 @@ def mapping_value(value):
     return Mapping(m).value
 
 
-def bridge_value(value, state, base):
-    if 'bridge' not in value: return None
-    old = state.control.get('applied_bridge', {})
-    old=deepcopy(old)
-    if 'profiles' in value['bridge']: old.pop('profile',None)
-    if 'profile' in value['bridge']: old.pop('profiles',None)
-    b = settings.merge(old, value['bridge'])
-    b = settings.merge(dict(enabled=False, recall=True, recall_fallback=False, dual_write=True, authority=False, timeout_seconds=10), b)
-    if not b['enabled'] and not old and set(value['bridge']) == {'enabled'}: return b
-    if any(k not in b for k in ('database', 'cli_argv', 'recall_agent', 'import_agent')):
-        raise ValueError('invalid_settings')
-    settings.validate({'bridge': b}, local=True)
-    profiles=b.get('profiles',[b['profile']] if 'profile' in b else [])
-    if not profiles or not set(profiles)<={t.root.name for t in state.trees}: raise ValueError('invalid_settings')
-    from .migrate.source import staging_node
-    if Path(b['database']).exists() or Path(b['database']).is_symlink(): node=staging_node(b['database'])
-    else:
-        # sqlite-retire archived the staging database: nothing can be written to it, so the bridge is recall-only and
-        # keeps the node it was bound to.
-        node=b.get('staging_node')
-        if not node: raise ValueError('invalid_settings')
-        b.update(dual_write=False,authority=False)
-    device=state.device.device_id
-    if ('device_id' in b and b['device_id']!=device) or ('staging_node' in b and b['staging_node']!=node):
-        raise ValueError('invalid_settings')
-    b.update(device_id=device,staging_node=node)
-    return b
-
-
-def render_bridge(base, bridge):
-    """Return the bridge's exact field set without opening the database."""
-    extra=('recall_fallback','device_id','staging_node')
-    if any(k in bridge for k in extra) and not all(k in bridge for k in extra): raise ValueError('invalid_settings')
-    if 'profiles' in bridge and not all(k in bridge for k in extra): raise ValueError('invalid_settings')
-    return dict(format='agentmesh-profile-log-bridge-v1',
-                **{k: bridge[k] for k in ('enabled', 'recall', 'dual_write', 'authority', 'cli_argv', 'timeout_seconds')},
-                **{k:bridge[k] for k in extra if k in bridge},
-                **({'profiles':bridge['profiles']} if 'profiles' in bridge else {'profile':bridge['profile']}),
-                agent_key=str(base / 'agents' / (bridge['recall_agent'] + '.key')),
-                import_agent_key=str(base / 'agents' / (bridge['import_agent'] + '.key')),
-                mapping=str(base / 'migration-mapping.json'))
-
-
-def diff(value, state, mapping=None, bridge=None):
+def diff(value, state, mapping=None):
     changes = []; ns = names(state); by_name = {v: k for k, v in ns.items()}
     def add(kind, name, **extra): changes.append(dict(kind=kind, name=name, **extra))
     if 'profiles' in value:
@@ -111,24 +68,12 @@ def diff(value, state, mapping=None, bridge=None):
                     add('agent_widen' if wider else 'agent_narrow', name, before=old, after=wanted)
     if mapping is not None and mapping != state.control.get('applied_mapping'):
         add('mapping_change', 'migration', before=state.control.get('applied_mapping'), after=mapping)
-    if bridge is not None and bridge != state.control.get('applied_bridge'):
-        old = state.control.get('applied_bridge', dict(enabled=False,recall=True,recall_fallback=False,dual_write=True,authority=False,timeout_seconds=10))
-        kind = 'bridge_enable' if bridge['enabled'] and not old.get('enabled', False) else 'bridge_disable' if old.get('enabled', False) and not bridge['enabled'] else 'bridge_update'
-        # Paths are not necessary to describe agent selection or widening flags.
-        public = lambda b: {k: v for k, v in b.items() if k not in ('database', 'cli_argv')}
-        # Only switching flags off narrows. Any other change (program, database, profile,
-        # agents, timeout) redirects which code runs with which agent key, so it widens.
-        flags = ('enabled', 'recall', 'dual_write', 'authority')
-        changed = {k for k in set(old) | set(bridge) if old.get(k) != bridge.get(k)}
-        add(kind, 'bridge', before=public(old), after=public(bridge),
-            widening=any(k not in flags or bridge.get(k, False) for k in changed))
     return changes
 
 
 def widening(change):
     # A mapping change can move rows into a profile or scope other agents read.
-    return change['kind'] in ('scope_create', 'agent_create', 'agent_widen', 'bridge_enable', 'mapping_change') or (
-        change['kind'] in ('bridge_update', 'bridge_disable') and change.get('widening', False))
+    return change['kind'] in ('scope_create', 'agent_create', 'agent_widen', 'mapping_change')
 
 
 def describe(changes):
@@ -192,8 +137,8 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
             if mapping is not None:
                 from .projects import effective_mapping
                 mapping = effective_mapping(value, state, project_dirs).value
-            bridge = bridge_value(value, state, base)
-            changes = diff(value, state, mapping, bridge); output(describe(changes))
+            # The `bridge` block configured the SQLite staging bridge, retired in R5b: it is still accepted and ignored.
+            changes = diff(value, state, mapping); output(describe(changes))
             if any(c['kind'] == 'unsupported' for c in changes) and not allow_unsupported_report:
                 outcome = 'unsupported'; return dict(error=outcome, diff=changes)
             # Preflight all grants/scopes/output paths before presence or mutation.
@@ -213,15 +158,6 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
                 raise ValueError('invalid_settings')
             if mapping is not None:
                 path = base / 'migration-mapping.json'; settings.safe(path, missing=True); paths.add(path)
-            if bridge is not None and 'database' in bridge:
-                path = Path(bridge['database'] + '.profile-log.json'); settings.safe(path, missing=True); paths.add(path)
-                if not path.parent.is_dir() or path.parent.is_symlink(): raise ValueError('invalid_settings')
-                if bridge['enabled']:
-                    declared_names = set(value.get('agents', state.control.get('agent_names', {})))
-                    # The importer is needed only while the bridge writes to staging; after the cutover it is revoked.
-                    needed = {bridge['recall_agent']} | ({bridge['import_agent']} if bridge['dual_write'] or bridge['authority'] else set())
-                    if not needed <= declared_names: raise ValueError('invalid_settings')
-                    if mapping is None and not state.control.get('applied_mapping'): raise ValueError('invalid_settings')
             if dry_run: return dict(ok=True, diff=changes)
             settings.safe(base / 'apply.jsonl', missing=True)
             if any(widening(c) for c in actionable):
@@ -246,9 +182,6 @@ def apply_settings(*, dry_run=False, allow_unsupported_report=False, console=Non
                                 state.grants[old.agent_id] = make_grant(state, old.agent_id, old.agent_public_key, wanted['read'], wanted['write'], wanted['default_write'], **kw, declared=True)
                     if any(c['kind'] == 'mapping_change' for c in actionable):
                         atomic_write(base / 'migration-mapping.json', wire(mapping)); state.control['applied_mapping'] = mapping
-                    if any(c['kind'].startswith('bridge_') for c in actionable):
-                        if 'database' in bridge: atomic_write(Path(bridge['database'] + '.profile-log.json'), wire(render_bridge(base, bridge)))
-                        state.control['applied_bridge'] = bridge
                     store.save(state)
             outcome = 'approved' if actionable else 'no-op'
             return dict(ok=True, diff=changes)

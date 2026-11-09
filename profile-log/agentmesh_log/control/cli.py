@@ -23,12 +23,8 @@ def add_parsers(commands):
     maintenance.add_argument('--reason',default='maintenance')
     sub.add_parser('audit').add_argument('--limit',type=int,default=20)
     sub.add_parser('panic-revert')
-    retire=sub.add_parser('sqlite-retire',help='retire the SQLite staging database (dry run unless --apply)')
-    retire.add_argument('--apply',action='store_true'); retire.add_argument('--summarizer-key')
-    retire.add_argument('--no-first-run',action='store_true')
-    sub.add_parser('sqlite-rollback').add_argument('--archive',required=True)
-    archive=sub.add_parser('sqlite-archive'); archive.add_argument('step',choices=['list','delete'])
-    archive.add_argument('--archive'); archive.add_argument('--before-30-days',action='store_true')
+    archive=sub.add_parser('sqlite-archive',help='list or delete the archives the SQLite retirement left')
+    archive.add_argument('step',choices=['list','delete']); archive.add_argument('--archive')
     export=sub.add_parser('memory-export',help='write a memory subtree as plaintext markdown files (Touch ID each time)')
     export.add_argument('path'); export.add_argument('folder')
     export.add_argument('--include-internal',action='store_true'); export.add_argument('--allow-synced',action='store_true')
@@ -93,22 +89,17 @@ def execute(args, *, layout=None, call=None, console=None, launchd=None, agents=
 
 
 def sqlite(args, layout, console, helper):
-    """SQLite retirement (R4): owner-run here, never over the socket; apply, rollback and delete are tier 3."""
-    from . import retire
+    """SQLite archives: owner-run here, never over the socket; delete is tier 3."""
+    from . import sqlite_archive
+    if args.step=='list': return {'archives':sqlite_archive.archives(layout.root)}
+    if not args.archive: return {'error':'archive_required'}
     if console is None:
         from ..presence import ConsolePresence
         console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     if helper is None and sys.platform=='darwin':
         from .presence_helper import HelperPresence
         helper=HelperPresence(layout.presence_helper)
-    if args.action=='sqlite-archive':
-        if args.step=='list': return {'archives':retire.archives(layout.root)}
-        if not args.archive: return {'error':'archive_required'}
-        return retire.delete(layout,layout.root,args.archive,console=console,helper=helper,early=args.before_30_days)
-    if args.action=='sqlite-rollback': return retire.rollback(layout,layout.root,args.archive,console=console,helper=helper)
-    setup=retire.Setup(layout.root,args.summarizer_key)
-    if not args.apply: return retire.plan(setup)
-    return retire.retire(layout,setup,console=console,helper=helper,first=not args.no_first_run)
+    return sqlite_archive.delete(layout,layout.root,args.archive,console=console,helper=helper)
 
 
 def local(args, layout, call, console, launchd, agents):

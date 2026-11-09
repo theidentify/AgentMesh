@@ -25,35 +25,12 @@ class Controller:
 
 
 def load_model(backend=None):
-    from ..migrate.mapping import plan, project_targets
-    from ..migrate.source import rows
-    from ..projects import effective_mapping
     from ..pairing import approver_fingerprint
     value=settings.load(); base=settings.root(); home,store=open_home(base,backend); state=store.load()
     ns=names(state); registry=state.registry()
     devices=[dict(device_id=d,revoked=d in getattr(registry,'revocations',{})) for d in sorted(registry._devices)]
+    # The staging database's projects, rows and import ledger are gone with SQLite retirement R5b.
     groups=[]; sources=[]; ledger=None
-    database=value.get('bridge',{}).get('database')
-    if database:
-        mapping=effective_mapping(value,state) if 'migration' in value else None
-        groups=plan(database,mapping)['projects']
-        values=rows(database)
-        groups=project_targets(groups,values,mapping)
-        for row in values:
-            try: target=mapping.target(row) if mapping else None
-            except ValueError: target=None
-            sources.append({k:row[k] for k in ('table','id','scope','project','reason')} | {'target':target})
-        importer=value.get('bridge',{}).get('import_agent')
-        if importer in state.control.get('agent_names',{}):
-            client=None
-            try:
-                key=base/'agents'/(importer+'.key'); settings.safe(key)
-                client=BrokerClient.from_file(key)
-                response=client.request({'op':'import_ledger'})
-                if 'entries' in response: ledger=response['entries']
-            except (ValueError,OSError): pass
-            finally:
-                if client is not None: client.close()
     model=Model(settings.read(base/'settings.json'),scopes=ns.values(),profiles=[t.root.name for t in state.trees],devices=devices,projects=groups,
                 labels={ns[s.scope_id]:s.default_label.name for t in state.trees for s in t.scopes.values()},sources=sources,ledger=ledger,
                 fingerprint=approver_fingerprint(registry,state.device.device_id),effective=value,device_id=state.device.device_id)

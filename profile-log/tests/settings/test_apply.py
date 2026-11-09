@@ -102,21 +102,7 @@ def test_s1_apply_invalid(env):
     assert run()['error']=='invalid_settings'; assert store.path.read_bytes()==before
 
 
-def test_s8_bridge(env):
-    root, home, store=env
-    value=desired(); value['bridge']={'enabled':True,'profile':'work','recall_agent':'reader','import_agent':'reader'}
-    value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
-    save_user(value)
-    local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
-    assert run(console=console())['ok']
-    path=root/'db.profile-log.json'; config=json.loads(path.read_text(encoding='utf-8'))
-    assert set(config)=={'format','enabled','recall','dual_write','authority','cli_argv','agent_key','import_agent_key','mapping','profile','timeout_seconds','recall_fallback','device_id','staging_node'}
-    assert config['agent_key']==str(root/'agents/reader.key')
-    value['bridge']['enabled']=False; save_user(value)
-    assert run()['ok']; assert json.loads(path.read_text(encoding='utf-8'))['enabled'] is False
-
-
-@pytest.mark.parametrize('change', ['scope','create','read','write','allow_secret','allow_cross_profile','allow_import','bridge_enable','recall','dual_write','authority','mapping','cli_argv','timeout'])
+@pytest.mark.parametrize('change', ['scope','create','read','write','allow_secret','allow_cross_profile','allow_import','mapping'])
 def test_s2_widening(env, change):
     root, home, store=env
     value={'agents':{'a':{'read':[],'write':[]}}}; save_user(value); assert run(console=console())['ok']
@@ -125,20 +111,6 @@ def test_s2_widening(env, change):
     elif change in ('read','write'): value['agents']['a'][change]=['work/common']
     elif change in ('allow_secret','allow_cross_profile','allow_import'): value['agents']['a'][change]=True
     elif change == 'mapping': value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
-    else:
-        state=store.load()
-        old=dict(enabled=True,recall=False,dual_write=False,authority=False,timeout_seconds=10,database=str(root/'db'),cli_argv=[sys.executable,'-m','agentmesh_log.cli'],profile='work',recall_agent='a',import_agent='a')
-        if change=='bridge_enable': old['enabled']=False
-        state.control['applied_bridge']=old
-        state.control['applied_mapping']={'format':'agentmesh-migration-mapping-v1','global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
-        store.save(state)
-        value['bridge']={('enabled' if change=='bridge_enable' else change):True}
-        if change=='timeout': value['bridge']={'timeout_seconds':20}
-        if change=='cli_argv':
-            # Redirecting the program that receives the agent key is widening.
-            value['bridge']={}; local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'cli_argv':[sys.executable,str(root/'other-cli')]}}),encoding='utf-8'); local.chmod(0o600)
-        if change=='authority':
-            value['bridge']={}; local=root/'settings.local.json'; local.write_text('{"bridge":{"authority":true}}',encoding='utf-8'); local.chmod(0o600)
     save_user(value); before=store.path.read_bytes()
     assert run(console=console(tty=False))['error']=='presence_required'
     assert store.path.read_bytes()==before
@@ -268,23 +240,15 @@ def test_s2_bridge_flags_off_narrow(env):
     result=run(console=console(calls=calls)); assert result['ok'] and not calls
 
 
-def test_bridge_after_sqlite_retire(env):
-    """The staging database archived by sqlite-retire: apply still works, the bridge turns recall-only, the importer goes."""
+def test_bridge_block_ignored(env):
+    """R5b: the staging bridge is gone. A settings file that still has a `bridge` block applies, and nothing is
+    written for it: no bridge file beside the database, no applied bridge in the broker state."""
     root, home, store=env
-    value=desired(); value['agents']['importer']={'read':[],'write':['work/common'],'allow_import':True}
-    value['bridge']={'enabled':True,'profile':'work','recall_agent':'reader','import_agent':'importer','dual_write':True}
-    value['migration']={'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}
+    value=desired(); value['bridge']={'enabled':True,'profile':'work','recall_agent':'reader','import_agent':'reader'}
     save_user(value)
-    local=root/'settings.local.json'; local.write_text(json.dumps({'bridge':{'database':str(root/'db'),'authority':True,'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8'); local.chmod(0o600)
-    assert run(console=console())['ok']
-    (root/'db').rename(root/'archived.db')
-    path=root/'db.profile-log.json'
-    del value['agents']['importer']; save_user(value)
+    local=root/'settings.local.json'
+    local.write_text(json.dumps({'bridge':{'database':str(root/'staging.db'),'cli_argv':[sys.executable,'-m','agentmesh_log.cli']}}),encoding='utf-8')
+    local.chmod(0o600)
     result=run(console=console())
-    assert result['ok'] and {c['kind'] for c in result['diff']} >= {'agent_remove'}
-    config=json.loads(path.read_text(encoding='utf-8'))
-    assert (config['dual_write'], config['authority'], config['recall'], config['staging_node']) == (False, False, True, 'test-node')
-    assert 'importer' not in store.load().control['agent_names']
-    # Without a recorded node there is nothing to bind to.
-    state=store.load(); state.control['applied_bridge'].pop('staging_node'); store.save(state)
-    assert run(dry_run=True)['error']=='invalid_settings'
+    assert result['ok'] and not any(c['kind'].startswith('bridge') for c in result['diff'])
+    assert not (root/'staging.db.profile-log.json').exists() and 'applied_bridge' not in store.load().control

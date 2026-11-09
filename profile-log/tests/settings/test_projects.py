@@ -53,65 +53,6 @@ def test_s9_layer_pairs(env,tmp_path,low,high):
     assert projects.effective_mapping(load(),store.load(),[folder] if high>=2 else []).value['projects']['demo']=='work/common'
 
 
-def test_migrate_parser():
-    from agentmesh_log.cli import parser
-    for action in ('plan','run','rows','catch-up','report'):
-        argv=['migrate',action,'--settings','--project-dir','/tmp/repo']
-        argv+=['--out','/tmp/report'] if action=='report' else ['--db','/tmp/synthetic.db']
-        if action!='plan': argv+=['--agent-key','/tmp/synthetic.key']
-        if action=='rows': argv+=['--ref','memory_items:1']
-        assert parser().parse_args(argv).settings
-        with pytest.raises(SystemExit): parser().parse_args(argv+['--mapping','/tmp/mapping'])
-
-
-def test_s7_cli_parity(env, monkeypatch):
-    import sqlite3
-    from pathlib import Path
-    from agentmesh_log.cli import parser, execute
-    from agentmesh_log.apply import apply_settings
-    from agentmesh_log.broker.client import BrokerClient
-    from agentmesh_log.broker.service import Broker, Session
-    from agentmesh_log.encoding import parse, typed
-    from agentmesh_log.events import EVENT_DOMAIN
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    root, home, store=env; db=root/'synthetic.db'
-    with sqlite3.connect(db) as conn:
-        conn.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text(encoding='utf-8'))
-        conn.execute('CREATE TABLE agentmesh_staging_identity(node TEXT NOT NULL)')
-        conn.execute("INSERT INTO agentmesh_staging_identity VALUES('test-node')")
-        conn.execute("INSERT INTO memory_items(kind,scope,content,confidence) VALUES('fact','global','synthetic marker',1)")
-    value=config(); value['agents']={'importer':{'write':['work/common'],'allow_import':True}}
-    save_user(value); assert apply_settings(console=console(),output=lambda _:None)['ok']
-    from agentmesh_log.broker.keystore import atomic_write
-    from agentmesh_log.encoding import wire
-    atomic_write(Path(str(db)+'.profile-log.json'),wire(dict(format='agentmesh-profile-log-bridge-v1',device_id=store.load().device.device_id,staging_node='test-node')))
-    mapping=root/'equivalent.json'; put(mapping,{'format':'agentmesh-migration-mapping-v1',**value['migration']})
-    base=['migrate','plan','--db',str(db)]
-    assert execute(parser().parse_args(base+['--settings']))==execute(parser().parse_args(base+['--mapping',str(mapping)]))
-    record=parse((root/'agents/importer.key').read_bytes()); private=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(record['agent_private_key']))
-    import shutil
-    from agentmesh_log.broker.keystore import BrokerHome,FileKeyStore
-    clone=root.parent/'equivalent-home'; shutil.copytree(root,clone)
-    broker=Broker(home,store=store)
-    class Client:
-        def __init__(self): self.session=Session(record['agent_cert'])
-        def request(self, req): return broker.request(self.session,req)
-        def close(self): pass
-        def import_row(self, **kwargs):
-            result=self.request(dict(op='import',**kwargs))
-            while result.get('stage')=='sign': result=self.request(dict(op='sign',signature=private.sign(EVENT_DOMAIN+typed(result['unsigned'])).hex()))
-            return result
-    monkeypatch.setattr(BrokerClient,'from_file',lambda _:Client())
-    base=['migrate','run','--db',str(db),'--agent-key',str(root/'agents/importer.key')]
-    try:
-        first=execute(parser().parse_args(base+['--settings'])); assert first['outcomes']=={'created':1}
-        unchanged=execute(parser().parse_args(base+['--settings']))
-        broker.close(); other_home=BrokerHome(clone/'profile-log'); broker=Broker(other_home,store=FileKeyStore(other_home))
-        assert first==execute(parser().parse_args(base+['--mapping',str(mapping)]))
-        assert unchanged==execute(parser().parse_args(base+['--mapping',str(mapping)]))
-    finally: broker.close()
-
-
 def test_root_mapping(env):
     from agentmesh_log.apply import apply_settings
     from agentmesh_log.migrate.mapping import Mapping

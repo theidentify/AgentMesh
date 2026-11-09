@@ -17,7 +17,7 @@ def audit_rows(tmp_path):
 
 def test_status_is_tier0_and_not_audited(tmp_path):
     response=Control(Layout(tmp_path),FakeBackend()).handle(request('status'),CALLER)
-    assert response['ok'] and response['id']=='r1' and len(response['result']['units'])==8
+    assert response['ok'] and response['id']=='r1' and len(response['result']['units'])==7
     assert response['result']['maintenance']['on'] is False and response['result']['quota']['calls']==0
     assert not Layout(tmp_path).audit.exists()
 
@@ -130,4 +130,4 @@ def test_failed_blocks_until_reset(tmp_path):
     assert control.handle(request('unit.reset',{'unit':'ingest'}),CALLER)['result']==dict(unit='ingest',cleared=True)
     assert control.handle(request('unit.start',{'unit':'ingest'}),CALLER)['ok']
     assert control.handle(request('unit.reset',{'unit':'ingest'}),CALLER)['result']['cleared'] is False
-    assert [u['native_ok'] for u in control.handle(request('units'),CALLER)['result']][:4]==[True]*4
+    assert [u['native_ok'] for u in control.handle(request('units'),CALLER)['result']][:3]==[True]*3

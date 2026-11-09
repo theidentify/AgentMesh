@@ -18,16 +18,12 @@ def boot_id():
 BROKER=('cli_argv','agent_key','mapping','state_dir')
 def load():
  c=json.loads(CONFIG.read_text(encoding='utf-8'))
- # SQLite retirement R2: backend 'broker' reads transcripts directly and writes through the summarizer agent.
- if c.get('backend','sqlite')=='broker':
-  b=c.get('broker')
-  if type(b) is not dict or set(b)!=set(BROKER) or not Path(c['runtime']).is_absolute():raise ValueError('invalid broker backend')
-  if any(not Path(v).is_absolute() for v in (b['agent_key'],b['mapping'],b['state_dir'],c['status_dir'])):raise ValueError('absolute path required')
-  sys.path.insert(0,c['runtime']);return c
- if c.get('backend','sqlite')!='sqlite':raise ValueError('unknown backend')
- if c['primary_backend']!='sqlite' or c['retention']!='disabled':raise ValueError('inactive SQLite authority or unsafe retention')
- if any(not Path(c[k]).is_absolute() for k in ('database','runtime','export_root') if k in c):raise ValueError('absolute path required')
- if not Path(c['database']).is_file():raise ValueError('database unavailable')
+ # The broker backend reads transcripts directly and writes through the summarizer agent. The SQLite backend was
+ # removed in retirement R5b; a config still naming it is refused, never run.
+ if c.get('backend')!='broker':raise ValueError('SQLite backend retired; backend must be broker')
+ b=c.get('broker')
+ if type(b) is not dict or set(b)!=set(BROKER) or not Path(c['runtime']).is_absolute():raise ValueError('invalid broker backend')
+ if any(not Path(v).is_absolute() for v in (b['agent_key'],b['mapping'],b['state_dir'],c['status_dir'])):raise ValueError('absolute path required')
  sys.path.insert(0,c['runtime']);return c
 def save(c,name,value):
  p=Path(c['status_dir'])/(name+'.json');p.parent.mkdir(parents=True,exist_ok=True)
@@ -35,7 +31,7 @@ def save(c,name,value):
 def broker(c,action,args):
  if action not in ('ingest','summary'):raise ValueError('action unavailable on the broker backend')
  p=argparse.ArgumentParser();p.add_argument('--force',action='store_true'); a=p.parse_args(args)
- from bounded_digest import run_lock
+ from digest_io import run_lock
  import broker_digest
  b=c['broker']
  with run_lock(str(CONFIG)+'.'+action):
@@ -59,31 +55,7 @@ def execute(action,argv=None):
  args=list(sys.argv[1:] if argv is None else argv)
  try:
   c=load()
-  if c.get('backend')=='broker':return broker(c,action,args)
-  # SQLite retirement R3: context, recall, export and retention are gone; agents use broker recall and the
-  # memory tree, and the plaintext Markdown export is no longer written (R4 archives the last one).
-  if action not in ('ingest','summary','blocked'):raise ValueError('unknown operation')
-  if action=='blocked':raise ValueError('legacy PostgreSQL writer disabled after SQLite cutover')
-  p=argparse.ArgumentParser();p.add_argument('--force',action='store_true'); a=p.parse_args(args)
-  from datetime import datetime,timezone
-  from bounded_digest import run_lock
-  with run_lock(str(CONFIG)+'.'+action):
-   if action=='ingest':
-    from ingest_sessions import ingest,raise_for_errors
-    report=ingest(c['database'],roots=c['roots']);save(c,'last-ingest',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
-    raise_for_errors(report)
-   elif action=='summary':
-    from digest_scheduler import tick
-    boot=boot_id()
-    try:
-     # The root stays part of the window identity, so a window opened before R3 still resumes; nothing is exported.
-     report=tick(c['database'],root=c.get('export_root',str(Path(c['database']).parent/'export')),exporter=None,boot_id=boot,force=a.force,**c['summary']);save(c,'last-summary',dict(observed_at=datetime.now(timezone.utc).isoformat(),**report))
-    finally:
-     from digest_scheduler import read_state
-     state=read_state(c['database']);state['source_of_truth']='SQLite';state['observed_at']=datetime.now(timezone.utc).isoformat()
-     target=CONFIG.parent/'.bounded_digest_state.json';tmp=target.with_suffix('.tmp');tmp.write_text(json.dumps(state,sort_keys=True),encoding='utf-8');os.replace(tmp,target)
-   else:raise ValueError('unknown operation')
-  return 0
+  return broker(c,action,args)
  except Exception as e:
   from bounded_protocol import error_detail
   print(json.dumps({'status':'blocked','action':action,'error_class':type(e).__name__,'detail':error_detail(e)}),file=sys.stderr);return 1

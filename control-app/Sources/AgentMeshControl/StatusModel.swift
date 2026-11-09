@@ -55,7 +55,7 @@ final class StatusModel {
         }
     }
 
-    /// 2 s while a job runs (so the spin stops when it ends), 5 s with the menu open, 10 s otherwise: catch-up runs
+    /// 2 s while a job runs (so the spin stops when it ends), 5 s with the menu open, 10 s otherwise: ingest runs
     /// last a few seconds, so a slower poll would rarely see one.
     var pollInterval: Double { iconState(status) == .running ? 2 : menuOpen ? 5 : 10 }
     var icon: IconState { iconState(status, inventory: inventory) }

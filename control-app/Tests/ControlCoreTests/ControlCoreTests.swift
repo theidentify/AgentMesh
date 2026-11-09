@@ -147,10 +147,10 @@ func fixture() throws -> Data {
 @Test func fixtureDecodes() throws {
     let envelope = try decoder().decode(Envelope<Status>.self, from: fixture())
     let status = try #require(envelope.result)
-    #expect(status.units.map(\.name) == ["ingest", "summary", "retention", "catch-up", "broker", "bridge", "insight", "insight-tunnel"])
-    let catchUp = try #require(status.units.first { $0.name == "catch-up" })
-    #expect(catchUp.backend == "native" && catchUp.move == Move(moveId: String(repeating: "0", count: 32), to: "launchd", state: "moving"))
-    #expect(status.units.first { $0.name == "retention" }?.health == .missing)
+    #expect(status.units.map(\.name) == ["ingest", "summary", "retention", "broker", "bridge", "insight", "insight-tunnel"])
+    let retention = try #require(status.units.first { $0.name == "retention" })
+    #expect(retention.backend == "native" && retention.move == Move(moveId: String(repeating: "0", count: 32), to: "launchd", state: "moving"))
+    #expect(retention.health == .missing)
     #expect(status.units.first { $0.name == "ingest" }?.job?.ok == true)
     #expect(status.units.first { $0.name == "broker" }?.pid == 4242)
     #expect(status.maintenance == Maintenance(on: false, reason: nil, since: nil) && status.quota.calls == 0)
@@ -184,8 +184,8 @@ func fixture() throws -> Data {
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AMC_LIVE"] == "1")) func liveUnitsOfferMove() throws {
     let client = ControlClient()
     let infos = try client.call("units", as: [UnitInfo].self)
-    let row = try #require(try client.status().units.first { $0.name == "catch-up" })
-    let info = infos.first { $0.name == "catch-up" }
+    let row = try #require(try client.status().units.first { $0.name == "summary" })
+    let info = infos.first { $0.name == "summary" }
     #expect(info?.nativeOk == true)
     #expect(actions(for: row, info: info).contains(.move(to: row.backend == "native" ? "launchd" : "native")))
 }

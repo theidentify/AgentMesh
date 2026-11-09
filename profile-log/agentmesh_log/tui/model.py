@@ -56,26 +56,8 @@ class Model:
         else: migration.setdefault('projects',{})[project]=target
 
     def preview(self):
-        if self.ledger is None: return None
-        result=dict(retired=0,recreated=0,created=0)
-        from ..migrate.run import local_entry
-        if self.device_id is None: return None
-        entries={}
-        for e in sorted(self.ledger,key=lambda e:'device' in e['source']):
-            if local_entry(e,self.device_id): entries[(e['source']['table'],e['source']['id'])]=e
-        migration=settings.merge(self.effective,self.user).get('migration',{})
-        routes=migration.get('projects',{})
-        seen=set()
-        for row in self.sources:
-            key=row['table'],row['id']; seen.add(key); old=entries.get(key)
-            target=(migration.get('global',row['target']) if row.get('scope')=='global' else
-                    migration.get('null_project',row['target']) if row['project'] is None else routes.get(row['project'],row['target']))
-            live=old and old['status']!='retired'
-            wanted=not row['reason'] and target not in (None,'skip')
-            if live and (not wanted or old['scope']!=target): result['retired']+=1
-            if wanted and (not live or old['scope']!=target): result['recreated' if old else 'created']+=1
-        result['retired']+=sum(e['status']!='retired' for key,e in entries.items() if key not in seen)
-        return result
+        """The import ledger preview went with the SQLite staging database (retirement R5b): nothing to preview."""
+        return None
 
     def approve(self,request,callback):
         if not self.pair_scopes: raise ValueError('pairing_empty')

@@ -9,8 +9,8 @@ from .broker.keystore import atomic_write
 from .encoding import label_valid, parse, wire
 
 FORMAT = 'agentmesh-profile-log-status-v1'
-OUTCOMES = ('created','revised','retired','unchanged','other')
-SKIPPED = ('mapping_skip','not_recalled','superseded','resolved','deleted','other')
+# Sections only the SQLite catch-up wrote (retirement R5b); dropped from an older file on its next write.
+RETIRED = ('migration','last_catch_up')
 
 
 def folded(value, allowed):
@@ -73,13 +73,6 @@ def passkeys(state, local, at):
     return dict(generated_at=timestamp(),items=items)
 
 
-def migration(database, mapping):
-    from .migrate.mapping import plan, project_targets
-    from .migrate.source import rows
-    value=plan(database,mapping)
-    return dict(generated_at=timestamp(),projects=project_targets(value['projects'],rows(database),mapping),unmapped=value['unmapped'])
-
-
 def base_for(home_root):
     """Where a broker with this home publishes its status: the AgentMesh home when the broker home lives inside
     it (the installed broker), else the broker home itself, so a test or second broker never overwrites the
@@ -96,6 +89,7 @@ def write(base, **sections):
         path=base/'profile-log-status.json'; settings.safe(path,missing=True)
         try:
             old=parse(settings.read_raw(path))
+            if type(old) is dict: old={k:v for k,v in old.items() if k not in RETIRED}
             if not valid(old): old={}
         except Exception: old={}
         value={**old,**sections,'format':FORMAT,'updated_at':timestamp()}
@@ -144,10 +138,7 @@ def valid(value):
             members=counts(('owner','admin','member','contributor')),
             tasks=counts(('open','claimed','in_progress','blocked','review','done','abandoned')),
             leases_live=count,leases_expired=count,conflicts=count,pending_reviews=count,over_quota=count,invite_uses_waiting=count))))),
-        'migration':obj(dict(generated_at=text,projects=seq(obj(dict(project=nullable,items=count,summaries=count,target=text))),unmapped=seq(text))),
-        'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update')))),
-        'last_catch_up':obj(dict(at=text,outcome=text,outcomes=counts(OUTCOMES),skipped=counts(SKIPPED),
-            unmapped=seq(text),errors=seq(lambda v:text(v) and v.isidentifier()),busy_retries=count,timestamp_fallback=count,secret_labelled=count))}
+        'last_apply':obj(dict(at=text,outcome=text,changes=counts(('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update'))))}
     return (type(value) is dict and value.get('format')==FORMAT and text(value.get('updated_at')) and
             not set(value)-{'format','updated_at',*schemas} and all(schemas[k](v) for k,v in value.items() if k in schemas))
 
@@ -156,27 +147,7 @@ def applied(base, outcome, changes, state=None, value=None, mapping=None):
     try:
         sections=dict(last_apply=dict(at=timestamp(),outcome=outcome,changes=dict(Counter(c['kind'] for c in changes))))
         if state is not None: sections.update(overview=overview(state),keys=keys(state))
-        database=(value or {}).get('bridge',{}).get('database')
-        if database and mapping:
-            from .migrate.mapping import Mapping
-            try: sections['migration']=migration(database,Mapping(mapping))
-            except Exception: pass
         write(base,**sections)
-    except Exception: pass
-
-
-def caught_up(database, mapping, result=None, *, outcome=None, error=None):
-    try:
-        from .migrate.run import error_code
-        result=result or {}
-        last=dict(at=timestamp(),outcome=outcome or ('unmapped' if result.get('unmapped') else 'error' if result.get('errors') else 'ok'),
-            outcomes=folded(result.get('outcomes'),OUTCOMES),skipped=folded(result.get('skipped'),SKIPPED),unmapped=result.get('unmapped',[]),
-            errors=[error_code(error)] if error is not None else result.get('errors',[]),
-            **{k:result.get(k,0) for k in ('busy_retries','timestamp_fallback','secret_labelled')})
-        sections=dict(last_catch_up=last)
-        try: sections['migration']=migration(database,mapping)
-        except Exception: pass
-        write(settings.root(),**sections)
     except Exception: pass
 
 

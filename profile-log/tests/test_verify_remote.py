@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -143,29 +142,10 @@ def test_markers_not_folded(synced, capsys, probe):
     assert result['marker_hits'] == 0 and result['missing_local'] == 1
 
 
-def test_sample(synced, tmp_path, capsys, monkeypatch):
-    # URI-special characters in the path; '?' is not a valid Windows filename character.
-    db = tmp_path / ('source ?#%.db' if os.name == 'posix' else 'source #%.db')
-    content = 'SECRET sampled content has at least six words in this sentence'
-    with sqlite3.connect(db) as conn:
-        conn.execute('CREATE TABLE memory_items (content TEXT, status TEXT)')
-        conn.executemany('INSERT INTO memory_items VALUES (?, ?)',
-            [(content, 'active'), ('SECRET inactive has at least six words also', 'deleted'),
-             ('', 'active'), ('few words', 'active'), (None, 'active')])
-    synced[2].put('alerts/sample.json', json.dumps({'value': content}).encode())
-    before = snapshot(synced[0].root), snapshot(synced[2].root), snapshot(db)
-    original = sqlite3.connect
-    def readonly(database, **kwargs):
-        assert database.endswith('?mode=ro') and kwargs['uri'] is True
-        conn = original(database, **kwargs)
-        with pytest.raises(sqlite3.OperationalError):
-            conn.execute('DELETE FROM memory_items')
-        conn.rollback()
-        return conn
-    monkeypatch.setattr(sqlite3, 'connect', readonly)
-    code, result = run(args_for(synced) + ['--sample-db', str(db), '--sample', '25'], capsys)
-    assert code == 1 and result['marker_hits'] == 1 and result['probes'] == 9
-    assert (snapshot(synced[0].root), snapshot(synced[2].root), snapshot(db)) == before
+def test_sqlite_sampling_retired(synced, capsys):
+    """SQLite retirement R5b: probes no longer come from a staging database."""
+    code, result = run(args_for(synced) + ['--sample-db', 'SECRET.db', '--sample', '25'], capsys)
+    assert code == 2 and result == {'ok': False, 'error': 'verification_error'}
 
 
 def test_symlink(synced, tmp_path, capsys):
@@ -177,8 +157,7 @@ def test_symlink(synced, tmp_path, capsys):
     assert code == 2 and result == {'ok': False, 'error': 'verification_error'}
 
 
-@pytest.mark.parametrize('extra', [['--SECRET'], ['--sample', '-1'], ['--sample', '2'], ['--sample-db', 'SECRET']],
-                         ids=['unknown', 'negative', 'no-db', 'no-count'])
+@pytest.mark.parametrize('extra', [['--SECRET'], ['--sample', '2']], ids=['unknown', 'sample'])
 def test_bad_args(synced, capsys, extra):
     code, result = run(args_for(synced) + extra, capsys)
     assert code == 2 and result == {'ok': False, 'error': 'verification_error'}

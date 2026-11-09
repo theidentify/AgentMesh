@@ -56,28 +56,17 @@
     "runtime_s": null
    },
    {
-    "backend": "launchd",
+    "backend": "native",
     "health": "missing",
     "job": null,
     "kind": "job",
     "last_exit": null,
-    "move": null,
-    "name": "retention",
-    "pid": null,
-    "runtime_s": null
-   },
-   {
-    "backend": "native",
-    "health": "idle",
-    "job": null,
-    "kind": "job",
-    "last_exit": 0,
     "move": {
      "move_id": "00000000000000000000000000000000",
      "state": "moving",
      "to": "launchd"
     },
-    "name": "catch-up",
+    "name": "retention",
     "pid": null,
     "runtime_s": null
    },

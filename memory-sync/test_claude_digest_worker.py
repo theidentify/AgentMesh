@@ -119,7 +119,7 @@ def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypa
 def test_expired_login_detail_end_to_end(tmp_path):
     import sys
     from pathlib import Path
-    import bounded_digest
+    import digest_io
     import claude_digest_worker
     from bounded_protocol import ValidationError, error_detail
 
@@ -127,7 +127,7 @@ def test_expired_login_detail_end_to_end(tmp_path):
     fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(AUTH_EXPIRED_RESULT) + "'\nexit 1\n")
     fake.chmod(0o755)
     with pytest.raises(ValidationError) as caught:
-        bounded_digest.extract_command(
+        digest_io.extract_command(
             request(), model='claude-haiku-5-5',
             command=[sys.executable, str(Path(claude_digest_worker.__file__)), '--claude', str(fake)],
         )
@@ -186,7 +186,7 @@ def test_markers(marker, reason, stream, monkeypatch, capsys):
     import io
     from types import SimpleNamespace
     import claude_digest_worker as worker
-    from bounded_digest import worker_reason
+    from digest_io import worker_reason
     import job_notify
     result = dict(returncode=7, stdout='', stderr=''); result[stream] = marker
     monkeypatch.setattr(worker.subprocess, 'run', lambda *a, **k: SimpleNamespace(**result))
@@ -295,10 +295,10 @@ def test_worker_stdio_is_utf8_under_an_ansi_code_page():
     import sys
     text = 'ภาษาไทย ✓ naïve'
     # The child checks what it decoded from stdin, then writes the same text back for the parent to decode as UTF-8.
-    script = 'import sys, memory_sync\n{}ok = sys.stdin.read() == {}\nsys.stdout.write(("ok " if ok else "bad ") + {})\n'
+    script = 'import sys, digest_io\n{}ok = sys.stdin.read() == {}\nsys.stdout.write(("ok " if ok else "bad ") + {})\n'
     env = dict(os.environ, PYTHONIOENCODING='cp1252', PYTHONUTF8='0')
     def run(fix):
-        code = script.format('memory_sync.utf8_stdio()\n' if fix else '', ascii(text), ascii(text))
+        code = script.format('digest_io.utf8_stdio()\n' if fix else '', ascii(text), ascii(text))
         result = subprocess.run([sys.executable, '-c', code], input=text.encode('utf-8'), capture_output=True,
                                 env=env, cwd=Path(__file__).parent)
         return result.returncode, result.stdout.decode('utf-8', 'replace')

@@ -13,7 +13,7 @@ def test_assess():
     assert assess(service,dict(IDLE,running=True,pid=1,runtime_s=10**7),None)=='running'
     assert assess(service,IDLE,None)=='down'
     assert assess(job,IDLE,dict(ok=False,at='t',since='t'))=='failing'
-    assert assess(get('catch-up'),dict(IDLE,last_exit=1),None)=='failing'
+    assert assess(get('retention'),dict(IDLE,last_exit=1),None)=='failing'
     assert assess(job,IDLE,dict(ok=True,at='t',since='t'))=='idle'
 
 
@@ -21,9 +21,9 @@ def test_observe_reads_job_state(tmp_path):
     layout=Layout(tmp_path); layout.status.mkdir()
     (layout.status/'job-summary.json').write_text('{"ok": false, "at": "a", "since": "s", "alerted": true}')
     rows={row['name']:row for row in observe(layout,FakeBackend(),UNITS)}
-    assert len(rows)==8
+    assert len(rows)==7
     assert rows['summary']['health']=='failing' and rows['summary']['job']==dict(ok=False,at='a',since='s')
-    assert rows['broker']['health']=='down' and rows['catch-up']['job'] is None
+    assert rows['broker']['health']=='down' and rows['retention']['job'] is None
 
 
 def test_failed_wins():

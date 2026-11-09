@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
 import stat
 import tempfile
 
@@ -63,12 +62,8 @@ def arguments(argv):
     parser.add_argument('--s3-endpoint')
     parser.add_argument('--s3-credentials')
     parser.add_argument('--markers', required=True)
-    parser.add_argument('--sample-db')
-    parser.add_argument('--sample', type=int)
-    args = parser.parse_args(argv)
-    if (args.sample_db is None) != (args.sample is None) or (args.sample is not None and args.sample < 0):
-        raise ValueError('invalid sampling arguments')
-    return args
+    # --sample-db read probes from the SQLite staging database; it went with SQLite retirement R5b.
+    return parser.parse_args(argv)
 
 
 def probes_for(args, state):
@@ -81,17 +76,6 @@ def probes_for(args, state):
         probes = {line.rstrip('\r\n') for line in stream if line.strip()}
     probes.update(names(state).values())  # Includes profile roots and every full scope path.
     probes.update(state.control.get('agent_names', {}))
-    if args.sample_db is not None:
-        connection = sqlite3.connect(Path(args.sample_db).resolve().as_uri() + '?mode=ro', uri=True)
-        try:
-            connection.execute('PRAGMA query_only=ON')
-            connection.execute('PRAGMA temp_store=MEMORY')
-            connection.create_function('eligible', 1, lambda v: isinstance(v, str) and len(v.split()) >= 6)
-            rows = connection.execute("SELECT content FROM memory_items WHERE status='active' "
-                                      'AND eligible(content) ORDER BY random() LIMIT ?', (args.sample,))
-            probes.update(content[:40] for (content,) in rows)
-        finally:
-            connection.close()
     # Case-sensitive and >= 6 chars: shorter or case-folded probes hit random base64 ciphertext by chance.
     return {probe.encode('utf-8') for probe in probes if len(probe) >= 6}
 

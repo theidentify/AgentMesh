@@ -1,8 +1,9 @@
-"""Strict owner-selected project routing; no inferred security boundaries."""
+"""Strict owner-selected project routing; no inferred security boundaries.
+
+The broker summary routes transcript projects with it. The SQLite import that once shared it was removed in R5b."""
 from pathlib import Path
 import unicodedata
 from ..encoding import parse
-from .source import rows
 
 
 def target_valid(value):
@@ -41,29 +42,3 @@ class Mapping:
         for entry in sorted(self.value['prefixes'], key=lambda e: -len(e['prefix'])):
             if name.startswith(entry['prefix']): return entry['target']
         raise ValueError('unmapped project')
-
-
-def plan(database, mapping=None):
-    groups = {}; unmapped = set()
-    for row in rows(database):
-        name = row.get('project')
-        key = name if name is not None else ''
-        group = groups.setdefault(key, dict(project=name,items=0,summaries=0))
-        group['items' if row['table'] == 'memory_items' else 'summaries'] += 1
-        if mapping is not None:
-            try: mapping.target(row)
-            except ValueError:
-                if name is not None: unmapped.add(name)
-        elif name is not None: unmapped.add(name)
-    return dict(projects=[groups[k] for k in sorted(groups)], unmapped=sorted(unmapped))
-
-
-def project_targets(groups, sources, mapping):
-    """Shared per-project target labels for the terminal and public snapshot."""
-    targets = {}
-    for row in sources:
-        try: target = mapping.target(row) if mapping else 'unmapped'
-        except ValueError: target = 'unmapped'
-        targets.setdefault(row.get('project'), set()).add(target)
-    return [dict(group, target=next(iter(found)) if len(found)==1 else 'mixed')
-            for group in groups for found in (targets.get(group['project'], set()),)]

@@ -5,28 +5,20 @@
 
 # AgentMesh
 
-Local-first memory sync and cross-platform setup scripts for AI agents,
-connecting Hermes, OMP, Codex, and Claude across devices via peer-to-peer
-file exchange.
+Local-first, end-to-end encrypted memory and coordination for AI agents (Claude, Codex, Hermes and others) across
+your devices, synchronized through an R2 bucket that only ever sees ciphertext.
 
 **User guide:** https://theidentify.github.io/AgentMesh/
 
 ## Status
 
-AgentMesh is in active development. The Python/SQLite sync engine, private
-bootstrap packaging, and setup entry points for macOS, Linux and Windows are
-implemented. Three independent SQLite peers have been exercised against a
-real read-only memory snapshot, with all eight memory tables compared.
+AgentMesh is in active development. Each device runs a broker (`profile-log/`) that holds the profile log: signed,
+encrypted events for memory, summaries, tasks and team workspaces. Agents reach it through scoped agent keys.
+Brokers replicate through R2. memory-sync's broker summary reads Claude and Codex transcripts and writes durable
+memory through the `summarizer` agent.
 
-SQLite-native ingestion, bounded durable-memory summaries, read-only recall,
-and deterministic export are implemented. Backend selection and deployment are
-explicit; checking out this repository does not migrate an existing installation
-or install every agent application. See [SQLite writer](memory-sync/SQLITE-WRITERS.md)
-and [consumer and scheduling](memory-sync/SQLITE-CONSUMERS.md) documentation.
-Actual Windows-host and Linux-host production verification remain outstanding.
-The optional PostgreSQL mirror is a migration/staging reader; do not run it
-against an independently writable SQLite authority. Peer edits do not write
-back to PostgreSQL, and a zero-loss reverse migration is not provided.
+The original SQLite staging database and its Syncthing packet exchange are retired. The last of their code was
+removed in SQLite retirement R5b (2026-11-09). See [the profile-log README](profile-log/README.md#sqlite-retirement).
 
 ## Profile-owned memory prototype
 
@@ -38,37 +30,9 @@ See [prototype setup, CLI, demo and trust boundaries](profile-memory/README.md).
 
 ## Setup
 
-Install Python 3.10+ with SQLite FTS5/JSON support and Syncthing separately,
-pair devices and accept a private exchange folder. The wrappers check these
-prerequisites but do not run OS package managers or register services.
-A bootstrap archive and its checksum manifest must be supplied through that
-private exchange; a Git checkout intentionally does not include memories.
-
-| Platform | Entry point supplied in the exchange |
-| --- | --- |
-| macOS | `sh setup_macos.sh "/absolute/path/to/exchange"` |
-| Linux | `sh setup_linux.sh "/absolute/path/to/exchange"` |
-| Windows | Double-click `START-WINDOWS.cmd` |
-
-The installer keeps local databases outside the Syncthing folder, verifies
-bootstrap checksums, preserves existing initialized databases, and starts a
-foreground sync worker. One logical node per `mac`, `windows` and `linux` is
-supported; never reuse an identity on another active device.
-
-See [macOS/Linux setup and optional user services](memory-sync/README-SETUP.md)
-and [Windows setup](memory-sync/README-WINDOWS.md). Background operation is
-optional and separate from installation: generate a macOS LaunchAgent or Linux
-systemd user unit with `memory-sync/platform_service.py`, inspect it, then
-register it using the documented OS commands.
-
-## Signed worker updates
-
-Opt-in worker OTA uses a separately approved Ed25519 release identity, immutable
-version directories, a shared cycle lock, SQLite-safe private backups and
-health-checked code rollback. Existing installations need a one-time local
-consumer bootstrap; file delivery alone cannot update an old Windows worker.
-See [signed OTA setup and recovery](memory-sync/OTA-UPDATES.md). Native Windows
-execution and production activation are separate, outstanding rollout gates.
+Install and operate the broker as described in the [profile-log README](profile-log/README.md). On a Mac the
+[control plane](#control-plane-macos) runs the summary jobs. On Windows they run as scheduled tasks wrapped by
+`memory-sync/job_notify.py`.
 
 ## AgentMesh Insight
 
@@ -89,7 +53,7 @@ are configured outside Git; absent sources are shown as unavailable. See
 ## Control plane (macOS)
 
 On the Mac, the AgentMesh supervisor (`org.agentmesh.control`, in `profile-log/agentmesh_log/control/`) runs and
-watches the background units. Catch-up, ingest and summary run as its native, scheduled jobs; the broker and other
+watches the background units. Ingest and summary run as its native, scheduled jobs; the broker and other
 services stay under launchd and are observed. Requests arrive on a local socket and are audited:
 
 - **Tier 0** reads status, the audit log and the key and device inventory (`keys.inventory`), which never opens a key file.
@@ -106,32 +70,11 @@ through Discord or a passkey and device and grant operations are not built yet. 
 
 ## Architecture
 
-Each device ingests into its local SQLite staging database. Post-commit imports and
-catch-up write device-qualified sources into the encrypted profile log, synchronized
-through R2. Local recall reads the log through the broker, including independently
-granted work and personal profiles; broker outages return an explicit error.
-On macOS the [control plane](#control-plane-macos) schedules catch-up, ingest and summary.
-
-Phase 7a defaults `packet_sync.enabled` to false. Packet/RANGES/conflict code remains
-for rollback. Workers preserve configured workflow ingest/summary while skipping
-packet work; units remain when workflow needs them. Otherwise workers idle until
-the upgrade command retires their service, preserving exchange history.
-SQLite fallback requires explicit `bridge.recall_fallback:true`.
-See the [upgrade, rollback and fresh Windows runbook](profile-log/README.md#phase-7a-upgrade-and-rollback).
-Never synchronize live SQLite, WAL or SHM files.
-
-## Private bootstrap construction
-
-On a trusted source machine with an existing compatible JSONL snapshot:
-
-```sh
-python memory-sync/build_package.py --snapshot /private/baseline.jsonl \
-  --exchange /private/syncthing-exchange --group "$SYNC_GROUP_UUID"
-```
-
-The exchange must already contain its Syncthing `.stfolder` marker. Keep the
-resulting ZIP, manifest, group configuration and change packets private; do
-not publish them as GitHub release assets.
+Each device's broker keeps an encrypted replica of the profile log and syncs it through R2. Agents recall and write
+through the local broker, which enforces their grants (work and personal profiles, scopes, labels). If the broker is
+down, the agent gets an explicit error. The broker summary (`memory-sync/broker_digest.py`) reads transcripts
+directly, keeps its cursors in `jobs/`, and writes summaries through the `summarizer` agent. On macOS the
+[control plane](#control-plane-macos) schedules ingest and summary.
 
 ## Privacy
 
@@ -148,10 +91,9 @@ This does not relicense existing code or claim trademark clearance.
 
 ## Development
 
-`memory-sync/` contains the SQLite adapter, packet exchange, read-only
-PostgreSQL mirror, pure transcript parsers, setup scripts and tests.
-The SQLite and packet-exchange runtime uses the standard library. The optional
-PostgreSQL mirror requires `psycopg`; tests require `pytest`.
+`memory-sync/` contains the broker summary (`broker_digest.py`, its Claude worker and the production job in
+`jobs/`), the transcript parsers and `job_notify.py`. They use the standard library; tests require `pytest`.
+`profile-log/` holds the broker and its CLI (`python -m pytest -q profile-log/tests`).
 
 ```sh
 python -m pytest -q memory-sync

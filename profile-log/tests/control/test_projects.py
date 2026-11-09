@@ -24,7 +24,8 @@ class Sheet:
 def setup(tmp_path, unmapped=('learn-x',), sheet=None, clock=None):
     layout=Layout(tmp_path).ensure()
     layout.mapping.write_bytes(wire(MAPPING)); layout.mapping.chmod(0o600)
-    layout.profile_status.write_text(json.dumps(dict(last_catch_up=dict(unmapped=list(unmapped)))))
+    held=layout.root/"jobs"/"summary-unmapped.json"; held.parent.mkdir(exist_ok=True)
+    held.write_text(json.dumps(dict(format="agentmesh-summary-unmapped-v1",at="t",projects=list(unmapped))))
     sheet=sheet or Sheet()
     moves=Moves(layout,Store(layout.state),sheet,**({'clock':clock} if clock else {}))
     return layout,sheet,moves,Mappings(layout,sheet,moves)
@@ -40,7 +41,7 @@ def test_pending_and_scopes(tmp_path):
 
 
 def test_pending_from_the_broker_summary(tmp_path):
-    """After the SQLite cutover catch-up imports nothing; the summary tick reports the projects it held back."""
+    """The summary tick reports the projects it held back; nothing else does since R5b."""
     layout,*_=setup(tmp_path,unmapped=())
     path=layout.root/'jobs'/'summary-unmapped.json'; path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(dict(format='agentmesh-summary-unmapped-v1',at='t',projects=['Users-krisb','home','learn-x'])))
@@ -50,7 +51,7 @@ def test_pending_from_the_broker_summary(tmp_path):
 
 
 def test_unreadable_state_means_none(tmp_path):
-    layout,*_=setup(tmp_path); layout.profile_status.write_text('{')
+    layout,*_=setup(tmp_path); (layout.root/'jobs'/'summary-unmapped.json').write_text('{')
     assert projects.pending(layout)==[]
     layout.mapping.unlink(); assert projects.scopes(layout)==[]
 

@@ -21,13 +21,6 @@ def test_model_grid_mapping_pair():
     with pytest.raises(ValueError,match='pairing_empty'): m.approve('request',lambda *_:pytest.fail('must not approve'))
 
 
-def test_mapping_preview():
-    m=model(); m.sources=[dict(table='memory_items',id=1,project='demo',target='work/common',reason=None),dict(table='memory_items',id=2,project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='created')]
-    m.set_target('demo','work/new')
-    assert m.preview()=={'retired':1,'recreated':1,'created':1}
-
-
 def test_s10_save_only_via_apply(env,monkeypatch):
     from agentmesh_log.tui import Controller
     root,home,store=env; save_user({'agents':{'reader':{'read':[],'write':[]}}})
@@ -85,30 +78,6 @@ def test_admin_cli(env,monkeypatch):
     assert seen[0]['menu'] is True
 
 
-def test_s11_db_markers(env):
-    import sqlite3
-    from pathlib import Path
-    from agentmesh_log.tui import load_model,Controller,menu_ui,curses_ui
-    root,home,store=env; db=root/'source.db'; marker='ROW_CONTENT_MARKER'
-    with sqlite3.connect(db) as conn:
-        conn.executescript((Path(__file__).resolve().parents[3]/'memory-sync/schema.sql').read_text(encoding='utf-8'))
-        conn.execute("INSERT INTO memory_items(kind,scope,project,content,confidence) VALUES('fact','project','demo',?,1)",(marker,))
-    save_user({'migration':{'global':'work/common','null_project':'work/common','projects':{'demo':'work/common'},'prefixes':[]}})
-    p=root/'settings.local.json'; p.write_text(json.dumps({'bridge':{'database':str(db)}}),encoding='utf-8'); p.chmod(0o600)
-    m=load_model(); c=Controller(m); rendered=[]
-    answers=iter(['1','3','','0']); menu_ui.run(c,input_fn=lambda _:next(answers),output=rendered.append)
-    class Screen:
-        keys=iter([ord('2'),ord('3'),ord('4'),ord('q')])
-        def erase(self): pass
-        def getmaxyx(self): return (50,180)
-        def addstr(self,y,x,text): rendered.append(text)
-        def refresh(self): pass
-        def getch(self): return next(self.keys)
-    curses_ui.run(Screen(),c)
-    assert 'demo' in '\n'.join(rendered) and marker not in '\n'.join(rendered)
-    assert all(marker not in repr(v) for v in vars(m).values())
-
-
 def test_s12_pair_delegation(env,monkeypatch):
     from agentmesh_log import cli
     from agentmesh_log.tui import run_admin,menu_ui
@@ -139,19 +108,6 @@ def test_fake_curses_grid_save():
         def getch(self): return next(self.keys)
     run(Screen(),Controller())
     assert calls[0]['agents']['reader']['read']==['work/common']
-
-
-def test_preview_global():
-    m=model(); m.sources=[dict(table='memory_items',id=1,scope='global',project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='created')]
-    m.set_target('demo','work/new')
-    assert m.preview()=={'retired':0,'recreated':0,'created':0}
-
-
-def test_preview_retired_same_scope():
-    m=model(); m.sources=[dict(table='memory_items',id=1,project='demo',target='work/common',reason=None)]
-    m.ledger=[dict(device='a'*32,source={'table':'memory_items','id':1},scope='work/common',status='retired')]
-    assert m.preview()=={'retired':0,'recreated':1,'created':0}
 
 
 def test_s10_exact_apply_diff(env):
@@ -218,3 +174,13 @@ def test_overview_all_agents(env):
     _,grant=create_agent(home,state,'legacy',['work/common'],['work/common'],'work/common')
     store.save(state)
     assert any(grant.agent_id in line and 'work/common' in line for line in load_model().lines(0))
+
+
+def test_no_staging_preview(env):
+    """R5b: a `bridge.database` left in settings opens nothing; the admin model has no staging rows or preview."""
+    from agentmesh_log.tui import load_model
+    root,home,store=env
+    save_user({'migration':{'global':'work/common','null_project':'work/common','projects':{},'prefixes':[]}})
+    p=root/'settings.local.json'; p.write_text(json.dumps({'bridge':{'database':str(root/'missing.db')}}),encoding='utf-8'); p.chmod(0o600)
+    m=load_model()
+    assert m.sources==[] and m.ledger is None and m.preview() is None and not (root/'missing.db').exists()

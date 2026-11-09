@@ -69,21 +69,10 @@ class SqliteInventoryTests(unittest.TestCase):
     # In-memory indexes and the supervisor's own state.db, not the staging database; they stay.
     KEEP = {'profile-log/agentmesh_log/broker/index.py', 'profile-log/agentmesh_log/broker/vector_store.py',
             'profile-log/agentmesh_log/control/store.py'}
+    # SQLite retirement R5b removed every memory-sync entry; Insight and profile-log follow in their own changes.
     RETIRE = {
         'insight/adapters.py', 'insight/deploy_insight.py', 'insight/metrics.py', 'insight/storage.py',
-        'memory-sync/agentmesh.py', 'memory-sync/bootstrap_windows.py', 'memory-sync/bounded_digest.py',
-        'memory-sync/build_package.py', 'memory-sync/digest_scheduler.py', 'memory-sync/ingest_sessions.py',
-        'memory-sync/install_adopt.py', 'memory-sync/install_inspect.py', 'memory-sync/install_join.py',
-        'memory-sync/install_setup.py', 'memory-sync/key_rotation.py', 'memory-sync/mac_relocate.py',
-        'memory-sync/mac_replace.py', 'memory-sync/memory_sync.py', 'memory-sync/ota_update.py',
-        'memory-sync/pg_mirror.py', 'memory-sync/protocol_activation.py', 'memory-sync/recall_memory.py',
-        'memory-sync/resolution_apply.py', 'memory-sync/retention_audit.py', 'memory-sync/security_wizard.py',
-        'memory-sync/shared_memory_context.py', 'memory-sync/smoke_os_unlock.py', 'memory-sync/smoke_standalone.py',
-        'memory-sync/smoke_windows_install.py', 'memory-sync/smoke_worker_lifetime.py', 'memory-sync/sqlite_export.py',
-        'memory-sync/sqlite_cutover.py', 'memory-sync/sqlite_memory.py', 'memory-sync/staging_retention.py', 'memory-sync/standalone_build.py',
-        'memory-sync/summarize_memory.py', 'memory-sync/support/benchmark_receive_backlog.py',
-        'memory-sync/sync_worker.py', 'profile-log/agentmesh_log/migrate/source.py',
-        'profile-log/agentmesh_log/verify_remote.py'}
+        }
     MARKERS = ('import sqlite3', 'sqlite3.connect', 'open_readonly', 'sqlite_memory')
 
     def test_no_new_sqlite_users(self):

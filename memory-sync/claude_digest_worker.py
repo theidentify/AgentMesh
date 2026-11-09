@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 
-from memory_sync import canonical, load_packet, utf8_stdio
+from digest_io import canonical, load_packet, utf8_stdio
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 JS_SYNTAX = '^$\\.*+?()[]{}|/'

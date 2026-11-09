@@ -1,4 +1,5 @@
-"""The launchd units AgentMesh runs on a Mac. Packet sync (org.agentmesh.sync) is retired and absent."""
+"""The launchd units AgentMesh runs on a Mac. Packet sync (org.agentmesh.sync) and catch-up (the SQLite import, R5b) are
+retired and absent."""
 from dataclasses import dataclass
 
 
@@ -16,7 +17,6 @@ UNITS=(
     Unit('ingest','org.agentmesh.ingest','job',True,3600,True),
     Unit('summary','org.agentmesh.summary','job',True,3600,True),
     Unit('retention','org.agentmesh.retention','job',True,3600,True),
-    Unit('catch-up','org.agentmesh.profile-log.catch-up','job',False,1800,True),
     Unit('broker','org.agentmesh.profile-log.broker','service'),
     Unit('bridge','org.agentmesh.profile-log.bridge','service'),
     Unit('insight','org.agentmesh.insight','service'),

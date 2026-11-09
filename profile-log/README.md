@@ -845,245 +845,30 @@ one disposable native key-store entry, checks a sealed round-trip, and removes t
 Run the full suite outside the socket-restricted sandbox and on all three OSes; a denied
 socket bind is an explicit test failure. Leave live R2 mode disabled for offline tests.
 
-## Migration from SQLite
+## SQLite retirement
 
-Migration is opt-in and offline. SQLite is a device-local staging database; raw observation events
-and transcript evidence stay there. Only active durable items and every non-session
-summary row migrate (summary versions are range-allocated IDs, not an order). Item metadata is discarded; provenance contains integer observation
-IDs only. Detectors redact secrets and raise labels before signing. Migration, hooks,
-catch-up and parity never synchronize remote storage.
+Every device used to ingest into a local SQLite staging database and import it into the profile log (the importer
+agent, `migrate catch-up`, and the staging bridge). That path is retired:
 
-Start with `python -m agentmesh_log.cli migrate plan --db DB` using the profile-log
-interpreter. It prints project names and counts, never row content. Write an owner-reviewed
-UTF-8 mapping, for example (replace these synthetic names):
+- R2 to R4 (2026-11-02 and 11-03) moved each device's summaries onto the broker and archived its staging database
+  with `control sqlite-retire`. The broker summary reads transcripts directly and writes through the `summarizer`
+  agent.
+- R5b removed the SQLite code: the importer tooling (`migrate plan/run/rows/catch-up/report/verify`), the
+  `sqlite-retire` ceremony and its rollback, the staging bridge, and memory-sync's SQLite worker. There is nothing
+  left to roll back to.
 
-```json
-{
-  "format": "agentmesh-migration-mapping-v1",
-  "global": "work/common",
-  "null_project": "personal/common",
-  "projects": {"Example": "work/common", "Excluded": "skip"},
-  "prefixes": [{"prefix": "Example--worktrees-", "target": "work/common"}]
-}
-```
+What is left:
 
-Exact projects win over the longest matching prefix. Unmapped projects stop the run
-before writes. Task summaries without a project use `null_project`. Prefer `project`
-as a filter within `common`; create a separate scope only for a distinct reader set.
-Every non-skip target must already exist and be in the import agent's write grant.
+- `agentmesh-log control sqlite-archive list` lists the archives under `backups/archive/sqlite-*`, and
+  `control sqlite-archive delete --archive NAME` deletes one for good. It needs typed presence, plus Touch ID on a Mac.
+- The migration mapping (`settings.json` `migration`, applied to `migration-mapping.json`) still routes each
+  transcript project to a scope for the broker summary.
+- A `bridge` block in `settings.json` is still accepted, but nothing acts on it. Delete it when convenient.
+- Events and grants the importer wrote stay in the profile log and still verify. The broker keeps accepting imported
+  heads it already has.
 
-On the authority Mac, initialize a dedicated broker home with the normal OS key store,
-save its recovery kit, add any mapped scopes, and grant a dedicated importer
-`--allow-import` with all mapped write scopes. Grant a separate recall agent only the
-necessary read access and ordinary minimum write scope required by the grant CLI;
-never give it `--allow-import`. Open the `first_access` presence window before each
-agent's first request. Start `broker run --home HOME` without `--sync-interval`.
-Use the CLI's existing presence, scope and grant commands described above.
-
-```sh
-python -m agentmesh_log.cli migrate plan --db DB --mapping MAPPING
-python -m agentmesh_log.cli migrate run --db DB --mapping MAPPING --agent-key IMPORT_KEY
-python -m agentmesh_log.cli migrate report --db DB --mapping MAPPING --agent-key IMPORT_KEY --out NEW_REPORT
-python -m agentmesh_log.cli migrate catch-up --db DB --mapping MAPPING --agent-key IMPORT_KEY
-```
-
-A second run is unchanged; changed rows revise, resolved/deleted/skipped rows retire,
-and remaps retire the old scope's chain before creating the new root. Runs resume from
-the encrypted replica after interruption, including interruption between the two remap
-signatures. Reports contain source IDs, chain IDs, scope names, status and reasons, never
-content or hashes. Report output is exclusive-create, mode 0600, outside the replica.
-Catch-up keeps a local accelerator cache at `DB.profile-log.catch-up.json` (override
-with `AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE`; mode 0600). Each entry pairs a source
-reference with a SHA-256 fingerprint of its last confirmed intent and the resulting ledger
-event. A row whose fingerprint and current ledger head both match is counted unchanged
-without an `import` request, so idle cycles audit only handshake, `import_ledger` and
-`whoami`. Changed rows, remaps, retirements, hook or peer revisions (a moved ledger head)
-and a missing or unreadable cache all fall back to sending the import. Deleting the cache
-is always safe.
-`migrate rows` accepts up to 500 repeated `--ref memory_items:ID` or
-`--ref memory_summaries:ID` arguments.
-
-Each device imports only its enrolled staging database. New source keys include the
-device ID, so identical integer IDs on different devices remain distinct. Legacy
-keys stay valid only for their authoring device. The local-device key wins after a
-legacy scope move; foreign heads never participate in local revision or retirement.
-`--take-over` is accepted but does nothing. Peer provenance retains device-level
-trust within the source device's namespace; local import-agent history is retained.
-
-Create `<DB>.profile-log.json` (or set `AGENTMESH_PROFILE_LOG_BRIDGE`) as an owner-only,
-non-symlink regular file, mode 0600 on POSIX. All paths must be absolute:
-
-```json
-{
-  "format": "agentmesh-profile-log-bridge-v1",
-  "enabled": true,
-  "recall": true,
-  "dual_write": true,
-  "authority": true,
-  "cli_argv": ["/absolute/venv/bin/python", "-m", "agentmesh_log.cli"],
-  "agent_key": "/absolute/home/agents/recall.key",
-  "import_agent_key": "/absolute/home/agents/import.key",
-  "mapping": "/absolute/mapping.json",
-  "profiles": ["work", "personal"],
-  "recall_fallback": false,
-  "device_id": "<this broker device: 32 lowercase hex>",
-  "staging_node": "<staging database node>",
-  "timeout_seconds": 5
-}
-```
-
-The prepared interpreter must resolve `agentmesh_log`; an absolute Python plus an
-absolute CLI script is also accepted. Apply enrolls the binding from broker state
-and the staging node (see below). Never copy another device's binding. Migration
-fails closed without it. The old exact single-`profile` config is accepted for
-recall only until upgraded. Invalid existing configs return an explicit recall
-error. Digest hooks run after commit; catch-up repairs missed hooks.
-
-Recall reads encrypted memories through the local broker only, querying each
-configured profile separately and concurrently within one total timeout. It
-interleaves ranks in configured profile order, dedupes event IDs, and sums candidate
-counts before truncation. It requires ordinary read grants, not cross-profile
-permission or a cross-profile presence window. Any failed profile fails the whole
-recall with `profile_log_unavailable`. Only `recall_fallback:true` permits SQLite
-fallback (marked `sqlite-fallback`). Explicit `--backend sqlite` without that flag
-returns `sqlite_recall_disabled` while bridge recall is enabled. Results retain
-log IDs plus `source_ref`; optional local evidence is expanded only for locally
-owned sources. No config or explicitly disabled bridge recall retains standalone
-SQLite behavior. Shared-memory context uses the same failure policy.
-
-Generate services with the memory-sync interpreter; generation never registers them:
-
-```sh
-python memory-sync/platform_service.py generate --unit broker --platform macos --database DB --home HOME --output NEW_BROKER_DIR
-python memory-sync/platform_service.py generate --unit catch-up --platform macos --database DB --home HOME --output NEW_CATCHUP_DIR --interval 300
-```
-
-Use absolute paths. The new output directories must not exist. Outputs are 0600
-launchd plists, systemd service/timer files (`--platform linux`), or Task Scheduler XML
-(`--platform windows`). Review the argv, then load/register them yourself. Broker units
-have no automatic remote sync. Worker units are generated when packet sync or workflow ingest/summary needs them.
-
-Parity rehearsal uses the source read-only and a disposable encrypted broker, with
-no SQLite backup or staging copy. Run it while staging is quiescent; concurrent
-writes can change its result. Reports contain metrics, missing/changed counts and
-integer IDs, never contents or queries. Foreign-device sources are excluded from
-local comparisons. The in-process `profile_log_parity.compare` checks a local
-broker's caught-up heads against staging with the same binding and source priority.
-
-```sh
-python memory-sync/profile_log_parity.py --db DB --mapping MAPPING --sample 200 --out NEW_PARITY_REPORT
-```
-
-### Live staging presence verification
-
-Use the import agent key to check the live local broker, without importing rows:
-
-```sh
-python -m agentmesh_log.cli migrate verify --db DB --settings --agent-key IMPORT_AGENT_KEY
-# Or replace --settings with --mapping MAPPING
-```
-
-The command validates the enrolled device/staging binding before reading the ledger.
-It returns only `{"missing":0,"retired_but_present":0}` counts: active, mapped staging
-rows with no local ledger entry, or with a retired local head. It uses the same
-local device-first, locally authored legacy-second source lookup as migration;
-foreign rows and staging rows intended for retirement or mapping `skip` do not count.
-No memory bodies, source IDs or hashes are emitted, and no imports, revisions or
-retirements are requested. Normal broker request auditing still applies.
-
-This is a presence check, not changed-content parity: the ledger exposes no hashes,
-so zero counts cannot establish that content or destination scopes match. Run
-catch-up, then run it again while staging is quiescent; zero `created` and `revised`
-outcomes in the second result supply the unchanged-write evidence. Keep the live
-presence counts alongside that result; the disposable parity rehearsal above does
-not verify the real broker's ledger.
-
-### Phase 7a upgrade and rollback
-
-Initialize a fresh staging identity through ingest if the database has no
-`_sync_config`; ingest creates one singleton UUID node in
-`agentmesh_staging_identity`. Existing sync databases use `_sync_config.node`.
-`apply` reads this identity without changing the database and records the current
-broker device plus staging node. An old binding cannot be silently rebound by
-changing the database path. Run apply to upgrade the bridge before catch-up.
-Enrolment/profile/read-grant widening requires the normal one-shot **agent** console
-presence (type `apply`); it does not open a cross-profile presence window.
-
-Merge this fragment into settings.json, preserving other declared agents:
-
-```json
-{
-  "packet_sync": {"enabled": false},
-  "agents": {
-    "recall": {"read": ["work", "personal"], "write": [], "default_write": null,
-               "allow_secret": false, "allow_cross_profile": false, "allow_import": false}
-  },
-  "bridge": {"profiles": ["work", "personal"], "recall_fallback": false}
-}
-```
-
-Remove `bridge.profile` when setting `bridge.profiles`; retain the existing importer,
-mapping, bridge enabled/authority/dual_write and local database/CLI declarations.
-Then run `python -m agentmesh_log.cli apply --dry-run` and
-`python -m agentmesh_log.cli apply`. This repository change does not alter live grants.
-
-On macOS, run `python memory-sync/agentmesh.py packet-sync retire --dry-run`, then
-`python memory-sync/agentmesh.py packet-sync retire`. It writes
-`settings.local.json` with `packet_sync.enabled:false`, invokes
-`launchctl bootout gui/<uid>/org.agentmesh.sync` only when workflow ingest and summary
-are off, and prints the actions/results. Retirement reads `--runtime PATH` (default
-`$AGENTMESH_HOME/memory-sync/data/runtime.json`) and its workflow configuration.
-Unreadable configuration refuses unloading. A worker needed for ingest/summary stays
-loaded with packet work disabled. Otherwise a loaded worker logs retirement once and
-idles until the owner retires it; managed workers still honor stop/nonce requests.
-Missing jobs (launchctl status 3) are idempotent. The generated unit and exchange
-folder remain intact. Settings errors fail without running a sync cycle.
-
-For an owned Windows installation:
-`agentmesh.exe packet-sync retire --installed-state C:\AgentMesh\installed.json`.
-If workflow needs the worker it is retained. Otherwise this delegates to the
-existing ownership-checked autostart operation and updates
-its manifest through the injectable runner. For a legacy unmanaged job use the
-explicit `--task-name NAME`. Linux retirement disables `agentmesh.service` through
-`systemctl --user disable --now`. No command deletes exchange history or a database.
-
-Rollback: first apply `bridge.recall_fallback:true`; then run `packet-sync enable`
-(with the same Windows installed-state argument). On macOS reload the retained unit:
-`launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/org.agentmesh.sync.plist"`.
-On Linux use `systemctl --user enable --now agentmesh.service`. Alternatively render
-a new unit to a new destination with `platform_service.py generate` and register it.
-Windows retains its existing worker ownership/drain checks; acknowledge a required
-drain only after performing it. Packet and SQLite fallback behavior are then restored.
-No packet, RANGES, or conflict-resolution code is removed in 7a.
-
-### Fresh Windows join (owner runbook; not executed here)
-
-1. Install the profile-log package and prepared interpreters on Windows.
-2. Pair as a **new device** with the Phase 4 commit-reveal flow above, granting the
-   required work/personal scopes and comparing the six-digit code.
-3. Run the first broker sync from R2 with the existing account storage prefix and
-   credential reference; let it finish before enabling local recall.
-4. Create a **new, empty staging path**, leaving the old Windows database untouched
-   and unused. Run `python memory-sync/sqlite_memory.py init NEW_STAGING_DB`, then
-   `python memory-sync/memory_sync.py init NEW_STAGING_DB --node windows --group NEW_UUID`.
-   The retained local ID allocator needs this metadata; initialization sends no packets.
-   Configure the importer and recall grants, local database/CLI paths, mapping, and
-   bridge `enabled:true`, `authority:true`, `dual_write:true`, `recall:true`,
-   `profiles:["work","personal"]`, `recall_fallback:false`. Apply records
-   `device_id` from this broker and `staging_node:"windows"`.
-5. Run `python memory-sync/agentmesh.py --database NEW_STAGING_DB ingest --start-at now`
-   with the desired transcript directories. An offset ISO timestamp is also accepted.
-   Existing cursors or a previous start boundary cause refusal; they are never reset.
-   The persistent boundary excludes older events in new, copied, and appended files;
-   old sessions produce no observations or summarize calls. Missing/invalid event
-   timestamps roll back that file without advancing its cursor; repair and retry
-   without `--start-at`. Future scheduled ingest retains the stored boundary.
-6. Generate the broker/catch-up units and configure the Phase 6 bridge plus
-   `cloudflared` with the **same tunnel token** as the other connector. Use the
-   Phase 6 runbook below for the gateway, local bridge and tunnel settings.
-
-`packet_sync.enabled` stays false throughout. Never migrate or copy the old Windows
-DB, packet history, device identities or keys into the new staging path.
+Plans and reports: `docs/superpowers/specs/2026-11-02-sqlite-retirement-design.md` and
+`docs/superpowers/plans/2026-11-03-sqlite-retirement-r5.REPORT.md`.
 
 ## Settings and admin UI
 
@@ -1092,10 +877,8 @@ protected grants; editing a settings file never changes a running agent's access
 `apply` prints the complete proposed change before requesting console presence for
 widening. The prompt is one-shot, even when an agent presence window is open.
 Widening means a new scope or agent, an added read/write scope or flag, any
-migration mapping change (it can move rows into a scope other agents read), and any
-bridge change other than switching `enabled`, `recall`, `dual_write` or `authority`
-off (a new `cli_argv`, database, profile, agent or timeout changes which program runs
-with which agent key). Narrowing and removal require no prompt. A mixed change is approved once and applied
+migration mapping change (it can move a project's memory into a scope other agents read).
+The `bridge` block is accepted and ignored since SQLite retirement R5b. Narrowing and removal require no prompt. A mixed change is approved once and applied
 together. Initialization and recovery-kit handling still use the existing CLI.
 
 The root is `$AGENTMESH_HOME`, defaulting to `~/.agentmesh` (Windows:
@@ -1138,18 +921,14 @@ scope's label are unsupported by apply.
   },
   "agents": {
     "recall": {"read": ["work/common"], "write": [], "default_write": null,
-               "allow_secret": false, "allow_cross_profile": false, "allow_import": false},
-    "importer": {"read": [], "write": ["work/common"], "default_write": null,
-                 "allow_secret": false, "allow_cross_profile": false, "allow_import": true}
+               "allow_secret": false, "allow_cross_profile": false, "allow_import": false}
   },
   "migration": {
     "global": "work/common", "null_project": "work/common",
     "projects": {"Example": "work/common"},
     "prefixes": [{"prefix": "Example--worktrees-", "target": "work/common"}]
   },
-  "routing": {"allowed_scopes": ["work/common", "work/client-a"]},
-  "bridge": {"enabled": false, "recall": true, "dual_write": true, "profile": "work",
-             "timeout_seconds": 10, "recall_agent": "recall", "import_agent": "importer"}
+  "routing": {"allowed_scopes": ["work/common", "work/client-a"]}
 }
 ```
 
@@ -1167,93 +946,11 @@ effective migration section needs `global`, `null_project`, `projects` and `pref
 no destination is inferred. Exact project routes take precedence over longest-prefix
 routes. Unmapped projects retain the existing migration refusal behavior.
 
-Only `settings.local.json` may add these bridge fields:
-
-```json
-{
-  "bridge": {
-    "database": "/absolute/path/to/database.db",
-    "authority": true,
-    "cli_argv": ["/absolute/venv/bin/python", "-m", "agentmesh_log.cli"]
-  }
-}
-```
-
-The database path is absolute. CLI argv accepts either an absolute interpreter plus
-`-m agentmesh_log.cli`, or an absolute interpreter plus an absolute CLI script.
-Timeouts are 1–30 seconds. A configured bridge needs database, CLI argv, profile or profiles and
-both named agents. Enabled bridges also need a migration mapping. Its default flags
-are enabled=false, recall=true, recall_fallback=false, dual_write=true, authority=false, timeout=10.
-Apply renders the bridge's exact extended schema to `<database>.profile-log.json`,
-with key paths pointing to `agents/<name>.key`; render_bridge stays content-free; apply reads only the staging node identity before rendering
-this file. Disabling preserves the file and renders `enabled: false`. Partial bridge
-updates retain previously applied bridge fields. A bare initial `enabled: false`
-needs no database or output file.
-
-```sh
-python -m agentmesh_log.cli settings validate
-python -m agentmesh_log.cli settings show
-python -m agentmesh_log.cli apply --dry-run
-python -m agentmesh_log.cli apply
-```
-
-`settings show` prints the merged user and local configuration with `$schema`, never
-key contents. Objects merge per key; lists replace. Precedence is user local over
-user. Project layers can affect only project routing, as described below.
-
-Dry runs perform **zero writes**, including no audit or presence-log writes. Every
-non-dry-run apply with a safely writable audit destination appends exactly one
-0600 `apply.jsonl` record, including declines and no-ops. A declined widening leaves
-the protected state and all agent key files unchanged; presence itself also logs its
-outcome. A second unchanged apply prints `no changes`, does not prompt and leaves the
-protected state byte-identical. Unsafe audit paths are refused, never repaired.
-Unsupported changes stop the entire apply with exit 1 unless
-`--allow-unsupported-report` is supplied; that option reports them and applies only
-the supported remainder. Ordinary I/O failures roll back state, key files, local
-keyring publications and rendered outputs. This is not a cross-file, power-loss
-atomicity guarantee; after a crash, inspect files and rerun a dry run before retrying.
-
-### Trusted project routing
-
-A repository may contain `.agentmesh/settings.json` and
-`.agentmesh/settings.local.json`. Both accept only this routing shape:
-
-```json
-{"project": {"name": "Example", "scope": "work/client-a"}}
-```
-
-The project local file overrides the shared file per key. The resulting trusted
-project route overrides user-local and user migration mappings for that project
-name only. Neither project file can contain grants, agents, bridge options or
-profiles. Project files are checked out by git (usually 0755/0644), so they must be
-regular, non-symlink, owned by you and not group- or world-writable; trust pins their
-exact bytes instead of a 0600 mode. Review them, then explicitly trust the folder in a terminal:
-
-```sh
-python -m agentmesh_log.cli project trust /absolute/repository
-```
-
-Trust uses one-shot presence and pins the canonical folder path and a SHA-256 hash
-of both files, with length-delimited file boundaries. Changed bytes require trusting
-again. Only existing scopes in user-level `routing.allowed_scopes` are accepted.
-Untrusted, changed, invalid or disallowed routing is ignored with a stderr warning;
-it does not stop migration. Apply includes routes from remembered trusted folders;
+The broker summary routes each transcript project with this mapping and holds back an unmapped one (listed in
+`jobs/summary-unmapped.json`) until it has a route. Apply includes routes from remembered trusted folders;
 `--project-dir DIR` can additionally name folders to evaluate. Multiple folders
 are processed in canonical-path order, making duplicate project-name routing
 predictable; prefer a unique project name per trusted repository.
-
-All migration operations accept `--settings` instead of `--mapping`, and reject
-using both. Settings mode loads this device's initialized broker state for trusted
-routes. The original `--mapping` form remains available, including plan without a
-broker. Repeat `--project-dir` as needed:
-
-```sh
-python -m agentmesh_log.cli migrate plan --db DB --settings --project-dir REPOSITORY
-python -m agentmesh_log.cli migrate run --db DB --settings --agent-key IMPORT_KEY
-python -m agentmesh_log.cli migrate rows --db DB --settings --agent-key IMPORT_KEY --ref memory_items:1
-python -m agentmesh_log.cli migrate catch-up --db DB --settings --agent-key IMPORT_KEY
-python -m agentmesh_log.cli migrate report --db DB --settings --agent-key IMPORT_KEY --out NEW_REPORT
-```
 
 ### Terminal administration
 
@@ -1262,11 +959,8 @@ otherwise it uses numbered menus. `--menu` always selects menus. Windows install
 `windows-curses==2.4.2`; absence of curses does not prevent menu operation.
 
 The overview shows profiles/scopes, enforced agent grants (opaque IDs for older unmanaged grants), device revocation
-status and migration project counts. The grid edits read/write lists and creates
-scopes or named agents. Mapping shows current and proposed destinations, with a
-retired/re-created/newly-created row preview when the import agent and broker can
-provide the ledger. Otherwise it explicitly marks the preview unavailable. Only
-names, counts and source references enter the screen model; no content is displayed.
+status. The grid edits read/write lists and creates scopes or named agents. Mapping shows current and proposed
+destinations. Only names enter the screen model; no content is displayed.
 The menu mapping editor also accepts `@global` and `@null` for those explicit routes.
 
 In curses, `1`–`4` select screens, arrows move, space toggles, left/right or `r`/`w`
@@ -1281,8 +975,7 @@ Edits remain in memory until Save. Save writes only the **user** layer atomicall
 then invokes the same apply command in the terminal. Curses temporarily releases
 the terminal for presence and pairing prompts. Local overrides remain authoritative;
 use `settings show` and the apply diff to check their effect. Saving a mapping renders
-the desired routing; use the existing explicit migration/catch-up operations to move
-rows. No service is installed and no remote synchronization starts automatically.
+the desired routing for the next summary tick. No service is installed and no remote synchronization starts automatically.
 
 
 ### Read-only Insight status snapshot
@@ -1294,14 +987,13 @@ the others from a valid document; an invalid existing document is replaced. Each
 
 | Writer | Sections |
 |---|---|
-| `agentmesh-log apply` (not `--dry-run`) | `last_apply` (outcome and change counts), `overview`, `keys`, and `migration` when a bridge database and mapping are configured |
-| `agentmesh-log migrate catch-up` | `last_catch_up` (outcome `ok`, `unmapped`, `error` or `disabled`; outcome and skipped counts, unmapped names, error classes, retry/fallback counts) and `migration`. Never `overview`. |
+| `agentmesh-log apply` (not `--dry-run`) | `last_apply` (outcome and change counts), `overview` and `keys` |
 | The broker's sync loop | `last_sync` after a sync with traffic or a changed result, and at least every 10 minutes; `overview`, `keys` and `passkeys` at most once a minute, from one locked read of its state |
 | `python -m agentmesh_log.backup create`, on success | `last_backup` (`at`, `files`, `bytes`), only for `$AGENTMESH_HOME/profile-log` |
 
 - `overview`: profiles and scopes, named agents' read/write/default/flags, and devices with their heartbeat name,
   platform, last seen and last sync.
-- `migration`: per-project counts and targets (`scope`, `skip`, `unmapped` or `mixed`).
+- `migration` and `last_catch_up` came from the SQLite catch-up; the next write drops them from an older file.
 - `keys`: every grant as `{name, key_ref, secret_until}` (`name` is null for an unnamed grant), and the recovery count
   with its latest issue time. `key_ref` is the first 16 bytes of SHA-256(`AgentMesh/key-inventory-ref/v1\0` + agent ID),
   as hex, so the file never holds an agent ID.

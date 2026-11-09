@@ -143,7 +143,7 @@ class Control:
         except MoveError as error: raise OpError(error.code) from None
 
     def op_mapping_set(self, project, target):
-        """Tier 2: add a scope for a new project catch-up is holding back, after the supervisor's presence check."""
+        """Tier 2: add a scope for a new project the summary is holding back, after the supervisor's presence check."""
         if self.mappings is None: raise OpError('presence_unavailable')
         try: return self.mappings.set(project,target)
         except MoveError as error: raise OpError(error.code) from None

@@ -165,17 +165,6 @@ def parser():
     init.add_argument('--out'); init.add_argument('--file-keystore',action='store_true')
     grant.add_argument('--allow-import',action='store_true'); grant.add_argument('--allow-pages',action='store_true'); grant.add_argument('--allow-summarize',action='store_true')
     recall.add_argument('--compat',action='store_true')
-    migration=commands.add_parser('migrate'); operations=migration.add_subparsers(dest='action',required=True)
-    for action in ('plan','run','rows','catch-up','report','verify'):
-        cmd=operations.add_parser(action)
-        cmd.add_argument('--db',required=action!='report')
-        routing=cmd.add_mutually_exclusive_group(required=action in ('run','rows','catch-up','verify'))
-        routing.add_argument('--mapping'); routing.add_argument('--settings',action='store_true')
-        cmd.add_argument('--project-dir',action='append',default=[])
-        if action!='plan': cmd.add_argument('--agent-key',required=True)
-        if action in ('run','rows','catch-up'): cmd.add_argument('--take-over',action='store_true')
-        if action=='rows': cmd.add_argument('--ref',action='append',required=True)
-        if action=='report': cmd.add_argument('--out',required=True)
     summarizer=commands.add_parser('summary'); steps=summarizer.add_subparsers(dest='action',required=True)
     delete=steps.add_parser('delete',help='confirm a quarantined deletion (typed presence)')
     delete.add_argument('--agent-key',required=True); delete.add_argument('--scope',required=True); delete.add_argument('--memory-key',required=True)
@@ -263,7 +252,6 @@ def execute(args,*,backend=None,console=None,input_fn=None):
         from .settings import load
         value=load()
         return value if args.action=='show' else {'ok':True}
-    if args.command=='migrate': return execute_migration(args,backend=backend)
     if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
     if args.command=='adapter': return execute_adapter(args,backend=backend)
     if args.command=='summary': return execute_summary(args,backend=backend)
@@ -366,68 +354,6 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             finally: broker.close()
     raise ValueError('invalid_request')
 
-
-
-def execute_migration(args, *, backend=None):
-    from .migrate.mapping import Mapping,plan
-    from .migrate.run import run
-    from .migrate.ledger import report,write_report
-    from .status import caught_up
-    mapping=None
-    try:
-        if args.action=='catch-up':
-            import os
-            bridge=Path(os.environ.get('AGENTMESH_PROFILE_LOG_BRIDGE',str(args.db)+'.profile-log.json'))
-            if bridge.exists():
-                config=parse(bridge.read_text(encoding='utf-8').encode('utf-8'))
-                if config.get('format')!='agentmesh-profile-log-bridge-v1': raise ValueError('invalid bridge config')
-                if config.get('enabled') is False or config.get('authority') is False:
-                    result=dict(outcomes={},unmapped=[],skipped={},timestamp_fallback=0,busy_retries=0,errors=[],secret_labelled=0)
-                    # Refresh counts without opening broker state on the disabled path.
-                    try:
-                        if getattr(args,'settings',False):
-                            from .settings import load
-                            from .apply import mapping_value
-                            mapping=Mapping(mapping_value(load()))
-                        elif args.mapping: mapping=Mapping.load(args.mapping)
-                    except Exception: pass
-                    caught_up(args.db,mapping,result,outcome='disabled')
-                    return result
-        if getattr(args,'settings',False):
-            from .settings import load,root
-            from .apply import open_home
-            from .projects import effective_mapping
-            value=load(); _,store=open_home(root(),backend)
-            mapping=effective_mapping(value,store.load(),args.project_dir)
-        else: mapping=Mapping.load(args.mapping) if args.mapping else None
-        if args.action=='plan': return plan(args.db,mapping)
-        binding=None
-        if args.action in ('run','rows','catch-up','verify'):
-            from .migrate.source import binding_for
-            binding=binding_for(args.db)
-        client=BrokerClient.from_file(args.agent_key)
-        try:
-            if args.action=='verify':
-                from .migrate.verify import verify
-                return verify(args.db,mapping,client,binding=binding)
-            if args.action=='report':
-                result=report(client,args.db,mapping)
-                # Agent files are emitted under HOME/agents; reject replica destinations.
-                home=Path(args.agent_key).resolve().parent.parent
-                write_report(result,args.out,home/'replica')
-                return dict(rows=len(result))
-            cache=None
-            if args.action=='catch-up':
-                import os
-                cache=Path(os.environ.get('AGENTMESH_PROFILE_LOG_CATCH_UP_CACHE',str(args.db)+'.profile-log.catch-up.json'))
-            result=run(args.db,mapping,client,refs=getattr(args,'ref',None),take_over=args.take_over,cache=cache,binding=binding,
-                hold_unmapped=args.action=='catch-up')
-        finally: client.close()
-        if args.action=='catch-up': caught_up(args.db,mapping,result)
-        return result
-    except Exception as exc:
-        if args.action=='catch-up': caught_up(args.db,mapping,outcome='error',error=exc)
-        raise
 
 
 def execute_summary(args, *, backend=None):
@@ -968,12 +894,6 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy
-        if code=='presence_required' and args.command=='migrate' and sys.stderr is not None:
-            from .settings import root
-            home=Path(root())/'profile-log'
-            presence_class=getattr(exc,'presence_class','first_access')
-            if not isinstance(presence_class,str) or not presence_class.replace('_','').isalnum(): presence_class='first_access'
-            print(f'run: agentmesh-log presence open --home {home} --class {presence_class}',file=sys.stderr)
         emit(json.dumps({'error':code})); return 1
 
 

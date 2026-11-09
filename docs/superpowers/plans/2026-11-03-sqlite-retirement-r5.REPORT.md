@@ -91,3 +91,46 @@ removes them with their tests and shrinks `RETIRE` to empty, leaving `KEEP` (the
 cache, and the supervisor's `state.db`). It also removes the ceremony's rollback (nothing to roll back to), the
 `sqlite` branch of the production job, the bridge's import fields, and the `migrate rows`, `catch-up` and `verify`
 commands with the importer role. `sqlite-archive delete` stays until every archive is gone.
+
+## R5b (2026-11-09): done early, by the owner's choice
+
+The owner asked for R5b before the rollback windows closed (Air 12-02, Windows and Pro 12-03), because the MacBook Pro is
+going back on 2026-12-03. Every device had been on the broker summary since 11-03 with no rollback needed, so they
+gave up rollback on all three.
+
+Removed, in one change (memory-sync and profile-log; Insight follows separately):
+
+- **memory-sync.** Every module except the broker summary path is gone: `broker_digest`, `claude_digest_worker`,
+  `transcripts`, `timestamps`, `bounded_protocol`, `job_notify`, `jobs/` and the `omp_memory` parsers stay. The
+  six helpers the summary still used from the SQLite modules now live in `digest_io.py`:
+  - `canonical`, `load_packet` and `utf8_stdio`, from `memory_sync`;
+  - `run_lock`, `append_metric` and `extract_command`, from `bounded_digest`.
+
+  The 0.3.1 worker stack went with the rest. It was uninstalled from Windows in W5, and its installers, OTA,
+  signed packets, key rotation and standalone builds only imported the SQLite modules. Its three CI workflows went
+  too: `standalone-smoke`, `standalone-trial-artifacts` and `windows-runtime-acl-repair`.
+- **Production job.** `jobs/agentmesh_production.py` runs only `backend: broker`. A config without it is refused as
+  `SQLite backend retired` and never runs.
+- **profile-log.** These are gone:
+  - `migrate plan/run/rows/catch-up/report/verify` and their source, run, ledger and verify modules;
+  - the `sqlite-retire` ceremony and `sqlite-rollback`;
+  - the staging bridge in `apply` (the `bridge` block is accepted and ignored);
+  - the `catch-up` control unit;
+  - the `migration` and `last_catch_up` status sections (an older file loses them on its next write);
+  - the admin TUI's staging rows and import preview;
+  - `verify_remote --sample-db`.
+
+  `control sqlite-archive list/delete` stays, with no 30-day window now that there is nothing to roll back to. The
+  migration mapping stays, because the broker summary routes projects with it.
+- **Kept on purpose.** The broker's import verification (`allow_import`, `import_agents`, imported heads) stays.
+  Events the importer wrote are in every replica's history and must keep verifying. The `retention` control unit
+  stays in the registry (it is not installed anywhere); the supervisor consolidation will drop it.
+
+`SqliteInventoryTests.RETIRE` now lists only Insight's four modules. `memory-sync/schema.sql` stays until the Insight change too,
+because Insight's tests build their fixtures from it.
+
+Owner steps after merge:
+1. Deploy `main` to the Air and Windows, then unload the catch-up job: the `org.agentmesh.profile-log.catch-up` plist
+   on the Air, the scheduled task on Windows.
+2. Delete each archive with `control sqlite-archive delete --archive sqlite-<node>-<stamp>`.
+3. Decommission the Pro: revoke its device, unload its agents, remove `~/.agentmesh` and its Keychain items.

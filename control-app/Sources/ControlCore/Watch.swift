@@ -47,7 +47,7 @@ public struct Watch: Sendable {
         for project in (status.projects?.pending ?? []) where !askedProjects.contains(project) {
             askedProjects.insert(project)
             notices.append(Notice(id: "project." + project, title: "New project needs a scope",
-                                  body: "\(project): choose where its memory goes. Until then catch-up holds it back.",
+                                  body: "\(project): choose where its memory goes. Until then the summary holds it back.",
                                   project: project, scopes: status.projects?.scopes ?? []))
         }
         askedProjects.formIntersection(pending)

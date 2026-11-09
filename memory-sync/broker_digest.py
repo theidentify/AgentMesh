@@ -1,6 +1,6 @@
 """Bounded digest on the broker backend (SQLite retirement R2).
 
-The same windows, prompt, validation and quarantine rules as bounded_digest, without the staging database:
+The same windows, prompt, validation and quarantine rules as the retired bounded_digest, without the staging database:
 events are read straight from the agents' JSONL files and memories are written through the broker by the
 summarizer agent (`agentmesh-log summary related|write`, JSON on stdin). Nothing from a transcript is stored.
 
@@ -264,7 +264,7 @@ def extract(task, *, extractor=None, command=None, model, conflict_model=None, c
         if extractor:
             result = extractor(request, model=chosen)
         else:
-            from bounded_digest import extract_command
+            from digest_io import extract_command
             result = extract_command(request, model=chosen, command=command)
         calls.append(result)
         return result
@@ -367,14 +367,14 @@ def tick(state_dir, backend, *, metrics_path=None, **kw):
         raise
     finally:
         if metrics_path is not None and metric['status'] != 'scheduled':
-            from bounded_digest import append_metric
+            from digest_io import append_metric
             metric.update(end=datetime.now(timezone.utc).isoformat(), duration_seconds=time.monotonic() - clock)
             append_metric(metrics_path, metric)
 
 
 def _tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None, boot_id=None, force=False, **options):
     """Daily/boot schedule like digest_scheduler: once due, run windows until drained, at most max_batches per tick."""
-    from bounded_digest import run_lock
+    from digest_io import run_lock
     if type(max_batches) is not int or not 1 <= max_batches <= 1000:
         raise ValidationError('invalid batch bound')
     instant = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)

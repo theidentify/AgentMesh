@@ -61,7 +61,7 @@ public struct Quota: Equatable, Sendable, Decodable {
     public let backoffUntil: String?
 }
 
-/// New projects catch-up is holding back, and the scopes mapping.set accepts for them. Absent on a pre-2026-10-31
+/// New projects the summary is holding back, and the scopes mapping.set accepts for them. Absent on a pre-2026-10-31
 /// supervisor, so it is optional.
 public struct Projects: Equatable, Sendable, Decodable {
     public let pending: [String]

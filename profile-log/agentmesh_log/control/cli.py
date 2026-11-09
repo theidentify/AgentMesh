@@ -21,7 +21,11 @@ def add_parsers(commands):
     for action in ('start','stop','restart','reset','adopt','release','reload'): sub.add_parser(action).add_argument('unit')
     consolidate=sub.add_parser('consolidate',help='run every unit under the supervisor: one background item (dry run unless --apply)')
     consolidate.add_argument('--apply',action='store_true')
-    for name in ('consolidate','adopt','release','reload','panic-revert'):
+    handover=sub.add_parser('handover',help='hand the supervisor to AgentMesh Control as its login item (--back to undo)')
+    handover.add_argument('--back',action='store_true')
+    handover.add_argument('--app',default=None,help='the AgentMesh Control bundle (default ~/Applications)')
+    handover.add_argument('--label',default=None,help='another label, for a test supervisor beside the real one')
+    for name in ('consolidate','adopt','release','reload','panic-revert','handover'):
         sub.choices[name].add_argument('--agents',help='the LaunchAgents folder (required with a non-default AGENTMESH_HOME)')
     sub.choices['panic-revert'].add_argument('--label',default=None,help='the supervisor label to boot out')
     maintenance=sub.add_parser('maintenance'); maintenance.add_argument('state',choices=['on','off'])
@@ -102,7 +106,7 @@ def execute(args, *, layout=None, call=None, console=None, launchd=None, agents=
     if args.action=='serve': return serve(layout)
     if args.action=='plist': return write_plist(layout,args.out,args.python,args.label)
     if call is None: from .client import call
-    if args.action in ('adopt','release','panic-revert','consolidate','reload'): return local(args,layout,call,console,launchd,agents)
+    if args.action in ('adopt','release','panic-revert','consolidate','reload','handover'): return local(args,layout,call,console,launchd,agents)
     if args.action.startswith('sqlite-'): return sqlite(args,layout,console,helper)
     op,params=CALLS[args.action](args)
     try: response=call(layout,op,params)
@@ -140,6 +144,11 @@ def local(args, layout, call, console, launchd, agents):
         console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
     layout.ensure(); store=Store(layout.state)
     try:
+        if args.action=='handover':
+            from . import handover
+            label=args.label or handover.LABEL
+            if args.back: return handover.hand_back(layout,console=console,agents=agents,label=label,launchd=launchd)
+            return handover.handover(layout,console=console,agents=agents,app=args.app,label=label,launchd=launchd)
         if args.action=='panic-revert':
             return migrate.panic_revert(layout,store,launchd=launchd,agents=agents,label=getattr(args,'label',None))
         if args.action=='adopt':

@@ -202,9 +202,10 @@ Bob syncs, tries `remember` and `recall "after removal"`.
 
 ## 7. Insight
 
-Point Insight at Alice's test home (the status snapshot is written by her running broker):
+A broker whose home is outside `~/.agentmesh` writes its status snapshot beside its home, so point
+Insight at Alice's test home (the snapshot is written by her running broker, at most once a minute):
 ```sh
-python3 -u ../insight/server.py --port 0
+python3 -u ../insight/server.py --port 0 --agentmesh-home $A
 ```
 - [ ] Profile log → **Workspaces** shows `acme` with member, task and lease counts, and no titles,
   account IDs or text anywhere on the page.
@@ -291,5 +292,14 @@ lines around that time (`broker run --log-dir` if you used it).
   - leases, notes and the claim race (same owner on both machines, `conflict: true`);
   - staging and quota (including release while over quota);
   - after removal: writes denied and new events unreadable.
-- **Not yet run:** 7 (Insight), 8 (gateway), 9 (Slack), 10 (OIDC) and 11 (clean-up of `ws-test/`,
-  the test homes and their key store items).
+- **Clean-up (11)** done on 2026-11-09:
+  - R2: all 103 objects under `ws-test/` deleted;
+  - Mac: test homes and test Keychain items removed;
+  - Windows: `C:\amtest` and Bob's credential moved to the Recycle Bin.
+- **Insight (7)**, 2026-11-09, on a disposable home with a staged workspace:
+  - the Workspaces panel shows counts only: members, tasks, leases, conflicts, reviews, quota;
+  - no task titles, fact text or 32-character IDs on the page or in the API.
+  - This step found a bug: a test broker wrote its status into the real `~/.agentmesh`
+    snapshot, so Control and Insight could show test data. It's fixed: brokers outside the
+    AgentMesh home now keep their snapshot beside their home.
+- **Not yet run:** 8 (gateway), 9 (Slack), 10 (OIDC).

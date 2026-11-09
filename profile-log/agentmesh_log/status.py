@@ -1,4 +1,5 @@
 """Best-effort content-free status for Insight; never an authority source."""
+import os
 from collections import Counter
 import hashlib
 import re
@@ -77,6 +78,15 @@ def migration(database, mapping):
     from .migrate.source import rows
     value=plan(database,mapping)
     return dict(generated_at=timestamp(),projects=project_targets(value['projects'],rows(database),mapping),unmapped=value['unmapped'])
+
+
+def base_for(home_root):
+    """Where a broker with this home publishes its status: the AgentMesh home when the broker home lives inside
+    it (the installed broker), else the broker home itself, so a test or second broker never overwrites the
+    snapshot that Control and Insight read for the real one."""
+    from pathlib import Path
+    root = settings.root(); home = Path(os.path.abspath(home_root))
+    return root if home == root or root in home.parents else home
 
 
 def write(base, **sections):

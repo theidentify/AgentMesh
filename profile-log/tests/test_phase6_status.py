@@ -46,3 +46,15 @@ def test_p6_s8_auth_drain(tmp_path):
     assert status['last_drain_result']==result
     assert isinstance(status['last_drain_ms'],int)
     assert isinstance(status['outbox_cursor_ms'],int)
+
+
+def test_status_base_for_test_homes(tmp_path):
+    """Only a broker whose home is inside the AgentMesh home publishes there; others keep their own snapshot."""
+    import os
+    from pathlib import Path
+    from agentmesh_log import status, settings
+    root = settings.root()
+    assert status.base_for(root / 'profile-log') == root
+    assert status.base_for(root) == root
+    other = tmp_path / 'elsewhere' / 'alice'
+    assert status.base_for(other) == Path(os.path.abspath(other))

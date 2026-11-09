@@ -6,11 +6,17 @@ import SwiftUI
 /// from the menu bar. This view sits behind the menu's content, so its height is the content's height; whenever that
 /// changes it sizes the window to fit, keeping the window's top edge where it is, so the panel grows and shrinks
 /// downward only. A resize from the system is pinned back to the same top edge.
+///
+/// It also reports when the panel opens and closes. The panel and its SwiftUI content stay alive between opens, so
+/// `onAppear`/`onDisappear` do not follow each open; the window's key state does.
 struct MenuBarAnchor: NSViewRepresentable {
-    func makeNSView(context: Context) -> AnchorView { AnchorView() }
-    func updateNSView(_ view: AnchorView, context: Context) {}
+    var onOpen: (Bool) -> Void = { _ in }
+
+    func makeNSView(context: Context) -> AnchorView { let view = AnchorView(); view.onOpen = onOpen; return view }
+    func updateNSView(_ view: AnchorView, context: Context) { view.onOpen = onOpen }
 
     final class AnchorView: NSView {
+        var onOpen: (Bool) -> Void = { _ in }
         private var top: CGFloat?
         private var correcting = false
 
@@ -23,6 +29,7 @@ struct MenuBarAnchor: NSViewRepresentable {
             // The system places the panel under its menu bar item each time it opens; remember that top edge then.
             center.addObserver(self, selector: #selector(opened(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
             center.addObserver(self, selector: #selector(resized(_:)), name: NSWindow.didResizeNotification, object: window)
+            center.addObserver(self, selector: #selector(closed(_:)), name: NSWindow.didResignKeyNotification, object: window)
             DispatchQueue.main.async { [weak self] in self?.remember(); self?.fit() }
         }
 
@@ -36,7 +43,9 @@ struct MenuBarAnchor: NSViewRepresentable {
             top = frame.maxY
         }
 
-        @objc private func opened(_ notification: Notification) { remember(); fit() }
+        @objc private func opened(_ notification: Notification) { remember(); fit(); onOpen(true) }
+
+        @objc private func closed(_ notification: Notification) { onOpen(false) }
 
         @objc private func resized(_ notification: Notification) {
             guard !correcting else { return }

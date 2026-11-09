@@ -21,6 +21,8 @@ import Testing
     #expect(SupervisorItem.decide(status: .requiresApproval, loaded: .none, legacyPlist: false) == .requiresApproval)
     #expect(SupervisorItem.on.actionable && SupervisorItem.ready.actionable && !SupervisorItem.waiting.actionable)
     #expect(SupervisorItem.needsHandover.caption!.contains("control handover"))
+    #expect(SupervisorItem.waiting.pending && SupervisorItem.ready.pending && SupervisorItem.needsHandover.pending)
+    #expect(!SupervisorItem.on.pending && !SupervisorItem.off.pending && !SupervisorItem.requiresApproval.pending)
 }
 
 @Test func loadedJobFromLaunchctlPrint() {

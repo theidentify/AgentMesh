@@ -34,6 +34,10 @@ struct MenuView: View {
                 maintenance(status.maintenance)
                 Text(quotaText(status.quota)).font(.caption).foregroundStyle(.secondary)
             }
+            if model.supervisorItem.available {
+                Divider()
+                SupervisorItemView(item: model.supervisorItem)
+            }
             Divider()
             footer
         }
@@ -158,6 +162,51 @@ struct MenuView: View {
             model.loginError = nil
         } catch {
             model.loginError = "Launch at login needs the installed app (control-app/bundle.sh)."
+        }
+    }
+}
+
+/// "Run supervisor at login": the supervisor's own background item, from this app's bundle.
+struct SupervisorItemView: View {
+    let item: SupervisorLoginItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Toggle("Run supervisor at login", isOn: Binding(get: { item.state.isOn }, set: { _ in item.confirming = true }))
+                    .toggleStyle(.checkbox).disabled(!item.state.actionable || item.working || item.confirming)
+                Spacer()
+                if item.working { ProgressView().controlSize(.small) }
+                if item.state == .requiresApproval {
+                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                }
+            }
+            if let caption = item.state.caption {
+                Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if item.confirming {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.state.isOn
+                         ? "The supervisor and every unit it runs stop, and nothing starts them again until you tick this or run `agentmesh-log control handover --back`."
+                         : item.state == .ready
+                         ? "The supervisor restarts under AgentMesh Control; its units are down for about a second."
+                         : "The supervisor starts from AgentMesh Control and at every login.")
+                        .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { item.confirming = false }
+                        Button(item.state.isOn ? "Stop supervisor" : "Continue") {
+                            let on = !item.state.isOn
+                            item.confirming = false
+                            Task { await item.apply(on) }
+                        }.keyboardShortcut(.defaultAction)
+                    }
+                }
+                .padding(8).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if let error = item.error {
+                Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

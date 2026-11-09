@@ -26,6 +26,21 @@ supervisor uses to ask for Touch ID or your Mac password.
   supervisor builds it from `lstat` of key files and the broker's content-free status; it never opens a key file or the
   sealed keystore.
 
+## Supervisor login item
+
+`bundle.sh` embeds the supervisor's job as `Contents/Library/LaunchAgents/org.agentmesh.control.plist`. Its
+`BundleProgram` is `Contents/Resources/agentmesh-control-launcher`, which sets umask 077 and execs
+`${AGENTMESH_HOME:-$HOME/.agentmesh}/venv/bin/AgentMesh -m agentmesh_log.cli control serve`, logging to
+`<home>/logs/control.{out,err}.log`. **Run supervisor at login** (installed bundle only) registers it with
+`SMAppService.agent(plistName:)`.
+
+- The legacy plist shares the label, so the toggle stays off until `agentmesh-log control handover` has parked it and
+  macOS has dropped the old Login Items record (`SMAppService.Status.notFound`, about a minute). Only then does it boot
+  the legacy job out and register. Registering sooner binds the job to the stale record, and it fails with EX_CONFIG.
+- The app runs `launchctl` itself only to read the job's owner (`print`) and for that one `bootout`, which you confirm.
+- Test build: `bundle.sh --label org.agentmesh.test-control --home /short/dir` embeds that label with
+  `AGENTMESH_HOME` set and never installs. Keep the home path short, because the control socket path is limited to 104 bytes.
+
 ## Memory
 
 **Memory…** in the menu opens a read-only browser of the memory tree: one level at a time, with `INDEX.md` page

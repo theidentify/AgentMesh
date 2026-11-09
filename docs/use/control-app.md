@@ -66,6 +66,26 @@ Under the supervisor:
 
 To change what a unit runs, edit its plist in `~/.agentmesh/control/units/` and run `agentmesh-log control reload UNIT`. `insight/deploy_insight.py` does this for Insight. To give one unit back to launchd, run `agentmesh-log control release UNIT`. To give back all of them without the supervisor, run `agentmesh-log control panic-revert`. Both move the plist back to `~/Library/LaunchAgents` first.
 
+### Let AgentMesh Control own the background item
+
+After consolidating, the one remaining item is still a plist in `~/Library/LaunchAgents`. AgentMesh Control carries the same supervisor job inside its bundle and can register it as its own login item, so the item comes from the app itself. The supervisor runs the same way; only its owner changes. Install the app with `control-app/bundle.sh` first, then hand the item over in your own terminal:
+
+```sh
+agentmesh-log control handover
+```
+
+It asks you to type `migrate`, then moves the plist to `~/.agentmesh/control/supervisor/`. The supervisor keeps running. macOS needs about a minute to forget the old item; until then the menu says so. Then tick **Run supervisor at login** in the menu and confirm. The app stops the old job and starts the supervisor from its bundle straight away, so units are down for about a second. Logs stay in `~/.agentmesh/logs/control.{out,err}.log`.
+
+Do not tick the box sooner, and do not `launchctl disable org.agentmesh.control`. macOS keys the item on the label that both jobs share, and while it still remembers the old item, a new registration fails to start.
+
+To go back, untick **Run supervisor at login**, which stops the supervisor, then run:
+
+```sh
+agentmesh-log control handover --back
+```
+
+It puts the plist back in `~/Library/LaunchAgents` and starts it. `panic-revert` still works under either owner.
+
 ## Choose a scope for a new project
 
 When an agent starts working in a project the migration mapping does not cover, catch-up imports everything else and holds that project's memory back. The app asks once, in a notification and in the menu, where it should go: one button per scope (for example Personal or Work), or **Skip** to keep it out of the profile log.

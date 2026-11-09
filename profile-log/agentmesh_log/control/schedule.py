@@ -6,12 +6,19 @@ a calendar job is due when its most recent matching minute is later than its las
 Three shapes come out of a plist (see `mode`): a `service` (KeepAlive true: kept running, restarted with backoff), a
 `timer` (StartInterval or StartCalendarInterval) and a `once` (RunAtLoad only: one run per supervisor start).
 """
+import os
 import plistlib
 from datetime import datetime, timedelta
 from pathlib import Path
 
 ENV_BASE=('HOME','USER','LOGNAME','SHELL','TMPDIR')
 DEFAULT_PATH='/usr/bin:/bin:/usr/sbin:/sbin'
+# The user environment a Task Scheduler action ran with, less anything a shell or app added. PATH stays the user's:
+# Windows has no fixed default, and the summary job finds claude.exe through it. SYSTEMROOT is required by Python itself.
+WINDOWS_ENV=('SYSTEMROOT','WINDIR','SYSTEMDRIVE','USERPROFILE','HOMEDRIVE','HOMEPATH','USERNAME','USERDOMAIN',
+    'COMPUTERNAME','APPDATA','LOCALAPPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','PROGRAMW6432',
+    'COMMONPROGRAMFILES','COMMONPROGRAMFILES(X86)','TEMP','TMP','PATH','PATHEXT','COMSPEC','OS',
+    'NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','PSMODULEPATH','PUBLIC','ALLUSERSPROFILE')
 RANGES={'Minute':(0,59),'Hour':(0,23),'Weekday':(0,7)}
 LOOKBACK_MINUTES=8*24*60
 THROTTLE_S=10  # launchd's default ThrottleInterval
@@ -60,12 +67,23 @@ def read_spec(unit, agents=None, path=None):
     with open(path or plist_path(unit,agents),'rb') as stream: return spec_from_plist(plistlib.load(stream))
 
 
-def child_env(spec, parent):
-    """launchd's base environment, then the plist's EnvironmentVariables. Nothing else from the supervisor leaks."""
-    env={key:parent[key] for key in ENV_BASE if key in parent}
-    env['PATH']=DEFAULT_PATH
+def child_env(spec, parent, windows=os.name=='nt'):
+    """launchd's base environment (on Windows, the user environment a task got), then the spec's own variables.
+    Nothing else from the supervisor leaks: not AGENTMESH_HOME, not a desktop app's ANTHROPIC_* host auth."""
+    if windows:
+        upper={key.upper():value for key,value in parent.items()}
+        env={key:upper[key] for key in WINDOWS_ENV if key in upper}
+    else:
+        env={key:parent[key] for key in ENV_BASE if key in parent}
+        env['PATH']=DEFAULT_PATH
     env.update(spec['env'])
     return env
+
+
+def home(parent, windows=os.name=='nt'):
+    """A child's working directory when its spec names none: the user's home, as the OS scheduler used."""
+    if windows: return parent.get('USERPROFILE') or parent.get('SYSTEMROOT') or 'C:\\'
+    return parent.get('HOME') or '/'
 
 
 def matches(calendar, moment):

@@ -6,18 +6,19 @@ after a run that lasted STABLE_S or more, else BACKOFF_BASE_S doubling per quick
 a RunAtLoad-only job runs once per supervisor start.
 
 Enforcing watchdog: a run past its unit's max_runtime_s gets SIGTERM to its process group, then SIGKILL after
-KILL_GRACE_S. More than STORM_KILLS watchdog kills within STORM_WINDOW_S puts the unit in `failed`; a failed unit is
-never started again (by schedule, start or restart) until `control reset`.
+KILL_GRACE_S. On Windows the child's process tree is ended at once (see procs). More than STORM_KILLS watchdog kills
+within STORM_WINDOW_S puts the unit in `failed`; a failed unit is never started again (by schedule, start or restart)
+until `control reset`.
 
 Failure streaks: the FAIL_STREAK-th failed run in a row alerts once, and the first ok run after such a streak alerts
 that the unit recovered. Both come from the runs table, so a supervisor restart neither repeats nor loses them.
 """
 import os
-import signal
 import subprocess
 import threading
 import time
-from . import schedule
+from . import procs, schedule
+from .procs import signal_group, started_token  # noqa: F401  (migrate imports them from here)
 from .store import FAILURES
 
 KILL_GRACE_S=10
@@ -29,22 +30,9 @@ BACKOFF_BASE_S=1
 BACKOFF_MAX_S=300
 
 
-def started_token(pid, runner=subprocess.run):
-    """`ps -o lstart` of pid. With the pid it names one process, so a reused pid is never signalled."""
-    try: process=runner(['/bin/ps','-o','lstart=','-p',str(pid)],capture_output=True,text=True,timeout=5)
-    except (OSError,subprocess.SubprocessError): return None
-    if process.returncode!=0: return None
-    return process.stdout.strip() or None
-
-
 def open_log(path):
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND|getattr(os,'O_NOFOLLOW',0),0o600)
     return os.fdopen(fd,'ab')
-
-
-def signal_group(pid, sig):
-    try: os.killpg(pid,sig)
-    except (ProcessLookupError,PermissionError): pass
 
 
 class NativeBackend:
@@ -94,9 +82,9 @@ class NativeBackend:
         at=self.now_ms(); out=err=None
         try:
             out=open_log(spec['stdout']); err=out if spec['stderr']==spec['stdout'] else open_log(spec['stderr'])
-            proc=subprocess.Popen(spec['argv'],cwd=spec['cwd'] or self.environ.get('HOME') or '/',
+            proc=subprocess.Popen(spec['argv'],cwd=spec['cwd'] or schedule.home(self.environ),
                 env=schedule.child_env(spec,self.environ),stdin=subprocess.DEVNULL,stdout=out,stderr=err,
-                start_new_session=True,umask=spec['umask'],close_fds=True)
+                **procs.spawn_options(spec))
         except OSError:
             run_id=self.store.start_run(unit.name,-1,None,at)
             self.store.end_run(run_id,127,'launch_error',at)
@@ -112,7 +100,7 @@ class NativeBackend:
     def terminate(self, run, why):
         if run['term_at'] is None:
             run['term_at'],run['why']=self.clock(),why
-            signal_group(run['proc'].pid,signal.SIGTERM)
+            procs.terminate(run['proc'].pid)
 
     def tick(self):
         """One supervisor second: reap finished runs, enforce the watchdog, then start due jobs."""
@@ -125,7 +113,7 @@ class NativeBackend:
                     alerts+=self.finish(name,run,code); continue
                 limit=self.units[name].max_runtime_s
                 if run['term_at'] is None and limit and now-run['started']>limit: self.terminate(run,'watchdog')
-                elif run['term_at'] is not None and now-run['term_at']>=KILL_GRACE_S: signal_group(run['proc'].pid,signal.SIGKILL)
+                elif run['term_at'] is not None and now-run['term_at']>=KILL_GRACE_S: procs.kill(run['proc'].pid)
             for name,spec in self.store.native_units().items():
                 unit=self.units.get(name)
                 if unit is None or name in self.running or self.store.failed(name): continue
@@ -199,13 +187,13 @@ class NativeBackend:
         alive=[]
         for run in self.store.open_runs():
             if run['pid']>0 and run['pid_started'] is not None and self.token(run['pid'])==run['pid_started']:
-                signal_group(run['pid'],signal.SIGTERM); alive.append(run)
+                procs.terminate(run['pid']); alive.append(run)
             self.store.end_run(run['id'],None,'orphaned',self.now_ms())
         waited=0.0
         while alive and waited<KILL_GRACE_S:
             self.sleep(0.2); waited+=0.2
             alive=[run for run in alive if self.token(run['pid'])==run['pid_started']]
-        for run in alive: signal_group(run['pid'],signal.SIGKILL)
+        for run in alive: procs.kill(run['pid'])
         return len(alive)
 
     def shutdown(self):
@@ -217,7 +205,7 @@ class NativeBackend:
         for _,run in runs:
             try: run['proc'].wait(max(0.0,deadline-time.monotonic()))
             except subprocess.TimeoutExpired:
-                signal_group(run['proc'].pid,signal.SIGKILL); run['proc'].wait(5)
+                procs.kill(run['proc'].pid); run['proc'].wait(5)
         with self.lock:
             for name,run in runs:
                 if self.running.get(name) is run: self.finish(name,run,run['proc'].returncode)

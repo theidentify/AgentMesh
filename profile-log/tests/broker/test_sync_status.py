@@ -243,7 +243,10 @@ def test_completion_timestamp(tmp_path,monkeypatch):
 def test_cli_shared_sync_status(tmp_path,monkeypatch,broken):
     from agentmesh_log import settings, status
     from .test_cli import cli as invoke
-    home,*_=setup_home(tmp_path); path=settings.root()/'profile-log-status.json'
+    home,*_=setup_home(tmp_path)
+    # This home is outside the AgentMesh home, so its status stays beside it and the shared snapshot is untouched.
+    path=status.base_for(home.root)/'profile-log-status.json'; shared=settings.root()/'profile-log-status.json'
+    assert path.parent==home.root
     if broken: path.mkdir()
     row=dict(at='2026-10-20T00:00:00Z',outcome='ok',interval_s=60,backend='filesystem',**{k:0 for k in service.COUNTS})
     def serve(self,**kw): kw['on_sync'](row)
@@ -255,3 +258,4 @@ def test_cli_shared_sync_status(tmp_path,monkeypatch,broken):
     else:
         value=json.loads(path.read_bytes()); assert status.valid(value)
         assert value['last_sync']==dict(row,last_ok_at=row['at'])
+    assert not shared.exists()

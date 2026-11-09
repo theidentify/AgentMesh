@@ -325,11 +325,11 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             atomic_write(home.root/'sync-status.json',wire(row))
             try:
                 from . import status, settings
-                status.synced(settings.root(),row)
+                status.synced(status.base_for(home.root),row)
             except Exception: pass
         def on_overview(sections):
             from . import status, settings
-            status.write(settings.root(),**sections)
+            status.write(status.base_for(home.root),**sections)
         broker=Broker(home,store=store)
         try: broker.serve(remote=remote,sync_interval=args.sync_interval,on_sync=on_sync,on_overview=on_overview)
         finally: broker.close()

@@ -86,7 +86,9 @@ final class StatusModel {
     /// inventory: true fetches keys.inventory now (the menu just opened); otherwise at most once a minute.
     func refresh(inventory force: Bool = false) async {
         let client = client
-        if menuOpen && !supervisorItem.working { await supervisorItem.refresh() }  // launchctl print: only while it shows
+        // launchctl print: while the menu shows, or while the item waits on something outside the app (the owner's
+        // handover, or macOS forgetting the old login item), so the toggle is current when the menu next opens.
+        if (menuOpen || supervisorItem.state.pending) && !supervisorItem.working { await supervisorItem.refresh() }
         switch await run({ try client.status() }) {
         case .success(let value): status = value; lastError = nil
         case .failure(let error): status = nil; lastError = describe(error)

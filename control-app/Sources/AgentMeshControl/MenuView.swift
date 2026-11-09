@@ -43,7 +43,7 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 400)
-        .background(MenuBarAnchor())  // keep the panel attached to the menu bar when sections expand or collapse
+        .background(MenuBarAnchor { open in if model.menuOpen != open { model.menuOpen = open } })  // stay attached to the menu bar; track opens
     }
 
     private var header: some View {

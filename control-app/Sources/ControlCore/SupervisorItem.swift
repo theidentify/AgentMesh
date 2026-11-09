@@ -39,6 +39,8 @@ public enum SupervisorItem: Sendable, Equatable {
     }
 
     public var isOn: Bool { self == .on }
+    /// Waiting on something outside the app, so worth re-checking even while the menu is closed.
+    public var pending: Bool { self == .needsHandover || self == .waiting || self == .ready }
     /// Whether the toggle may be ticked or unticked in this state.
     public var actionable: Bool { self == .on || self == .off || self == .ready }
 

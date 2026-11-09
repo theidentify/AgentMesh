@@ -39,7 +39,7 @@ export async function start(h,client,method='S256'){
  const query=new URLSearchParams({client_id:client,response_type:'code',redirect_uri:'https://client.example/callback',scope:'memory',state:'synthetic-state',resource:h.env.ORIGIN+'/mcp'});
  if(method!==null){query.set('code_challenge',challenge);query.set('code_challenge_method',method);}
  const response=await h.worker.fetch(new Request(h.env.ORIGIN+'/authorize?'+query),h.env);const text=await response.text();
- return {response,code: /<strong>([0-9]{6})<\/strong>/.exec(text)?.[1],cookie:response.headers.get('Set-Cookie')?.split(';')[0],verifier};
+ return {response,text,code: /<strong>([0-9]{6})<\/strong>/.exec(text)?.[1],cookie:response.headers.get('Set-Cookie')?.split(';')[0],verifier};
 }
 export async function finish(h,s){return h.worker.fetch(new Request(h.env.ORIGIN+'/authorize/complete',{method:'POST',headers:{Cookie:s.cookie}}),h.env);}
 export async function exchange(h,client,code,verifier){return h.worker.fetch(new Request(h.env.ORIGIN+'/token',{method:'POST',body:new URLSearchParams({grant_type:'authorization_code',client_id:client,code,code_verifier:verifier,redirect_uri:'https://client.example/callback',resource:h.env.ORIGIN+'/mcp'})}),h.env);}

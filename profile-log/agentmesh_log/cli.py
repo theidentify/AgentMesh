@@ -891,6 +891,9 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
               'invalid staging identity':'staging_identity_invalid',
               'invalid token':'token_rejected','token expired':'token_expired','email not verified':'email_not_verified',
               'issuer mismatch':'issuer_mismatch','https required':'https_required'}.get(str(exc))
+        from .connector_cli import CODES as CONNECTOR_CODES
+        if code is None and str(exc) in CONNECTOR_CODES:
+            emit(json.dumps({'error':str(exc),'hint':CONNECTOR_CODES[str(exc)]})); return 1
         if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy

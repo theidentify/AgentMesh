@@ -15,6 +15,7 @@ supervisor uses to ask for Touch ID or your Mac password.
   | Start, restart, stop, reset, maintenance on/off | Tier 1 | The supervisor's rate limits and the audit |
   | Move to supervisor or launchd (`unit.backend`) | Tier 2 | The supervisor's own presence check |
   | Open the Memory window (`memory.unlock`) | Tier 2 | The supervisor's own presence check, then an idle lock |
+  | Approve a Claude connector (`connector.approve`) | Tier 2 | The typed code must match the shown request, then the supervisor's own presence check |
 
 - **Touch ID never comes from this app.** For a move, the supervisor runs its own `agentmesh-presence` child and trusts
   only that child's exit code. A client, this app included, cannot claim the check passed.
@@ -36,6 +37,14 @@ summaries, `stale` and label badges, and pages or items rendered as markdown on 
 - The supervisor reads through the broker with the agent key in `settings.local.json` `memory_tree.agent_key`, so that
   agent's grants, labels and the broker audit still apply. A secret item needs the broker's own presence window too.
 - The app writes nothing to disk. Plaintext export is a CLI-only ceremony (`agentmesh-log control memory-export`).
+
+## Connector approval
+
+The app polls `connector.pending` (tier 0, cached 20 s by the supervisor) every 30 s and pops a floating window when a
+new gateway request appears. The owner types the browser's 6-digit code; `connector.approve` sends it with the shown
+request's code hash, and the supervisor refuses `code_mismatch` before any prompt. The supervisor reads the broker home
+and R2 remote from the broker's launchd plist, runs the same approve as the CLI with its `agentmesh-presence` helper,
+and redacts the code in the audit log. Polling errors stay quiet; the window shows them only when opened from the menu.
 
 ## Menu bar icon
 

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile,readdir } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { makeEnv,register,start,finish,exchange,approved,admin,writePolicy,rpc } from './fakes.mjs';
-import { bytes,sha,wire } from '../src/encoding.js';
+import { bytes,sha,wire,hex,sign } from '../src/encoding.js';
 import { callTool,PREAMBLE } from '../src/gateway.js';
 const {createGateway}=await import('../src/worker.js');
 async function harness(){const h=await makeEnv();h.worker=createGateway({fetcher:async()=>new Response(null,{status:502})});return h;}
@@ -17,14 +17,15 @@ test('P6-2 registration alone, missing/plain PKCE, pending and wrong code grant 
  for(const method of [null,'plain'])assert.equal((await start(h,c.client_id,method)).response.status,403);
  const s=await start(h,c.client_id);assert.ok(s.code);assert.equal((await finish(h,s)).status,409);
  const {p,ref}=await writePolicy(h,c.client_id);
- assert.equal((await admin(h,'approve',{code_hash:'00'.repeat(32),app_id:p.app_id,policy_ref:ref})).status,403);
+ const missing=await admin(h,'approve',{code_hash:'00'.repeat(32),app_id:p.app_id,policy_ref:ref});assert.equal(missing.status,404);assert.deepEqual(await missing.json(),{error:'code_not_found_or_expired'});
  const hash=await sha(bytes(s.code));const pending=await h.env.OAUTH_KV.get('pending:'+hash,'json');pending.expires=Date.now()-1;await h.env.OAUTH_KV.put('pending:'+hash,JSON.stringify(pending));
- assert.equal((await admin(h,'approve',{code_hash:hash,app_id:p.app_id,policy_ref:ref})).status,403);
+ assert.equal((await admin(h,'approve',{code_hash:hash,app_id:p.app_id,policy_ref:ref})).status,404);
+ const late=await finish(h,s);assert.equal(late.status,410);assert.match(await late.text(),/This code has expired/);
 });
 test('P6-2 approved OAuth, single-use approval, hashed rotating tokens, immediate revoke',async()=>{
  const h=await harness(),a=await approved(h);assert.ok(a.token.access_token);
  const kv=JSON.stringify([...h.env.OAUTH_KV.data]);assert.ok(!kv.includes(a.token.access_token));assert.ok(!kv.includes(a.token.refresh_token));
- assert.equal((await admin(h,'approve',{code_hash:await sha(bytes(a.s.code)),app_id:a.p.app_id,policy_ref:a.ref})).status,403);
+ const used=await admin(h,'approve',{code_hash:await sha(bytes(a.s.code)),app_id:a.p.app_id,policy_ref:a.ref});assert.equal(used.status,409);assert.deepEqual(await used.json(),{error:'code_already_used'});
  assert.equal((await finish(h,a.s)).status,403);
  const r=await h.worker.fetch(new Request(h.env.ORIGIN+'/token',{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',client_id:a.client,refresh_token:a.token.refresh_token})}),h.env);const next=await r.json();assert.ok(next.refresh_token);assert.notEqual(next.refresh_token,a.token.refresh_token);
  const {ref}=await writePolicy(h,a.client,{...a.p,state:'revoked',issued_at:Date.now()+1});await new Promise(r=>setTimeout(r,5));
@@ -220,4 +221,29 @@ test('P6-3 recall forwards names but refuses out-of-policy IDs before the bridge
   assert.ok((await callTool(h.env,auth,'recall',{query:'x',profile},fetcher)).data);assert.equal(seen.at(-1),profile);
  }
  assert.deepEqual(await callTool(h.env,auth,'recall',{query:'x',profile:'p'.repeat(2049)},fetcher),{error:'invalid_request'});assert.equal(seen.length,5);
+});
+
+test('approval page shows expiry; Continue before approval says so in a page',async()=>{
+ const h=await harness(),c=await register(h),s=await start(h,c.client_id);
+ const html=s.text;assert.match(html,/The code expires at <time datetime="[0-9T:.\-]+Z">[0-9]{2}:[0-9]{2} UTC<\/time>, 10 min from now\./);
+ assert.match(html,/AgentMesh Control shows an approval window/);
+ const early=await finish(h,s);assert.equal(early.status,409);assert.equal(early.headers.get('Content-Type'),'text/html; charset=utf-8');
+ const text=await early.text();assert.match(text,/Not approved yet/);assert.match(text,/Claude/);assert.ok(!text.includes(s.code),'the code is never repeated');
+ const none=await h.worker.fetch(new Request(h.env.ORIGIN+'/authorize/complete',{method:'POST'}),h.env);assert.equal(none.status,410);
+});
+test('admin list returns live requests only to a signed device; refusals are coded only after the signature',async()=>{
+ const h=await harness(),c=await register(h),s=await start(h,c.client_id),other=await start(h,c.client_id);
+ const hash=await sha(bytes(other.code)),p=await h.env.OAUTH_KV.get('pending:'+hash,'json');p.rejected=true;await h.env.OAUTH_KV.put('pending:'+hash,JSON.stringify(p));
+ const objects=h.env.STORAGE.data.size,list=await admin(h,'list',{});assert.equal(list.status,200);const body=await list.json();
+ assert.equal(h.env.STORAGE.data.size,objects,'polling list writes no R2 object');
+ assert.equal(body.capped,false);assert.equal(body.requests.length,1);
+ const row=body.requests[0];assert.deepEqual(Object.keys(row).sort(),['client_name','code_hash','created','expires']);
+ assert.equal(row.code_hash,await sha(bytes(s.code)));assert.equal(row.client_name,'Claude');assert.ok(row.expires>Date.now());
+ assert.ok(!JSON.stringify(body).includes(s.code));
+ assert.equal((await admin(h,'list',{extra:1})).status,403);
+ const forged=await h.worker.fetch(new Request(h.env.ORIGIN+'/admin/list',{method:'POST',body:wire({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now(),nonce:'00'.repeat(16),action:'list',payload:{},signature:'00'.repeat(64)})}),h.env);
+ assert.equal(forged.status,403);assert.deepEqual(await forged.json(),{error:'denied'});
+ const skew=await sign({format:'agentmesh-connector-admin-v1',device_id:h.deviceId,ts:Date.now()-120000,nonce:hex(crypto.getRandomValues(new Uint8Array(16))),action:'list',payload:{}},h.device,'connector-admin');
+ const late=await h.worker.fetch(new Request(h.env.ORIGIN+'/admin/list',{method:'POST',body:wire(skew)}),h.env);
+ assert.equal(late.status,403);assert.deepEqual(await late.json(),{error:'clock_skew'});
 });

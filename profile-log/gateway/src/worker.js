@@ -24,6 +24,15 @@ const corsHeaders={
  'Access-Control-Expose-Headers':'WWW-Authenticate, Mcp-Session-Id',
  'Access-Control-Max-Age':'86400',
 };
+// A coded refusal: only after the signed admin envelope verified, so the code names the fix, never a secret.
+class Refusal extends Error{constructor(code,status){super(code);this.code=code;this.status=status;}}
+const PAGE_CSP=redirect=>`default-src 'none'; form-action 'self'${redirect?' '+redirect:''}; frame-ancestors 'none'`;
+const utc=at=>new Date(at).toISOString().slice(11,16)+' UTC';
+function page(title,body,status=200,extra={}){
+ const html=`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)}</title>${body}</html>`;
+ return new Response(html,{status,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':PAGE_CSP(extra.redirect),'Referrer-Policy':'no-referrer',...(extra.headers??{})}});
+}
+const expiresLine=at=>`<p>The code expires at <time datetime="${new Date(at).toISOString()}">${utc(at)}</time>, ${Math.max(1,Math.ceil((at-Date.now())/60000))} min from now.</p>`;
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function authServer(env) {
  return new OAuthAuthorizationServer({issuer:env.ORIGIN,resources:[env.ORIGIN+'/mcp'],defaultResource:env.ORIGIN+'/mcp',authorizeEndpoint:'/authorize',tokenEndpoint:'/token',clientRegistrationEndpoint:'/register',accessTokenTTL:300,refreshTokenTTL:2592000,scopesSupported:['memory'],
@@ -47,16 +56,23 @@ async function authorize(request,env,as) {
  const pending={auth,client_name:client.clientName??'App',client_id:auth.clientId,browser_hash:browserHash,created:Date.now(),expires:Date.now()+600000};
  await env.OAUTH_KV.put('pending:'+codeHash,JSON.stringify(pending),{expirationTtl:600});
  await env.OAUTH_KV.put('browser:'+browserHash,codeHash,{expirationTtl:600});
- const html=`<!doctype html><meta charset="utf-8"><title>Approve AgentMesh</title><h1>${escape(pending.client_name)}</h1><p>Approve on a trusted device using this code:</p><strong>${code}</strong><form method="post" action="/authorize/complete"><button>Continue after approval</button></form>`;
- return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':`default-src 'none'; form-action 'self' ${redirect.origin}; frame-ancestors 'none'`,'Referrer-Policy':'no-referrer','Set-Cookie':`am_approval=${browser}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=600`}});
+ // One small index so a device can poll admin/list with a KV read instead of a KV list.
+ try{const index=await env.OAUTH_KV.get('pending-index','json'),now=Date.now();
+  const live=(Array.isArray(index)?index:[]).filter(e=>e&&typeof e.h==='string'&&/^[0-9a-f]{64}$/.test(e.h)&&Number.isSafeInteger(e.x)&&e.x>now&&e.h!==codeHash);
+  await env.OAUTH_KV.put('pending-index',JSON.stringify([...live,{h:codeHash,x:pending.expires}].slice(-100)),{expirationTtl:600});}catch{}
+ const body=`<h1>${escape(pending.client_name)}</h1><p>Approve on a trusted device using this code:</p><p><strong>${code}</strong></p>${expiresLine(pending.expires)}<p>On a Mac, AgentMesh Control shows an approval window: type this code there. Or run <code>agentmesh-log connector approve ${code}</code>.</p><form method="post" action="/authorize/complete"><button>Continue after approval</button></form>`;
+ return page('Approve AgentMesh',body,200,{redirect:redirect.origin,headers:{'Set-Cookie':`am_approval=${browser}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=600`}});
 }
+const restart='<p>Start the connection again from your app to get a new code.</p>';
 async function complete(request,env,as) {
- const cookie=/(?:^|;\s*)am_approval=([0-9a-f]{64})(?:;|$)/.exec(request.headers.get('Cookie')??'');if(!cookie)throw Error('denied');
- const browserHash=await sha(bytes(cookie[1])),codeHash=await env.OAUTH_KV.get('browser:'+browserHash);if(!codeHash)throw Error('denied');
+ const cookie=/(?:^|;\s*)am_approval=([0-9a-f]{64})(?:;|$)/.exec(request.headers.get('Cookie')??'');if(!cookie)return page('Request expired','<h1>This request has expired</h1>'+restart,410);
+ const browserHash=await sha(bytes(cookie[1])),codeHash=await env.OAUTH_KV.get('browser:'+browserHash);if(!codeHash)return page('Request expired','<h1>This request has expired</h1>'+restart,410);
  const pending=await env.OAUTH_KV.get('pending:'+codeHash,'json');
- if(!pending||pending.expires<=Date.now()||pending.browser_hash!==browserHash)throw Error('denied');
- if(pending.completed||pending.rejected)throw Error('denied');
- const approval=pending.approval;if(!approval)return failure('approval_pending',409);
+ if(!pending||pending.expires<=Date.now())return page('Request expired','<h1>This code has expired</h1><p>Codes last 10 minutes.</p>'+restart,410);
+ if(pending.browser_hash!==browserHash)throw Error('denied');
+ if(pending.rejected)return page('Request rejected','<h1>This request was rejected</h1>'+restart,403);
+ if(pending.completed)throw Error('denied');
+ const approval=pending.approval;if(!approval)return page('Not approved yet',`<h1>Not approved yet</h1><p>No trusted device has approved <b>${escape(pending.client_name)}</b> yet. Approve it with the code from the previous page, then press Continue again.</p>${expiresLine(pending.expires)}<form method="post" action="/authorize/complete"><button>Continue after approval</button></form>`,409);
  const reg=await registry(env);await verify(approval,await reg.publicKey(approval.device_id),'connector-admin');
  if(approval.ts<pending.created||approval.ts>=pending.expires||approval.payload.code_hash!==codeHash)throw Error('denied');
  const approvedApp=approval.payload.app_id;
@@ -68,9 +84,12 @@ async function complete(request,env,as) {
 }
 async function admin(request,env,as,action) {
  const record=parse(new Uint8Array(await request.arrayBuffer()));exact(record,['format','signature','device_id','ts','nonce','action','payload']);
- if(record.format!=='agentmesh-connector-admin-v1'||record.action!==action||!Number.isSafeInteger(record.ts)||Math.abs(Date.now()-record.ts)>60000)throw Error('denied');
+ if(record.format!=='agentmesh-connector-admin-v1'||record.action!==action||!Number.isSafeInteger(record.ts))throw Error('denied');
  unhex(record.nonce,16);const reg=await registry(env);await verify(record,await reg.publicKey(record.device_id),'connector-admin');
- if(!await claim(env,'admin/'+record.device_id+'/'+record.nonce))throw Error('denied');
+ // Past this line the device is known: a coded refusal is safe to return.
+ if(Math.abs(Date.now()-record.ts)>60000)throw new Refusal('clock_skew',403);
+ // list only reads metadata, so a device may poll it without one R2 replay object per call.
+ if(action!=='list'&&!await claim(env,'admin/'+record.device_id+'/'+record.nonce))throw Error('denied');
  const body=record.payload;
  if(action==='reject'){
   exact(body,['code_hash']);unhex(body.code_hash,32);
@@ -83,7 +102,8 @@ async function admin(request,env,as,action) {
  if(action==='pending'||action==='approve'){
   exact(body,action==='pending'?['code_hash']:['code_hash','app_id','policy_ref']);unhex(body.code_hash,32);
   const pending=await env.OAUTH_KV.get('pending:'+body.code_hash,'json');
-  if(!pending||pending.expires<=Date.now()||pending.approval||pending.rejected||pending.completed)throw Error('denied');
+  if(!pending||pending.expires<=Date.now())throw new Refusal('code_not_found_or_expired',404);
+  if(pending.approval||pending.rejected||pending.completed)throw new Refusal('code_already_used',409);
   if(action==='pending')return json({client_id:pending.client_id,client_name:pending.client_name});
   unhex(body.app_id,16);if(!body.policy_ref.startsWith(`connectors/${body.app_id}/policy/`))throw Error('denied');
   const p=policyShape(await read(env.STORAGE,body.policy_ref));
@@ -91,6 +111,15 @@ async function admin(request,env,as,action) {
   await verify(p,await reg.publicKey(p.issuer_device,p.issued_at),'connector-policy');
   if(!await claim(env,'approved/'+body.code_hash+'/'+pending.browser_hash))throw Error('denied');
   pending.approval=record;await env.OAUTH_KV.put('pending:'+body.code_hash,JSON.stringify(pending),{expirationTtl:600});return json({ok:true});
+ }
+ if(action==='list'){
+  exact(body,[]);const index=await env.OAUTH_KV.get('pending-index','json'),rows=[];
+  for(const entry of (Array.isArray(index)?index:[]).slice(-100)){
+   if(!entry||typeof entry.h!=='string'||!/^[0-9a-f]{64}$/.test(entry.h)||!(entry.x>Date.now()))continue;
+   const p=await env.OAUTH_KV.get('pending:'+entry.h,'json');
+   if(p&&!p.approval&&!p.completed&&!p.rejected&&p.expires>Date.now())rows.push({code_hash:entry.h,client_name:typeof p.client_name==='string'?p.client_name.slice(0,256):'App',created:p.created,expires:p.expires});
+  }
+  return json({requests:rows,capped:false});
  }
  if(action==='revoke'){
   exact(body,['app_id','policy_ref']);unhex(body.app_id,16);
@@ -136,7 +165,7 @@ export function createGateway({fetcher=fetch,jwksFetcher=fetch,authorizationServ
     const transport=new WebStandardStreamableHTTPServerTransport({sessionIdGenerator:undefined,enableJsonResponse:true});await server.connect(transport);return await transport.handleRequest(request);
    }
    const response=await as.fetch(request,env,ctx);if(response.status>=400)return failure('invalid_request',response.status);return response;
-  }catch{return failure('denied',403);}
+  }catch(error){return error instanceof Refusal?failure(error.code,error.status):failure('denied',403);}
  }
  return {async fetch(request,env,ctx={waitUntil(){}}) {
   env={...env,STATUS_WAIT_UNTIL:task=>ctx.waitUntil(task)};

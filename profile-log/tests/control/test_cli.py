@@ -72,11 +72,31 @@ def test_adopt_release_panic_locally(tmp_path):
     assert run('release','ingest')=={'error':'not_native'}
 
 
+def serve_with_fakes(tmp_path, monkeypatch, root):
+    from agentmesh_log.control import launchd as launchd_module, native, server
+    from agentmesh_log.control.store import Store
+    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path))
+    layout=Layout(root); layout.ensure()
+    store=Store(layout.state); store.set_backend('ingest','native',{},1); store.close()
+    fake_launchd=FakeLaunchd(); order=[]
+    monkeypatch.setattr(launchd_module,'LaunchdBackend',lambda:fake_launchd)
+    monkeypatch.setattr(native.NativeBackend,'reconcile',lambda self:order.append(list(fake_launchd.calls)))
+    monkeypatch.setattr(server.Supervisor,'serve',lambda self:None)
+    monkeypatch.setattr('signal.signal',lambda *a:None)
+    assert execute(parser().parse_args(['control','serve']),layout=layout)=={'ok':True}
+    return order
+
+
+def test_test_home_never_evicts(tmp_path, monkeypatch):
+    """Unit labels are global: a supervisor on a test home leaves the real home's launchd jobs alone."""
+    assert serve_with_fakes(tmp_path,monkeypatch,tmp_path/'test-home')==[[]]
+
+
 def test_serve_evicts_reloaded_units_first(tmp_path, monkeypatch):
     from agentmesh_log.control import launchd as launchd_module, native, server
     from agentmesh_log.control.store import Store
-    monkeypatch.setattr(sys,'platform','darwin')
-    layout=Layout(tmp_path); layout.ensure()
+    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path))
+    layout=Layout(tmp_path/'.agentmesh'); layout.ensure()
     store=Store(layout.state); store.set_backend('ingest','native',{},1); store.close()
     fake_launchd=FakeLaunchd(); order=[]
     monkeypatch.setattr(launchd_module,'LaunchdBackend',lambda:fake_launchd)

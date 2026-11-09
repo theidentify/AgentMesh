@@ -29,9 +29,14 @@ func status(_ rows: [UnitRow]) -> Status {
     #expect(actions(for: row(backend: "native"), info: info(true)) == [.start, .restart, .stop, .move(to: "launchd")])
 }
 
-@Test func serviceCannotStopOrMove() {
+@Test func launchdServiceCannotStopOrMove() {
     #expect(actions(for: row("broker", kind: "service", health: .running), info: info(false)) == [.start, .restart])
     #expect(actions(for: row("broker", kind: "service"), info: nil) == [.start, .restart])
+}
+
+@Test func supervisedServiceCanStop() {
+    #expect(actions(for: row("broker", kind: "service", backend: "native", health: .running), info: info(true))
+        == [.start, .restart, .stop, .move(to: "launchd")])
 }
 
 @Test func resetOnlyWhenFailed() {

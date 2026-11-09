@@ -38,7 +38,7 @@ def test_adopt(tmp_path):
 def down(layout, op, args): raise ConnectionRefusedError()
 
 
-REFUSALS=[('broker','broker',True,ok_call,'not_native_capable'),('unknown','nope',True,ok_call,'not_native_capable'),
+REFUSALS=[('unknown','nope',True,ok_call,'not_native_capable'),
     ('no-plist','summary',True,ok_call,'unsupported_plist'),('down','ingest',True,down,'supervisor_unavailable'),
     ('not-ok','ingest',True,lambda l,o,a:dict(ok=False),'supervisor_unavailable'),('denied','ingest',False,ok_call,'presence_required')]
 

@@ -414,7 +414,10 @@ def launchd_jobs(agentmesh_home=None, agents=None):
                'last_status':'ok' if state.get('ok') is True else 'error' if state.get('ok') is False else None,'has_error':state.get('ok') is False,
                'failing_since':None if state.get('ok') is not False else state.get('since'),'enabled':None,'state':None,'interval_seconds':None,'next_run_at':None}
         try:
-            with open(agents/('org.agentmesh.'+name+'.plist'), 'rb') as f:
+            # After `control consolidate` the supervisor runs the job; its plist is parked under control/units/.
+            path = agents/('org.agentmesh.'+name+'.plist')
+            parked = base/'control'/'units'/path.name
+            with open(path if path.exists() or not parked.exists() else parked, 'rb') as f:
                 plist = plistlib.load(f)
             row['enabled'] = True
             interval = plist.get('StartInterval')

@@ -41,6 +41,31 @@ Each row shows a job or service: its health, whether launchd or the supervisor r
 
 Moving a service between launchd and the supervisor is a protected change. The supervisor raises its own Touch ID or Mac password sheet; the app cannot answer it, and neither can any other client. Approve a sheet only if you started that move. The supervisor allows at most three such prompts every ten minutes, denials included.
 
+## Run everything as one background item
+
+Each AgentMesh plist in `~/Library/LaunchAgents` shows as its own entry under **System Settings > General > Login Items & Extensions > Allow in the Background**. The supervisor can run all of them itself, so macOS lists one entry, `org.agentmesh.control`, shown under AgentMesh Control when the app is installed. Read the plan first; it changes nothing:
+
+```sh
+agentmesh-log control consolidate
+```
+
+It lists each unit with a plist the supervisor can reproduce: services (KeepAlive), timer jobs (StartInterval or StartCalendarInterval) and run-once jobs (RunAtLoad only). A plist it cannot reproduce exactly, such as a KeepAlive dictionary, is listed as `skip` and stays with launchd. Then apply it in your own terminal:
+
+```sh
+agentmesh-log control consolidate --apply
+```
+
+It asks you to type `migrate`. For each unit it waits for a running job to finish, disables and boots out the launchd job, and moves its plist to `~/.agentmesh/control/units/`. The supervisor starts it within a second. Logs stay at the paths the plist names, and job status stays in `~/.agentmesh/status/`, so Insight and this app show the same health as before. The supervisor also writes `~/.agentmesh/status/supervisor.json` with the process of each unit it runs. A unit that fails to move stays with launchd and is listed under `errors`.
+
+Under the supervisor:
+
+- A service that exits starts again after its ThrottleInterval (10 seconds unless the plist says otherwise). Quick exits in a row back off, doubling up to 5 minutes; a run that lasts a minute resets the backoff.
+- **Stop** keeps a service down until **Start** or the next supervisor start. Under launchd a service cannot be stopped this way, because launchd restarts it at once.
+- A run-once job runs once each time the supervisor starts.
+- Restarting the supervisor restarts every service it runs.
+
+To change what a unit runs, edit its plist in `~/.agentmesh/control/units/` and run `agentmesh-log control reload UNIT`. `insight/deploy_insight.py` does this for Insight. To give one unit back to launchd, run `agentmesh-log control release UNIT`. To give back all of them without the supervisor, run `agentmesh-log control panic-revert`. Both move the plist back to `~/Library/LaunchAgents` first.
+
 ## Choose a scope for a new project
 
 When an agent starts working in a project the migration mapping does not cover, catch-up imports everything else and holds that project's memory back. The app asks once, in a notification and in the menu, where it should go: one button per scope (for example Personal or Work), or **Skip** to keep it out of the profile log.

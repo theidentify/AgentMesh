@@ -147,7 +147,8 @@ func fixture() throws -> Data {
 @Test func fixtureDecodes() throws {
     let envelope = try decoder().decode(Envelope<Status>.self, from: fixture())
     let status = try #require(envelope.result)
-    #expect(status.units.map(\.name) == ["ingest", "summary", "retention", "broker", "bridge", "insight", "insight-tunnel"])
+    #expect(status.units.map(\.name) == ["ingest", "summary", "retention", "broker", "bridge", "insight", "insight-tunnel",
+                                         "bridge-tunnel", "embed-tunnel", "ollama-env"])
     let retention = try #require(status.units.first { $0.name == "retention" })
     #expect(retention.backend == "native" && retention.move == Move(moveId: String(repeating: "0", count: 32), to: "launchd", state: "moving"))
     #expect(retention.health == .missing)

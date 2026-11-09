@@ -13,7 +13,7 @@ class Layout:
         self.socket=self.run/'control.sock'; self.audit=self.control/'audit.jsonl'
         self.maintenance=self.control/'maintenance.json'
         self.quota=self.control/'quota.json'; self.quota_policy=self.control/'quota-policy.json'
-        self.state=self.control/'state.db'; self.presence_helper=self.root/'bin'/'agentmesh-presence'
+        self.state=self.control/'state.db'; self.units=self.control/'units'; self.presence_helper=self.root/'bin'/'agentmesh-presence'
         self.mapping=self.root/'migration-mapping.json'; self.profile_status=self.root/'profile-log-status.json'
         self.agent_keys=self.root/'profile-log'/'agents'; self.named_keys=self.root/'agents'
         self.keystore=self.root/'profile-log'/'keystore.sealed'

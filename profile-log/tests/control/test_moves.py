@@ -73,8 +73,7 @@ def test_unavailable_never_prompts(tmp_path):
     assert error.value.code=='presence_unavailable' and sheet.seen==[] and store.backend('ingest')=='launchd'
 
 
-@pytest.mark.parametrize('name,to', [('broker','native'),('nope','native'),('ingest','elsewhere')],
-    ids=['service','unknown','bad-to'])
+@pytest.mark.parametrize('name,to', [('nope','native'),('ingest','elsewhere')],ids=['unknown','bad-to'])
 def test_bad_args(tmp_path, name, to):
     layout,store,launchd,sheet,moves=setup(tmp_path)
     with pytest.raises(MoveError) as error: moves.request(name,to)

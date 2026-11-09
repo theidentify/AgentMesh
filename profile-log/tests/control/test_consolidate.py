@@ -1,6 +1,7 @@
 """control consolidate: every unit under the supervisor, plists parked out of LaunchAgents; release and panic-revert put
 them back. A fake launchd and a temporary LaunchAgents folder: the real ones are never touched."""
 import json
+import os
 import plistlib
 import pytest
 from agentmesh_log.cli import parser
@@ -50,7 +51,7 @@ def test_apply_leaves_one_plist(tmp_path):
     assert listing(agents)==['org.agentmesh.bridge-tunnel.plist','org.agentmesh.control.plist']
     assert listing(layout.units)==['org.agentmesh.ingest.plist','org.agentmesh.ollama-env.plist',
         'org.agentmesh.profile-log.broker.plist','org.agentmesh.retention.plist']
-    assert oct(layout.units.stat().st_mode&0o777)=='0o700'
+    assert os.name=='nt' or oct(layout.units.stat().st_mode&0o777)=='0o700'
     assert set(store.native_units())=={'ingest','retention','ollama-env','broker'}
     assert store.spec('broker')['keep_alive'] is True and store.spec('ingest')['interval']==60
     assert launchd.disabled=={'ingest','retention','ollama-env','broker'} and not launchd.loaded&launchd.disabled

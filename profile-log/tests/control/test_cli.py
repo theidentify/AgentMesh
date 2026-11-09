@@ -75,7 +75,7 @@ def test_adopt_release_panic_locally(tmp_path):
 def serve_with_fakes(tmp_path, monkeypatch, root):
     from agentmesh_log.control import launchd as launchd_module, native, server
     from agentmesh_log.control.store import Store
-    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path))
+    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('USERPROFILE',str(tmp_path))
     layout=Layout(root); layout.ensure()
     store=Store(layout.state); store.set_backend('ingest','native',{},1); store.close()
     fake_launchd=FakeLaunchd(); order=[]
@@ -95,7 +95,7 @@ def test_test_home_never_evicts(tmp_path, monkeypatch):
 def test_serve_evicts_reloaded_units_first(tmp_path, monkeypatch):
     from agentmesh_log.control import launchd as launchd_module, native, server
     from agentmesh_log.control.store import Store
-    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path))
+    monkeypatch.setattr(sys,'platform','darwin'); monkeypatch.setenv('HOME',str(tmp_path)); monkeypatch.setenv('USERPROFILE',str(tmp_path))
     layout=Layout(tmp_path/'.agentmesh'); layout.ensure()
     store=Store(layout.state); store.set_backend('ingest','native',{},1); store.close()
     fake_launchd=FakeLaunchd(); order=[]

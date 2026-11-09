@@ -72,6 +72,18 @@ When an agent starts working in a project the migration mapping does not cover, 
 
 Choosing a scope sends the request to the supervisor, which asks for Touch ID or your Mac password before it adds the mapping. The held-back memory imports on the next catch-up. This only adds a route for a waiting project; it never changes an existing one.
 
+## Approve a Claude connector
+
+When you add AgentMesh as a connector in Claude, the browser shows a 6-digit code. The app checks the gateway every 30 seconds and opens an **Approve a Claude connector** window by itself when a new request arrives. You can also open it with **Approve connector…** in the menu.
+
+1. Check the client name and the time left. Approve only a request you started.
+2. Type the code from the browser and choose **Approve with Touch ID…**. The supervisor asks for Touch ID or your Mac password with its own sheet.
+3. Go back to the browser and choose **Continue after approval**.
+
+The supervisor checks that the code belongs to the request the window showed, so you cannot approve a look-alike request by mistake. Access follows the approval settings (normally read Personal and Work, remember into `personal/inbox`). The code never reaches the audit log. Approvals share the limit of three Touch ID prompts every ten minutes.
+
+If the window says this Mac does not know the gateway yet, run `agentmesh-log connector gateway-use` once in Terminal.
+
 ## Check keys and devices
 
 Expand **Keys & devices** for a read-only inventory. The supervisor builds it from file metadata and the broker's content-free status; it never opens a key file or the keystore. Warnings come first, then:

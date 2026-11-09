@@ -10,16 +10,15 @@ assert.ok(!/<form|<input|<button/.test(section));
 assert.ok(section.includes('agentmesh-log admin / agentmesh-log apply'));
 assert.ok(html.includes("jsonFetch('/api/profile-log')"));
 const helpers=html.slice(html.indexOf('const $='),html.indexOf('const agentColumns='));
-const renderer=html.slice(html.indexOf('function deviceTable('),html.indexOf('function renderPeers('));
+const renderer=html.slice(html.indexOf('function deviceTable('),html.indexOf('const ageOf='));
 const nodes=new Map();
 const document={getElementById(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:''});return nodes.get(id)}};
 const attack='<img src=x onerror="throw 1">&\'';
 const fixture={available:true,truncated:true,age_seconds:3,updated_at:'2026-10-20T00:00:00Z',
  overview:{profiles:[{name:attack,scopes:[{path:attack,label:attack}]}],agents:[{name:attack,read:[attack],write:[attack],default_write:attack,allow_secret:attack}],devices:[{device_id:attack,revoked:false},{device_id:'revoked',revoked:true}]},
- migration:{unmapped:[attack],projects:[{project:attack,items:3,summaries:1,target:attack}]},
- last_apply:{outcome:attack},last_catch_up:{outcome:attack,outcomes:{[attack]:2},skipped:{[attack]:1},errors:[attack]}};
-vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixture});
-for(const id of ['cards','profiles','agents','devices','migration','outcomes']){
+ last_apply:{outcome:attack}};
+vm.runInNewContext(helpers+renderer+'renderProfileLog(fixture)',{document,fixture,ops:{summary:{held_projects:[attack]}}});
+for(const id of ['cards','profiles','agents','devices']){
  const rendered=nodes.get('profile-log-'+id).innerHTML;
  assert.ok(rendered.includes('&lt;img'),id+' must render escaped fixture values');
  assert.ok(!rendered.includes('<img'),id+' must never interpolate raw markup');

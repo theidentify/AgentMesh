@@ -1,9 +1,8 @@
-"""AgentMesh Insight: local read-only operational and memory browser."""
+"""AgentMesh Insight: local read-only status for the profile log, its jobs and this device."""
 import argparse
 import json
 import os
 from pathlib import Path
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,41 +29,13 @@ class Cache:
             return self.value
 
 
-def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, metrics_logs=None, cron_archive=None, insight_agent_key=None):
+def make_server(port, agentmesh_home=None, metrics_logs=None, cron_archive=None, insight_agent_key=None):
     agentmesh_home = adapters.agentmesh_root(agentmesh_home)
-    readers = {'sqlite':adapters.MemoryReader(sqlite=sqlite), 'postgres':adapters.MemoryReader(dsn=dsn, backend='postgres')}
-    primary = primary or os.environ.get('INSIGHT_PRIMARY_BACKEND', 'postgres')
-    primary = 'postgres' if primary == 'pg' else primary
-    if primary not in ('postgres', 'sqlite'):
-        raise ValueError('invalid primary backend')
-    default = primary if (dsn if primary == 'postgres' else sqlite) else ('postgres' if dsn else 'sqlite')
-    readers['postgres'].label = 'PostgreSQL authority' if primary == 'postgres' else 'PostgreSQL read-only comparison'
-    readers['sqlite'].label = 'SQLite authority' if primary == 'sqlite' else 'SQLite staging'
     metrics_cache = Cache(lambda: adapters.metrics(agentmesh_home, metrics_logs, cron_archive))
-    from syncthing_transport import observe
-    transport_cache = Cache(lambda: observe(agentmesh_home, exchange=adapters.layout(agentmesh_home)['exchange']['path']))
-    ops_cache = {key:Cache(lambda key=key: adapters.operations(readers[key], sqlite, transport_cache.get(), agentmesh_home)) for key in readers}
-
-    def connections():
-        rows = []
-        for key, reader in readers.items():
-            configured = bool(dsn) if key == 'postgres' else bool(sqlite)
-            row = {'id':key,'label':reader.label,'configured':configured,'available':False,'authority':key==primary,'items':None,'summaries':None}
-            if configured:
-                try:
-                    with reader.connect() as c:
-                        row['items'] = reader.query(c, 'SELECT COUNT(*) AS count FROM ' + reader.table('items'))[0]['count']
-                        row['summaries'] = reader.query(c, 'SELECT COUNT(*) AS count FROM ' + reader.table('summaries'))[0]['count']
-                    row['available'] = True
-                except Exception:
-                    row['error'] = 'Configured backend unavailable'
-            rows.append(row)
-        return {'default':default,'primary':primary,'rows':rows,'readonly':True}
-
-    connection_cache = Cache(connections)
+    ops_cache = Cache(lambda: adapters.operations(agentmesh_home))
     profile_cache = Cache(lambda: adapters.profile_log_status(agentmesh_home))
     stats_cache = Cache(lambda: adapters.memory_stats(agentmesh_home, insight_agent_key), ttl=60)
-    storage_cache = storage.Cache(storage.Observer(agentmesh_home, sqlite, metrics_logs, running=Path(__file__).parent).compute)
+    storage_cache = storage.Cache(storage.Observer(agentmesh_home, metrics_logs, running=Path(__file__).parent).compute)
     storage_cache.warm()
     access = remote_access.Verifier()
 
@@ -127,32 +98,10 @@ def make_server(port, sqlite=None, dsn=None, primary=None, agentmesh_home=None, 
                         raise ValueError('Unknown parameter')
                     value = metrics_cache.get()
                     return self.send(503 if 'error' in value else 200, value)
-                if path == '/api/connections':
+                if path == '/api/operations':
                     if args:
                         raise ValueError('Unknown parameter')
-                    return self.send(200, connection_cache.get())
-                if path == '/api/operations' or path == '/api/memory' or re.fullmatch(r'/api/memory/(items|summaries)/[0-9]+', path):
-                    backend = args.pop('backend', default)
-                    if backend not in readers:
-                        raise ValueError('Unknown backend')
-                    reader = readers[backend]
-                    if path == '/api/operations':
-                        if args:
-                            raise ValueError('Unknown parameter')
-                        return self.send(200, ops_cache[backend].get())
-                    if path == '/api/memory':
-                        collection = args.pop('collection','items')
-                        # Validate user filters before trying an absent backend.
-                        reader.table(collection)
-                        if set(args)-{'q','project','kind','status','scope','limit','offset'}:
-                            raise ValueError('Unknown filter')
-                        value = reader.browse(collection, args)
-                    else:
-                        if args:
-                            raise ValueError('Unknown detail parameter')
-                        _, _, _, collection, item_id = path.split('/')
-                        value = reader.detail(collection, int(item_id))
-                    return self.send(200, value)
+                    return self.send(200, ops_cache.get())
                 return self.send(404, {'error':'Not found'})
             except ValueError:
                 return self.send(400, {'error':'Invalid parameters'})
@@ -182,11 +131,11 @@ def main():
     parser.add_argument('--cron-archive', type=Path, help='Frozen history of the retired cron digest; defaults to backups/archive/digest-cron under the AgentMesh home')
     parser.add_argument('--agentmesh-home', type=Path, default=Path(os.environ.get('AGENTMESH_HOME', str(Path.home()/'.agentmesh'))))
     parser.add_argument('--metrics-log', type=Path, action='append')
-    parser.add_argument('--sqlite', type=Path, help='Existing AgentMesh staging database, never created')
+    # The staging database is gone (SQLite retirement R5b). Installed plists still pass --sqlite: accept and ignore it.
+    parser.add_argument('--sqlite', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--insight-agent-key', type=Path, help='Read-only profile-log agent for memory counts; defaults to agents/insight.key')
-    # DSN only via environment, not CLI/process list or a web form.
     args = parser.parse_args()
-    server = make_server(args.port, args.sqlite, os.environ.get('INSIGHT_PG_DSN'), agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log, cron_archive=args.cron_archive, insight_agent_key=args.insight_agent_key)
+    server = make_server(args.port, agentmesh_home=args.agentmesh_home, metrics_logs=args.metrics_log, cron_archive=args.cron_archive, insight_agent_key=args.insight_agent_key)
     print(json.dumps({'url':'http://127.0.0.1:'+str(server.server_port),'pid':os.getpid(),'readonly':True}), flush=True)
     try:
         server.serve_forever()

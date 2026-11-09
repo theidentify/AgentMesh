@@ -4,7 +4,7 @@ Dry run by default: prints the plan and changes nothing. --apply performs it.
 
 Deploy (--rev <merge sha> --apply):
   1. stage ~/.agentmesh/status/insight-release-<sha12> from `git show` (0700 dir, 0600 files, release.json);
-  2. build ~/.agentmesh/backups/archive/digest-cron from ~/.hermes/cron/usage_audit.jsonl and state.db
+  2. build ~/.agentmesh/backups/archive/digest-cron from ~/.hermes/cron/usage_audit.jsonl
      (copy only: counters and timings of the retired digest job, no prompts or error text; Hermes keeps its files);
   3. copy ~/.hermes/omp-memory/summary-metrics.jsonl to
      backups/archive/summary-metrics.jsonl.pre-relocate-20261021-omp-memory (byte-checked),
@@ -24,7 +24,6 @@ import json
 import os
 import plistlib
 import shutil
-import sqlite3
 import subprocess
 import sys
 import time
@@ -32,11 +31,10 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-FILES = ('server.py', 'adapters.py', 'remote_access.py', 'metrics.py', 'libpq_reader.py', 'syncthing_transport.py',
+FILES = ('server.py', 'adapters.py', 'remote_access.py', 'metrics.py',
          'index.html', 'metrics.html', 'storage.py', 'pricing.json')
 JOB = '6fcf5646d34d'
 AUDIT_FIELDS = ('fire_id', 'job_id', 'ts', 'duration_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'model')
-SESSION_FIELDS = ('id', 'started_at', 'input_tokens', 'cache_read_tokens', 'reasoning_tokens', 'api_call_count', 'actual_cost_usd', 'model')
 LEGACY_RUNS = 'summary-metrics.jsonl.pre-relocate-20261021-omp-memory'
 LABEL = 'org.agentmesh.insight'
 
@@ -74,18 +72,10 @@ def build_cron_archive(hermes, target):
                 if r.get('job_id') == JOB:
                     rows.append(dict({k:r[k] for k in AUDIT_FIELDS if k in r}, error=bool(r.get('error'))))
     (tmp/'cron/usage_audit.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
-    sessions = []
-    if (hermes/'state.db').exists():
-        with sqlite3.connect((hermes/'state.db').resolve().as_uri()+'?mode=ro', uri=True) as s:
-            have = [c for c in SESSION_FIELDS if c in {r[1] for r in s.execute('PRAGMA table_info(sessions)')}]
-            sessions = s.execute('SELECT '+','.join(have)+' FROM sessions WHERE id LIKE ?', ('cron_'+JOB+'_%',)).fetchall()
-        with sqlite3.connect(tmp/'state.db') as d:
-            d.execute('CREATE TABLE sessions('+','.join(have)+')')
-            d.executemany('INSERT INTO sessions VALUES('+','.join('?'*len(have))+')', sessions)
     for path in tmp.rglob('*'):
         path.chmod(0o700 if path.is_dir() else 0o600)
     tmp.rename(target)
-    return len(rows), len(sessions)
+    return len(rows)
 
 
 def referencing_agents(agents, path):
@@ -191,7 +181,7 @@ def main(argv=None):
             say('build '+str(archive/'digest-cron')+' from '+str(hermes/'cron/usage_audit.jsonl')+' and state.db (copy only)')
             if a.apply:
                 archive.mkdir(mode=0o700, parents=True, exist_ok=True)
-                say('archived %d audit rows, %d sessions' % build_cron_archive(hermes, archive/'digest-cron'))
+                say('archived %d audit rows' % build_cron_archive(hermes, archive/'digest-cron'))
         if omp.exists():
             runs = omp/'summary-metrics.jsonl'
             if runs.exists():

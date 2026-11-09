@@ -3,8 +3,6 @@ import json
 import os
 import stat
 import re
-import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -16,8 +14,7 @@ def layout(agentmesh_home=None):
     """AgentMesh-home paths only; filesystem paths stay inside the adapters."""
     base = agentmesh_root(agentmesh_home)
     result = {}
-    for key, name in (('status','exchange/status'), ('exchange','exchange'),
-                      ('coordinator','jobs/.bounded_digest_state.json'),
+    for key, name in (('coordinator','jobs/.bounded_digest_state.json'),
                       ('summary','jobs/summary-metrics.jsonl'),
                       ('smoke','jobs/summary-smoke-test-metrics.jsonl')):
         path = base/name
@@ -48,122 +45,6 @@ def redact(value):
     return value.replace('\u00b7', ' ')
 
 
-@contextmanager
-def sqlite_ro(path):
-    c = sqlite3.connect(Path(path).expanduser().resolve().as_uri() + '?mode=ro', uri=True, timeout=3)
-    c.row_factory = sqlite3.Row
-    try:
-        c.execute('PRAGMA query_only=ON')
-        c.execute('BEGIN')
-        yield c
-    finally:
-        c.close()
-
-
-class MemoryReader:
-    def __init__(self, sqlite=None, dsn=None, backend=None):
-        self.sqlite = sqlite
-        self.dsn = dsn
-        self.is_postgres = backend == 'postgres' or bool(dsn)
-        self.prefix = 'memory.' if self.is_postgres else ''
-        self.label = 'PostgreSQL authority' if self.is_postgres else 'SQLite staging'
-
-    def connect(self):
-        if self.is_postgres:
-            if not self.dsn:
-                raise RuntimeError('PostgreSQL not configured')
-            from libpq_reader import Postgres
-            return Postgres(self.dsn)
-        if not self.sqlite:
-            raise RuntimeError('Memory backend not configured')
-        return sqlite_ro(self.sqlite)
-
-    def query(self, c, sql, params=()):
-        return c.query(sql, params) if self.dsn else [dict(r) for r in c.execute(sql, params)]
-
-    def table(self, kind):
-        if kind not in ('items', 'summaries'):
-            raise ValueError('Unsupported collection')
-        return self.prefix + ('memory_items' if kind == 'items' else 'memory_summaries')
-
-    def fields(self, kind):
-        return 'id,kind,scope,scope_key,project,status,confidence,created_at,updated_at' if kind == 'items' else 'id,scope,scope_key,version,created_at'
-
-    def browse(self, kind, args):
-        table = self.table(kind)
-        if set(args) - {'q','project','kind','status','scope','limit','offset'}:
-            raise ValueError('Unknown filter')
-        limit, offset = int(args.get('limit', 25)), int(args.get('offset', 0))
-        if not 1 <= limit <= 100 or not 0 <= offset <= 1000000:
-            raise ValueError('Pagination outside bounds')
-        if any(len(str(v)) > 200 for v in args.values()):
-            raise ValueError('Filter too long')
-        where, params = [], []
-        for name in ('project','kind','status','scope'):
-            if args.get(name):
-                if kind == 'summaries' and name in ('kind','status'):
-                    raise ValueError('Unsupported summary filter')
-                col = 'scope_key' if kind == 'summaries' and name == 'project' else name
-                where.append(col + ' = ?')
-                params.append(args[name])
-        if args.get('q'):
-            where.append("LOWER(content) LIKE LOWER(?) ESCAPE '\\'")
-            params.append('%' + args['q'].replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
-        clause = ' WHERE ' + ' AND '.join(where) if where else ''
-        with self.connect() as c:
-            total = self.query(c, 'SELECT COUNT(*) AS total FROM ' + table + clause, params)[0]['total']
-            rows = self.query(c, 'SELECT ' + self.fields(kind) + ', substr(content,1,2000) AS content FROM ' + table + clause + ' ORDER BY id DESC LIMIT ? OFFSET ?', params + [limit, offset])
-        return redact({'available':True,'backend':self.label,'total':total,'limit':limit,'offset':offset,'rows':rows})
-
-    def detail(self, kind, item_id):
-        table = self.table(kind)
-        if not 0 < item_id < 2**63:
-            raise ValueError('Invalid ID')
-        with self.connect() as c:
-            rows = self.query(c, 'SELECT ' + self.fields(kind) + ', substr(content,1,20000) AS content,metadata FROM ' + table + ' WHERE id=?', [item_id])
-            if not rows:
-                return {'available':True,'backend':self.label,'row':None,'evidence':[]}
-            row = rows[0]
-            metadata = row.pop('metadata')
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            if kind == 'items':
-                refs = self.query(c, 'SELECT event_id FROM ' + self.prefix + 'memory_sources WHERE memory_id=? ORDER BY event_id LIMIT 21', [item_id])
-                ids = [r['event_id'] for r in refs]
-            else:
-                ids = [*((metadata or {}).get('source_event_ids') or []), *((metadata or {}).get('event_ids') or []), *((metadata or {}).get('batch_event_ids') or [])]
-                # Some summaries store evidence references under source_events.
-                if not ids:
-                    ids = [r.get('event_id', r.get('id')) if isinstance(r, dict) else r for r in (metadata or {}).get('source_events', [])]
-            ids = [int(str(v)) for v in ids if str(v).isdigit() and 0 < int(str(v)) < 2**63]
-            evidence = []
-            if ids:
-                evidence = self.query(c, 'SELECT id,source_agent,occurred_at,project,kind,substr(content,1,4000) AS content FROM ' + self.prefix + 'observation_events WHERE id IN (' + ','.join('?' for _ in ids[:20]) + ') ORDER BY id', ids[:20])
-        result = {'available':True,'backend':self.label,'row':row,'evidence':evidence,'evidence_truncated':len(ids)>20,'note':'Explicit evidence excerpts, maximum 20 references. Redaction is best-effort; treat text as untrusted.'}
-        if kind == 'items':
-            result['identity'] = identity_projection(metadata)
-        return redact(result)
-
-
-IDENTITY_FIELDS = ('kind', 'scope', 'scope_key', 'project')
-BATCH_ID = re.compile(r'^[A-Za-z0-9_.:-]{1,128}$')
-
-
-def identity_projection(metadata):
-    """Fields the digest took from the stored row instead of the model, now and in earlier revisions."""
-    metadata = metadata if isinstance(metadata, dict) else {}
-    def fields(value):
-        return [f for f in IDENTITY_FIELDS if f in value] if isinstance(value, list) else None
-    def batch(value):
-        return value if isinstance(value, str) and BATCH_ID.match(value) else None
-    history = metadata.get('evidence_history')
-    rows = []
-    for n, entry in enumerate(history if isinstance(history, list) else [], 1):
-        if isinstance(entry, dict) and fields(entry.get('identity_from_existing')):
-            rows.append({'revision':n, 'batch_id':batch(entry.get('batch_id')), 'identity_from_existing':fields(entry['identity_from_existing'])})
-    return {'identity_from_existing':fields(metadata.get('identity_from_existing')) or None,
-            'batch_id':batch(metadata.get('batch_id')), 'history':rows[-50:]}
-
 def observed_state(stamp):
     from datetime import datetime, timezone
     if not stamp:
@@ -175,23 +56,6 @@ def observed_state(stamp):
         return 'recent observation' if 0 <= age < 3600 else 'stale'
     except (ValueError, TypeError):
         return 'unknown'
-
-
-def retention_status(database):
-    """Applied staging runs only; never open private settings or raw events."""
-    with sqlite_ro(database) as c:
-        result = dict(retention_enabled=False, last_run_at=None, rows_deleted_total=0, last_run=None)
-        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='agentmesh_retention_runs'").fetchone(): return result
-        fields = ('ran_at','older_than_days','deleted','candidates','kept_evidence','kept_pending','kept_too_new','kept_active_session','applied')
-        row = c.execute('SELECT ' + ','.join(fields) + ' FROM agentmesh_retention_runs WHERE applied=1 ORDER BY rowid DESC LIMIT 1').fetchone()
-        if row:
-            last = dict(zip(fields, row))
-            from datetime import datetime
-            last['ran_at'] = datetime.fromisoformat(last['ran_at']).isoformat()
-            if any(type(last[k]) is not int or last[k] < 0 for k in fields[1:]): raise ValueError('invalid retention counters')
-            total = c.execute('SELECT coalesce(sum(deleted),0) FROM agentmesh_retention_runs WHERE applied=1').fetchone()[0]
-            result.update(retention_enabled=True, last_run_at=last['ran_at'], rows_deleted_total=total, last_run=last)
-        return result
 
 
 MEMORY_LABELS = ('general', 'internal', 'secret')
@@ -239,157 +103,6 @@ def memory_stats(agentmesh_home=None, agent_key=None, runner=None, executable=No
 
 def unavailable(label):
     return {'available':False,'error':label + ' unavailable or not configured'}
-
-
-PEER_COUNTS = ('memory_items', 'memory_summaries', 'memory_sources', 'observation_events',
-               'source_sessions', 'ingestion_cursors', 'ingestion_errors', 'summary_state')
-PEER_SYNC = ('received', 'outbox', 'pending', 'conflict', 'invalid')
-
-
-def security_projection(value, *, legacy=False):
-    """Allowlisted telemetry only; status JSON itself is not authenticated proof."""
-    from datetime import datetime, timezone
-    import uuid
-    value = value if isinstance(value, dict) and value.get('format') == 'agentmesh-security-status-v1' else {}
-    def choice(key, allowed, default='unknown'):
-        v = value.get(key)
-        return v if isinstance(v, str) and v in allowed else default
-    def timestamp(v):
-        try:
-            if not isinstance(v, str) or len(v) > 64: return None
-            when = datetime.fromisoformat(v.replace('Z', '+00:00'))
-            return when.astimezone(timezone.utc).isoformat() if when.tzinfo else None
-        except (ValueError, OverflowError): return None
-    def count(v):
-        return v if type(v) is int and 0 <= v <= 2**53-1 else None
-    label = value.get('display_name')
-    label = label if isinstance(label, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', label) else None
-    verification = value.get('verification')
-    verification = verification if isinstance(verification, dict) else {}
-    packet = value.get('roundtrip_packet_uuid')
-    try: packet = packet if isinstance(packet, str) and str(uuid.UUID(packet)) == packet else None
-    except ValueError: packet = None
-    verified_at = timestamp(value.get('roundtrip_verified_at'))
-    roundtrip = 'reported verified' if value.get('roundtrip') == 'verified' and packet and verified_at else 'pending' if value.get('roundtrip') == 'pending' else 'unknown'
-    return {'policy': choice('policy', ('legacy', 'required'), 'legacy' if legacy else 'unknown'),
-            'display_name': label, 'pairing': choice('pairing', ('pending', 'approved', 'revoked', 'unknown')),
-            'wizard_step': choice('wizard_step', ('prerequisites', 'identity', 'pairing', 'roundtrip', 'activation', 'active')),
-            'next_action': choice('next_action', ('check_prerequisites', 'create_or_reuse_local_identity', 'confirm_peer_fingerprint_out_of_band', 'send_and_receive_signed_probe', 'confirm_coordinated_legacy_boundary', 'restart_worker_with_same_security_directory', 'recover_identity_or_receipt')),
-            'roundtrip': roundtrip, 'roundtrip_packet_uuid': packet if roundtrip == 'reported verified' else None,
-            'roundtrip_verified_at': verified_at if roundtrip == 'reported verified' else None,
-            'verification': {'attempts':count(verification.get('attempts')), 'failed_attempts':count(verification.get('failed_attempts')),
-                             'last_success_at':timestamp(verification.get('last_success_at')), 'last_failure_at':timestamp(verification.get('last_failure_at'))},
-            'source': 'reported by unsigned status telemetry'}
-
-
-def local_security(c):
-    required = bool(c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_security'").fetchone())
-    value: dict = {'format':'agentmesh-security-status-v1','policy':'required' if required else 'legacy'}
-    if c.execute("SELECT 1 FROM sqlite_master WHERE name='_sync_verification'").fetchone():
-        record = c.execute('SELECT attempts,failed_attempts,last_success_at,last_failure_at FROM _sync_verification WHERE id=1').fetchone()
-        if record: value['verification'] = dict(record)
-    result = security_projection(value)
-    result['source'] = 'local read-only SQLite policy and verification counters'
-    return result
-
-
-def packet_sync_enabled(agentmesh_home=None):
-    root=Path(agentmesh_home or os.environ.get('AGENTMESH_HOME',str(Path.home()/'.agentmesh'))).expanduser()
-    path=root/'packet-sync-status.json'
-    try:
-        if path.is_symlink() or any(p.is_symlink() for p in path.parents): return False
-        value=json.loads(path.read_text(encoding='utf-8'))
-        return value=={'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}
-    except (OSError,ValueError,TypeError): return False
-
-
-def peer_status(now=None, agentmesh_home=None):
-    """Fixed peer files only. ACKs are completed cycles, never live connectivity."""
-    from datetime import datetime, timezone
-    if not packet_sync_enabled(agentmesh_home):
-        return {'rows':[], 'transport':'packet sync retired', 'freshness_threshold_seconds':300,
-                'packet_sync':'retired', 'note':'packet sync retired; see profile-log devices and sync status.'}
-    now = now or datetime.now(timezone.utc)
-    item = layout(agentmesh_home)['status']
-    root = item['path']
-    rows = []
-    for node, label in (('mac', 'Mac'), ('windows', 'Windows')):
-        row = {'peer':label, 'source':item['source'], 'available':False, 'availability':'missing',
-               'ack_at':None, 'age_seconds':None, 'freshness':'unknown', 'has_error':None, 'partial':False,
-               'counts':dict.fromkeys(PEER_COUNTS), 'sync':dict.fromkeys(PEER_SYNC),
-               'security':security_projection(None),
-               'cycle':dict.fromkeys(('applied', 'published', 'pending', 'conflict', 'invalid',
-                                      'summary_applied', 'summary_published'))}
-        rows.append(row)
-        path = root/(node+'.json')
-        try:
-            # No symlinks or files outside the configured home; bound read before JSON parsing.
-            if path.is_symlink() or path.resolve().parent != root.resolve() or not root.resolve().is_relative_to(item['home'].resolve()):
-                raise ValueError('Invalid status location')
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
-            with os.fdopen(fd, 'rb') as source:
-                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                    raise ValueError('Regular status file required')
-                raw = source.read(65537)
-            if len(raw) > 65536:
-                raise ValueError('Status too large')
-            report = json.loads(raw)
-            if not isinstance(report, dict) or report.get('format') != 'agentmesh-status-v1' or report.get('node') != node:
-                raise ValueError('Invalid status format')
-            row.update(available=True, availability='available')
-            row['security'] = security_projection(report.get('security'), legacy='security' not in report)
-            value = report.get('updated_at')
-            try:
-                if not isinstance(value, str) or len(value) > 64:
-                    raise ValueError('Invalid timestamp')
-                when = datetime.fromisoformat(value.replace('Z', '+00:00'))
-                if when.tzinfo is None:
-                    raise ValueError('Offset required')
-                row['ack_at'] = when.astimezone(timezone.utc).isoformat()
-                row['age_seconds'] = round((now - when).total_seconds(), 1)
-                row['freshness'] = ('future timestamp' if row['age_seconds'] < 0 else
-                                    'fresh' if row['age_seconds'] <= 300 else 'stale')
-            except (TypeError, ValueError, OverflowError):
-                pass
-            def obj(value):
-                return value if isinstance(value, dict) else {}
-            def counter(value):
-                return value if type(value) is int and 0 <= value <= 2**53-1 else None
-            for key, fields in (('counts', PEER_COUNTS), ('sync', PEER_SYNC)):
-                row[key] = {field:counter(obj(report.get(key)).get(field)) for field in fields}
-            cycle = obj(report.get('cycle'))
-            receive, publish = obj(cycle.get('receive')), obj(cycle.get('publish'))
-            row['cycle'].update({key:counter(receive.get(key)) for key in ('applied', 'pending', 'conflict', 'invalid')})
-            row['cycle']['published'] = counter(publish.get('published'))
-            workflow = obj(report.get('workflow'))
-            summary_cycle = obj(workflow.get('summary_sync'))
-            row['cycle']['summary_applied'] = counter(obj(summary_cycle.get('receive')).get('applied'))
-            row['cycle']['summary_published'] = counter(obj(summary_cycle.get('publish')).get('published'))
-            # Project presence only: never send workflow statuses, error messages or payloads.
-            ingestion, summary = obj(workflow.get('ingestion')), obj(workflow.get('summary'))
-            row['has_error'] = bool(report.get('error') or obj(report.get('postgres_mirror')).get('error') or
-                                    ingestion.get('error') or ingestion.get('errors') or summary.get('error') or
-                                    summary.get('status') in ('stale', 'blocked', 'failed') or
-                                    receive.get('unavailable') or publish.get('unavailable') or
-                                    obj(summary_cycle.get('receive')).get('unavailable') or
-                                    obj(summary_cycle.get('publish')).get('unavailable') or
-                                    row['sync']['invalid'] or row['sync']['conflict'] or
-                                    row['counts']['ingestion_errors'] or row['cycle']['invalid'] or row['cycle']['conflict'])
-            row['partial'] = row['ack_at'] is None or any(
-                report.get(key) is not None and not isinstance(report.get(key), dict)
-                for key in ('workflow', 'postgres_mirror')) or any(
-                workflow.get(key) is not None and not isinstance(workflow.get(key), dict)
-                for key in ('ingestion', 'summary', 'summary_sync')) or any(
-                value is None for group in ('counts', 'sync') for value in row[group].values()) or any(
-                row['cycle'][key] is None for key in ('applied', 'published', 'pending', 'conflict', 'invalid'))
-            if row['partial'] and not row['has_error']:
-                row['has_error'] = None
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError, TypeError, RecursionError):
-            row['availability'] = 'unavailable or malformed'
-    return {'rows':rows, 'transport':'unknown', 'freshness_threshold_seconds':300,
-            'note':'Completed-cycle ACKs only, not a live process, Syncthing connection or proof of full convergence. Fresh means age at most 5 minutes; stale does not mean offline. Missing or invalid values remain unknown.'}
 
 
 def launchd_jobs(agentmesh_home=None, agents=None):
@@ -478,48 +191,6 @@ def job_failures(agentmesh_home=None, now=None, tail=1024*1024):
     return {'available':bool(counts),'counts':counts,'rows':rows[:50]}
 
 
-def path_platform(path):
-    """(platform, home key) from an ingested session path; the path itself never leaves."""
-    path = path if isinstance(path, str) else ''
-    if re.match(r'^[A-Za-z]:[\\/]', path) or path.startswith('\\\\'):
-        parts = re.split(r'[\\/]+', path)
-        return 'windows', '\\'.join(parts[:3]).lower()
-    for prefix, name in (('/Users/', 'macos'), ('/home/', 'linux'), ('/root/', 'linux')):
-        if path.startswith(prefix):
-            return name, '/'.join(path.split('/')[:3])
-    return 'unknown', ''
-
-
-PLATFORM_LABELS = {'macos':'macOS', 'windows':'Windows', 'linux':'Linux', 'unknown':'Unknown origin'}
-
-
-def devices_seen(reader, now=None):
-    """Machines whose sessions reached memory, grouped by OS and user home; activity, not liveness."""
-    import hashlib
-    from datetime import datetime, timedelta, timezone
-    now = now or datetime.now(timezone.utc)
-    with reader.connect() as c:
-        rows = reader.query(c, 'SELECT source_agent,substr(source_path,1,96) AS prefix,COUNT(*) AS events,MAX(occurred_at) AS latest FROM ' + reader.prefix + 'observation_events GROUP BY source_agent,substr(source_path,1,96)')
-    groups = {}
-    for r in rows:
-        platform, key = path_platform(r['prefix'])
-        g = groups.setdefault((platform, key), {'platform':platform, 'events':0, 'agents':set(), 'last_seen_at':None})
-        g['events'] += r['events'] or 0
-        if r['source_agent']: g['agents'].add(str(r['source_agent'])[:32])
-        latest = r['latest'] if isinstance(r['latest'], str) else r['latest'].isoformat() if r['latest'] is not None else None
-        if latest and (g['last_seen_at'] is None or parse_instant(latest) > parse_instant(g['last_seen_at'])):
-            g['last_seen_at'] = latest
-    out = []
-    per_platform = {}
-    for (platform, key), g in groups.items(): per_platform[platform] = per_platform.get(platform, 0) + 1
-    for (platform, key), g in groups.items():
-        when = parse_instant(g['last_seen_at'])
-        label = PLATFORM_LABELS[platform] + (' · ' + hashlib.sha256(key.encode()).hexdigest()[:6] if per_platform[platform] > 1 and key else '')
-        out.append(dict(g, agents=sorted(g['agents']), label=label,
-                        state='unknown' if when is None else 'recent' if now - when <= timedelta(days=1) else 'stale'))
-    out.sort(key=lambda r: parse_instant(r['last_seen_at']) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return {'available':True, 'backend':reader.label, 'rows':out[:20],
-            'note':'Grouped by the OS and user folder of ingested session paths. Last activity is the newest ingested event, not a heartbeat.'}
 
 
 def parse_instant(value):
@@ -531,21 +202,66 @@ def parse_instant(value):
         return None
 
 
-def operations(reader, sync_db, transport=None, agentmesh_home=None):
+TOOLS = {'claude': '/.claude/projects/', 'codex': '/.codex/sessions/', 'omp': '/.omp/agent/sessions/'}
+SUMMARY_STATUSES = ('scheduled', 'pending', 'completed', 'committed', 'blocked', 'failed')
+
+
+def bounded_json(path, limit=8*1024*1024):
+    """A regular, non-symlinked JSON file of at most `limit` bytes, else None."""
+    try:
+        if path.is_symlink(): return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, 'rb') as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode): return None
+            raw = source.read(limit + 1)
+        return json.loads(raw) if len(raw) <= limit else None
+    except (OSError, ValueError):
+        return None
+
+
+def summary_status(agentmesh_home=None):
+    """The broker summary's own files (SQLite retirement R2): counts, states and times only, never transcript paths
+    or content. The ingest scan writes status/last-ingest.json, the summary tick status/last-summary.json; its
+    cursors, schedule and held-back projects live in jobs/."""
+    base = agentmesh_root(agentmesh_home)
+    count = lambda v: v if type(v) is int and 0 <= v < 2**53 else None
+    when = lambda v: v if isinstance(v, str) and parse_instant(v) else None
+    obj = lambda v: v if isinstance(v, dict) else {}
+    ingest = obj(bounded_json(base/'status/last-ingest.json'))
+    summary = obj(bounded_json(base/'status/last-summary.json'))
+    state = obj(bounded_json(base/'jobs/summary-state.json'))
+    held = obj(bounded_json(base/'jobs/summary-unmapped.json'))
+    cursors = obj(obj(bounded_json(base/'jobs/transcript-cursors.json')).get('files'))
+    tools = {name: dict(tool=name, transcripts=0, latest_at=None) for name in TOOLS}
     from datetime import datetime, timezone
-    result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20,'memory_backend':reader.label}
-    try:
-        with reader.connect() as c:
-            rows = reader.query(c, 'SELECT source_agent,SUM(sessions) AS sessions,SUM(events) AS events,MAX(observed_at) AS observed_at FROM (SELECT source_agent,COUNT(*) AS sessions,0 AS events,MAX(last_seen_at) AS observed_at FROM ' + reader.prefix + 'source_sessions GROUP BY source_agent UNION ALL SELECT source_agent,0 AS sessions,COUNT(*) AS events,MAX(occurred_at) AS observed_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent) observed GROUP BY source_agent ORDER BY source_agent')
-            for row in rows:
-                row['state'] = observed_state(row['observed_at'])
-        result['agents'] = {'available':True,'backend':reader.label,'rows':rows,'note':'Ingested session and event metadata. Recent observation is not proof of a running process. No heartbeat probe configured.'}
-    except Exception:
-        result['agents'] = unavailable('Agent source metadata')
-    try:
-        result['devices_seen'] = devices_seen(reader)
-    except Exception:
-        result['devices_seen'] = unavailable('Device activity')
+    for path in cursors:
+        name = next((n for n, marker in TOOLS.items() if isinstance(path, str) and marker in path.replace('\\', '/')), None)
+        if name is None: continue
+        row = tools[name]; row['transcripts'] += 1
+        try: modified = datetime.fromtimestamp(os.stat(path, follow_symlinks=False).st_mtime, timezone.utc).isoformat()
+        except (OSError, ValueError): continue
+        if row['latest_at'] is None or modified > row['latest_at']: row['latest_at'] = modified
+    for row in tools.values(): row['state'] = observed_state(row['latest_at'])
+    success = obj(state.get('success'))
+    names = held.get('projects') if held.get('format') == 'agentmesh-summary-unmapped-v1' else []
+    return {
+        'available': bool(ingest or summary or state),
+        'ingest': {k: count(ingest.get(k)) for k in ('found', 'processed', 'skipped', 'errors', 'invalid_json')} | {'observed_at': when(ingest.get('observed_at'))},
+        'summary': {k: count(summary.get(k)) for k in ('llm_api_calls', 'events', 'batches')} | {
+            'status': summary.get('status') if summary.get('status') in SUMMARY_STATUSES else ('unknown' if summary else None),
+            'observed_at': when(summary.get('observed_at'))},
+        'schedule': {'pending': state.get('pending') if type(state.get('pending')) is bool else None,
+                     'last_completed_at': when(success.get('completed_at')),
+                     'quarantined': len(state['quarantine']) if isinstance(state.get('quarantine'), list) else None},
+        'held_projects': sorted({n for n in names if isinstance(n, str) and 0 < len(n) <= 200 and n.isprintable()}) if isinstance(names, list) else [],
+        'tools': [r for r in tools.values() if r['transcripts']],
+        'note': 'From the broker summary\'s own status files. Transcript activity is file modification time, not a live check.'}
+
+
+def operations(agentmesh_home=None):
+    """Pipeline and summary state. The SQLite staging and packet-sync sections went with SQLite retirement R5b."""
+    from datetime import datetime, timezone
+    result: dict = {'generated_at':datetime.now(timezone.utc).isoformat(),'refresh_seconds':20}
     try:
         selected = launchd_jobs(agentmesh_home)
         note = 'Launchd jobs: last result and time from the job wrapper; next run is last run plus the interval.'
@@ -562,44 +278,9 @@ def operations(reader, sync_db, transport=None, agentmesh_home=None):
     except Exception:
         result['pipeline'] = unavailable('Pipeline cron metadata')
     try:
-        with reader.connect() as c:
-            result['ingest'] = {'available':True,'backend':reader.label,'rows':reader.query(c, 'SELECT source_agent,COUNT(*) AS events,MAX(occurred_at) AS latest_event_at FROM ' + reader.prefix + 'observation_events GROUP BY source_agent ORDER BY source_agent'),'cursors':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + 'ingestion_cursors')[0],'errors':reader.query(c, 'SELECT error_type,COUNT(*) AS count,MAX(created_at) AS latest_at FROM ' + reader.prefix + 'ingestion_errors GROUP BY error_type'),'summary_state':reader.query(c, 'SELECT consumer,last_event_id,updated_at FROM ' + reader.prefix + "summary_state WHERE consumer NOT LIKE '%:event:%' ORDER BY consumer LIMIT 30"),'summary_event_markers':reader.query(c, 'SELECT COUNT(*) AS count,MAX(updated_at) AS updated_at FROM ' + reader.prefix + "summary_state WHERE consumer LIKE '%:event:%'")[0]}
+        result['summary'] = summary_status(agentmesh_home)
     except Exception:
-        result['ingest'] = unavailable('Ingest counters')
-    if result['ingest']['available'] and sync_db:
-        try: result['ingest']['retention'] = retention_status(sync_db)
-        except Exception: result['ingest']['retention'] = unavailable('Staging retention')
-    try:
-        if not packet_sync_enabled(agentmesh_home):
-            raise RuntimeError('packet sync retired')
-        if not sync_db:
-            raise RuntimeError('No staging database')
-        with sqlite_ro(sync_db) as c:
-            config = c.execute('SELECT node FROM _sync_config LIMIT 1').fetchone()
-            security = local_security(c)
-            sync = {'available':True,'backend':('SQLite authority' if reader.label == 'SQLite authority' else 'SQLite staging'),'node':config['node'] if config else None,'transport':'unknown','receipts':c.execute('SELECT COUNT(*) FROM _sync_receipts').fetchone()[0],'outbox': [dict(r) for r in c.execute('SELECT published,COUNT(*) AS packets FROM _sync_outbox GROUP BY published')],'diagnostics':[dict(r) for r in c.execute('SELECT kind,COUNT(*) AS count FROM _sync_diagnostics GROUP BY kind')],'workers':[],'note':'Receipts confirm local packet import, not peer convergence. Worker timestamps do not prove transport connectivity.'}
-            try:
-                sync['workers'] = [dict(r) for r in c.execute('SELECT consumer,last_run,lease_until FROM _agentmesh_worker_state ORDER BY consumer LIMIT 30')]
-                sync['worker_metadata_available'] = True
-            except sqlite3.OperationalError:
-                sync['worker_metadata_available'] = False
-        result['sync'] = sync
-        result['sync']['security'] = security
-    except Exception:
-        result['sync'] = dict(unavailable('SQLite sync metadata'), transport='unknown')
-    result['sync']['peers'] = peer_status(agentmesh_home=agentmesh_home)
-    if 'security' not in result['sync']: result['sync']['security'] = security_projection(None)
-    if not packet_sync_enabled(agentmesh_home):
-        result['sync'].update(available=False, packet_sync='retired', error='packet sync retired',
-                              note='packet sync retired; see profile-log devices and sync status.',
-                              receipts=None, outbox=[], diagnostics=[], workers=[])
-        transport = {'available':False, 'status':'packet sync retired', 'note':'packet sync retired', 'rows':[]}
-    if transport is None:
-        from syncthing_transport import observe
-        transport = observe(agentmesh_root(agentmesh_home), exchange=layout(agentmesh_home)['exchange']['path'])
-    result['sync']['transport_status'] = transport
-    result['sync']['transport'] = transport['status']
-    result['sync']['peers']['transport'] = transport['status']
+        result['summary'] = unavailable('Broker summary status')
     return redact(result)
 
 
@@ -748,9 +429,6 @@ def profile_log_status(agentmesh_home, now=None):
                     members=lambda v:counts(v,('owner','admin','member','contributor')),
                     tasks=lambda v:counts(v,('open','claimed','in_progress','blocked','review','done','abandoned')),
                     **{k:count for k in ('leases_live','leases_expired','conflicts','pending_reviews','over_quota','invite_uses_waiting')})))))
-        if 'migration' in value:
-            result['migration'] = fields(value['migration'],dict(generated_at=text,unmapped=strings,
-                projects=lambda v:sequence(v,lambda r:fields(r,dict(project=text,items=count,summaries=count,target=text)))))
         if 'last_apply' in value:
             result['last_apply'] = event(value['last_apply'],dict(changes=lambda v:counts(v,('unsupported','scope_create','agent_create','agent_remove','agent_widen','agent_narrow','mapping_change','bridge_enable','bridge_disable','bridge_update'))))
         if 'last_sync' in value:
@@ -763,10 +441,6 @@ def profile_log_status(agentmesh_home, now=None):
             sync['stale_after_seconds']=max(3*seconds,600+2*seconds) if seconds is not None else None
             sync['stale']=sync['age_seconds']>sync['stale_after_seconds'] if sync['age_seconds'] is not None and seconds is not None else None
             result['last_sync']=sync
-        if 'last_catch_up' in value:
-            result['last_catch_up'] = event(value['last_catch_up'],dict(outcomes=lambda v:counts(v,('created','revised','retired','unchanged','other')),
-                skipped=lambda v:counts(v,('mapping_skip','not_recalled','superseded','resolved','deleted','other')),unmapped=strings,errors=strings,
-                busy_retries=count,timestamp_fallback=count,secret_labelled=count))
     except FileNotFoundError: pass
     except (OSError, ValueError, TypeError, RecursionError): result = dict(available=False, availability='unavailable or malformed', truncated=False)
     return redact(result)

@@ -29,7 +29,10 @@ OPS={  # op: (tier, exact argument names)
     'memory.unlock':(2,frozenset()),'memory.lock':(1,frozenset()),
     'memory.ls':(0,frozenset({'path','depth'})),'memory.cat':(0,frozenset({'path'})),
     'memory.export':(2,frozenset({'path','folder','include_internal','allow_synced'})),
+    # Claude connectors: the app lists live gateway requests and approves one with the code the browser shows.
+    'connector.pending':(0,frozenset()),'connector.approve':(2,frozenset({'code','code_hash'})),
 }
+REDACTED=frozenset({'code'})  # a live approval code never reaches the audit log
 
 
 class OpError(Exception):
@@ -38,9 +41,10 @@ class OpError(Exception):
 
 
 class Control:
-    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None, memory=None):
+    def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None, memory=None,
+                 connector=None):
         self.layout,self.backend,self.clock,self.units,self.moves=layout,backend,clock,units,moves
-        self.mappings,self.memory=mappings,memory
+        self.mappings,self.memory,self.connector=mappings,memory,connector
         self.lock=threading.Lock(); self.recent={}
 
     def handle(self, request, caller):
@@ -71,6 +75,7 @@ class Control:
         return op,args
 
     def record(self, op, args, caller, outcome, strict=True):
+        if isinstance(args,dict): args={k:('redacted' if k in REDACTED else v) for k,v in args.items()}
         row=dict(ts=time.time_ns()//1000000,op=op,args=args,outcome=outcome,
             caller_pid=caller.get('pid'),caller_exe=caller.get('exe'))
         try: self.layout.ensure(); append_row(self.layout.audit,row)
@@ -163,6 +168,17 @@ class Control:
     def op_memory_export(self, path, folder, include_internal, allow_synced):
         """Tier 2: plaintext files for the owner, after the supervisor's presence check for this export."""
         return self.memory_call('export',path,folder,include_internal,allow_synced)
+
+    def connector_call(self, name, *args):
+        if self.connector is None: raise OpError('presence_unavailable')
+        try: return getattr(self.connector,name)(*args)
+        except MoveError as error: raise OpError(error.code) from None
+
+    def op_connector_pending(self): return self.connector_call('pending')
+
+    def op_connector_approve(self, code, code_hash):
+        """Tier 2: approve the request the app showed, after the supervisor's presence check."""
+        return self.connector_call('approve',code,code_hash)
 
     def op_moves_get(self, move_id):
         if self.moves is None: raise OpError('unknown_move')

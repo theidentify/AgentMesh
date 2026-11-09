@@ -98,7 +98,7 @@ def app(tmp_path, monkeypatch, signing, configured, request):
         thread.join()
 
 
-@pytest.mark.parametrize('path', ['/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections'])
+@pytest.mark.parametrize('path', ['/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/operations'])
 def test_INS_R1_allowed(app, signing, path):
     status, body = app(path, signing[1]())
     assert status == 200
@@ -285,16 +285,16 @@ def test_INS_R13_ui(remote):
     script = Path(__file__).with_name('index.html').read_text(encoding='utf-8').split('<script>')[1].split('</script>')[0]
     harness = r'''
 const vm=require('node:vm'), assert=require('node:assert/strict');
-const elements=new Map(), calls=[], views=['overview','metrics','memory','agents','pipeline','sync','profile-log'];
+const elements=new Map(), calls=[], views=['overview','metrics','agents','pipeline','sync','profile-log','storage'];
 function element(id){if(!elements.has(id))elements.set(id,{id,dataset:{view:id},hidden:false,disabled:false,value:'sqlite',options:[],classList:{toggle(){}},setAttribute(){},closest(){return element('label')},contentWindow:{postMessage(){}}});return elements.get(id)}
-const context={console,Intl,URLSearchParams,Date,Object,String,Number,location:{hash:'#memory',origin:'https://insight.example.com'},localStorage:{getItem(){},setItem(){}},setInterval(){},document:{getElementById:element,body:element('body'),addEventListener(){},querySelector:element,querySelectorAll(selector){return selector.includes('button')&&selector!=='nav button'?[element('search')]:views.map(element)}},window:{scrollTo(){},addEventListener(){}},fetch:async url=>{calls.push(url);return {ok:true,json:async()=>url==='/health'?{remote:REMOTE}:url==='/api/connections'?{rows:[],default:'sqlite'}:{}}}};
+const context={console,Intl,URLSearchParams,Date,Object,String,Number,location:{hash:'#pipeline',origin:'https://insight.example.com'},localStorage:{getItem(){},setItem(){}},setInterval(){},document:{getElementById:element,body:element('body'),addEventListener(){},querySelector:element,querySelectorAll(selector){return selector.includes('button')&&selector!=='nav button'?[element('search')]:views.map(element)}},window:{scrollTo(){},addEventListener(){}},fetch:async url=>{calls.push(url);return {ok:true,json:async()=>url==='/health'?{remote:REMOTE}:{}}}};
 vm.createContext(context);
 vm.runInContext(SCRIPT,context);
 vm.runInContext('renderOperations=()=>{};renderProfileLog=()=>{};',context);
 setImmediate(()=>{try{
 assert.equal(calls[0],'/health');
-if(REMOTE){assert(calls.includes('/api/operations?backend=sqlite'));assert(!calls.some(c=>c.startsWith('/api/memory')));assert.equal(element('memory').hidden,true);assert.equal(element('memory').disabled,true);assert.equal(element('connection').disabled,true);vm.runInContext("navigate('memory');loadMemory();",context);assert.equal(context.location.hash,'overview');assert(!calls.some(c=>c.startsWith('/api/memory')));}
-else{assert(calls.includes('/api/operations?backend=sqlite'));assert.equal(element('connection').disabled,false);}
+assert(calls.includes('/api/operations'));assert(!calls.some(c=>c.startsWith('/api/memory')||c.startsWith('/api/connections')||c.includes('backend=')));
+vm.runInContext("navigate('memory');",context);assert.equal(context.location.hash,REMOTE?'overview':'pipeline');
 }catch(error){console.error(error.message);process.exitCode=1;}});
 '''
     result = subprocess.run([node, '-e', 'const REMOTE='+json.dumps(remote)+';const SCRIPT='+json.dumps(script)+';'+harness], capture_output=True, text=True, encoding='utf-8')

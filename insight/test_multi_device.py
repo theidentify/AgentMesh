@@ -7,7 +7,7 @@ import subprocess
 import pytest
 import adapters
 from test_profile_log import fixture
-from test_sync_view import HARNESS
+from test_sync_view import SETUP
 
 
 def test_md5_projection(tmp_path):
@@ -27,7 +27,7 @@ def test_md5_projection(tmp_path):
 
 def test_md6_render():
     script=Path(__file__).with_name('index.html').read_text().split('<script>')[1].split('</script>')[0]
-    harness=HARNESS.split('const peer=')[0]+r'''
+    harness=SETUP+r'''
 const attack='<img src=x onerror=1>';
 for(const count of [1,3]){
  const rows=Array.from({length:count},(_,i)=>({device_id:'a'.repeat(31)+i,name:i===0?attack:null,platform:i===0?'macos':null,this_device:i===0,revoked:i===2,last_seen_at:i===0?new Date().toISOString():null,last_sync_at:i===0?new Date().toISOString():null,last_sync_outcome:i===0?'ok':null}));
@@ -49,7 +49,7 @@ for(const count of [1,3]){
 
 def test_md7_allowlist():
     from remote_access import ALLOWED_PATHS
-    assert ALLOWED_PATHS==frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/connections', '/api/operations', '/api/storage', '/api/log-counts'))
+    assert ALLOWED_PATHS==frozenset(('/', '/metrics.html', '/health', '/api/profile-log', '/api/metrics', '/api/operations', '/api/storage', '/api/log-counts'))
 
 
 @pytest.mark.parametrize('mode',['ok','empty','failed','missing-cloudflared','missing-security'])

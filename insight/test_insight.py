@@ -1,6 +1,5 @@
 """Portable fixtures only: never write a configured runtime database."""
 import json
-import sqlite3
 import tempfile
 import unittest
 from test_isolation import setUpModule, tearDownModule
@@ -29,8 +28,6 @@ class InsightTests(unittest.TestCase):
             archive = adapters.cron_archive(home)
             (archive / 'cron').mkdir(parents=True)
             (home / 'jobs').mkdir()
-            with sqlite3.connect(archive / 'state.db') as c:
-                c.execute('CREATE TABLE sessions(id TEXT, started_at REAL)')
             (archive / 'cron/usage_audit.jsonl').write_text('')
             (archive / 'cron/jobs.json').write_text(json.dumps({'jobs':[{'id':'6fcf5646d34d','enabled':True,'no_agent':True,'last_status':'ok'}]}))
             (home / 'jobs/summary-metrics.jsonl').write_text(json.dumps({'record_type':'run','run_id':'production','status':'no_work','content':'PRIVATE','errors':['secret']})+'\n')
@@ -53,80 +50,52 @@ class InsightTests(unittest.TestCase):
             self.assertIsNone(data['report']['new_successful_llm']['actual_cost_usd']['total'])
 
 
-class MemoryTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.db = Path(self.temp.name) / 'memory.db'
-        with sqlite3.connect(self.db) as c:
-            c.executescript((Path(__file__).parent.parent / 'memory-sync/schema.sql').read_text())
-            for n in range(3):
-                c.execute("INSERT INTO memory_items(kind,scope,project,content) VALUES ('fact','project','demo',?)", ('remember api_key=sk-abcdef1234567890 '+str(n),))
-            c.execute("INSERT INTO observation_events(event_key,source_path,kind,content,source_hash) VALUES ('ev','/private/path','user','password=hunter22','hash')")
-            c.execute('INSERT INTO memory_sources VALUES (1,1)')
-            c.execute("INSERT INTO memory_summaries(scope,scope_key,content,metadata) VALUES ('project','demo','summary','{\"source_event_ids\":[1]}')")
-        self.addCleanup(self.temp.cleanup)
-
-    def test_memory_pagination_redaction_evidence_and_readonly(self):
-        reader = adapters.MemoryReader(sqlite=self.db)
-        page = reader.browse('items', {'limit':'2','offset':'0','q':'remember'})
-        self.assertEqual(page['total'], 3)
-        self.assertEqual(len(page['rows']), 2)
-        self.assertNotIn('sk-abcdef', json.dumps(page))
-        self.assertNotIn('evidence', page['rows'][0])
-        next_page = reader.browse('items', {'limit':'2','offset':'2'})
-        self.assertEqual(len(next_page['rows']), 1)
-        detail = reader.detail('items', 1)
-        self.assertEqual(detail['evidence'][0]['id'], 1)
-        self.assertNotIn('hunter22', json.dumps(detail))
-        self.assertNotIn('/private/path', json.dumps(detail))
-        self.assertEqual(reader.detail('summaries', 1)['evidence'][0]['id'], 1)
-        with reader.connect() as c:
-            with self.assertRaises(sqlite3.OperationalError):
-                c.execute("DELETE FROM memory_items")
-
-    def test_memory_query_allowlist_and_literal_search(self):
-        reader = adapters.MemoryReader(sqlite=self.db)
-        with self.assertRaises(ValueError):
-            reader.browse('observation_events', {})
-        with self.assertRaises(ValueError):
-            reader.browse('items', {'sql':'DELETE FROM memory_items'})
-        with self.assertRaises(ValueError):
-            reader.browse('items', {'limit':'101'})
-        self.assertEqual(reader.browse('items', {'q':"' OR 1=1 --"})['total'], 0)
-        self.assertEqual(reader.browse('items', {'q':'%'})['total'], 0)
-        self.assertEqual(reader.browse('summaries', {'project':'demo'})['total'], 1)
-
-
 class OperationsTests(unittest.TestCase):
     def test_missing_sources_are_visible_and_never_online(self):
         with tempfile.TemporaryDirectory() as folder:
-            data = adapters.operations(adapters.MemoryReader(), None)
-            self.assertFalse(data['agents']['available'])
+            data = adapters.operations(Path(folder))
             self.assertEqual(data['pipeline']['jobs'], [])
-            self.assertFalse(data['sync']['available'])
-            self.assertEqual(data['sync']['transport'], 'unknown')
+            self.assertFalse(data['summary']['available'])
+            self.assertEqual(data['summary']['tools'], [])
+            self.assertEqual(set(data), {'generated_at', 'refresh_seconds', 'pipeline', 'summary'})
             self.assertNotIn('online', json.dumps(data))
 
-    def test_operational_projection_hides_payloads_and_distinguishes_observations(self):
+    def test_summary_projection_is_content_free(self):
+        """The broker summary's own files: counts, states and times leave; paths, keys and project text do not."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            (root/'status').mkdir()
+            (root/'status').mkdir(); (root/'jobs').mkdir()
             for name in ('ingest','summary'):
                 (root/'status'/('job-'+name+'.json')).write_text(json.dumps({'ok':True,'at':'2026-01-01T00:00:00Z','prompt':'secret-token','detail':'private'}))
-            (root/'packet-sync-status.json').write_text(json.dumps({'format':'agentmesh-packet-sync-status-v1','packet_sync':'enabled'}))
-            db = root/'staged.db'
-            with sqlite3.connect(db) as c:
-                c.executescript((Path(__file__).parent.parent/'memory-sync/schema.sql').read_text())
-                c.execute("INSERT INTO source_sessions(source_agent,source_path,last_seen_at) VALUES ('codex','secret-path','2026-01-01T00:00:00Z')")
-                c.executescript("CREATE TABLE _sync_config(node TEXT, group_id TEXT); INSERT INTO _sync_config VALUES ('mac','SECRET'); CREATE TABLE _sync_receipts(uuid TEXT,checksum TEXT); CREATE TABLE _sync_outbox(uuid TEXT,published INTEGER,packet TEXT); CREATE TABLE _sync_diagnostics(path TEXT,kind TEXT,message TEXT); CREATE TABLE _agentmesh_worker_state(consumer TEXT,last_run REAL,lease_until REAL,owner TEXT);")
-            data = adapters.operations(adapters.MemoryReader(sqlite=db), db, agentmesh_home=root)
-            self.assertEqual(data['agents']['rows'][0]['state'], 'stale')
+            (root/'status/last-ingest.json').write_text(json.dumps(dict(backend='broker',found=3,processed=1,skipped=2,errors=0,invalid_json=0,
+                error_classes=['secret-class'],observed_at='2026-01-01T00:00:00+00:00')))
+            (root/'status/last-summary.json').write_text(json.dumps(dict(backend='broker',status='completed',events=4,batches=1,llm_api_calls=1,
+                prompt='secret-prompt',observed_at='2026-01-01T00:00:00+00:00')))
+            (root/'jobs/summary-state.json').write_text(json.dumps(dict(format='agentmesh-summary-state-v1',pending=False,start_at=None,
+                success=dict(day='2026-01-01',completed_at='2026-01-01T00:00:00+00:00',boot_id='secret-boot'),quarantine=[{'memory_key':'secret-key'}])))
+            (root/'jobs/summary-unmapped.json').write_text(json.dumps(dict(format='agentmesh-summary-unmapped-v1',at='t',projects=['learn-x','bad\x00name'])))
+            transcript = root/'home/.claude/projects/-secret-project/s.jsonl'; transcript.parent.mkdir(parents=True); transcript.write_text('{}')
+            (root/'jobs/transcript-cursors.json').write_text(json.dumps(dict(format='agentmesh-transcript-cursors-v1',files={
+                str(transcript):{'offset':2}, str(root/'home/.codex/sessions/gone.jsonl'):{'offset':0}, '/elsewhere/x.jsonl':{}})))
+            data = adapters.operations(root)
+            s = data['summary']
+            self.assertTrue(s['available'])
+            self.assertEqual(s['ingest']['found'], 3); self.assertEqual(s['summary']['status'], 'completed')
+            self.assertEqual(s['schedule'], dict(pending=False, last_completed_at='2026-01-01T00:00:00+00:00', quarantined=1))
+            self.assertEqual(s['held_projects'], ['learn-x'])
+            tools = {t['tool']: t for t in s['tools']}
+            self.assertEqual((tools['claude']['transcripts'], tools['codex']['transcripts']), (1, 1))
+            self.assertIsNotNone(tools['claude']['latest_at']); self.assertIsNone(tools['codex']['latest_at'])
             self.assertEqual(data['pipeline']['jobs'][1]['last_status'], 'ok')
-            self.assertEqual(data['sync']['node'], 'mac')
-            self.assertEqual(data['sync']['transport'], 'unknown')
-            self.assertNotIn('SECRET', json.dumps(data))
-            self.assertNotIn('secret-', json.dumps(data))
-            self.assertNotIn('private', json.dumps(data))
+            text = json.dumps(data)
+            for secret in ('secret', 'private', str(root)): self.assertNotIn(secret, text)
+
+    def test_unknown_summary_status_is_not_echoed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); (root/'status').mkdir()
+            (root/'status/last-summary.json').write_text(json.dumps(dict(status='<script>', observed_at='not a time')))
+            s = adapters.operations(root)['summary']['summary']
+            self.assertEqual((s['status'], s['observed_at']), ('unknown', None))
 
 
 class HTTPTests(unittest.TestCase):
@@ -149,11 +118,13 @@ class HTTPTests(unittest.TestCase):
                     response = e
                 return response.status, response.read()
             self.assertEqual(request('/health')[0], 200)
-            self.assertIn(b'Memory Browser', request('/')[1])
+            page = request('/')[1]
+            self.assertIn(b'Pipeline', page); self.assertNotIn(b'Memory Browser', page)
             self.assertEqual(request('/metrics.html')[0], 200)
-            self.assertEqual(request('/api/memory?backend=bad')[0], 400)
-            self.assertEqual(request('/api/memory?sql=select')[0], 400)
-            self.assertEqual(request('/api/memory')[0], 503)
+            # The SQLite and PostgreSQL readers are gone (SQLite retirement R5b).
+            for retired in ('/api/memory', '/api/memory/items/1', '/api/connections'):
+                self.assertEqual(request(retired)[0], 404)
+            self.assertEqual(request('/api/operations?backend=sqlite')[0], 400)
             # Hermes cron files are optional now; absent logs give empty, not unavailable, metrics.
             self.assertEqual(request('/api/metrics')[0], 200)
             self.assertNotIn(folder.encode(), request('/api/metrics')[1])
@@ -162,26 +133,20 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(request('/health', headers={'Host':'evil.test'})[0], 403)
             self.assertEqual(request('/health', headers={'Origin':'https://evil.test'})[0], 403)
             for method in ('POST','PUT','PATCH','DELETE'):
-                self.assertEqual(request('/api/memory', method=method)[0], 405)
+                self.assertEqual(request('/api/operations', method=method)[0], 405)
 
-    def test_explicit_authority_does_not_promote_staging_by_default(self):
-        import server
-        import threading
-        import urllib.request
+    def test_sqlite_flag_is_accepted_and_ignored(self):
+        """Installed plists still pass --sqlite; the server must start anyway."""
+        import subprocess
+        import sys
         with tempfile.TemporaryDirectory() as folder:
-            for primary, expected in ((None, 'PostgreSQL authority'), ('sqlite', 'SQLite authority')):
-                app = server.make_server(0, agentmesh_home=Path(folder), sqlite=Path(folder)/'absent.db', primary=primary)
-                thread = threading.Thread(target=app.serve_forever, daemon=True)
-                thread.start()
-                try:
-                    result = json.load(urllib.request.urlopen('http://127.0.0.1:'+str(app.server_port)+'/api/connections'))
-                    self.assertEqual(next(r for r in result['rows'] if r['authority'])['label'], expected)
-                    self.assertEqual(result['primary'], primary or 'postgres')
-                finally:
-                    app.shutdown()
-                    app.server_close()
-            with self.assertRaises(ValueError):
-                server.make_server(0, agentmesh_home=Path(folder), primary='invalid')
+            process = subprocess.Popen([sys.executable, '-u', str(Path(__file__).with_name('server.py')), '--port', '0',
+                '--agentmesh-home', folder, '--sqlite', str(Path(folder)/'absent.db')], stdout=subprocess.PIPE, text=True)
+            try:
+                line = json.loads(process.stdout.readline())
+                self.assertTrue(line['readonly'] and line['url'].startswith('http://127.0.0.1:'))
+            finally:
+                process.terminate(); process.wait(10)
 
     def test_cache_expiry_and_sanitized_failure(self):
         import server

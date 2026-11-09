@@ -1,15 +1,13 @@
 """Failure reasons, identity overrides and previously seen devices; temporary fixtures only."""
 import json
 import shutil
-import sqlite3
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 import adapters
-from test_sync_view import HARNESS
+from test_sync_view import SETUP
 
 SCRIPT = Path(__file__).with_name('index.html').read_text(encoding='utf-8').split('<script>')[1].split('</script>')[0]
 
@@ -85,79 +83,21 @@ def test_cron_archive_lives_in_agentmesh_home(tmp_path, monkeypatch):
     data = adapters.metrics(am)
     assert [r['run_id'] for r in data['runs']['historical']] == ['f1']
     assert data['report']['baseline']['input_total_tokens']['total'] == 5
-    assert 'hermes_sessions' not in adapters.operations(adapters.MemoryReader(), None, {'status':'unknown','rows':[]}, am)
+    assert 'hermes_sessions' not in adapters.operations(am)
 
 
-@pytest.fixture
-def memory_db(tmp_path):
-    db = tmp_path/'memory.db'
-    with sqlite3.connect(db) as c:
-        c.executescript((Path(__file__).parent.parent/'memory-sync/schema.sql').read_text())
-    return db
-
-
-def test_detail_shows_identity_from_existing_and_history(memory_db):
-    metadata = {'identity_from_existing':['kind','scope_key','PRIVATE<b>'], 'batch_id':'b-3',
-                'evidence_history':[{'evidence':[{'event_id':1,'quote':'PRIVATE quote'}], 'batch_id':'b-1'},
-                                    {'evidence':[], 'batch_id':'b-2', 'identity_from_existing':['project']},
-                                    'junk']}
-    with sqlite3.connect(memory_db) as c:
-        c.execute("INSERT INTO memory_items(kind,scope,project,content,metadata) VALUES ('fact','project','demo','x',?)", (json.dumps(metadata),))
-        c.execute("INSERT INTO memory_items(kind,scope,project,content,metadata) VALUES ('fact','project','demo','y','{}')")
-    reader = adapters.MemoryReader(sqlite=memory_db)
-    value = reader.detail('items', 1)
-    assert value['identity'] == {'identity_from_existing':['kind','scope_key'], 'batch_id':'b-3',
-                                 'history':[{'revision':2, 'batch_id':'b-2', 'identity_from_existing':['project']}]}
-    assert 'PRIVATE' not in json.dumps(value)
-    assert reader.detail('items', 2)['identity'] == {'identity_from_existing':None, 'batch_id':None, 'history':[]}
-
-
-def test_devices_seen_in_ingested_memory(memory_db):
-    events = [('claude', '/Users/me/.claude/projects/a/1.jsonl', '2026-10-23T08:00:00Z'),
-              ('codex', '/Users/me/.codex/sessions/2.jsonl', '2026-10-23T05:00:00Z'),
-              ('claude', 'C:\\Users\\krisb\\.claude\\projects\\x\\3.jsonl', '2026-10-16T05:51:54Z'),
-              ('claude', 'C:\\Users\\krisb\\.claude\\projects\\y\\4.jsonl', '2026-10-15T00:00:00Z'),
-              ('omp', '', '2026-09-22T17:02:34Z')]
-    with sqlite3.connect(memory_db) as c:
-        for n, (agent, path, at) in enumerate(events):
-            c.execute('INSERT INTO observation_events(event_key,source_agent,source_path,occurred_at,kind,content,source_hash) VALUES (?,?,?,?,?,?,?)',
-                      ('k%d' % n, agent, path, at, 'user', 'PRIVATE', 'h'))
-    reader = adapters.MemoryReader(sqlite=memory_db)
-    now = datetime(2026, 10, 23, 9, tzinfo=timezone.utc)
-    value = adapters.devices_seen(reader, now=now)
-    rows = {r['platform']:r for r in value['rows']}
-    assert set(rows) == {'macos', 'windows', 'unknown'}
-    win = rows['windows']
-    assert (win['events'], win['last_seen_at'], win['agents'], win['state']) == (2, '2026-10-16T05:51:54Z', ['claude'], 'stale')
-    assert rows['macos']['agents'] == ['claude', 'codex'] and rows['macos']['state'] == 'recent'
-    assert value['rows'][0]['platform'] == 'macos'
-    text = json.dumps(value)
-    assert 'krisb' not in text and '/Users/me' not in text and 'PRIVATE' not in text
-
-
-def test_operations_include_devices_seen(memory_db, tmp_path):
-    with sqlite3.connect(memory_db) as c:
-        c.execute("INSERT INTO observation_events(event_key,source_agent,source_path,occurred_at,kind,content,source_hash) VALUES ('k','claude','C:\\x\\y','2026-10-16T05:51:54Z','user','x','h')")
-    value = adapters.operations(adapters.MemoryReader(sqlite=memory_db), None, {'status':'unknown','rows':[]}, tmp_path/'am')
-    assert [r['platform'] for r in value['devices_seen']['rows']] == ['windows']
-
-
-DEVICE_HARNESS = HARNESS.split('const peer=')[0] + r'''
-const old=new Date(Date.now()-7*86400e3).toISOString(), now=new Date().toISOString();
-context.LOG={last_sync:{outcome:'ok',stale:false,age_seconds:20,outbox:0,local_objects:3,remote_objects:3},overview:{devices:[{device_id:'a'.repeat(32),name:'Mac',platform:'macos',this_device:true,revoked:false,last_seen_at:now,last_sync_at:now,last_sync_outcome:'ok'}]}};
-context.SEEN={available:true,rows:[{platform:'macos',label:'macOS',events:9,agents:['claude'],last_seen_at:now,state:'recent'},{platform:'windows',label:'Windows <img>',events:736,agents:['claude'],last_seen_at:old,state:'stale'}]};
-vm.runInContext('ops={sync:{peers:{rows:[]}},devices_seen:SEEN};renderProfileLog(LOG);profileLog=LOG;renderSyncSummary();',context);
-const html=element('sync-profile').innerHTML, head=element('sync-headline').innerHTML;
-assert.match(html,/Windows &lt;img&gt;/);assert.ok(!html.includes('<img'));
-assert.match(html,/not in the profile log/);
-assert.match(html,/last activity 7d ago/);
-assert.match(head,/Windows &lt;img&gt; last sent memory 7d ago and has not joined the profile log/);
-assert.ok(!/macOS last sent/.test(head));
-assert.match(element('profile-log-devices').innerHTML,/Windows &lt;img&gt;/);
+DEVICE_HARNESS = SETUP + r'''
+const now=new Date().toISOString();
+context.LOG={last_sync:{outcome:'ok',stale:false,age_seconds:20,outbox:0,local_objects:3,remote_objects:3},overview:{devices:[{device_id:'a'.repeat(32),name:'Mac <img>',platform:'macos',this_device:true,revoked:false,last_seen_at:now,last_sync_at:now,last_sync_outcome:'ok'}]}};
+vm.runInContext('ops={};renderProfileLog(LOG);profileLog=LOG;renderSyncSummary();',context);
+const html=element('sync-profile').innerHTML;
+assert.match(html,/Mac &lt;img&gt;/);assert.ok(!html.includes('<img'));
+assert.match(html,/1 device/);assert.match(html,/this device/);
+assert.ok(!/not in the profile log/.test(html+element('profile-log-devices').innerHTML));
 '''
 
 
-def test_previously_seen_device_is_listed_as_stale():
+def test_profile_log_devices_are_listed():
     node = shutil.which('node')
     if not node:
         pytest.skip('Node unavailable for UI script check')

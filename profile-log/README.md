@@ -1185,7 +1185,10 @@ Examples, using the profile-log interpreter and a trusted broker home `H`:
 
 ```sh
 python -m agentmesh_log.cli connector gateway-init --home H --origin https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev --public-key-file PUBLIC_HEX_FILE
-python -m agentmesh_log.cli connector approve CODE --home H --profiles personal,work --remember personal/inbox
+python -m agentmesh_log.cli connector gateway-use                 # another device: point at the published gateway
+python -m agentmesh_log.cli connector pending                     # live requests: client name and expiry
+python -m agentmesh_log.cli connector approve                     # asks for the code; defaults below
+python -m agentmesh_log.cli connector approve CODE --profiles personal,work --remember work
 python -m agentmesh_log.cli connector list --home H
 python -m agentmesh_log.cli connector allow-secret --home H --app APP_ID --minutes 15
 python -m agentmesh_log.cli connector revoke --home H --app APP_ID
@@ -1193,6 +1196,48 @@ python -m agentmesh_log.cli bridge serve --home H --host 127.0.0.1 --port 8766
 ```
 
 `approve`, `gateway-init`, `revoke`, and `allow-secret` require console presence.
+
+Approve defaults, so the usual case is `connector approve` and the code:
+
+- `--home` defaults to the broker's own home, read from its launchd definition
+  (`~/Library/LaunchAgents/org.agentmesh.profile-log.broker.plist`). The R2 flags
+  (`--s3-bucket`, `--s3-prefix`, `--s3-endpoint`, `--s3-credentials`) come from the same
+  definition, but only when `--home` is that broker's home: a scratch or test home never
+  inherits the real remote. Explicit flags always win. Windows still needs the flags.
+- `--profiles` defaults to the approval settings (`connector passkey settings`, normally
+  `personal,work`). `--remember` defaults to `<first profile>/inbox`; `--remember work`
+  means `work/inbox`. Anything else must end in `/inbox`.
+- The code is asked for when left out (a real terminal only: `!` bash mode cannot answer
+  the presence prompt either).
+- With no local `connector_origin`, approve and revoke use the gateway origin from the one
+  verified `registry/gateway/*.json` record. With several, run
+  `connector gateway-use --origin URL` once: it sets only the local pointer and checks the
+  origin against a verified record. Never re-run `gateway-init` on a second device: it
+  republishes the record under the same key ID.
+- `connector pending` lists live requests (client name, created, expires, code hash). It
+  never shows the code: approving still needs the code from the browser, so a look-alike
+  request cannot be approved by picking the wrong row. The gateway answers `admin/list`
+  from a small KV index, without a KV list or an R2 replay object, so a device may poll it.
+- On a Mac, AgentMesh Control polls the same list and opens an approval window when a new
+  request arrives; see [the menu bar app](../docs/use/control-app.md).
+
+Errors name the fix and carry no code, key or token (the CLI prints `error` and `hint`):
+
+| Error | Meaning |
+|---|---|
+| `remember_must_end_with_inbox` | `--remember` must be a profile or a profile inbox |
+| `no_gateway_origin` | no local pointer and not exactly one published gateway: run `connector gateway-use` |
+| `gateway_origin_unknown` | `gateway-use --origin` names no verified gateway record |
+| `code_not_found_or_expired` | no live request for that code (codes last 10 minutes) |
+| `code_already_used` | the request was already approved, rejected or completed |
+| `code_mismatch` | the code does not belong to the chosen request (control app) |
+| `gateway_denied` | the gateway refused this device's signature |
+| `gateway_clock_skew` | this device's clock is more than 60 s from the gateway's |
+| `gateway_unreachable` / `gateway_unavailable` | no answer / an error answer from the gateway |
+| `unknown_profile` / `not_authorized` | a profile does not exist / this device cannot read every target |
+
+The gateway returns the coded refusals only after the admin envelope's device signature
+verifies; an unsigned or forged request still gets the bare `denied`.
 Names remembered by this device can also select apps for revoke/allow-secret,
 case-insensitively. Revoked apps are excluded from name matching; allow-secret
 also excludes apps with missing policies. No match returns `unknown_app`; multiple
@@ -1200,8 +1245,10 @@ matches return `ambiguous_app` before any presence prompt or write. Use the exac
 app ID to disambiguate. `connector list` includes each app's locally remembered
 `display_name` (or null when absent), ID, and policy state.
 Approval creates an absent inbox only after verifying profile-root authority.
-The six-digit browser code expires in ten minutes and is single-use. After the
-terminal approval, click **Continue after approval** in the authorization page.
+The six-digit browser code expires in ten minutes and is single-use; the page shows
+when it expires. After approval, click **Continue after approval** in the authorization
+page. Pressed too early, it says the request is not approved yet and offers the button
+again; an expired or rejected request says so and asks to start the connection again.
 Codes, tokens and private signing keys must not be captured in ordinary logs.
 
 The commands above use the local replica. To operate against shared storage,

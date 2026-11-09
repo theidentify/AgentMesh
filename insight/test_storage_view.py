@@ -1,18 +1,18 @@
 import json
 from pathlib import Path
 import subprocess
-from test_sync_view import HARNESS
+from test_sync_view import SETUP
 
 
 def test_st7_view():
     script=Path(__file__).with_name('index.html').read_text().split('<script>')[1].split('</script>')[0]
-    harness=HARNESS.split('const peer=')[0]+r'''
+    harness=SETUP+r'''
 vm.runInContext("renderStorage({available:false,pending:true})",context);
 assert.match(element('storage-note').textContent,/Computing/);
-context.DATA={available:true,computed_at:'2026-10-22T12:00:00Z',sqlite:{dbstat:false,rows:{memory_items:3},tables:[{name:'<img src=x onerror=alert(1)>',rows:3,retired:true,note:'removed in 7b'}]},disk:{categories:[{category:'<script>bad</script>',bytes:9}],reclaimable:[]},costs:{summary:{month:null},r2:{total:null},pricing:{prices:{as_of:'2026-10-22',sources:[],cloudflare:{}}}},compute:{services:[{service:'broker',state:'not running',cpu_s:null}],jobs:[]},buffers:[],network:{}};
+context.DATA={available:true,computed_at:'2026-10-22T12:00:00Z',disk:{categories:[{category:'<script>bad</script>',bytes:9},{category:'<img src=x onerror=alert(1)>',bytes:3}],reclaimable:[]},costs:{summary:{month:null},r2:{total:null},pricing:{prices:{as_of:'2026-10-22',sources:[],cloudflare:{}}}},compute:{services:[{service:'broker',state:'not running',cpu_s:null}],jobs:[]},buffers:[],network:{}};
 vm.runInContext('renderStorage(DATA)',context);
 const all=[...elements.values()].map(e=>e.innerHTML).join('');
-assert.match(all,/dbstat unavailable/);assert.match(all,/memory_items/);assert.match(all,/removed in 7b/);
+assert.ok(!/SQLite|dbstat/.test(all));
 assert.match(all,/&lt;img/);assert.match(all,/&lt;script&gt;/);assert(!all.includes('<img'));
 assert.match(all,/API-equivalent cost/);assert.match(all,/unknown/);assert.match(all,/not running/);
 assert.match(all,/Insight never deletes anything/);
@@ -25,7 +25,7 @@ vm.runInContext("remote=true;navigate('storage')",context);assert.equal(context.
 
 def test_storage_pending_polling():
     script=Path(__file__).with_name('index.html').read_text().split('<script>')[1].split('</script>')[0]
-    harness=HARNESS.split('const peer=')[0]+r'''
+    harness=SETUP+r'''
 const timers=new Map();let nextTimer=0,calls=0,reply={available:false,pending:true};
 context.setTimeout=(fn,ms)=>{assert.equal(ms,2000);timers.set(++nextTimer,fn);return nextTimer};
 context.clearTimeout=id=>timers.delete(id);

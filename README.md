@@ -14,8 +14,9 @@ your devices, synchronized through an R2 bucket that only ever sees ciphertext.
 
 AgentMesh is in active development. Each device runs a broker (`profile-log/`) that holds the profile log: signed,
 encrypted events for memory, summaries, tasks and team workspaces. Agents reach it through scoped agent keys.
-Brokers replicate through R2. memory-sync's broker summary reads Claude and Codex transcripts and writes durable
-memory through the `summarizer` agent.
+Brokers replicate through R2. The transcript summary (`profile-log/agentmesh_log/ingest/`) reads your own Claude and
+Codex transcripts and writes durable memory through the `summarizer` agent. Ingestion is personal-only: it refuses a
+team workspace home and never writes transcripts into workspace scopes.
 
 The original SQLite staging database and its Syncthing packet exchange are retired. The last of their code was
 removed in SQLite retirement R5b (2026-11-09). See [the profile-log README](profile-log/README.md#sqlite-retirement).
@@ -31,8 +32,10 @@ See [prototype setup, CLI, demo and trust boundaries](profile-memory/README.md).
 ## Setup
 
 Install and operate the broker as described in the [profile-log README](profile-log/README.md). On a Mac the
-[control plane](#control-plane-macos) runs the summary jobs. On Windows they run as scheduled tasks wrapped by
-`memory-sync/job_notify.py`.
+[control plane](#control-plane-macos) runs the summary jobs; on Windows the same supervisor runs them from a logon
+task. Each job runs through `python -m agentmesh_log.control.jobrun`, which applies maintenance and quota holds and
+sends failure alerts. Devices set up before memory-sync's retirement migrate with
+[the memory-sync migration runbook](docs/install/migrate-memory-sync.md).
 
 ## AgentMesh Insight
 
@@ -69,8 +72,8 @@ through Discord or a passkey and device and grant operations are not built yet. 
 
 Each device's broker keeps an encrypted replica of the profile log and syncs it through R2. Agents recall and write
 through the local broker, which enforces their grants (work and personal profiles, scopes, labels). If the broker is
-down, the agent gets an explicit error. The broker summary (`memory-sync/broker_digest.py`) reads transcripts
-directly, keeps its cursors in `jobs/`, and writes summaries through the `summarizer` agent. On macOS the
+down, the agent gets an explicit error. The broker summary (`profile-log/agentmesh_log/ingest/digest.py`)
+reads transcripts directly, keeps its cursors in `jobs/`, and writes summaries through the `summarizer` agent. On macOS the
 [control plane](#control-plane-macos) schedules ingest and summary.
 
 ## Privacy
@@ -88,10 +91,11 @@ This does not relicense existing code or claim trademark clearance.
 
 ## Development
 
-`memory-sync/` contains the broker summary (`broker_digest.py`, its Claude worker and the production job in
-`jobs/`), the transcript parsers and `job_notify.py`. They use the standard library; tests require `pytest`.
-`profile-log/` holds the broker and its CLI (`python -m pytest -q profile-log/tests`).
+`profile-log/` holds the broker, its CLI, the control plane and the transcript summary (`agentmesh_log/ingest/`, standard
+library only). Tests require the pinned `profile-log/requirements-dev.txt`.
 
 ```sh
-python -m pytest -q memory-sync
+python -m pytest -q profile-log/tests
 ```
+
+`memory-sync/` holds only compatibility shims until every device has migrated; see its README.

@@ -3,7 +3,13 @@
 Standalone Python 3.11 library and Phase 4 local memory broker for the encrypted profile log design.
 It models local accounts, profiles, scope trees and sensitivity labels; certifies devices
 and agents; seals, verifies and opens signed HPKE events; and stores opaque objects in
-filesystem or S3-compatible storage. It imports nothing from `memory-sync` or `profile-memory`.
+filesystem or S3-compatible storage. It imports nothing from `profile-memory`.
+
+`agentmesh_log/ingest/` is the transcript summary that moved here from `memory-sync/` (2026-11): `python -m
+agentmesh_log.ingest scan|summary` runs the scheduled jobs and `python -m agentmesh_log.control.jobrun` wraps them with
+maintenance and quota holds and failure alerts. Both are standard library only. Ingestion is personal-only
+(`ingest/personal.py`). `control rewire-ingest` and `ingest migrate-config` move an installed device over; see
+[the migration runbook](../docs/install/migrate-memory-sync.md).
 
 ## Tests
 

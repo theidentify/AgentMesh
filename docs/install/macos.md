@@ -1,5 +1,13 @@
 # macOS
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 ::: info Profile log
 These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
 :::

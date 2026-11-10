@@ -1,5 +1,13 @@
 # Run in the background
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 ::: info Profile log
 With packet sync off (the default since Phase 7a), the worker carries no packets; devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). On a Mac managed by the AgentMesh supervisor, ingest, summary and catch-up run as supervisor jobs instead, shown in the [menu bar app](../use/control-app). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
 :::

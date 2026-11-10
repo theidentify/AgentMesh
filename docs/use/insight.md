@@ -1,5 +1,13 @@
 # Insight dashboard
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 Use Insight to browse local memory and recorded operations without changing them. First [check your installation paths](./worker#inspect-the-installation-first) and have a repository checkout available to run the dashboard. You will open a local read-only workspace for memory, ingestion and sync observations.
 
 | View | What to inspect |

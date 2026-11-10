@@ -1,4 +1,4 @@
-"""Maintenance mode: a hold file job_notify.py reads before every wrapped job. Only `"on": true` holds."""
+"""Maintenance mode: a hold file the job wrapper (control/jobrun.py) reads before every wrapped job. Only `"on": true` holds."""
 from datetime import datetime, timezone
 from .layout import read_json, write_json
 

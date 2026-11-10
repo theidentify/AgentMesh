@@ -5,8 +5,10 @@ tick. Messages carry the job name, exit code and the job's own JSON
 `error_class`/`status` fields; other output is never forwarded because it may
 contain source evidence. Without a webhook file the run is logged only.
 
-  python job_notify.py --name summary --state-dir status \
-      --webhook-file ~/.config/agentmesh/discord-webhook -- python job.py
+  python -m agentmesh_log.control.jobrun --name summary --state-dir status \
+      --webhook-file ~/.config/agentmesh/discord-webhook -- python -m agentmesh_log.ingest summary
+
+(`agentmesh-log job run ...` is the same). Standard library only. Was memory-sync/job_notify.py.
 """
 import argparse
 from datetime import datetime, timedelta, timezone

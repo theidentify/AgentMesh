@@ -1,5 +1,13 @@
 # Prerequisites
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 ::: info Profile log
 The setup wrappers still check for Syncthing, but with packet sync off (the default since Phase 7a) it carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). The profile log needs private S3-compatible storage credentials, which the [owner runbook](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery) sets up.
 :::

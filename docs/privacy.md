@@ -1,5 +1,13 @@
 # Privacy
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](install/migrate-memory-sync).
+:::
+
 Keep private memory and runtime data out of Git and public support posts. Review [Concepts](./getting-started/concepts) first to distinguish local state from private exchange artifacts. You will know what to protect and what to inspect before sharing diagnostic excerpts.
 
 ## Keep private material out of Git

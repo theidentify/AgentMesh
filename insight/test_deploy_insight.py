@@ -66,6 +66,7 @@ def test_dry_run_changes_nothing(scratch, capsys):
     assert snapshot(root) == before
     out = capsys.readouterr().out
     assert 'Dry run only' in out and 'omp-memory' in out and 'drop HERMES_HOME' in out
+    assert 'usage_audit.jsonl (copy only)' in out and 'state.db' not in out
 
 
 def test_apply_moves_inputs_into_agentmesh_and_rollback_restores(scratch):

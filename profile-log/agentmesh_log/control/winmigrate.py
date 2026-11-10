@@ -4,7 +4,10 @@
 and with --apply moves each native-capable one under the supervisor's logon task, so Task Scheduler holds one AgentMesh
 task instead of one per unit. Per task: wait for a job to finish its run, disable it, end it (a service), save its exported
 XML under <home>/control/units/, delete it, then record its spec as native; the supervisor starts it on its next tick.
-The broker goes last, so recall is down for about a second. A retired unit's task (catch-up, removed at R5b) is saved
+The broker goes last, so recall is down for about a second.
+A task registered from an elevated window can be disabled and deleted only from one: consolidate then reports
+`needs_elevation` and says to re-run it elevated. Files an elevated run saves are handed back to the user (winacl), so
+release and panic-revert still work from a normal window. A retired unit's task (catch-up, removed at R5b) is saved
 under control/units/retired/ and deleted, never supervised. A task that fails is left as it was, enabled.
 
 `control release UNIT` and `control panic-revert` register a saved task again from its XML. state.db's backend value
@@ -16,13 +19,32 @@ import os
 import sys
 import time
 from ..broker.audit import append_row
-from . import procs, schedule, wintasks
+from . import procs, schedule, winacl, wintasks
+from .taskscheduler import ELEVATE
 from .layout import read_json, write_json
 from .native import started_token
 from .units import UNITS, get
 
 WAIT_S=600
 POLL_S=2
+REPORTED=('busy','task_scheduler_failed','needs_elevation')
+ACL=('Saved task files could not be handed to %s; release and panic-revert from a normal window may not read them. '
+    'Fix with: icacls <file> /setowner %%USERNAME%% and icacls <file> /grant %%USERNAME%%:F')
+
+
+UNREADABLE=('A saved task file under control\\units cannot be read from this window (an elevated consolidate wrote it). '
+    'Re-run this command from an elevated PowerShell, or give the file back from one: '
+    'icacls <file> /setowner %USERNAME% and icacls <file> /grant %USERNAME%:F')
+
+
+def failure(exc): return str(exc) if str(exc) in REPORTED else type(exc).__name__
+
+
+def advise(result):
+    """Add the elevated-PowerShell advice to a result whose error (or one of whose errors) is needs_elevation."""
+    errors=[e.get('error') for e in result.get('errors') or [] if isinstance(e,dict)]
+    if result.get('error')=='needs_elevation' or 'needs_elevation' in errors: result['advice']=ELEVATE
+    return result
 
 
 def now_ms(): return time.time_ns()//1000000
@@ -116,7 +138,7 @@ def evict_reloaded(layout, store, tasks):
             tasks.act('disable',row['task'])
             if row['state']=='Running': tasks.act('stop',row['task'])
             outcome='ok'; evicted.append(row['unit'])
-        except RuntimeError: outcome='task_scheduler_failed'
+        except RuntimeError as exc: outcome=failure(exc)
         try: audit(layout,'task_reloaded',{'unit':row['unit'],'task':row['task']},outcome)
         except Exception: pass
     return evicted
@@ -144,20 +166,26 @@ def consolidate(layout, store, *, console, call, tasks, apply=False, sleep=time.
     if not console.confirm('migrate',summary):
         audit(layout,'unit.consolidate',{},'presence_denied'); return {'error':'presence_required'}
     audit(layout,'unit.consolidate',{},'requested')
-    moved,parked,retired,errors=[],[],[],[]
+    moved,parked,retired,errors,written=[],[],[],[],[]
     for row in work:
         name=row['unit']
         try:
             take(layout,tasks,row,retired=row['action']=='retire',wait_s=wait_s,sleep=sleep)
+            written.append(saved(layout,name,row['action']=='retire'))
             if row['action']=='move': store.set_backend(name,'native',row['spec'],now_ms()); moved.append(name)
             elif row['action']=='park': parked.append(name)
             else: retired.append(name)
             outcome='ok'
         except (RuntimeError,OSError) as exc:
-            outcome=str(exc) if str(exc) in ('busy','task_scheduler_failed') else type(exc).__name__
+            outcome=failure(exc)
             errors.append(dict(unit=name,task=row['task'],error=outcome))
         audit(layout,'unit.consolidate',{'unit':name,'task':row['task']},outcome)
-    return {'ok':not errors,'moved':moved,'parked':parked,'retired':retired,'skipped':skipped,'errors':errors}
+    result={'ok':not errors,'moved':moved,'parked':parked,'retired':retired,'skipped':skipped,'errors':errors}
+    if written:
+        # an elevated run (needed for a task registered elevated) must leave files the user's normal token can read
+        unfixed=winacl.give_to_user([layout.units,layout.units/'retired',*written])
+        if unfixed: result['acl_unfixed'],result['warning']=unfixed,ACL%(winacl.user() or 'the user')
+    return advise(result)
 
 
 def restore(layout, tasks, name):
@@ -175,7 +203,9 @@ def release(layout, store, name, *, console, call, tasks, sleep=time.sleep, wait
     """supervisor -> Task Scheduler: stop the native run (a service) or let it finish (a job), then register the task."""
     unit=next((u for u in UNITS if u.name==name and u.native_ok),None)
     if unit is None or store.backend(name)!='native': return {'error':'not_native'}
-    if read_json(saved(layout,name)) is None: return {'error':'no_saved_task'}
+    try: record=read_json(saved(layout,name))
+    except PermissionError: return {'error':'saved_task_unreadable','path':str(saved(layout,name)),'advice':UNREADABLE}
+    if record is None: return {'error':'no_saved_task'}
     if not console.confirm('migrate','Move %s back from the AgentMesh supervisor to its scheduled task.'%name):
         audit(layout,'unit.release',{'unit':name},'presence_denied'); return {'error':'presence_required'}
     audit(layout,'unit.release',{'unit':name},'requested')
@@ -188,8 +218,9 @@ def release(layout, store, name, *, console, call, tasks, sleep=time.sleep, wait
     try:
         record=restore(layout,tasks,name)
         if unit.kind=='service': tasks.act('start',record['task'])
-    except (RuntimeError,OSError):
-        audit(layout,'unit.release',{'unit':name},'task_scheduler_failed'); return {'error':'task_scheduler_failed'}
+    except (RuntimeError,OSError) as exc:
+        code='needs_elevation' if str(exc)=='needs_elevation' else 'task_scheduler_failed'
+        audit(layout,'unit.release',{'unit':name},code); return advise({'error':code})
     audit(layout,'unit.release',{'unit':name},'ok')
     return {'ok':True,'unit':name,'backend':'task_scheduler','waited_s':waited}
 
@@ -207,15 +238,19 @@ def panic_revert(layout, store, *, tasks, token=started_token, sleep=time.sleep,
         if run['pid']>0 and run['pid_started'] is not None and token(run['pid'])==run['pid_started']:
             procs.terminate(run['pid']); stopped.append(run['unit'])
         store.end_run(run['id'],None,'panic',now_ms())
-    reverted,errors=[],[]
+    reverted,errors,elevate,unreadable=[],[],False,False
     for name in sorted(store.native_units()):
         store.set_backend(name,'launchd',store.spec(name),now_ms())
         try:
             record=restore(layout,tasks,name)
             if get(name).kind=='service': tasks.act('start',record['task'])
             reverted.append(name)
-        except (RuntimeError,OSError,KeyError): errors.append(name)
+        except (RuntimeError,OSError,KeyError) as exc:
+            errors.append(name); elevate=elevate or str(exc)=='needs_elevation'
+            unreadable=unreadable or isinstance(exc,PermissionError)
     try: audit(layout,'panic_revert',{},'ok' if not errors else 'partial')
     except Exception: pass
-    return {'ok':not errors,'reverted':reverted,'stopped':stopped,'errors':errors}
+    result={'ok':not errors,'reverted':reverted,'stopped':stopped,'errors':errors}
+    if elevate or unreadable: result['advice']=ELEVATE if elevate else UNREADABLE
+    return result
 

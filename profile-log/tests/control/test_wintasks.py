@@ -160,6 +160,12 @@ def test_names_out_of_band():
     assert backend.cached is None  # an action drops the cached listing
     failing=TaskSchedulerBackend(runner=lambda argv,**kw:subprocess.CompletedProcess(argv,1,b'',b'denied'))
     with pytest.raises(RuntimeError,match='task_scheduler_failed'): failing.act('stop','\\x')
+    denied=(b'Disable-ScheduledTask : Access is denied.\r\n    + FullyQualifiedErrorId : HRESULT 0x80070005,'
+        b'Disable-ScheduledTask\r\n')
+    elevated=TaskSchedulerBackend(runner=lambda argv,**kw:subprocess.CompletedProcess(argv,1,b'',denied))
+    with pytest.raises(RuntimeError,match='needs_elevation'): elevated.act('disable','\\x')
+    localized=TaskSchedulerBackend(runner=lambda argv,**kw:subprocess.CompletedProcess(argv,1,b'',b'Zugriff verweigert HRESULT 0x80070005'))
+    with pytest.raises(RuntimeError,match='needs_elevation'): localized.act('delete','\\x')
     assert failing.status(get('broker'))['loaded'] is False
 
 

@@ -79,7 +79,8 @@ class FakeTasks:
 
     def act(self, action, task, xml=None):
         self.calls.append((action,task))
-        if self.fail.get((action,task)): raise RuntimeError('task_scheduler_failed')
+        if self.fail.get((action,task)):
+            raise RuntimeError(self.fail[(action,task)] if isinstance(self.fail[(action,task)],str) else 'task_scheduler_failed')
         if action=='register': self.rows[task]=dict(task=task,state='Ready',xml=xml); return True
         if task not in self.rows: raise RuntimeError('task_scheduler_failed')
         row=self.rows[task]

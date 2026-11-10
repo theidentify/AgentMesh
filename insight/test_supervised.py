@@ -2,6 +2,7 @@
 launchd knows none of them. Health comes from <home>/status/supervisor.json and the parked plists instead."""
 import json
 import plistlib
+import pytest
 from types import SimpleNamespace
 import adapters
 import deploy_insight
@@ -53,3 +54,28 @@ def test_deploy_finds_and_reloads_the_parked_plist(tmp_path):
     try: deploy_insight.restart(parked, 1, am, run=run)
     except SystemExit: pass
     assert seen == [([str(am/'venv'/'bin'/'python'),'-m','agentmesh_log.cli','control','reload','insight'], str(am))]
+
+
+def test_launchd_restart_retries_bootstrap_after_bootout(tmp_path, monkeypatch):
+    """bootstrap right after bootout fails with error 5 while launchd finishes the bootout: retry, then give up loudly."""
+    import subprocess
+    plist = tmp_path/'org.agentmesh.insight.plist'
+    monkeypatch.setattr(deploy_insight.os, 'getuid', lambda: 501)
+    def scripted(codes):
+        seen, naps = [], []
+        def run(argv, **kw):
+            seen.append((argv[1], kw.get('check', False)))
+            code = codes.pop(0) if argv[1] == 'bootstrap' else 0
+            if kw.get('check') and code: raise subprocess.CalledProcessError(code, argv)
+            return SimpleNamespace(returncode=code, stdout='')
+        return run, seen, naps
+    run, seen, naps = scripted([5, 5, 0])
+    monkeypatch.setattr(deploy_insight.urllib.request, 'urlopen', lambda *a, **kw: (_ for _ in ()).throw(OSError()))
+    try: deploy_insight.restart(plist, 1, run=run, sleep=naps.append)
+    except SystemExit as e: assert 'did not answer /health' in str(e)
+    assert seen[:4] == [('bootout', False), ('bootstrap', False), ('bootstrap', False), ('bootstrap', False)]
+    assert naps[:2] == [deploy_insight.BOOTSTRAP_WAIT_S]*2
+    run, seen, naps = scripted([5]*deploy_insight.BOOTSTRAP_TRIES)
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy_insight.bootstrap('gui/501', plist, run, naps.append)
+    assert seen == [('bootstrap', False)]*(deploy_insight.BOOTSTRAP_TRIES-1)+[('bootstrap', True)]

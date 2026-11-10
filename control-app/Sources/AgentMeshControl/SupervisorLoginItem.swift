@@ -49,6 +49,12 @@ final class SupervisorLoginItem {
                     let (code, _) = await launchctl(["bootout", "\(domain)/\(label)"])
                     guard code == 0 else { error = "Could not stop the legacy supervisor (launchctl \(code))."; return }
                     try service.register()
+                case .stopped:
+                    // SMAppService still says enabled but launchd lost the job (a manual bootout); register() alone
+                    // is a no-op then, so drop the registration and make it again.
+                    try await service.unregister()
+                    try? await Task.sleep(for: .seconds(1))
+                    try service.register()
                 default: await refresh(); return
                 }
             } else if state == .on {

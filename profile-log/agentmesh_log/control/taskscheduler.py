@@ -37,6 +37,17 @@ ACTIONS={
         '-TaskPath $env:AGENTMESH_TASK_PATH | Out-Null',
 }
 CACHE_S=10
+# A task registered from an elevated window refuses Enable/Disable/Unregister to the user's normal token, while Start and
+# Stop still work. PowerShell prints the failure with FullyQualifiedErrorId "HRESULT 0x80070005" (E_ACCESSDENIED); the
+# message text is localized, so the HRESULT is what counts, the English text a fallback.
+DENIED=(b'0x80070005',b'access is denied',b'e_accessdenied')
+ELEVATE=('Task Scheduler refused access: a task registered from an elevated window can only be disabled or deleted from '
+    'one. Re-run this command from an elevated PowerShell (Run as administrator).')
+
+
+def denied(process):
+    text=(process.stderr or b'')+b'\n'+(process.stdout or b'')
+    return any(marker in text.lower() for marker in DENIED)
 
 
 def run(argv, *, env=None, input=None):
@@ -62,7 +73,7 @@ class TaskSchedulerBackend:
         try: process=self.runner([*POWERSHELL,script],env=env,
                                  input=data.encode('utf-8') if data is not None else None)
         except (OSError,subprocess.SubprocessError): raise RuntimeError('task_scheduler_failed') from None
-        if process.returncode!=0: raise RuntimeError('task_scheduler_failed')
+        if process.returncode!=0: raise RuntimeError('needs_elevation' if denied(process) else 'task_scheduler_failed')
         return process.stdout
 
     def tasks(self, fresh=False):

@@ -86,6 +86,14 @@ agentmesh-log control handover --back
 
 It puts the plist back in `~/Library/LaunchAgents` and starts it. `panic-revert` still works under either owner.
 
+#### If the supervisor stops after the handover
+
+Once the app owns the item, do not stop the supervisor with `launchctl bootout gui/$(id -u)/org.agentmesh.control`. If you do, it stays down: the plist parked in `~/.agentmesh/control/supervisor/` no longer belongs to launchd, so `launchctl bootstrap` with it fails, and macOS still reports the login item as enabled, so ticking the box again changes nothing.
+
+To start it again, open the menu. When the item is registered but launchd has no job, the box shows unticked with the caption *The supervisor is not running*. Tick it and confirm: the app removes its registration and makes it again, and launchd starts the supervisor. An older build of the app without that caption shows the box ticked; untick it, confirm, then tick it and confirm again.
+
+To stop the supervisor on purpose, untick **Run supervisor at login** instead.
+
 ## Choose a scope for a new project
 
 When an agent starts working in a project the migration mapping does not cover, catch-up imports everything else and holds that project's memory back. The app asks once, in a notification and in the menu, where it should go: one button per scope (for example Personal or Work), or **Skip** to keep it out of the profile log.

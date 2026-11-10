@@ -186,6 +186,13 @@ def parser():
     project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
     apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
     settings_cmd=commands.add_parser('settings'); settings_cmd.add_argument('action',choices=['show','validate'])
+    rules=commands.add_parser('rules',help='agent recall rules'); rules_sub=rules.add_subparsers(dest='action',required=True)
+    a=rules_sub.add_parser('install',help="write each agent's read-only recall rules and argv manifest")
+    a.add_argument('--agent-key',required=True,help='the recall agent key (read grants only)')
+    a.add_argument('--profile',action='append',required=True,help='a profile to search (repeat)')
+    a.add_argument('--agents',nargs='+',choices=('hermes','omp','codex','claude'))
+    a.add_argument('--python',help='the interpreter agents run (default: this one)')
+    a.add_argument('--home'); a.add_argument('--hermes-home'); a.add_argument('--dry-run',action='store_true')
     from .control.cli import add_parsers as add_control_parsers
     add_control_parsers(commands)
     from .connector_cli import add_parsers
@@ -257,6 +264,12 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command=='apply':
         from .apply import apply_settings
         return apply_settings(dry_run=args.dry_run,allow_unsupported_report=args.allow_unsupported_report,console=console,backend=backend,project_dirs=args.project_dir,output=lambda text:print(text,file=sys.stderr))
+    if args.command=='rules':
+        from .sharedrules import install
+        try: written=install(agent_key=args.agent_key,profiles=args.profile,python=args.python,home=args.home,agents=args.agents,
+                             hermes_home=args.hermes_home,dry_run=args.dry_run)
+        except ValueError as exc: return {'error':'refused','reason':str(exc)}   # local paths only; nothing is written
+        return {'ok':True,'dry_run':args.dry_run,'rules':{agent:str(path) for agent,path in written.items()}}
     if args.command=='settings':
         from .settings import load
         value=load()

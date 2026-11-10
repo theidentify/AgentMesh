@@ -1,77 +1,54 @@
 # Prerequisites
 
-::: warning Retired installer
-Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
-`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
-R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
-[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
-device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
-:::
+Prepare Python, a private bucket and its credentials before you set up a device. Read [Concepts](./concepts) first.
+You will have everything the [Quick start](./quick-start) needs.
 
-::: info Profile log
-The setup wrappers still check for Syncthing, but with packet sync off (the default since Phase 7a) it carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). The profile log needs private S3-compatible storage credentials, which the [owner runbook](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery) sets up.
-:::
+## Python 3.11 or later
 
-Prepare Python, Syncthing and local storage before installing AgentMesh. Read [Concepts](./concepts) first to understand device identity and the private exchange folder. You will be ready either to use a supplied bootstrap or to create an empty group for local use.
+The broker and the jobs need Python 3.11 or later. Python 3.13 is a good choice.
 
-![Bootstrap setup: check prerequisites, pair devices, run the installer, keep the foreground worker open, then optionally configure background operation.](/diagrams/install-flow.svg)
-
-**Prerequisites** means checking Python and Syncthing. **Pair devices** shares the private exchange folder. **Run the installer**, highlighted, verifies a supplied bootstrap and creates local state. The **Foreground worker** runs while its terminal stays open; stop it before **Background (optional)** setup. This diagram shows the bootstrap path; starting alone follows [New sync group](../install/new-group) instead.
-
-## Install and check Python
-
-Bootstrap installation requires Python 3.10+ with SQLite FTS5 and JSON support. `setup-new` requires Python 3.11+ because it uses `hashlib.file_digest`. Choose a supported Python 3.11+ release when preparing a new environment.
-
-| Platform | Installation starting point |
+| Platform | Where to get it |
 | --- | --- |
-| macOS | Use the [official macOS downloads](https://www.python.org/downloads/macos/) and reopen your terminal after installation. |
-| Windows | Use the [official Windows downloads](https://www.python.org/downloads/windows/); confirm `py -3` selects the intended interpreter. |
-| Linux | Follow [Python's Unix installation guidance](https://docs.python.org/3/using/unix.html) for your distribution; verify the interpreter's SQLite capabilities below. |
+| macOS | The [official macOS downloads](https://www.python.org/downloads/macos/) |
+| Windows | The [official Windows downloads](https://www.python.org/downloads/windows/); check that `py -3` selects it |
+| Linux | Your distribution's packages, or [Python's Unix guidance](https://docs.python.org/3/using/unix.html) |
 
-On macOS/Linux, run:
+Check the version:
 
 ```sh
-python3 -c "import sys,sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sys.version.split()[0]); print('FTS5: ok'); print('JSON:',c.execute(\"select json_valid('{}')\").fetchone()[0])"
+python3 --version
 ```
 
-For macOS (exit `0`):
+AgentMesh runs from its own virtual environment with the exact versions pinned in `profile-log/requirements.txt` and
+`profile-log/requirements-s3.txt` (boto3, for S3 sync). The platform pages create it.
 
-Output (run on macOS)
+## A private bucket
 
-```text
-3.14.8
-FTS5: ok
-JSON: 1
-```
+The profile log syncs through S3-compatible object storage. Cloudflare R2 is what AgentMesh is tested with.
 
-Your version can differ; it must meet the minimum for your route. A missing command, traceback or missing success lines means this interpreter is not ready. Install a Python build with SQLite FTS5/JSON support from the platform links above, then rerun this check with its explicit interpreter path. Reuse that interpreter for AgentMesh and service configuration; a different Python on PATH can have a different SQLite build. AgentMesh has no command to repair an interpreter’s SQLite capabilities. If the replacement still fails, report the Python version, platform and failing capability without private paths.
+1. Create a dedicated **private** bucket with no public access.
+2. Create an API token with **Object Read & Write**, scoped to that bucket only.
+3. Note the S3 endpoint (`https://<account>.r2.cloudflarestorage.com`), the bucket name, and a prefix for AgentMesh
+   objects, for example `v1/`. Every device uses the same three values.
 
-On Windows, use the [Command Prompt version of this check](./quick-start#check-install-and-query).
+Keep the access key ID and the secret out of files, command lines and chat. You store them in the OS credential store
+in the next step of your platform page, and the broker reads them from there.
 
-Output (example from code)
+::: warning Linux
+The broker reads S3 credentials only from the macOS login Keychain or Windows Credential Manager. A Linux device can
+run a broker and sync through a shared folder, but cannot sync with R2 yet. See [Linux](../install/linux).
+:::
 
-A suitable version, `FTS5: ok`, `JSON: 1`, and exit `0`. The macOS/Linux setup wrappers perform prerequisite checks; **START-WINDOWS.cmd only finds a runnable Python command**. It does not verify the minimum version, FTS5, JSON or Syncthing for you.
+## The Claude Code CLI (for the summary)
 
-## Install and start Syncthing
+The summary job runs `claude` in print mode, with no tools, to turn transcripts into memories. Install
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and sign in on each device whose sessions you want to
+ingest. A device that only recalls does not need it.
 
-Use the [official Syncthing downloads](https://syncthing.net/downloads/) for macOS, Windows or Linux, or the linked distribution packages. Keep `syncthing` on PATH for the macOS/Linux wrappers. Start it, then open its local management GUI at `http://127.0.0.1:8384/` unless you configured another address. A reachable GUI confirms the local service is available, not that peer files have arrived. Choose startup behavior separately using [Syncthing's autostart documentation](https://docs.syncthing.net/users/autostart.html).
+## Optional
 
-## Share the private exchange folder
+- **Swift 6 and macOS 14 or later** to build the [menu bar app](../use/control-app). The Command Line Tools are
+  enough.
+- **Ollama** with `bge-m3` on one always-on device, for [hybrid recall](../use/recall#use-hybrid-recall).
 
-For a supplied bootstrap, the person administering the group must assign an unused AgentMesh device identity. Check their device list and existing runtime inspections; an offline device still owns its identity. Syncthing device IDs are separate from AgentMesh device identities, and missing status files do not prove an identity is free.
-
-1. On each device, open **Actions → Show ID**. Exchange those Syncthing IDs through a trusted channel.
-2. Use **Add Remote Device** on both sides and enter the other device's ID.
-3. On the supplying device, add the private exchange folder and select the intended peer in its sharing settings.
-4. On the receiving device, accept the offered folder and choose a private local folder path outside AgentMesh's application and database directories.
-5. Wait for the folder to show **Up to Date** and resolve any folder errors before installing.
-
-Use a dedicated exchange folder for each sync group; a group UUID does not partition a shared folder. For a first device starting alone, add a new local folder in Syncthing; no remote invitation is required. Syncthing creates its `.stfolder` marker. Do not manufacture a marker to bypass an unavailable folder. See the [official getting-started guide](https://docs.syncthing.net/intro/getting-started.html) for the GUI steps and [folder settings](https://docs.syncthing.net/users/config.html#folder-element) for details.
-
-## Check the supplied files
-
-A bootstrap exchange contains `AgentMesh-bootstrap-v1.zip`, its matching `agentmesh-package.json`, `bootstrap_windows.py`, `setup_macos.sh`, `setup_linux.sh` and `START-WINDOWS.cmd`, plus supporting files such as `brand.py`, `terminal_progress.py` and `assets/`. Keep the supplied set together; do not unzip the bootstrap yourself. The installer compares the ZIP's hash with the manifest, then checks the snapshot hash.
-
-Two separate limits apply: the total uncompressed size of all ZIP members must not exceed **200,000,000 bytes**, and the decompressed baseline must not exceed **200,000,000 bytes**. Oversized material fails with `unsafe archive size` or `unsafe baseline size`; see [troubleshooting](../troubleshooting#bootstrap-is-too-large). Free disk space alone does not remove these limits.
-
-Next, follow [Quick start](./quick-start) if you received a bootstrap, or [New sync group](../install/new-group) if you are starting alone.
+Next, follow the [Quick start](./quick-start).

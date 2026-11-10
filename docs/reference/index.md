@@ -1,50 +1,34 @@
 # Reference
 
-::: warning Retired installer
-Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
-`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
-R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
-[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
-device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
-:::
-
-Find the repository reference for details beyond the task-based user guide. Start with [What is AgentMesh](../introduction) if you have not chosen a setup path yet. You will be able to distinguish user instructions from operator procedures and developer material, and consult each linked document for its verification limits.
+Find the repository documents behind this guide: full command references, operator procedures and design records.
+Start with [What is AgentMesh](../introduction) if you have not set up a device yet.
 
 ## Users
 
 | Document | Use it for |
 | --- | --- |
-| [Sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SYNC.md) | Understand record exchange, identity limits, operator protocol activation and resolution commands. |
-| [macOS and Linux setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) | Review installation paths, optional user services and the unsigned invitation/join contract. |
-| [Windows setup](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md) | Run the bootstrap launcher and interpret its progress. |
-| [Insight](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md) | Configure the read-only dashboard and understand its observations. |
-| [Menu bar app](https://github.com/theidentify/AgentMesh/blob/main/control-app/README.md) | Build, install and remove AgentMesh Control, and see what it may and may not do. |
-
-For the task sequence, use [Resolve conflicts](../use/resolve-conflicts): activate after upgrading peers, preview and confirm a choice, receive it and explicitly restart workers.
+| [Encrypted profile log](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md) | Every broker command: init, pairing, grants, `apply` and the settings schema, sync, recall modes, presence, backup and recovery |
+| [Insight](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md) | The read-only dashboard, its sources and its remote access |
+| [Menu bar app](https://github.com/theidentify/AgentMesh/blob/main/control-app/README.md) | Building, installing and removing AgentMesh Control, and what it may and may not do |
 
 ## Operators
 
 | Document | Use it for |
 | --- | --- |
-| [Encrypted profile log](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md) | Create the account, pair devices, grant agents, migrate from SQLite, run the broker and administer settings. |
-| [Control plane design](https://github.com/theidentify/AgentMesh/blob/main/docs/superpowers/specs/2026-10-23-local-control-plane-design.md) | Understand the supervisor, its tiers and its milestones. |
-| [Windows program installation](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md) | Manage existing program installations, confirmations and sign-in startup. |
-| [Workflow](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WORKFLOW.md) | Configure ingestion, primary summarization, exchange and recall. |
-| [OTA updates](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md) | Set up opt-in signed worker updates and recovery. |
-| [Signed sync](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SIGNED-SYNC.md) | Understand packet authentication, pinned peer trust and strict revocation for uncommitted resolution evidence. |
-| [Key protection and recovery](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/KEY-PROTECTION.md) | Protect device keys, configure account-bound unattended unlock, and create, verify, drill or restore encrypted identity backups with fencing and trust checks; recover lost keys, rotate compromised keys and review old-key evidence. |
-| [Security wizard](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SECURITY-WIZARD.md) | Review explicit identity, pairing and activation steps. |
-| [Mac replacement](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md) | Plan operator-led program replacement and rollback. |
-
-For the user procedure, see [Back up and verify the device identity](../install/security#back-up-and-verify-the-device-identity) and [Restore only after stopping the old device](../install/security#restore-only-after-stopping-the-old-device). For lost keys without a backup or suspected compromise, use [key recovery and rotation](../install/security#recover-a-lost-or-compromised-key). Identity recovery does not restore SQLite data.
+| [Devices and recovery](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery) | Pairing, regrants, removing devices, archiving and deleting profiles, recovery |
+| [Settings and admin UI](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#settings-and-admin-ui) | `settings.json`, `settings.local.json`, `apply` and the terminal admin (`agentmesh-log admin`) |
+| [Hybrid recall](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#phase-8-hybrid-recall) | The embedding host, its tunnel and the evaluation scripts |
+| [Team workspaces](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#workspace-registry-team-workspace-w1) | Workspace roles, invites, shared tasks, review, quotas and the Slack adapter |
+| [Connecting AI apps](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#connecting-ai-apps) | The MCP gateway, connector approval and the owner deployment runbook |
+| [SQLite retirement](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#sqlite-retirement) | What R5b removed and what is left |
+| [Migrate from memory-sync](../install/migrate-memory-sync) | Moving an older device's transcript jobs into the profile-log package |
+| [Control plane design](https://github.com/theidentify/AgentMesh/blob/main/docs/superpowers/specs/2026-10-23-local-control-plane-design.md) | The supervisor, its tiers and its milestones |
 
 ## Developers
 
 | Document | Use it for |
 | --- | --- |
-| [SQLite writers](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SQLITE-WRITERS.md) | Understand native ingestion and bounded writer readiness. |
-| [SQLite consumers](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/SQLITE-CONSUMERS.md) | Understand recall, exports and explicit backend selection. |
-| [Standalone builds](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/STANDALONE-BUILD.md) | Build native CLI bundles and review platform verification gates. |
-| [Profile-owned memory prototype](https://github.com/theidentify/AgentMesh/blob/main/profile-memory/README.md) | Explore the separate opt-in profile memory experiment. |
+| [Wire format](https://github.com/theidentify/AgentMesh/blob/main/profile-log/FORMAT.md) | Normative rules for events, wraps and registry objects |
+| [Design records](https://github.com/theidentify/AgentMesh/tree/main/docs/superpowers) | Specs, plans and reports for each phase. They are history: where they disagree with this guide or the READMEs, the current code wins. |
 
-Next, use [Quick start](../getting-started/quick-start) for a supplied bootstrap, or [New sync group](../install/new-group) to begin without one and [add eligible peers by invitation](../install/new-group#adding-another-device).
+Next, return to the [Quick start](../getting-started/quick-start).

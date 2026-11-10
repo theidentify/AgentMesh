@@ -40,3 +40,14 @@ import Testing
     #expect(loadedJob(printExit: 0, output: app) == .app)
     #expect(loadedJob(printExit: 113, output: "") == LoadedJob.none)
 }
+
+@Test func launchAtLoginSaysWhyItDidNotStick() {
+    #expect(launchAtLoginMessage(wanted: true, status: .enabled, error: nil) == nil)
+    #expect(launchAtLoginMessage(wanted: false, status: .notRegistered, error: nil) == nil)
+    #expect(launchAtLoginMessage(wanted: true, status: .requiresApproval, error: nil)?.contains("Allow AgentMesh Control") == true)
+    // register() returned without error, yet macOS listed the item nowhere: the checkbox must not snap back silently.
+    let silent = launchAtLoginMessage(wanted: true, status: .notRegistered, error: nil)
+    #expect(silent?.contains("did not add the login item") == true && silent?.contains("~/Applications/AgentMesh Control.app") == true)
+    #expect(launchAtLoginMessage(wanted: true, status: .notFound, error: "Operation not permitted")?.contains("(Operation not permitted)") == true)
+    #expect(launchAtLoginMessage(wanted: false, status: .enabled, error: nil)?.contains("remove it") == true)
+}

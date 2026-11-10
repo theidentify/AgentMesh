@@ -69,3 +69,17 @@ public func loadedJob(printExit: Int32, output: String) -> LoadedJob {
     }
     return .legacy
 }
+
+/// What "Launch at login" says after the app asked SMAppService to add (or remove) itself as a login item. register()
+/// can return without an error and still leave the item off: macOS may hold it for approval, or (seen 2026-11-10 with
+/// the ad-hoc signed app in ~/Applications) list it nowhere. The checkbox then snaps back with no word, so name it.
+public func launchAtLoginMessage(wanted: Bool, status: ServiceStatus, error: String?) -> String? {
+    if !wanted { return status == .enabled ? "macOS kept AgentMesh Control under Open at Login; remove it in System Settings > General > Login Items & Extensions." : nil }
+    switch status {
+    case .enabled: return nil
+    case .requiresApproval: return "Allow AgentMesh Control under Open at Login in System Settings > General > Login Items & Extensions."
+    case .notRegistered, .notFound:
+        let why = error.map { " (\($0))" } ?? ""
+        return "macOS did not add the login item\(why). Add it by hand: System Settings > General > Login Items & Extensions > Open at Login > +, then ⌘⇧G and ~/Applications/AgentMesh Control.app."
+    }
+}

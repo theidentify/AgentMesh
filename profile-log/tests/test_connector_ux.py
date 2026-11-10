@@ -193,7 +193,7 @@ def test_broker_config(tmp_path):
 
 
 
-def test_broker_config_reads_the_supervisor_unit(tmp_path,monkeypatch):
+def test_broker_config_unit_plist(tmp_path,monkeypatch):
     """After consolidate the broker plist lives in <home>/control/units, not LaunchAgents."""
     home=tmp_path/'am'; units=home/'control'/'units'; units.mkdir(parents=True)
     monkeypatch.setenv('AGENTMESH_HOME',str(home)); monkeypatch.setenv('HOME',str(tmp_path/'user'))

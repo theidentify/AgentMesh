@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="memory-sync/assets/agentmesh-logo-dark.svg">
-  <img src="memory-sync/assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/agentmesh-logo-dark.svg">
+  <img src="assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
 </picture>
 
 # AgentMesh
@@ -83,7 +83,7 @@ and device-specific deployment files must remain outside Git.
 
 The logo, peer-network icon, and terminal mark are original vector geometry and
 custom lettering; no stock image, external font, icon pack, or vendor logo is
-included. See [artwork provenance and license boundary](memory-sync/assets/PROVENANCE.md).
+included. See [artwork provenance and license boundary](assets/PROVENANCE.md).
 This does not relicense existing code or claim trademark clearance.
 
 ## Development

@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../memory-sync/assets/agentmesh-logo-dark.svg">
-  <img src="../memory-sync/assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
+  <source media="(prefers-color-scheme: dark)" srcset="../assets/agentmesh-logo-dark.svg">
+  <img src="../assets/agentmesh-logo.svg" alt="AgentMesh" width="384" height="80">
 </picture>
 
 # Profile-owned memory prototype

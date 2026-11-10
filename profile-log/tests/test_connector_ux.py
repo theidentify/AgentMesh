@@ -192,6 +192,16 @@ def test_broker_config(tmp_path):
     plist.write_bytes(b'not a plist'); assert cli.broker_config(plist)=={}
 
 
+
+def test_broker_config_unit_plist(tmp_path,monkeypatch):
+    """After consolidate the broker plist lives in <home>/control/units, not LaunchAgents."""
+    home=tmp_path/'am'; units=home/'control'/'units'; units.mkdir(parents=True)
+    monkeypatch.setenv('AGENTMESH_HOME',str(home)); monkeypatch.setenv('HOME',str(tmp_path/'user'))
+    assert cli.broker_config()=={}
+    (units/(cli.BROKER_LABEL+'.plist')).write_bytes(plistlib.dumps({'ProgramArguments':['/py','-m','agentmesh_log.cli','broker','run',
+        '--home',str(home/'profile-log'),'--s3-bucket','bucket','--s3-prefix','test/']}))
+    assert cli.broker_config()=={'home':str(home/'profile-log'),'s3_bucket':'bucket','s3_prefix':'test/'}
+
 def test_approve_defaults(tmp_path,monkeypatch):
     home,store,storage=home_fixture(tmp_path,monkeypatch); state=store.load()
     state.control['connector_origin']=ORIGIN; store.save(state)

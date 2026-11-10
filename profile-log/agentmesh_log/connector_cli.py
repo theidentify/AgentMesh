@@ -233,9 +233,19 @@ BROKER_LABEL='org.agentmesh.profile-log.broker'
 def broker_config(plist=None):
     """--home and the R2 remote from the broker's own launchd definition, or {} when there is none to read.
 
+    After `control consolidate` the supervisor runs the broker from <home>/control/units, and LaunchAgents holds
+    no broker plist. Without that copy the CLI fell back to the local replica: a connector policy reached R2 only
+    on the broker's next sync, after the gateway had already refused the approval for a missing policy.
+
     Only flag values are taken; the credentials flag is a keystore reference, never a secret."""
     import plistlib
-    path=Path(plist) if plist is not None else Path.home()/'Library'/'LaunchAgents'/(BROKER_LABEL+'.plist')
+    if plist is None:
+        from . import settings
+        for path in (settings.root()/'control'/'units'/(BROKER_LABEL+'.plist'),Path.home()/'Library'/'LaunchAgents'/(BROKER_LABEL+'.plist')):
+            found=broker_config(path)
+            if found: return found
+        return {}
+    path=Path(plist)
     try: argv=plistlib.loads(path.read_bytes()).get('ProgramArguments')
     except Exception: return {}
     if type(argv) is not list or not all(type(a) is str for a in argv): return {}

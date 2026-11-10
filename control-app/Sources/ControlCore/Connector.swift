@@ -67,6 +67,14 @@ public func describeConnector(_ error: ControlError) -> String {
     return describe(error)
 }
 
+/// Seconds until the next connector.pending poll. Each poll that fails doubles the wait, up to 15 minutes: a gateway
+/// that refuses every request (an older deploy, a revoked device) must not be asked twice a minute all day, because
+/// each refusal costs the gateway a KV write and the free tier allows 1,000 a day.
+public func connectorPollDelay(failures: Int, base: UInt64 = 30, cap: UInt64 = 900) -> UInt64 {
+    guard failures > 0 else { return base }
+    return min(cap, base << UInt64(min(failures, 10)))
+}
+
 extension ControlClient {
     public func connectorPending() throws(ControlError) -> ConnectorPending {
         try call("connector.pending", as: ConnectorPending.self, timeout: 15)

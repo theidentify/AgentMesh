@@ -62,7 +62,9 @@ test('P6-S3 host separation covers methods, preflight and disabled feature',asyn
 });
 test('P6-S4 denied tool and HTTP errors increment bounded hourly counters',async()=>{
  const h=await harness();assert.deepEqual(await callTool(h.env,{props:{app_id:'ab'.repeat(16)},clientId:'missing'},'whoami',{}),{error:'denied'});
- await h.worker.fetch(new Request(h.env.ORIGIN+'/mcp'),h.env);
+ // A second error inside the same minute is buffered; the next flush carries it.
+ const {ERROR_FLUSH_MS}=await import('../src/status-metrics.js'),realNow=Date.now;Date.now=()=>realNow()+ERROR_FLUSH_MS;
+ try{await h.worker.fetch(new Request(h.env.ORIGIN+'/mcp'),h.env);}finally{Date.now=realNow;}
  const data=await (await h.get()).json();assert.equal(data.gateway_errors.denied,1);assert.equal(data.gateway_errors.invalid_token,1);
  for(const [key,row]of h.env.OAUTH_KV.data)if(key.startsWith('status:err:')){assert.match(key,/status:err:\d{10}$/);assert.ok(row.expires<=Date.now()+172800000);}
 });
@@ -334,6 +336,19 @@ test('duration and timestamp use singular units for one and plural units otherwi
  await h.env.OAUTH_KV.put('status:err:'+hour(Date.now()-23*3600000),JSON.stringify({denied:5,invalid_token:2}));
  await h.env.OAUTH_KV.put('status:err:'+hour(Date.now()-24*3600000),JSON.stringify({denied:100}));
  const data=await (await h.get()).json();assert.equal(data.gateway_errors.denied,12);assert.equal(data.gateway_errors.invalid_token,2);assert.equal(data.gateway_errors.unknown,undefined);
+ });
+ test('a stream of refusals writes the error counter at most once a minute',async()=>{
+ const {countError,hour,ERROR_FLUSH_MS}=await import('../src/status-metrics.js'),h=await harness(),tasks=[],put=h.env.OAUTH_KV.put.bind(h.env.OAUTH_KV);
+ let writes=0,now=Date.now();const realNow=Date.now;Date.now=()=>now;
+ try{
+  h.env.OAUTH_KV.put=async(...args)=>{if(args[0].startsWith('status:err:'))writes++;return put(...args);};
+  h.env.STATUS_WAIT_UNTIL=p=>tasks.push(p);
+  for(let i=0;i<120;i++)countError(h.env,'denied');
+  countError(h.env,'invalid_token');await Promise.all(tasks);
+  assert.equal(writes,1);assert.deepEqual(await h.env.OAUTH_KV.get('status:err:'+hour(now),'json'),{denied:1});
+  now+=ERROR_FLUSH_MS;countError(h.env,'denied');await Promise.all(tasks);
+  assert.equal(writes,2);assert.deepEqual(await h.env.OAUTH_KV.get('status:err:'+hour(now),'json'),{denied:121,invalid_token:1});
+ }finally{Date.now=realNow;}
  });
  test('inventory cache avoids lists for 45 seconds while live observations and errors stay fresh',async()=>{
  const h=await harness(),list=h.env.STORAGE.list.bind(h.env.STORAGE);let calls=0;

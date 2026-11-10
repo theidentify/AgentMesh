@@ -66,3 +66,16 @@ def test_cli(tmp_path):
         try: parser().parse_args(retired)
         except SystemExit: continue
         raise AssertionError(retired)
+
+
+def test_helper_accepts_delete():
+    """On a Mac the delete also asks the Touch ID helper with action 'delete'. The helper's own allowlist
+    (PresenceCore `actions`) must accept it, or every delete is refused without a prompt (found 2026-11-10)."""
+    import re
+    swift = (Path(__file__).resolve().parents[3]/'control-app/Sources/PresenceCore/Presence.swift').read_text(encoding='utf-8')
+    allowed = set(re.findall(r'"([a-z]+)"', re.search(r'public let actions: Set<String> = \[([^\]]*)\]', swift).group(1)))
+    assert {'delete', 'migrate'} <= allowed
+    helper = Yes()
+    archive = make_archive(Path(__import__('tempfile').mkdtemp()))
+    assert sqlite_archive.delete(Layout(archive.parents[2]), archive.parents[2], archive.name, console=Yes(), helper=helper)['ok']
+    assert helper.asked == ['delete']

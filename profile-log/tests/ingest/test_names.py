@@ -60,5 +60,5 @@ def test_windows_names_match_mac_names(windows_home, tmp_path):
     assert infer_codex_project({'cwd': windows_home + '\\Documents\\Codex\\2026-11-10\\x'}) == 'codex-scratch'
 
 
-def test_windows_sibling_folder_is_not_a_workspace(windows_home):
+def test_windows_sibling_not_workspace(windows_home):
     assert not codex._under(windows_home + '\\WorkspacesOld\\x', codex.WORKSPACES_ROOT)

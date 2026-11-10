@@ -44,7 +44,7 @@ def test_legacy_actions_removed(config, capsys, action):
 def test_scan_ignores_legacy_runtime(config, capsys):
     """An unmigrated config still names memory-sync's runtime directory: accepted, never put on sys.path."""
     value = json.loads(config.read_text())
-    config.write_text(json.dumps(dict(value, runtime='/nonexistent/memory-sync')))
+    config.write_text(json.dumps(dict(value, runtime=str(config.parent / 'nonexistent' / 'memory-sync'))))
     before = list(sys.path)
     assert production.execute('ingest', config=config) == 0
     assert sys.path == before

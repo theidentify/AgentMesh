@@ -157,12 +157,20 @@ struct MenuView: View {
             model.loginError = "Launch at login needs the installed app (control-app/bundle.sh)."
             return
         }
+        var failure: String?
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            model.loginError = nil
         } catch {
-            model.loginError = "Launch at login needs the installed app (control-app/bundle.sh)."
+            failure = error.localizedDescription
         }
+        let status: ServiceStatus = switch SMAppService.mainApp.status {
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        case .notRegistered: .notRegistered
+        default: .notFound
+        }
+        model.loginError = launchAtLoginMessage(wanted: on, status: status, error: failure)
+        if on && status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
     }
 }
 

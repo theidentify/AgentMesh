@@ -17,7 +17,7 @@ Those now live in `profile-log/agentmesh_log/`:
 These files are compatibility shims only. Each one loads the package module that replaced it, so a device that
 deploys this tree before it migrates keeps running its hourly jobs unchanged. That covers the supervisor's stored
 commands, the copies in `~/.agentmesh/jobs` and a `summary.command` that still names `claude_digest_worker.py`.
-`profile-log/tests/ingest/test_memory_sync_shims.py` tests them.
+`profile-log/tests/ingest/test_shims.py` tests them.
 
 Migrate each device with the runbook in
 [docs/install/migrate-memory-sync.md](../docs/install/migrate-memory-sync.md). Once the Air, the Pro and Windows have all

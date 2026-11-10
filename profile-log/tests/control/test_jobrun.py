@@ -23,7 +23,7 @@ def webhook(tmp_path):
     return path
 
 
-def test_alerts_once_on_failure_and_once_on_recovery(tmp_path, webhook):
+def test_alerts_on_failure_and_recovery(tmp_path, webhook):
     sent = []
     sender = lambda url, content: sent.append((url, content))
     fail = job(tmp_path, 1, '{"status": "blocked", "action": "summary", "error_class": "ValidationError"}')
@@ -49,7 +49,7 @@ def test_failed_alert_is_retried_next_tick(tmp_path, webhook):
     assert len(calls) == 2
 
 
-def test_failure_before_webhook_is_alerted_once_configured(tmp_path, webhook):
+def test_alert_once_webhook_exists(tmp_path, webhook):
     sent = []
     sender = lambda url, content: sent.append(content)
     fail = job(tmp_path, 1, '{"error_class": "ValidationError"}')
@@ -63,7 +63,7 @@ def test_failure_before_webhook_is_alerted_once_configured(tmp_path, webhook):
     assert len(sent) == 2 and 'recovered' in sent[1]
 
 
-def test_legacy_failing_state_without_alerted_flag_alerts(tmp_path, webhook):
+def test_legacy_state_alerts(tmp_path, webhook):
     (tmp_path / 'job-summary.json').write_text(json.dumps({'ok': False, 'exit': 1, 'since': 'old', 'at': 'old'}))
     sent = []
     job_notify.run('summary', job(tmp_path, 1), tmp_path, webhook, sender=lambda u, c: sent.append(c), now='t1')
@@ -78,7 +78,7 @@ def test_no_webhook_file_logs_only(tmp_path):
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='file modes are POSIX; Windows relies on the profile ACL')
-def test_webhook_file_must_be_private_and_a_discord_url(tmp_path, webhook):
+def test_webhook_private_discord_url(tmp_path, webhook):
     webhook.chmod(0o644)
     with pytest.raises(PermissionError):
         job_notify.read_webhook(webhook)
@@ -88,13 +88,13 @@ def test_webhook_file_must_be_private_and_a_discord_url(tmp_path, webhook):
         job_notify.read_webhook(webhook)
 
 
-def test_only_allow_listed_identifiers_are_forwarded():
+def test_only_allowed_ids_forwarded():
     fields = job_notify.summary_fields('{"error_class": "ValueError", "message": "secret"}\n'
                                        '{"status": "has spaces and secrets"}\nplain text')
     assert fields == {'error_class': 'ValueError'}
 
 
-def test_protocol_detail_is_forwarded_but_free_text_is_not():
+def test_detail_forwarded_text_not():
     fields = job_notify.summary_fields('{"error_class": "ValidationError", "detail": "unsupported evidence quote"}')
     assert fields['detail'] == 'unsupported evidence quote'
     assert 'detail' not in job_notify.summary_fields('{"detail": "token=sk-ant-abc \\"quoted\\" <html>"}')
@@ -120,8 +120,8 @@ def test_resource_fields(tmp_path,monkeypatch,capsys):
     ('claude login expired', True),
     ('claude auth failed', True),
     ('api_error 429', False),
-])
-def test_auth_failure_hint_and_unchanged_recovery(reason, has_hint):
+], ids=['expired', 'auth', 'quota'])
+def test_auth_hint(reason, has_hint):
     detail = f'model worker failed: {reason}; coverage unchanged'
     fields = job_notify.summary_fields(json.dumps({'detail': detail}))
     assert fields == {'detail': detail}
@@ -147,7 +147,7 @@ def test_retention_summary_and_exit(tmp_path, webhook, code, capsys):
     assert 'SECRET-EVIDENCE' not in capsys.readouterr().out + ''.join(sent)
 
 
-def test_retention_summary_rejects_non_counts():
+def test_retention_rejects_non_counts():
     for value in ('secret', True, -1, 1.5, None):
         assert job_notify.summary_fields(json.dumps(dict(deleted=value, candidates=2))) == {}
 
@@ -179,7 +179,7 @@ def test_maintenance_off_runs(tmp_path):
     assert (tmp_path / 'ran').exists()
 
 
-def test_without_control_dir_nothing_changes(tmp_path):
+def test_no_control_dir_no_change(tmp_path):
     status = tmp_path / 'status'; status.mkdir()
     assert job_notify.run('summary', job(tmp_path, 0), status, now=NOW) == 0
     assert not (tmp_path / 'control').exists()
@@ -192,7 +192,7 @@ def quota(control):
     return json.loads((control / 'quota.json').read_text())
 
 
-def test_quota_failure_backs_off_and_doubles(tmp_path):
+def test_quota_backoff_doubles(tmp_path):
     status, control = control_home(tmp_path)
     fail = job(tmp_path, 1, QUOTA_FAIL)
     assert job_notify.run('summary', fail, status, now=NOW) == 1

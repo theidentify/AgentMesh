@@ -41,7 +41,7 @@ def test_legacy_actions_removed(config, capsys, action):
     assert error(capsys, action, config)['error_class'] == 'ValueError'
 
 
-def test_scan_runs_and_memory_sync_runtime_is_ignored(config, capsys):
+def test_scan_ignores_legacy_runtime(config, capsys):
     """An unmigrated config still names memory-sync's runtime directory: accepted, never put on sys.path."""
     value = json.loads(config.read_text())
     config.write_text(json.dumps(dict(value, runtime='/nonexistent/memory-sync')))
@@ -54,13 +54,13 @@ def test_scan_runs_and_memory_sync_runtime_is_ignored(config, capsys):
     assert error(capsys, 'ingest', config)['error_class'] == 'ValueError'
 
 
-def test_config_defaults_under_agentmesh_home_not_hermes(tmp_path, monkeypatch):
+def test_config_default_under_home(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path / 'home'))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes'))
     assert production.default_config() == tmp_path / 'home/jobs/agentmesh-production.json'
 
 
-def test_child_path_makes_the_package_importable(monkeypatch):
+def test_child_path_importable(monkeypatch):
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(['/a', '/b']))
     production.child_path()
     production.child_path()
@@ -70,7 +70,7 @@ def test_child_path_makes_the_package_importable(monkeypatch):
 
 # Personal-only: transcripts never reach a workspace home (one-click join, ~/.agentmesh/ws/<id8>/).
 
-def test_workspace_paths_are_refused_before_any_transcript_is_read(config, capsys, tmp_path):
+def test_workspace_paths_refused(config, capsys, tmp_path):
     home = Path(os.environ['AGENTMESH_HOME'])
     value = json.loads(config.read_text())
     for key in ('agent_key', 'mapping', 'state_dir'):
@@ -83,13 +83,13 @@ def test_workspace_paths_are_refused_before_any_transcript_is_read(config, capsy
     assert not (tmp_path / 'status').exists()
 
 
-def test_a_workspace_home_as_agentmesh_home_is_refused(tmp_path, monkeypatch):
+def test_workspace_home_refused(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path / 'personal' / 'ws' / 'abcd1234'))
     with pytest.raises(ValidationError, match='personal-only'):
         personal.check((str(tmp_path / 'state'),))
 
 
-def test_a_key_that_reaches_a_workspace_broker_is_refused(tmp_path):
+def test_workspace_broker_key_refused(tmp_path):
     root = tmp_path / 'home'
     workspace_key = root / 'ws' / 'abcd1234' / 'agents' / 'workspace.key'
     workspace_key.parent.mkdir(parents=True)
@@ -129,7 +129,7 @@ def legacy(tmp_path, command):
     return path
 
 
-def test_migrate_config_is_a_dry_run_by_default(tmp_path):
+def test_migrate_config_dry_run(tmp_path):
     path = legacy(tmp_path, ['/v/python', '/Users/o/.agentmesh/memory-sync/claude_digest_worker.py', '--effort', 'low'])
     before = path.read_bytes()
     result = production.migrate_config(path)
@@ -138,7 +138,7 @@ def test_migrate_config_is_a_dry_run_by_default(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_migrate_config_apply_keeps_a_backup_and_is_idempotent(tmp_path):
+def test_migrate_config_apply_backup(tmp_path):
     path = legacy(tmp_path, ['C:\\v\\python.exe', 'C:\\Users\\o\\.agentmesh\\app\\AgentMesh\\memory-sync\\claude_digest_worker.py'])
     before = path.read_bytes()
     result = production.migrate_config(path, apply=True)
@@ -159,7 +159,7 @@ def test_migrate_config_through_the_cli(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)['changes'] == ['runtime', 'summary']
 
 
-def test_ingest_cli_returns_the_job_exit_code_without_a_result_line(config, capsys):
+def test_ingest_cli_exit_code(config, capsys):
     from agentmesh_log import cli
     assert cli.main(['ingest', 'scan', '--config', str(config)]) == 0
     assert capsys.readouterr().out == ''
@@ -200,7 +200,7 @@ def test_boot_id_windows_kernel_boot_time(monkeypatch):
 
 
 @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux boot id')
-def test_boot_id_linux_reads_the_kernel_boot_id():
+def test_boot_id_linux():
     assert production.boot_id() == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 

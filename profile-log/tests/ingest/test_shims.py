@@ -42,7 +42,7 @@ def deployed(tmp_path):
     return jobs
 
 
-def test_old_wrapper_and_old_ingest_job_still_run(tmp_path, deployed):
+def test_old_wrapper_and_job(tmp_path, deployed):
     status = tmp_path / 'status'
     argv = [sys.executable, str(MEMORY_SYNC / 'job_notify.py'), '--name', 'ingest', '--state-dir', str(status), '--',
             sys.executable, str(deployed / 'agentmesh_ingest.py')]
@@ -66,7 +66,7 @@ def test_old_modules_are_the_package_modules(tmp_path):
     assert result.stdout.strip() == 'ok', result.stderr
 
 
-def test_old_worker_script_runs_the_package_worker(tmp_path):
+def test_old_worker_script(tmp_path):
     """summary.command still names claude_digest_worker.py until migrate-config; a bad request fails the same way."""
     result = subprocess.run([sys.executable, str(MEMORY_SYNC / 'claude_digest_worker.py'), '--model', 'm'], input='{}',
                             env=clean_env(tmp_path), capture_output=True, text=True, timeout=60)
@@ -74,7 +74,7 @@ def test_old_worker_script_runs_the_package_worker(tmp_path):
     assert 'Traceback' not in result.stderr
 
 
-def test_production_shim_copied_into_jobs_still_runs(tmp_path, deployed):
+def test_copied_production_shim(tmp_path, deployed):
     """Windows R5 runbook step 1 copied memory-sync/jobs/agentmesh_production.py over the deployed one; a deploy of
     this tree followed by the same copy must keep working, finding the package through the config's runtime."""
     shutil.copy(MEMORY_SYNC / 'jobs' / 'agentmesh_production.py', deployed / 'agentmesh_production.py')

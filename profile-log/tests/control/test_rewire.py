@@ -76,7 +76,7 @@ def test_dry_run_changes_nothing(home):
     assert not (layout.control / rewire.SAVED).exists()
 
 
-def test_apply_rewrites_specs_and_parked_plist_and_back_restores(home):
+def test_apply_then_back(home):
     layout, store = home
     before = {n: store.spec(n) for n in rewire.UNITS}
     broker = store.spec('broker')
@@ -104,7 +104,7 @@ def test_apply_rewrites_specs_and_parked_plist_and_back_restores(home):
     assert run(layout, store, back=True) == {'error': 'nothing_saved'}
 
 
-def test_presence_denied_and_import_failure_change_nothing(home):
+def test_denied_or_import_fail_no_change(home):
     layout, store = home
     before = {n: store.spec(n) for n in rewire.UNITS}
     assert run(layout, store, answer=False, apply=True) == {'error': 'presence_required'}
@@ -123,7 +123,7 @@ def test_units_under_launchd_are_skipped(tmp_path):
         store.close()
 
 
-def test_importable_runs_the_interpreter_with_the_package_path():
+def test_importable_check():
     assert rewire.importable(sys.executable) is True
     seen = {}
     def fake(argv, **kw):

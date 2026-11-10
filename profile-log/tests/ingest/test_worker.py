@@ -18,7 +18,7 @@ def request():
     return build_request(batch, [])
 
 
-def test_command_is_noninteractive_and_uses_request_schema():
+def test_command_noninteractive():
     from agentmesh_log.ingest import claude_worker as worker
     req = request()
     args = worker.command(req, executable='claude', model='claude-sonnet-5-5')
@@ -31,7 +31,7 @@ def test_command_is_noninteractive_and_uses_request_schema():
     assert args[args.index('--effort') + 1] == 'low'
 
 
-def test_schema_patterns_are_unicode_js_regex_and_keep_python_meaning():
+def test_schema_patterns_js_regex():
     import re
     from agentmesh_log.ingest import claude_worker as worker
     batch = [{'id': 7, 'kind': 'user_request', 'project': 'Agent-Mesh.claude-wt 1', 'content': 'use sqlite',
@@ -48,7 +48,7 @@ def test_schema_patterns_are_unicode_js_regex_and_keep_python_meaning():
             assert not re.match(pattern, 'project.AgentXMesh.claude-wt 1.constraint.x')
 
 
-def test_rejects_requests_with_extra_options():
+def test_rejects_extra_options():
     from agentmesh_log.ingest import claude_worker as worker
     req = dict(request(), tools=[])
     with pytest.raises(ValueError):
@@ -58,7 +58,7 @@ def test_rejects_requests_with_extra_options():
         worker.check_request(req)
 
 
-def test_decode_result_returns_bounded_envelope():
+def test_decode_result_bounded():
     from agentmesh_log.ingest import claude_worker as worker
     payload = {'items': [], 'reviewed_event_ids': [7], 'conflicts': []}
     result = {'is_error': False, 'subtype': 'success', 'structured_output': payload,
@@ -104,8 +104,8 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
       'result': 'SECRET provider text'}, 1, 'api_error'),
     ({'type': 'result', 'is_error': True, 'subtype': 'error_max_budget_usd'}, 0, 'error_max_budget_usd'),
     ({'type': 'result', 'is_error': True, 'terminal_reason': 'SECRET Free Text!'}, 1, 'claude exit 1'),
-])
-def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
+], ids=['s%d' % i for i in range(12)])
+def test_fixed_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
     from agentmesh_log.ingest import claude_worker as worker
     fake = tmp_path / 'claude'
     fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(stdout) + "'\nexit " + str(code) + "\n")
@@ -259,7 +259,7 @@ def test_failure_log_is_redacted(tmp_path, monkeypatch, capsys):
         assert log.stat().st_mode & 0o777 == 0o600
 
 
-def test_failure_log_from_environment_and_capped(tmp_path, monkeypatch, capsys):
+def test_failure_log_env_capped(tmp_path, monkeypatch, capsys):
     from agentmesh_log.ingest import claude_worker as worker
     log = tmp_path / 'claude-worker.err.log'
     monkeypatch.setenv(worker.ERROR_LOG_ENV, str(log))
@@ -272,7 +272,7 @@ def test_failure_log_from_environment_and_capped(tmp_path, monkeypatch, capsys):
     assert all(json.loads(r)['stderr'] == ['fatal error: spawn failed'] for r in rows)
 
 
-def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, capsys):
+def test_no_failure_log_by_default(tmp_path, monkeypatch, capsys):
     from agentmesh_log.ingest import claude_worker as worker
     monkeypatch.delenv(worker.ERROR_LOG_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -292,7 +292,7 @@ def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, caps
     assert not log.exists()
 
 
-def test_worker_stdio_is_utf8_under_an_ansi_code_page():
+def test_stdio_utf8_under_ansi():
     """A Windows scheduled task starts Python with cp1252 stdio; packets must still cross the pipe as UTF-8."""
     import os
     from pathlib import Path

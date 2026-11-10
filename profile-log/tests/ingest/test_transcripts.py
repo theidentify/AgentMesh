@@ -11,20 +11,20 @@ def record(ident, text='synthetic note'):
     return json.dumps({'type': 'message', 'id': ident, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': text}]}}) + '\n'
 
 
-class TranscriptReaderTests(unittest.TestCase):
+class Reader(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.path = Path(temp.name) / '-Workspaces-demo' / 'a.jsonl'
         self.path.parent.mkdir()
 
-    def test_resolve_project_and_agent(self):
+    def test_resolve_project(self):
         self.path.write_text(record('one'), encoding='utf-8')
         path, project, skipped = transcripts.resolve(self.path, 'omp')
         self.assertEqual((path, project, skipped), (self.path.resolve(), 'demo', False))
         self.assertEqual(transcripts.resolve(self.path, 'omp', 'given')[1], 'given')
         with self.assertRaises(ValueError): transcripts.resolve(self.path, 'other')
 
-    def test_only_complete_records_and_cursor_advance(self):
+    def test_complete_records_only(self):
         self.path.write_text(record('one') + record('two')[:-5], encoding='utf-8')
         first = transcripts.read(self.path, 'omp', 'demo')
         self.assertEqual((len(first['events']), first['lines'], first['offset']), (1, 1, 0))
@@ -36,7 +36,7 @@ class TranscriptReaderTests(unittest.TestCase):
         idle = transcripts.read(self.path, 'omp', 'demo', second['cursor'])
         self.assertFalse(idle['complete']); self.assertEqual(idle['cursor'], second['cursor'])
 
-    def test_identity_change_or_truncation_restarts(self):
+    def test_truncation_restarts(self):
         self.path.write_text(record('one') + record('two'), encoding='utf-8')
         done = transcripts.read(self.path, 'omp', 'demo')
         moved = ('0:0',) + done['cursor'][1:]
@@ -45,7 +45,7 @@ class TranscriptReaderTests(unittest.TestCase):
         again = transcripts.read(self.path, 'omp', 'demo', done['cursor'])
         self.assertEqual((again['offset'], [e.source_event_id.split(':')[0] for e in again['events']]), (0, ['new']))
 
-    def test_renumbered_device_keeps_the_cursor(self):
+    def test_renumbered_device(self):
         """macOS renumbers APFS st_dev across reboots; the same inode is the same file and reads on from the cursor."""
         self.path.write_text(record('one'), encoding='utf-8')
         done = transcripts.read(self.path, 'omp', 'demo')
@@ -56,7 +56,7 @@ class TranscriptReaderTests(unittest.TestCase):
         self.assertEqual(after['cursor'][0], transcripts.identity(self.path)[0])
         self.assertFalse(transcripts.same_file(None, after['cursor'][0]))
 
-    def test_invalid_json_is_reported_not_fatal(self):
+    def test_invalid_json_reported(self):
         self.path.write_text('{not json\n' + record('ok'), encoding='utf-8')
         window = transcripts.read(self.path, 'omp', 'demo')
         self.assertEqual(len(window['errors']), 1)
@@ -64,7 +64,7 @@ class TranscriptReaderTests(unittest.TestCase):
         self.assertEqual(window['lines'], 2)
 
 
-class SqliteInventoryTests(unittest.TestCase):
+class Sqlite(unittest.TestCase):
     """Shrink-only list of production modules that still touch SQLite, until retirement R5 deletes them."""
     # In-memory indexes and the supervisor's own state.db, not the staging database; they stay.
     KEEP = {'profile-log/agentmesh_log/broker/index.py', 'profile-log/agentmesh_log/broker/vector_store.py',

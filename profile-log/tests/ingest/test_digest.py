@@ -110,7 +110,7 @@ def test_device_renumbering_keeps_cursors(setup):
     assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two', 'gamma three']
 
 
-def test_failed_or_stale_write_keeps_cursors(setup):
+def test_failed_write_keeps_cursors(setup):
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
     fake.fail = True
@@ -123,7 +123,7 @@ def test_failed_or_stale_write_keeps_cursors(setup):
     assert run(tmp_path, fake)['status'] == 'committed' and len(fake.writes) == 1
 
 
-def test_rotation_restarts_and_quiet_file_moves(setup):
+def test_rotation_and_quiet_file(setup):
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one') + record('u2', 'beta two'))
     run(tmp_path, fake, max_events=1)
@@ -219,7 +219,7 @@ def test_tick_metrics(setup):
     assert rows[1]['errors'] == ['ValidationError'] and 'content' not in json.dumps(rows)
 
 
-def test_stale_window_is_redone_then_left_pending(setup):
+def test_stale_window_redo_then_pending(setup):
     """Another device changed the related memories mid-window: redo it once, then end pending without failing."""
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
@@ -238,7 +238,7 @@ def test_stale_window_is_redone_then_left_pending(setup):
     assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two']
 
 
-def test_unavailable_cli_logs_a_redacted_stderr_tail(tmp_path, monkeypatch):
+def test_unavailable_cli_logs_stderr(tmp_path, monkeypatch):
     """A summary CLI that breaks without an error code leaves its stderr tail in the worker's error log."""
     log = tmp_path / 'claude-worker.err.log'
     monkeypatch.setenv('AGENTMESH_WORKER_ERROR_LOG', str(log))
@@ -251,7 +251,7 @@ def test_unavailable_cli_logs_a_redacted_stderr_tail(tmp_path, monkeypatch):
     assert record['stderr'] == ['ConnectionResetError: broker went away [masked]']
 
 
-def test_unmapped_project_waits_and_others_carry_on(setup):
+def test_unmapped_project_waits(setup):
     """One project without a mapping holds back only its own events; once mapped, the next tick summarizes them."""
     tmp_path, folder, fake = setup
     other = tmp_path / 'omp' / '-Workspaces-newproj'; other.mkdir()

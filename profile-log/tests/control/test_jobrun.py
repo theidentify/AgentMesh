@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 import pytest
@@ -76,6 +77,7 @@ def test_no_webhook_file_logs_only(tmp_path):
     assert sent == [] and json.loads((tmp_path / 'job-ingest.json').read_text())['ok'] is False
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='file modes are POSIX; Windows relies on the profile ACL')
 def test_webhook_file_must_be_private_and_a_discord_url(tmp_path, webhook):
     webhook.chmod(0o644)
     with pytest.raises(PermissionError):
@@ -100,6 +102,7 @@ def test_protocol_detail_is_forwarded_but_free_text_is_not():
     assert 'error_class=ValidationError: unsupported evidence quote' in text
 
 
+@pytest.mark.skipif(job_notify.resource is None, reason='no resource module on Windows')
 def test_resource_fields(tmp_path,monkeypatch,capsys):
     from types import SimpleNamespace
     ticks=iter([10.,14.]); usage=iter([SimpleNamespace(ru_utime=1.,ru_stime=2.,ru_maxrss=0),SimpleNamespace(ru_utime=2.,ru_stime=2.5,ru_maxrss=8*1024*1024)])

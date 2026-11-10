@@ -1,5 +1,6 @@
 """control rewire-ingest: the supervised jobs move from memory-sync's scripts to agentmesh_log, nothing else changes."""
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -141,7 +142,8 @@ def test_rewired_command_runs_a_real_scan(tmp_path, monkeypatch):
     old = [sys.executable, '/gone/job_notify.py', '--name', 'ingest', '--state-dir', str(status), '--',
            sys.executable, '/gone/agentmesh_ingest.py', '--config', str(config)]
     argv = rewire.rewired(old)
-    env = dict(PATH='/usr/bin:/bin', PYTHONPATH=rewire.PACKAGE_ROOT, AGENTMESH_HOME=str(tmp_path / 'home'))
+    env = {k: v for k, v in os.environ.items() if k not in ('PYTHONPATH', 'PYTHONHOME')}
+    env.update(PYTHONPATH=rewire.PACKAGE_ROOT, AGENTMESH_HOME=str(tmp_path / 'home'))
     result = subprocess.run(argv, env=env, cwd=str(tmp_path), capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['exit'] == 0

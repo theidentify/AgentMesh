@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -75,6 +76,7 @@ def test_decode_result_returns_bounded_envelope():
         worker.decode_result(dict(result, is_error=True), 'claude-sonnet-5-5')
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
 def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
     from agentmesh_log.ingest import claude_worker as worker
     fake = tmp_path / 'claude'
@@ -86,6 +88,7 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
     assert 'SECRET' not in out and json.loads(out) == {'error_class': 'ValueError', 'reason': 'claude exit 3'}
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
 @pytest.mark.parametrize('stdout, code, reason', [
     (AUTH_EXPIRED_RESULT, 1, 'claude login expired'),
     (AUTH_EXPIRED_RESULT, 0, 'claude login expired'),
@@ -116,6 +119,7 @@ def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypa
         assert stdout['result'] not in out
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
 def test_expired_login_detail_end_to_end(tmp_path, monkeypatch):
     import sys
     from pathlib import Path

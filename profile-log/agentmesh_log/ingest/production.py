@@ -36,6 +36,8 @@ def boot_id():
             raise OSError('boot time unavailable')
         filetime = int.from_bytes(bytes(info)[:8], 'little')
         return datetime.fromtimestamp(filetime / 10**7 - 11644473600, timezone.utc).isoformat()
+    if sys.platform.startswith('linux'):
+        return Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
     return subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.boottime'], capture_output=True, text=True, check=True).stdout.strip()
 
 

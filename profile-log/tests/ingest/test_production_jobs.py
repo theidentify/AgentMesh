@@ -199,9 +199,15 @@ def test_boot_id_windows_kernel_boot_time(monkeypatch):
     with pytest.raises(OSError): production.boot_id()
 
 
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux boot id')
+def test_boot_id_linux_reads_the_kernel_boot_id():
+    assert production.boot_id() == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
 def test_boot_id_macos_preserves_sysctl(monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setattr(production, 'os', SimpleNamespace(name='posix'))
+    monkeypatch.setattr(production.sys, 'platform', 'darwin')
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs)); return SimpleNamespace(stdout=' boot value\n')

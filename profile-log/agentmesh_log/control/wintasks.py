@@ -88,17 +88,23 @@ def command(root):
     return [program,*split_args(arguments)],(cwd.strip('"') if cwd else None)
 
 
+def job_name(options):
+    """The --name of a job wrapper's own options; they end at `--`, and the rest is the job."""
+    if '--' in options: options=options[:options.index('--')]
+    name=options[options.index('--name')+1] if '--name' in options[:-1] else None
+    return name if name in JOBS else None
+
+
 def unit_of(argv):
-    """Which AgentMesh unit an argv runs, or None for anything else."""
+    """Which AgentMesh unit an argv runs, or None for anything else. A scheduled job runs through the job wrapper:
+    memory-sync's job_notify.py before its retirement, `-m agentmesh_log.control.jobrun` or `agentmesh-log job run` after."""
     rest=argv[1:]
+    if rest[:2]==['-m','agentmesh_log.control.jobrun']: return job_name(rest[2:])
     if len(rest)>=2 and rest[:2]==['-m','agentmesh_log.cli']: rest=rest[2:]
     elif ntpath.basename(argv[0]).lower() in ('agentmesh-log','agentmesh-log.exe','agentmesh-log.cmd'): pass
-    elif rest and ntpath.basename(rest[0]).lower()=='job_notify.py':
-        tail=rest[1:]
-        if '--' in tail: tail=tail[:tail.index('--')]  # job_notify's own options end at `--`; the rest is the job
-        name=tail[tail.index('--name')+1] if '--name' in tail[:-1] else None
-        return name if name in JOBS else None
+    elif rest and ntpath.basename(rest[0]).lower()=='job_notify.py': return job_name(rest[1:])
     else: return None
+    if rest[:2]==['job','run']: return job_name(rest[2:])
     head=[a for a in rest if not a.startswith('-')][:2]
     return {('broker','run'):'broker',('bridge','serve'):'bridge',('migrate','catch-up'):'catch-up'}.get(tuple(head))
 

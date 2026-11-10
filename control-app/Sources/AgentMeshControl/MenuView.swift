@@ -190,6 +190,8 @@ struct SupervisorItemView: View {
                          ? "The supervisor and every unit it runs stop, and nothing starts them again until you tick this or run `agentmesh-log control handover --back`."
                          : item.state == .ready
                          ? "The supervisor restarts under AgentMesh Control; its units are down for about a second."
+                         : item.state == .stopped
+                         ? "AgentMesh Control registers the supervisor again and launchd starts it."
                          : "The supervisor starts from AgentMesh Control and at every login.")
                         .font(.caption).fixedSize(horizontal: false, vertical: true)
                     HStack {

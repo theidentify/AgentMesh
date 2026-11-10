@@ -8,6 +8,8 @@
 //   to spawn (EX_CONFIG) in a loop; unregister() then disables that record and register() gets EPERM;
 // - about a minute later macOS drops the stale record (status `notFound`), even with the legacy job still running.
 // So the app takes over only from `notFound`: boot the legacy job out, then register at once.
+// - after a manual `launchctl bootout` of the app's job, SMAppService still reports `enabled` but launchd has no job,
+//   and register() alone does not load it again (seen 2026-11-09); unregister() then register() does.
 import Foundation
 
 /// SMAppService.Status, mirrored so the decision is testable without ServiceManagement.
@@ -19,6 +21,8 @@ public enum LoadedJob: Sendable, Equatable { case none, legacy, app }
 public enum SupervisorItem: Sendable, Equatable {
     /// The app's job owns the label.
     case on
+    /// Registered with SMAppService but launchd has no job (booted out by hand): ticking re-registers.
+    case stopped
     /// Nothing of the app's is registered and no legacy job is loaded: ticking registers.
     case off
     /// The legacy plist is still in ~/Library/LaunchAgents: the owner runs `agentmesh-log control handover` first.
@@ -32,6 +36,7 @@ public enum SupervisorItem: Sendable, Equatable {
 
     public static func decide(status: ServiceStatus, loaded: LoadedJob, legacyPlist: Bool) -> SupervisorItem {
         if status == .requiresApproval { return .requiresApproval }
+        if status == .enabled && loaded == .none && !legacyPlist { return .stopped }
         if status == .enabled && loaded != .legacy { return .on }
         if legacyPlist { return .needsHandover }
         if loaded == .legacy { return status == .notFound ? .ready : .waiting }
@@ -42,13 +47,14 @@ public enum SupervisorItem: Sendable, Equatable {
     /// Waiting on something outside the app, so worth re-checking even while the menu is closed.
     public var pending: Bool { self == .needsHandover || self == .waiting || self == .ready }
     /// Whether the toggle may be ticked or unticked in this state.
-    public var actionable: Bool { self == .on || self == .off || self == .ready }
+    public var actionable: Bool { self == .on || self == .off || self == .ready || self == .stopped }
 
     public var caption: String? {
         switch self {
         case .on, .off: nil
         case .needsHandover: "The supervisor runs from its launchd plist. To move it here, run `agentmesh-log control handover` in Terminal."
         case .waiting: "macOS is still forgetting the supervisor's old login item. This takes about a minute."
+        case .stopped: "The supervisor is not running: launchd has no job for it, though its login item is registered. Ticking registers it again."
         case .ready: "Ready: ticking restarts the supervisor under AgentMesh Control (about a second)."
         case .requiresApproval: "Turned off in System Settings > General > Login Items & Extensions."
         }

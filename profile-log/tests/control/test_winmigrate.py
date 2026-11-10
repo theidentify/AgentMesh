@@ -1,10 +1,21 @@
 import argparse
 import json
-from agentmesh_log.control import cli, winmigrate, wintasks
+import os
+import pytest
+from agentmesh_log.control import cli, winacl, winmigrate, wintasks
 from agentmesh_log.control.layout import Layout, read_json
 from agentmesh_log.control.store import Store
 from .wintask_support import (BROKER_ARGV, CATCH_UP_ARGV, PY, PYW, FakeTasks, exported_job, job_argv, rendered_broker,
     rendered_job)
+
+
+REAL_ELEVATED=winacl.elevated
+
+
+@pytest.fixture(autouse=True)
+def not_elevated(monkeypatch):
+    """A Windows CI runner is elevated: never touch real ACLs from the move tests."""
+    monkeypatch.setattr(winacl,'elevated',lambda:False)
 
 
 class Console:
@@ -162,3 +173,85 @@ def test_cli_task(tmp_path):
     assert result=={'ok':True,'path':str(out),'task':wintasks.TASK_NAME}
     assert wintasks.command(wintasks.parse(out.read_bytes()))[0][0]==PYW
     assert cli.execute(argparse.Namespace(action='task',out=str(out),python=PYW),layout=layout)=={'error':'exists'}
+
+
+BROKER='\\org.agentmesh.profile-log.broker'
+
+
+def test_elevated_task(tmp_path):
+    """The broker task was registered from an elevated window: Disable is denied to the normal token, Stop/Start work."""
+    layout,store,tasks=device(tmp_path)
+    tasks.fail={('disable',BROKER):'needs_elevation'}
+    result=winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+    assert result['errors']==[dict(unit='broker',task=BROKER,error='needs_elevation')]
+    assert 'elevated PowerShell' in result['advice'] and result['moved']==['ingest','summary']
+    assert tasks.rows[BROKER]['state']=='Running' and 'broker' not in store.native_units()
+    assert not winmigrate.saved(layout,'broker').exists()
+    rows=[json.loads(line) for line in layout.audit.read_text().splitlines()]
+    assert rows[-1]['outcome']=='needs_elevation'
+    layout,store,tasks=device(tmp_path/'clean')
+    assert 'advice' not in winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+
+
+def test_elevated_release_and_revert(tmp_path):
+    layout,store,tasks=device(tmp_path)
+    winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+    tasks.fail={('register',BROKER):'needs_elevation'}
+    result=winmigrate.release(layout,store,'broker',console=Console(),call=alive,tasks=tasks,sleep=lambda s:None)
+    assert result['error']=='needs_elevation' and 'elevated PowerShell' in result['advice']
+    store.set_backend('broker','native',store.spec('broker'),1)
+    result=winmigrate.panic_revert(layout,store,tasks=tasks,token=lambda pid:None,sleep=lambda s:None)
+    assert result['errors']==['broker'] and 'elevated PowerShell' in result['advice']
+    tasks.fail={('register',BROKER):True}
+    store.set_backend('broker','native',store.spec('broker'),1)
+    assert 'advice' not in winmigrate.panic_revert(layout,store,tasks=tasks,token=lambda pid:None,sleep=lambda s:None)
+
+
+def test_elevated_files_go_to_user(tmp_path, monkeypatch):
+    """An elevated consolidate hands control\\units and each saved file to the user, so release works from a normal window."""
+    calls=[]
+    def give(paths, **kw):
+        calls.append([str(p) for p in paths]); return []
+    monkeypatch.setattr(winacl,'give_to_user',give)
+    layout,store,tasks=device(tmp_path)
+    result=winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+    assert 'warning' not in result and len(calls)==1
+    assert calls[0][:2]==[str(layout.units),str(layout.units/'retired')]
+    assert set(calls[0][2:])=={str(winmigrate.saved(layout,n)) for n in ('ingest','summary','broker')}|{
+        str(winmigrate.saved(layout,'catch-up',retired=True))}
+    monkeypatch.setattr(winacl,'give_to_user',lambda paths,**kw:[str(layout.units)])
+    monkeypatch.setattr(winacl,'user',lambda:'PC\\o')
+    layout,store,tasks=device(tmp_path/'again')
+    result=winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+    assert result['ok'] is True and result['acl_unfixed']==[str(layout.units)] and 'PC\\o' in result['warning']
+
+
+def test_give_to_user(tmp_path):
+    folder=tmp_path/'units'; folder.mkdir(); saved=folder/'broker.task.json'; saved.write_text('{}')
+    calls=[]
+    def runner(argv):
+        calls.append(argv); return argparse.Namespace(returncode=1 if 'bad' in argv[1] else 0)
+    paths=[folder,saved,tmp_path/'missing']
+    assert winacl.give_to_user(paths,is_elevated=lambda:False,runner=runner)==[] and calls==[]
+    assert winacl.give_to_user(paths,is_elevated=lambda:True,account=lambda:'PC\\o',runner=runner)==[]
+    assert calls==[['icacls',str(folder),'/setowner','PC\\o'],['icacls',str(folder),'/grant','PC\\o:(OI)(CI)F'],
+        ['icacls',str(saved),'/setowner','PC\\o'],['icacls',str(saved),'/grant','PC\\o:F']]
+    bad=tmp_path/'bad.json'; bad.write_text('{}')
+    assert winacl.give_to_user([bad,saved],is_elevated=lambda:True,account=lambda:'PC\\o',runner=runner)==[str(bad)]
+    assert winacl.give_to_user([saved],is_elevated=lambda:True,account=lambda:None,runner=runner)==[str(saved)]
+    def broken(argv): raise OSError('no icacls')
+    assert winacl.give_to_user([saved],is_elevated=lambda:True,account=lambda:'o',runner=broken)==[str(saved)]
+    if os.name!='nt': assert REAL_ELEVATED() is False  # never elevated off Windows
+
+
+def test_unreadable_saved_task(tmp_path, monkeypatch):
+    """A saved file an earlier elevated run left unreadable: release and panic-revert say why instead of crashing."""
+    layout,store,tasks=device(tmp_path)
+    winmigrate.consolidate(layout,store,console=Console(),call=alive,tasks=tasks,apply=True)
+    def denied(path): raise PermissionError(13,'denied')
+    monkeypatch.setattr(winmigrate,'read_json',denied)
+    result=winmigrate.release(layout,store,'broker',console=Console(),call=alive,tasks=tasks)
+    assert result['error']=='saved_task_unreadable' and 'icacls' in result['advice']
+    assert store.backend('broker')=='native'  # nothing changed
+    result=winmigrate.panic_revert(layout,store,tasks=tasks,token=lambda pid:None,sleep=lambda s:None)
+    assert result['errors']==['broker','ingest','summary'] and 'icacls' in result['advice']

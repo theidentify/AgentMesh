@@ -37,6 +37,8 @@ JOB = '6fcf5646d34d'
 AUDIT_FIELDS = ('fire_id', 'job_id', 'ts', 'duration_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'model')
 LEGACY_RUNS = 'summary-metrics.jsonl.pre-relocate-20261021-omp-memory'
 LABEL = 'org.agentmesh.insight'
+BOOTSTRAP_TRIES = 5
+BOOTSTRAP_WAIT_S = 1
 
 
 def stage_release(repo, rev, root):
@@ -122,7 +124,18 @@ def supervised(plist, agentmesh_home):
     return Path(plist).parent == Path(agentmesh_home)/'control'/'units'
 
 
-def restart(plist, port, agentmesh_home=None, run=subprocess.run):
+def bootstrap(domain, plist, run=subprocess.run, sleep=time.sleep):
+    """launchctl bootstrap right after a bootout fails with error 5 (Input/output error) while launchd is still tearing
+    the old job down: try again after a short wait. The last try keeps check=True, so a real failure still raises."""
+    argv = ['launchctl', 'bootstrap', domain, str(plist)]
+    for _ in range(BOOTSTRAP_TRIES-1):
+        if run(argv, capture_output=True).returncode == 0:
+            return
+        sleep(BOOTSTRAP_WAIT_S)
+    run(argv, check=True)
+
+
+def restart(plist, port, agentmesh_home=None, run=subprocess.run, sleep=time.sleep):
     if agentmesh_home is not None and supervised(plist, agentmesh_home):
         # The supervisor re-reads the parked plist and restarts its child (asks for the typed confirmation).
         env = dict(os.environ, AGENTMESH_HOME=str(agentmesh_home))
@@ -131,13 +144,13 @@ def restart(plist, port, agentmesh_home=None, run=subprocess.run):
     else:
         domain = 'gui/'+str(os.getuid())
         run(['launchctl', 'bootout', domain+'/'+LABEL], capture_output=True)
-        run(['launchctl', 'bootstrap', domain, str(plist)], check=True)
+        bootstrap(domain, plist, run, sleep)
     for _ in range(15):
         try:
             with urllib.request.urlopen('http://127.0.0.1:'+str(port)+'/health', timeout=2) as r:
                 return json.load(r)
         except OSError:
-            time.sleep(1)
+            sleep(1)
     raise SystemExit('Insight did not answer /health; run the rollback')
 
 
@@ -178,7 +191,7 @@ def main(argv=None):
         if (archive/'digest-cron').exists():
             say('keep existing '+str(archive/'digest-cron'))
         else:
-            say('build '+str(archive/'digest-cron')+' from '+str(hermes/'cron/usage_audit.jsonl')+' and state.db (copy only)')
+            say('build '+str(archive/'digest-cron')+' from '+str(hermes/'cron/usage_audit.jsonl')+' (copy only)')
             if a.apply:
                 archive.mkdir(mode=0o700, parents=True, exist_ok=True)
                 say('archived %d audit rows' % build_cron_archive(hermes, archive/'digest-cron'))

@@ -15,7 +15,7 @@ import Testing
 
 @Test func appOwnedAndPlainStates() {
     #expect(SupervisorItem.decide(status: .enabled, loaded: .app, legacyPlist: false) == .on)
-    #expect(SupervisorItem.decide(status: .enabled, loaded: .none, legacyPlist: false) == .on)
+    #expect(SupervisorItem.decide(status: .enabled, loaded: .none, legacyPlist: true) == .on)
     #expect(SupervisorItem.decide(status: .notRegistered, loaded: .none, legacyPlist: false) == .off)
     #expect(SupervisorItem.decide(status: .notFound, loaded: .none, legacyPlist: false) == .off)
     #expect(SupervisorItem.decide(status: .requiresApproval, loaded: .none, legacyPlist: false) == .requiresApproval)
@@ -23,6 +23,14 @@ import Testing
     #expect(SupervisorItem.needsHandover.caption!.contains("control handover"))
     #expect(SupervisorItem.waiting.pending && SupervisorItem.ready.pending && SupervisorItem.needsHandover.pending)
     #expect(!SupervisorItem.on.pending && !SupervisorItem.off.pending && !SupervisorItem.requiresApproval.pending)
+}
+
+@Test func bootedOutButStillRegisteredOffersARestart() {
+    // `launchctl bootout` of the app's job: SMAppService still says enabled, launchd has nothing.
+    let item = SupervisorItem.decide(status: .enabled, loaded: .none, legacyPlist: false)
+    #expect(item == .stopped)
+    #expect(!item.isOn && item.actionable && !item.pending)
+    #expect(item.caption!.contains("registers it again"))
 }
 
 @Test func loadedJobFromLaunchctlPrint() {

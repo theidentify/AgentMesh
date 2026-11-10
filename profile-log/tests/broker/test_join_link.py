@@ -1,5 +1,6 @@
 """One-click join (J1): link, request, admin approval, sealed answer, sync, agent and rules."""
 import json
+import os
 from pathlib import Path
 import pytest
 from .test_cli import cli
@@ -30,7 +31,7 @@ def make_link(alice, remote, path, **extra):
 
 def test_folder_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path/'am'))
-    monkeypatch.setenv('HOME', str(tmp_path/'user'))
+    monkeypatch.setenv('HOME', str(tmp_path/'user')); monkeypatch.setenv('USERPROFILE', str(tmp_path/'user'))   # Path.home() on Windows
     alice, remote = admin_workspace(tmp_path)
     link = tmp_path/'bob.link'
     made = make_link(alice, remote, link)
@@ -214,6 +215,7 @@ def test_credential_kinds(monkeypatch):
     for kind, values in (('s3-aws', ('AKIB' + 'C' * 16, 'x' * 40)), ('s3-generic', ('ab', 'y' * 8)), ('s3-generic', ('abc', 'has"quote')),
                          ('s3', ('A' * 32, 'b' * 64))):
         with pytest.raises(StorageError): r2creds.check_values(kind, values)
+    if os.name == 'nt': return   # the Keychain store is macOS-only (POSIX keychain paths)
     monkeypatch.setattr(r2creds.sys, 'platform', 'darwin')
     seen = {}
     class Result:

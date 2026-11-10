@@ -17,8 +17,18 @@ from .common import ObservationEvent, _normalize_timestamp, is_excluded, redact_
 
 
 AGENT = "claude"
-_PROJECT_PREFIX = "-" + str(Path("~/Workspaces").expanduser()).strip("/").replace("/", "-") + "-"
-_HOME_DIR = "-" + str(Path("~").expanduser()).strip("/").replace("/", "-")
+
+
+def encode_project_dir(path: str) -> str:
+    """Claude Code's project-folder name for ``path``: every non-alphanumeric character becomes ``-``.
+
+    ``/Users/me/Workspaces`` -> ``-Users-me-Workspaces``; ``C:\\Users\\me\\Workspaces`` -> ``C--Users-me-Workspaces``.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+_PROJECT_PREFIX = encode_project_dir(str(Path("~/Workspaces").expanduser())) + "-"
+_HOME_DIR = encode_project_dir(str(Path("~").expanduser()))
 _RESULT_LIMIT = 2000
 _INPUT_LIMIT = 500
 _SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)

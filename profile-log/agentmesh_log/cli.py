@@ -43,6 +43,8 @@ def parser():
         group=cmd.add_mutually_exclusive_group(required=required)
         group.add_argument('--filesystem'); group.add_argument('--s3-bucket')
         cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint'); cmd.add_argument('--s3-credentials')
+        cmd.add_argument('--s3-credentials-kind',choices=('s3','s3-aws','s3-generic'),help='key format (default s3: R2)')
+        cmd.add_argument('--s3-region'); cmd.add_argument('--s3-path-style',action='store_true',help='path-style addressing (MinIO)')
     init=admin.add_parser('init'); home(init); init.add_argument('--profile',action='append',required=True)
     scope=admin.add_parser('scope'); scope_sub=scope.add_subparsers(dest='scope_action',required=True)
     add=scope_sub.add_parser('add'); home(add); add.add_argument('scope'); add.add_argument('--label',choices=list(Label.__members__),default='general')
@@ -51,7 +53,7 @@ def parser():
     grant.add_argument('--default-write'); grant.add_argument('--allow-secret',action='store_true'); grant.add_argument('--allow-cross-profile',action='store_true')
     revoke=admin.add_parser('revoke'); home(revoke); revoke.add_argument('agent_id')
     run=admin.add_parser('run'); home(run); run.add_argument('--sync-interval',type=float); run.add_argument('--log-dir'); remote(run)
-    sync=admin.add_parser('sync'); home(sync); remote(sync,True)
+    sync=admin.add_parser('sync',help="without remote flags, uses the home's remote.json"); home(sync); remote(sync)
     stats=commands.add_parser('stats'); stats.add_argument('--agent-key',required=True)
     recall=commands.add_parser('recall'); recall.add_argument('query'); recall.add_argument('--agent-key',required=True)
     recall.add_argument('--project'); recall.add_argument('--task'); recall.add_argument('--limit',type=int,default=12)
@@ -102,9 +104,27 @@ def parser():
     inv=ws_sub.add_parser('invite',help='signed invites: create, list, revoke, accept joiners'); inv_sub=inv.add_subparsers(dest='invite_action',required=True)
     a=inv_sub.add_parser('create'); home(a); a.add_argument('--profile',required=True); a.add_argument('--scope',action='append',required=True)
     a.add_argument('--role',choices=('member','contributor'),default='member'); a.add_argument('--max-uses',type=int,default=1)
-    a.add_argument('--days',type=int,default=7); a.add_argument('--out',required=True)
-    for action in ('list','accept'):
-        a=inv_sub.add_parser(action); home(a); a.add_argument('--profile',required=True)
+    a.add_argument('--days',type=int,default=7); out=a.add_mutually_exclusive_group(required=True); out.add_argument('--out')
+    out.add_argument('--link',help='one-click link file for one person (agentmesh://join#…; it holds a secret, no storage credential)')
+    a.add_argument('--label',help='who the link is for, shown to both sides'); remote(a)
+    a=inv_sub.add_parser('list'); home(a); a.add_argument('--profile',required=True)
+    a=inv_sub.add_parser('accept'); home(a); a.add_argument('--profile',required=True)
+    request=a.add_mutually_exclusive_group(); request.add_argument('--request',help='one-click join request slot')
+    request.add_argument('--request-file',help='a join request sent as a file')
+    a.add_argument('--member-credentials',default=None,help="prompt, none, or file:PATH (JSON with kind, access_key_id, secret_access_key)")
+    a.add_argument('--answer-out',help='write the answer to this file (file channel)'); remote(a)
+    a=inv_sub.add_parser('requests',help='one-click join requests waiting for approval'); home(a); a.add_argument('--profile',required=True)
+    a.add_argument('--request-file',action='append',default=[]); remote(a)
+    a=inv_sub.add_parser('reject'); home(a); a.add_argument('--profile',required=True)
+    request=a.add_mutually_exclusive_group(required=True); request.add_argument('--request'); request.add_argument('--request-file')
+    a.add_argument('--reason'); a.add_argument('--answer-out'); remote(a)
+    jl=ws_sub.add_parser('join-link',help='join a workspace from a one-click link: new home, request, wait, sync, agent, rules')
+    jl.add_argument('--link-file',required=True,help="a file holding the link (never pass it on the command line)")
+    jl.add_argument('--home',help='default: ~/.agentmesh/ws/<id8>'); jl.add_argument('--recovery-out')
+    jl.add_argument('--folder',help='the shared folder, for a folder-channel workspace'); jl.add_argument('--request-out')
+    jl.add_argument('--answer-file'); jl.add_argument('--wait',type=float,default=0.0,help='seconds to keep waiting for the admin')
+    jl.add_argument('--agent-name'); jl.add_argument('--no-rules',action='store_true')
+    jl.add_argument('--project',action='append',help='a project folder that belongs to this workspace (agent rules)')
     a=inv_sub.add_parser('revoke'); home(a); a.add_argument('--profile',required=True); a.add_argument('--id',required=True)
     clink=ws_sub.add_parser('chat-link',help='link a chat user to a workspace account (admin, presence)'); home(clink)
     clink.add_argument('--profile',required=True); clink.add_argument('--platform',choices=('slack','discord','teams','line'),required=True)
@@ -193,15 +213,35 @@ def remote_storage(args, *, filesystem_factory=None):
         from .storage.s3 import S3Storage
         from .storage.r2creds import validate_remote, load_credentials
         validate_remote(args.s3_credentials,args.s3_endpoint)
-        access,secret=load_credentials(args.s3_credentials)
+        kind=getattr(args,'s3_credentials_kind',None)
+        access,secret=load_credentials(args.s3_credentials,**({'kind':kind} if kind and kind!='s3' else {}))
+        path_style=bool(getattr(args,'s3_path_style',False))
         def factory(service,**kwargs):
             import boto3
             from botocore.config import Config
             # Bounded network time: sync holds the broker lock, and recall must not wait minutes on a stalled R2.
-            config=Config(connect_timeout=5,read_timeout=20,retries=dict(max_attempts=3,mode='standard'))
+            config=Config(connect_timeout=5,read_timeout=20,retries=dict(max_attempts=3,mode='standard'),signature_version='s3v4',
+                          **({'s3':{'addressing_style':'path'}} if path_style else {}))
             return boto3.client(service,**kwargs,config=config,aws_access_key_id=access,aws_secret_access_key=secret)
-        return S3Storage(args.s3_bucket,prefix=args.s3_prefix,endpoint_url=args.s3_endpoint,client_factory=factory)
+        return S3Storage(args.s3_bucket,prefix=args.s3_prefix,endpoint_url=args.s3_endpoint,client_factory=factory,
+                         region_name=getattr(args,'s3_region',None) or 'auto')
     return None
+
+
+REMOTE_FIELDS=('filesystem','s3_bucket','s3_prefix','s3_endpoint','s3_credentials','s3_credentials_kind','s3_region','s3_path_style')
+
+
+def home_remote(args,home):
+    """Fill missing remote flags from ``<home>/remote.json`` (written by one-click join; it names a keystore
+    reference, never a secret). Explicit flags win."""
+    if getattr(args,'filesystem',None) or getattr(args,'s3_bucket',None) or getattr(home,'root',None) is None: return args
+    try: value=json.loads((Path(home.root)/'remote.json').read_text(encoding='utf-8'))
+    except FileNotFoundError: return args
+    if type(value) is not dict or not set(value)<=set(REMOTE_FIELDS)|{'layout'}: raise ValueError('invalid remote.json')
+    for key in REMOTE_FIELDS:
+        if key in value: setattr(args,key,value[key])
+    if getattr(args,'s3_prefix',None) is None: args.s3_prefix=''
+    return args
 
 
 def merge_profiles(answers,limit):
@@ -297,6 +337,8 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             return client.write(dict(kind=args.kind,content=args.content),scope=args.scope,tags=args.tag,task=args.task)
         finally: client.close()
     home=BrokerHome(args.home); store=select_store(home,backend)
+    if args.action in ('run','sync'): home_remote(args,home)
+    if args.action=='sync' and not (args.filesystem or args.s3_bucket): raise ValueError('invalid_request')
     if args.action=='run':
         if args.s3_bucket:
             from .storage.r2creds import validate_remote
@@ -425,6 +467,9 @@ def execute_workspace(args,*,backend=None,console=None,input_fn=input):
     """Workspace registry administration on this device. Every change requires presence (class `workspace`)."""
     from . import workspace
     from .storage.filesystem import FilesystemStorage
+    if args.action=='join-link':
+        from .joinflow import join_link
+        return join_link(args,backend=backend,console=console)
     home=BrokerHome(args.home); store=select_store(home,backend); presence=PresenceManager(home,store)
     local=FilesystemStorage(home.root/'replica')
     def profile_id(state,name):
@@ -647,10 +692,10 @@ def execute_federation(args,home,store,presence,local,state,console):
         federation.publish_account(local,me)
         return {'account':me['account_id'],'fingerprint':federation.fingerprint(me['root_public_key']),'device':state.device.device_id}
     if args.action=='join':
-        token=None
-        if args.invite:
+        token=getattr(args,'invite_record',None)
+        if args.invite or token:
             from . import invites
-            token=invites.read_token(json.loads(Path(args.invite).read_text(encoding='utf-8')))
+            token=invites.read_token(token or json.loads(Path(args.invite).read_text(encoding='utf-8')))
             args.profile_id,args.owner_account,args.owner_fingerprint=token['workspace'],token['owner_account'],token['owner_fingerprint']
         if not (args.profile_id and args.owner_account and args.owner_fingerprint): raise ValueError('invalid_request')
         hex_bytes(args.profile_id,16); hex_bytes(args.owner_account,16)
@@ -718,10 +763,33 @@ def execute_invite(args,home,store,presence,local,state,console,profile_id,curre
         # The token carries the workspace owner's fingerprint (this account, or the owner this device pinned).
         owner=ws_owner(local,state,ws_id)
         root=state.account.public_record()['root_public_key'] if owner==state.account.account_id else state.control['federation_pins'][ws_id]['root']
+        base=invites.token(ws_id,invite_id,secret,owner,federation.fingerprint(root),args.role,expires)
+        if args.link:
+            # One link, one slot, one person: a presigned PUT cannot refuse an existing object.
+            if args.max_uses!=1: raise ValueError('invalid_request')
+            from . import joinlink
+            store_=remote_storage(args)
+            if store_ is None: raise ValueError('invalid_request')   # the link names the workspace store
+            slot=joinlink.new_slot(); channels=[]
+            if getattr(store_,'backend','filesystem')=='s3':
+                seconds=min(args.days*86_400,604_800)
+                channels.append(dict(kind='storage',request_url=joinlink.presign(store_,joinlink.request_key(slot),'PUT',seconds),
+                                     answer_url=joinlink.presign(store_,joinlink.answer_key(slot),'GET',seconds)))
+            else: channels.append(dict(kind='folder'))
+            channels.append(dict(kind='file'))
+            remote_=joinlink.remote_of(store_)
+            if getattr(args,'s3_credentials_kind',None) and remote_['kind']=='s3': remote_['credentials_kind']=args.s3_credentials_kind
+            if getattr(args,'s3_path_style',False) and remote_['kind']=='s3': remote_['path_style']=True
+            token=invites.token_v2(base,federation.account_record(owner,root),remote_,channels,slot,args.label)
+            text=invites.encode_link(token)
         workspace.publish(local,entry)
-        out=Path(args.out); fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        out=Path(args.out or args.link); fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
-            json.dump(invites.token(ws_id,invite_id,secret,owner,federation.fingerprint(root),args.role,expires),stream)
+            if args.link: stream.write(text+'\n')
+            else: json.dump(base,stream)
+        if args.link:
+            return {'ok':True,'invite':invite_id,'slot':slot,'written':str(out),
+                    'note':'send the link only to the person invited (it lets them ask to join, nothing more); run broker sync'}
         return {'ok':True,'invite':invite_id,'written':str(out),'note':'give the token file only to the people invited; run broker sync'}
     if action=='revoke':
         old=ws.state.invites.get(args.id)
@@ -732,6 +800,8 @@ def execute_invite(args,home,store,presence,local,state,console,profile_id,curre
         if check is None or not workspace.allowed(ws.state,entry,*check): raise ValueError('denied')
         presence.require('workspace','revoke',console=console,one_shot=True,summary=f'Revoke invite {args.id}.')
         workspace.publish(local,entry); return {'ok':True}
+    if action in ('requests','reject') or getattr(args,'request',None) or getattr(args,'request_file',None):
+        return execute_join_request(args,action,home,store,presence,local,state,console,ws_id,current)
     accepted,skipped=[],[]
     uses=[u for u in invites.pending_uses(local,ws_id) if u['account'] not in ws.state.members]
     if not uses: return {'accepted':[],'skipped':[]}
@@ -754,6 +824,102 @@ def execute_invite(args,home,store,presence,local,state,console,profile_id,curre
             grant_write(state,local,use['device_id'],invite['scopes'])   # contributors: write-only
         accepted.append(dict(account=use['account'],device=use['device_id'],role=invite['role']))
     return {'accepted':accepted,'skipped':skipped,'note':'run broker sync so joiners receive their keys'}
+
+
+def admit(state,local,ws_id,use,current):
+    """Add the use's account with the invite's role and grant the device the invite's scopes (the body of accept)."""
+    from . import workspace, federation
+    from .keyring import regrant, grant_write
+    ws=current(state,ws_id); invite=ws.state.invites[use['invite']]
+    entry=workspace.create(state.device,ws_id,'member',previous=ws.head,subject=use['account'],role=invite['role'],
+                           account_root=use['account_root'],invite={'id':use['invite']})
+    check=workspace.verified(registry_of(local,state),entry)
+    if check is None or not workspace.allowed(ws.state,entry,*check): return 'not allowed'
+    workspace.publish(local,entry)
+    if invite['role'] in federation.HOLDERS: regrant(state,local,use['device_id'],invite['scopes'])
+    else: grant_write(state,local,use['device_id'],invite['scopes'])
+    return None
+
+
+def member_credentials(spec,kind,input_fn=None):
+    """The storage credential an admin hands to one member (the ``manual`` issuer): typed, from a file, or none."""
+    from .storage.r2creds import check_values, S3_KINDS
+    if spec in (None,'none'): return None
+    if spec=='prompt':
+        import getpass
+        values=(getpass.getpass('Member access key ID: '),getpass.getpass('Member secret access key: '))
+    elif spec.startswith('file:'):
+        value=json.loads(Path(spec[5:]).read_text(encoding='utf-8'))
+        if type(value) is not dict or set(value)!={'kind','access_key_id','secret_access_key'} or value['kind'] not in S3_KINDS:
+            raise ValueError('invalid_request')
+        kind=value['kind']; values=(value['access_key_id'],value['secret_access_key'])
+    else: raise ValueError('invalid_request')
+    check_values(kind,values)
+    return dict(kind=kind,access_key_id=values[0],secret_access_key=values[1])
+
+
+def execute_join_request(args,action,home,store,presence,local,state,console,ws_id,current):
+    """One-click join, admin side: list requests, approve one (members entry, keys, sealed storage credential) or
+    reject it. Requests come from the workspace store (storage and folder channels) or from a file."""
+    import os
+    from . import joinlink
+    from .storage import ObjectNotFound
+    remote_=remote_storage(args)
+    def load(slot=None,path=None):
+        data=Path(path).read_bytes() if path else remote_.get(joinlink.request_key(slot))
+        record=joinlink.read_request(data)
+        if record['workspace']!=ws_id or (slot and record['slot']!=slot): raise ValueError('invalid_request')
+        return record
+    def answered(slot):
+        if remote_ is None: return False
+        try: remote_.get(joinlink.answer_key(slot)); return True
+        except ObjectNotFound: return False
+    def describe(record):
+        ws=current(state,ws_id); _,reason=joinlink.check_request(record,local,ws.state.invites.get(record['invite']))
+        inv=ws.state.invites.get(record['invite'],{})
+        return dict(slot=record['slot'],account=record['account'],device=record['device_id'],invite=record['invite'],
+                    role=inv.get('role'),requested_at=record['issued_at'],ready=reason is None,reason=reason)
+    if action=='requests':
+        found=[]
+        if remote_ is not None:
+            for key in remote_.list(joinlink.REQ_PREFIX):
+                slot=key[len(joinlink.REQ_PREFIX):].removesuffix('.json')
+                try:
+                    if not answered(slot): found.append(describe(load(slot)))
+                except (ValueError,KeyError,TypeError): found.append(dict(slot=slot,ready=False,reason='invalid'))
+        for path in args.request_file:
+            try: found.append(describe(load(path=path)))
+            except (ValueError,KeyError,TypeError): found.append(dict(file=path,ready=False,reason='invalid'))
+        return {'requests':found}
+    if remote_ is None and not args.answer_out: raise ValueError('invalid_request')   # nowhere to put the answer
+    record=load(args.request,None) if args.request else load(path=args.request_file)
+    if args.request and answered(record['slot']): return {'error':'already_answered'}
+    def deliver(data):
+        if args.answer_out:
+            fd=os.open(args.answer_out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'wb') as stream: stream.write(data)
+        else: remote_.put(joinlink.answer_key(record['slot']),data)
+    if action=='reject':
+        presence.require('workspace','revoke',console=console,one_shot=True,summary=f"Refuse join request {record['slot']} from account {record['account']}.")
+        deliver(joinlink.build_answer(ws_id,record['slot'],'rejected',args.reason,record['answer_recipient'],None))
+        return {'ok':True,'rejected':record['slot']}
+    ws=current(state,ws_id)
+    if record['account'] in ws.state.members: return {'error':'already_member'}
+    use,reason=joinlink.check_request(record,local,ws.state.invites.get(record['invite']))
+    if reason is not None: return {'error':'denied','reason':reason}
+    creds=member_credentials(args.member_credentials,getattr(args,'s3_credentials_kind',None) or 's3')
+    if creds is None and getattr(remote_,'backend','filesystem')=='s3': raise ValueError('invalid_request')   # an S3 member needs one
+    invite=ws.state.invites[record['invite']]
+    presence.require('workspace','grant',console=console,one_shot=True,
+                     summary=f"Admit account {record['account']} (device {record['device_id']}) as {invite['role']}, "
+                             f"give it keys for {len(invite['scopes'])} scope(s)"+(' and a storage credential' if creds else '')+'.')
+    answer=joinlink.build_answer(ws_id,record['slot'],'approved',None,record['answer_recipient'],creds)   # fails before any write
+    joinlink.apply_request(record,local)
+    why=admit(state,local,ws_id,use,current)
+    if why is not None: return {'error':'denied','reason':why}
+    deliver(answer)
+    return {'ok':True,'accepted':dict(account=record['account'],device=record['device_id'],role=invite['role']),
+            'note':'run broker sync so the member receives the keys'}
 
 
 def write_only(registry,state,scopes,account,at):

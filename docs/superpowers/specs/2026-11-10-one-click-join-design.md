@@ -429,7 +429,7 @@ apply. `secret` content is never shown in the client.
 2. Should the Memory window move to the web client in J6, or stay native on macOS?
 3. Answer polling: is 60 s after the first 2 minutes acceptable, or should the admin side also nudge
    through a chat adapter?
-4. Lease renewal: confirm that a claim by the current owner extends a live lease, or add an explicit
-   `task renew`.
+4. ~~Lease renewal~~: answered. Any `task update` by the holding agent while the task is held sets
+   `lease_until` to now + lease (`tasks.successor`), so the rules renew with an update.
 5. Should a workspace home share the member's existing Insight snapshot, or keep its own beside the
    home (current behaviour for homes outside `~/.agentmesh`)?

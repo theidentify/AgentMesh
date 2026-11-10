@@ -173,6 +173,15 @@ def parser():
         routing=cmd.add_mutually_exclusive_group(required=True)
         routing.add_argument('--mapping'); routing.add_argument('--settings',action='store_true')
         cmd.add_argument('--project-dir',action='append',default=[])
+    ingest=commands.add_parser('ingest',help='the scheduled transcript jobs (personal home only)')
+    ingest_sub=ingest.add_subparsers(dest='action',required=True)
+    for action in ('scan','summary'):
+        cmd=ingest_sub.add_parser(action); cmd.add_argument('--config')
+        if action=='summary': cmd.add_argument('--force',action='store_true')
+    cmd=ingest_sub.add_parser('migrate-config',help="drop memory-sync's runtime and point summary.command at the package (dry run unless --apply)")
+    cmd.add_argument('--config'); cmd.add_argument('--apply',action='store_true')
+    job=commands.add_parser('job',help='run one scheduled job with maintenance and quota holds and failure alerts')
+    job.add_argument('action',choices=['run']); job.add_argument('rest',nargs=argparse.REMAINDER)
     terminal=commands.add_parser('admin'); terminal.add_argument('--menu',action='store_true'); terminal.add_argument('--filesystem')
     project=commands.add_parser('project'); project.add_argument('action',choices=['trust']); project.add_argument('path')
     apply_cmd=commands.add_parser('apply'); apply_cmd.add_argument('--dry-run',action='store_true'); apply_cmd.add_argument('--allow-unsupported-report',action='store_true'); apply_cmd.add_argument('--project-dir',action='append',default=[])
@@ -205,7 +214,7 @@ def remote_storage(args, *, filesystem_factory=None):
 
 
 def merge_profiles(answers,limit):
-    """Interleave per-profile ranks, deduplicate IDs and sum candidate counts, as memory-sync's broker_recall does."""
+    """Interleave per-profile ranks, deduplicate IDs and sum candidate counts (memory-sync's broker_recall did the same)."""
     for answer in answers:
         if 'error' in answer: return answer
     merged=dict(answers[0]); merged['results']=[]; merged['evidence']=[]; merged['candidate_counts']={}; seen=set()
@@ -255,6 +264,9 @@ def execute(args,*,backend=None,console=None,input_fn=None):
     if args.command=='workspace': return execute_workspace(args,backend=backend,console=console,input_fn=input_fn)
     if args.command=='adapter': return execute_adapter(args,backend=backend)
     if args.command=='summary': return execute_summary(args,backend=backend)
+    if args.command=='ingest':
+        from .ingest import production
+        return production.migrate_config(args.config,apply=args.apply)
     if args.command not in ('broker','recall','remember','memory','stats','tasks','task','review','notes'):
         return execute_phase4(args,backend,console,input_fn)
     if args.command!='broker':
@@ -357,7 +369,8 @@ def execute(args,*,backend=None,console=None,input_fn=None):
 
 
 def execute_summary(args, *, backend=None):
-    """One summarizer step for memory-sync's broker backend; the request is JSON on stdin, never on the command line."""
+    """One summarizer step for the transcript summary (agentmesh_log.ingest); the request is JSON on stdin, never on the
+    command line. related and write serve personal transcripts only, so a workspace home's key is refused."""
     from .migrate.mapping import Mapping
     from . import summarize
     if args.action=='delete':
@@ -368,6 +381,9 @@ def execute_summary(args, *, backend=None):
         client=BrokerClient.from_file(args.agent_key)
         try: return summarize.delete(client,args.scope,args.memory_key)
         finally: client.close()
+    from .ingest import personal
+    try: personal.check(agent_key=args.agent_key)
+    except ValueError: raise ValueError('workspace_refused') from None
     raw=sys.stdin.buffer.read(8*1024*1024+1)
     if len(raw)>8*1024*1024: raise ValueError('invalid_request')
     try: request=parse(raw)
@@ -871,7 +887,23 @@ def build_pages(client, args):
     finally: writer.close()
 
 
+def job_main(argv):
+    """`job run` and `ingest scan|summary` keep the exit code and output protocol of the scheduled jobs they replace
+    (memory-sync's job_notify.py and jobs/agentmesh_*.py): no JSON result line of the CLI's own."""
+    if argv[:2]==['job','run']:
+        from .control.jobrun import main as run
+        return run(argv[2:])
+    if argv[:1]==['ingest'] and argv[1:2] in (['scan'],['summary']):
+        args=parser().parse_args(argv)
+        from .ingest import production
+        return production.execute('ingest' if args.action=='scan' else 'summary',config=args.config,force=getattr(args,'force',False))
+    return None
+
+
 def main(argv=None,*,backend=None,console=None,input_fn=None):
+    argv=list(sys.argv[1:] if argv is None else argv)
+    code=job_main(argv)
+    if code is not None: return code
     p=parser(); args=p.parse_args(argv)
     try:
         result=execute(args,backend=backend,console=console,input_fn=input_fn)
@@ -894,7 +926,7 @@ def main(argv=None,*,backend=None,console=None,input_fn=None):
         from .connector_cli import CODES as CONNECTOR_CODES
         if code is None and str(exc) in CONNECTOR_CODES:
             emit(json.dumps({'error':str(exc),'hint':CONNECTOR_CODES[str(exc)]})); return 1
-        if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale') else 'unavailable'
+        if code is None: code=str(exc) if str(exc) in ('unknown_app','ambiguous_app','invalid_settings','presence_required','pairing_denied','pairing_expired','pairing_mismatch','pairing_reused','stale','workspace_refused') else 'unavailable'
         if isinstance(exc,BrokerUnreachable): code='broker_unreachable'
         if code=='unavailable' and getattr(exc,'status_code',None): code=exc.status_code  # e.g. broker_busy
         emit(json.dumps({'error':code})); return 1

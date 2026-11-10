@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import re
 
 
-def parse_utc(value, *, naive_as_utc=False):
+def parse_utc(value):
     if not isinstance(value, str):
         raise TypeError('timestamp must be a string')
     if len(value[:-1] if value.endswith('Z') else value) <= 10:
@@ -14,7 +14,5 @@ def parse_utc(value, *, naive_as_utc=False):
                    lambda match: '.' + match[1][:6].ljust(6, '0'), value)
     stamp = datetime.fromisoformat(value)
     if stamp.tzinfo is None:
-        if not naive_as_utc:
-            raise ValueError('timestamp requires an offset')
-        stamp = stamp.replace(tzinfo=timezone.utc)
+        raise ValueError('timestamp requires an offset')
     return stamp.astimezone(timezone.utc)

@@ -1,10 +1,5 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-
-from omp_memory.claude_parser import infer_claude_project
-from omp_memory.codex_parser import WORKSPACES_ROOT, infer_codex_project
+from agentmesh_log.ingest.parsers.claude import infer_claude_project
+from agentmesh_log.ingest.parsers.codex import WORKSPACES_ROOT, infer_codex_project
 
 
 def test_codex_and_claude_name_the_same_workspace_identically(tmp_path):

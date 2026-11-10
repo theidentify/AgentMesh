@@ -14,11 +14,11 @@ import re
 import subprocess
 import sys
 
-from digest_io import canonical, load_packet, utf8_stdio
+from .digest_io import canonical, load_packet, utf8_stdio
 
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 JS_SYNTAX = '^$\\.*+?()[]{}|/'
-ERROR_LOG_ENV = 'AGENTMESH_WORKER_ERROR_LOG'  # set by job_notify for scheduled jobs; unset means no log
+ERROR_LOG_ENV = 'AGENTMESH_WORKER_ERROR_LOG'  # set by control/jobrun.py for scheduled jobs; unset means no log
 ERROR_LOG_MAX = 64 * 1024
 STDERR_LINES = 20
 LINE_CHARS = 300

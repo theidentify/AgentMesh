@@ -4,7 +4,7 @@ import json
 import unittest
 from typing import Any
 
-from bounded_protocol import build_request, validate, ValidationError
+from agentmesh_log.ingest.protocol import build_request, validate, ValidationError
 
 
 class OutputProtocolTests(unittest.TestCase):

@@ -22,8 +22,8 @@ from pathlib import Path
 import re
 import subprocess
 
-from bounded_protocol import ValidationError, ConflictError, collect, validate, build_request, encode, error_detail
-import transcripts
+from .protocol import ValidationError, ConflictError, collect, validate, build_request, encode, error_detail
+from . import transcripts
 
 KINDS = ('user_request', 'assistant_response')
 ROOTS = {'omp': '.omp/agent/sessions', 'codex': '.codex/sessions', 'claude': '.claude/projects'}
@@ -109,7 +109,7 @@ def discover(roots=None, home=None):
 def _floor(start_at):
     if start_at is None:
         return None
-    from timestamps import parse_utc
+    from .timestamps import parse_utc
     return parse_utc(start_at)
 
 
@@ -155,7 +155,7 @@ def scan(state, sources, *, start_at=None):
 
 
 def _after(event, floor):
-    from timestamps import parse_utc
+    from .timestamps import parse_utc
     try:
         return parse_utc(event.occurred_at) >= floor
     except (AttributeError, TypeError, ValueError) as exc:
@@ -224,7 +224,7 @@ class CliBackend:
             code = code if type(code) is str and re.fullmatch(r'[a-z_]{1,40}', code) else 'unavailable'
             if code == 'unavailable':
                 # No error code means the CLI itself broke; keep a redacted stderr tail in the worker's error log.
-                from claude_digest_worker import log_failure
+                from .claude_worker import log_failure
                 log_failure('summary-' + action, result.returncode, result.stderr.decode('utf-8', 'replace'),
                             'summary %s unavailable' % action)
             if action == 'related' and code == 'unmapped_project':
@@ -264,7 +264,7 @@ def extract(task, *, extractor=None, command=None, model, conflict_model=None, c
         if extractor:
             result = extractor(request, model=chosen)
         else:
-            from digest_io import extract_command
+            from .digest_io import extract_command
             result = extract_command(request, model=chosen, command=command)
         calls.append(result)
         return result
@@ -367,14 +367,14 @@ def tick(state_dir, backend, *, metrics_path=None, **kw):
         raise
     finally:
         if metrics_path is not None and metric['status'] != 'scheduled':
-            from digest_io import append_metric
+            from .digest_io import append_metric
             metric.update(end=datetime.now(timezone.utc).isoformat(), duration_seconds=time.monotonic() - clock)
             append_metric(metrics_path, metric)
 
 
 def _tick(state_dir, backend, *, roots=None, home=None, max_batches=8, now=None, boot_id=None, force=False, **options):
     """Daily/boot schedule like digest_scheduler: once due, run windows until drained, at most max_batches per tick."""
-    from digest_io import run_lock
+    from .digest_io import run_lock
     if type(max_batches) is not int or not 1 <= max_batches <= 1000:
         raise ValidationError('invalid batch bound')
     instant = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)

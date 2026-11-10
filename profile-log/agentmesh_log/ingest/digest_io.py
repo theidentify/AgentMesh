@@ -1,11 +1,11 @@
 """Small helpers the broker summary and its Claude worker share: canonical JSON, strict packet parsing, the run lock,
-the metrics log and the model worker call. Moved out of the retired SQLite modules (memory_sync, bounded_digest)."""
+the metrics log and the model worker call. Moved here from memory-sync/digest_io.py."""
 from __future__ import annotations
 
 from contextlib import contextmanager
 import json
 
-from bounded_protocol import ValidationError
+from .protocol import ValidationError
 
 
 def canonical(value):
@@ -33,34 +33,30 @@ def load_packet(text):
 
 
 @contextmanager
-def run_lock(db, *, wait=0.0, name='bounded digest'):
-    """OS lock is held across model calls, no long database write transaction.
+def run_lock(target):
+    """A non-blocking OS lock on `<target>.bounded.lock`, held across model calls; a held lock is `overlap`.
 
-    `wait` seconds retries a held lock before reporting `overlap: <name>`."""
+    The lock file name is unchanged from memory-sync, so a job still running the old code and one running this
+    package exclude each other while a device migrates."""
     import os
-    import time
     from pathlib import Path
-    path = str(Path(db).resolve()) + '.bounded.lock'
+    path = str(Path(target).resolve()) + '.bounded.lock'
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     acquired = False
-    deadline = time.monotonic() + wait
     try:
-        while not acquired:
-            try:
-                if os.name == 'nt':
-                    import msvcrt
-                    if os.fstat(fd).st_size == 0:
-                        os.write(fd, b'0')
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise ValidationError('overlap: %s already running' % name) from None
-                time.sleep(0.25)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b'0')
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError:
+            raise ValidationError('overlap: bounded digest already running') from None
         yield
     finally:
         if acquired:

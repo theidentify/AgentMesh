@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import transcripts
+from agentmesh_log.ingest import transcripts
 
 
 def record(ident, text='synthetic note'):
@@ -74,15 +74,15 @@ class SqliteInventoryTests(unittest.TestCase):
     MARKERS = ('import sqlite3', 'sqlite3.connect', 'open_readonly', 'sqlite_memory')
 
     def test_no_new_sqlite_users(self):
-        root = Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parents[3]
         found = set()
-        for base in ('memory-sync', 'insight', 'profile-log/agentmesh_log'):
+        for base in ('insight', 'profile-log/agentmesh_log'):
             for path in (root / base).rglob('*.py'):
                 rel = path.relative_to(root).as_posix()
                 if path.name.startswith('test_') or path.name == 'conftest.py' or '/tests/' in rel or '/src/' in rel: continue
                 if any(m in path.read_text(encoding='utf-8', errors='replace') for m in self.MARKERS): found.add(rel)
         self.assertLessEqual(found, self.KEEP | self.RETIRE, 'new SQLite user; the staging database is being retired')
-        self.assertNotIn('memory-sync/transcripts.py', found)
+        self.assertNotIn('profile-log/agentmesh_log/ingest/transcripts.py', found)
 
 
 if __name__ == '__main__':

@@ -215,13 +215,3 @@ def build_request(batch, related, max_chars=60000):
     if len(INSTRUCTIONS)+len(text)+len(encode(output_format)) > max_chars:
         raise ValidationError('context overflow including output schema; cursor unchanged')
     return {'instructions': INSTRUCTIONS, 'input': [{'role':'user', 'content':text}], 'store':False, 'reasoning':{'effort':'low'},'text':output_format}
-
-
-def normalize_usage(usage):
-    usage = usage or {}
-    total = usage.get('input_tokens', usage.get('prompt_tokens'))
-    cached = (usage.get('input_tokens_details') or usage.get('prompt_tokens_details') or {}).get('cached_tokens')
-    output = usage.get('output_tokens', usage.get('completion_tokens'))
-    reasoning = (usage.get('output_tokens_details') or usage.get('completion_tokens_details') or {}).get('reasoning_tokens')
-    return {'input_total_tokens':total, 'input_uncached_tokens': total-cached if total is not None and cached is not None else None,
-            'cache_read_tokens':cached, 'output_tokens':output, 'reasoning_tokens':reasoning, 'actual_cost_usd':None}

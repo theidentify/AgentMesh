@@ -1,22 +1,18 @@
 """Pure transcript reading for OMP, Codex and Claude JSONL (SQLite retirement R0).
 
-No database: the caller owns the cursor (file identity, byte offset, line number) and decides where events go.
-The staging ingest stores them in its database today; the broker writer will use the same reader later.
+No database: the caller (the broker summary in digest.py) owns the cursor (file identity, byte offset, line number) and
+decides where events go.
 Only complete newline-terminated records are consumed, so a line still being written is read next time.
 """
 from hashlib import sha256
 import json
 from pathlib import Path
-import sys
 
 
 def parsers():
-    """The pure parsers under src/ (never ingest.py/db.py, which open PostgreSQL)."""
-    source = Path(__file__).resolve().parent / 'src'
-    if source.is_dir() and str(source) not in sys.path:
-        sys.path.insert(0, str(source))
-    from omp_memory import parser, codex_parser, claude_parser
-    return parser, codex_parser, claude_parser
+    """The pure JSONL parsers: OMP (common), Codex and Claude."""
+    from .parsers import claude, codex, common
+    return common, codex, claude
 
 
 def resolve(transcript, agent, project=None):

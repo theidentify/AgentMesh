@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-import job_notify
+from agentmesh_log.control import jobrun as job_notify
 
 URL = 'https://discord.com/api/webhooks/123/abc-DEF_9'
 

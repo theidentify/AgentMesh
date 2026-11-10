@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
-from .parser import ObservationEvent, _normalize_timestamp, is_excluded, redact_secrets
+from .common import ObservationEvent, _normalize_timestamp, is_excluded, redact_secrets
 
 
 AGENT = "claude"

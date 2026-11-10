@@ -2,7 +2,6 @@
 
 The write side (heads, remember/revise, quarantine) is tested in profile-log; here the backend is an in-memory fake.
 """
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,10 +10,9 @@ import sys
 import pytest
 from types import SimpleNamespace
 
-import broker_digest
-from bounded_protocol import ValidationError
+from agentmesh_log.ingest import digest as broker_digest
+from agentmesh_log.ingest.protocol import ValidationError
 
-HERE = Path(__file__).resolve().parent
 
 
 def record(ident, text, stamp='2026-11-02T00:00:01Z'):
@@ -185,28 +183,25 @@ def test_cli_backend_errors(tmp_path):
     with pytest.raises(ValidationError): broker_digest.CliBackend([sys.executable], 'relative', str(tmp_path))
 
 
-def test_production_broker_backend(tmp_path, monkeypatch, capsys):
-    spec = importlib.util.spec_from_file_location('agentmesh_production_broker', HERE / 'jobs/agentmesh_production.py')
-    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+def test_production_broker_backend(tmp_path, capsys):
+    from agentmesh_log.ingest import production as module
     folder = tmp_path / 'omp' / '-Workspaces-demo'; folder.mkdir(parents=True)
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
     config = tmp_path / 'agentmesh-production.json'
     broker = dict(cli_argv=[sys.executable, '-m', 'agentmesh_log.cli'], agent_key=str(tmp_path / 'k'),
                   mapping=str(tmp_path / 'm'), state_dir=str(tmp_path / 'jobs'))
-    value = dict(backend='broker', broker=broker, runtime=str(HERE), status_dir=str(tmp_path / 'status'),
+    value = dict(backend='broker', broker=broker, status_dir=str(tmp_path / 'status'),
                  roots={'omp': str(tmp_path / 'omp')}, summary=dict(model='m'))
     config.write_text(json.dumps(value))
-    monkeypatch.setattr(module, 'CONFIG', config)
-    monkeypatch.setattr(sys, 'path', list(sys.path))
-    assert module.execute('ingest', []) == 0
+    assert module.execute('ingest', config=config) == 0
     report = json.loads((tmp_path / 'status/last-ingest.json').read_text())
     assert (report['backend'], report['processed'], report['errors']) == ('broker', 1, 0)
     assert not (tmp_path / 'jobs' / broker_digest.CURSORS).exists()
     capsys.readouterr()
-    assert module.execute('recall', []) == 1
+    assert module.execute('recall', config=config) == 1
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])['error_class'] == 'ValueError'
     config.write_text(json.dumps({**value, 'broker': {**broker, 'extra': 1}}))
-    assert module.execute('ingest', []) == 1
+    assert module.execute('ingest', config=config) == 1
 
 
 def test_tick_metrics(setup):

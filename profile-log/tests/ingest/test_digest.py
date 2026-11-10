@@ -2,7 +2,6 @@
 
 The write side (heads, remember/revise, quarantine) is tested in profile-log; here the backend is an in-memory fake.
 """
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,10 +10,9 @@ import sys
 import pytest
 from types import SimpleNamespace
 
-import broker_digest
-from bounded_protocol import ValidationError
+from agentmesh_log.ingest import digest as broker_digest
+from agentmesh_log.ingest.protocol import ValidationError
 
-HERE = Path(__file__).resolve().parent
 
 
 def record(ident, text, stamp='2026-11-02T00:00:01Z'):
@@ -112,7 +110,7 @@ def test_device_renumbering_keeps_cursors(setup):
     assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two', 'gamma three']
 
 
-def test_failed_or_stale_write_keeps_cursors(setup):
+def test_failed_write_keeps_cursors(setup):
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
     fake.fail = True
@@ -125,7 +123,7 @@ def test_failed_or_stale_write_keeps_cursors(setup):
     assert run(tmp_path, fake)['status'] == 'committed' and len(fake.writes) == 1
 
 
-def test_rotation_restarts_and_quiet_file_moves(setup):
+def test_rotation_and_quiet_file(setup):
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one') + record('u2', 'beta two'))
     run(tmp_path, fake, max_events=1)
@@ -185,28 +183,25 @@ def test_cli_backend_errors(tmp_path):
     with pytest.raises(ValidationError): broker_digest.CliBackend([sys.executable], 'relative', str(tmp_path))
 
 
-def test_production_broker_backend(tmp_path, monkeypatch, capsys):
-    spec = importlib.util.spec_from_file_location('agentmesh_production_broker', HERE / 'jobs/agentmesh_production.py')
-    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+def test_production_broker_backend(tmp_path, capsys):
+    from agentmesh_log.ingest import production as module
     folder = tmp_path / 'omp' / '-Workspaces-demo'; folder.mkdir(parents=True)
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
     config = tmp_path / 'agentmesh-production.json'
     broker = dict(cli_argv=[sys.executable, '-m', 'agentmesh_log.cli'], agent_key=str(tmp_path / 'k'),
                   mapping=str(tmp_path / 'm'), state_dir=str(tmp_path / 'jobs'))
-    value = dict(backend='broker', broker=broker, runtime=str(HERE), status_dir=str(tmp_path / 'status'),
+    value = dict(backend='broker', broker=broker, status_dir=str(tmp_path / 'status'),
                  roots={'omp': str(tmp_path / 'omp')}, summary=dict(model='m'))
     config.write_text(json.dumps(value))
-    monkeypatch.setattr(module, 'CONFIG', config)
-    monkeypatch.setattr(sys, 'path', list(sys.path))
-    assert module.execute('ingest', []) == 0
+    assert module.execute('ingest', config=config) == 0
     report = json.loads((tmp_path / 'status/last-ingest.json').read_text())
     assert (report['backend'], report['processed'], report['errors']) == ('broker', 1, 0)
     assert not (tmp_path / 'jobs' / broker_digest.CURSORS).exists()
     capsys.readouterr()
-    assert module.execute('recall', []) == 1
+    assert module.execute('recall', config=config) == 1
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])['error_class'] == 'ValueError'
     config.write_text(json.dumps({**value, 'broker': {**broker, 'extra': 1}}))
-    assert module.execute('ingest', []) == 1
+    assert module.execute('ingest', config=config) == 1
 
 
 def test_tick_metrics(setup):
@@ -224,7 +219,7 @@ def test_tick_metrics(setup):
     assert rows[1]['errors'] == ['ValidationError'] and 'content' not in json.dumps(rows)
 
 
-def test_stale_window_is_redone_then_left_pending(setup):
+def test_stale_window_redo_then_pending(setup):
     """Another device changed the related memories mid-window: redo it once, then end pending without failing."""
     tmp_path, folder, fake = setup
     (folder / 'a.jsonl').write_text(record('u1', 'alpha one'))
@@ -243,7 +238,7 @@ def test_stale_window_is_redone_then_left_pending(setup):
     assert [i['content'] for w in fake.writes for i in w['items']] == ['alpha one', 'beta two']
 
 
-def test_unavailable_cli_logs_a_redacted_stderr_tail(tmp_path, monkeypatch):
+def test_unavailable_cli_logs_stderr(tmp_path, monkeypatch):
     """A summary CLI that breaks without an error code leaves its stderr tail in the worker's error log."""
     log = tmp_path / 'claude-worker.err.log'
     monkeypatch.setenv('AGENTMESH_WORKER_ERROR_LOG', str(log))
@@ -256,7 +251,7 @@ def test_unavailable_cli_logs_a_redacted_stderr_tail(tmp_path, monkeypatch):
     assert record['stderr'] == ['ConnectionResetError: broker went away [masked]']
 
 
-def test_unmapped_project_waits_and_others_carry_on(setup):
+def test_unmapped_project_waits(setup):
     """One project without a mapping holds back only its own events; once mapped, the next tick summarizes them."""
     tmp_path, folder, fake = setup
     other = tmp_path / 'omp' / '-Workspaces-newproj'; other.mkdir()

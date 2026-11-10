@@ -1,4 +1,4 @@
-"""One-line Discord alerts from the supervisor, under the same webhook rules as memory-sync/job_notify.py.
+"""One-line Discord alerts from the supervisor, under the same webhook rules as the job wrapper (control/jobrun.py).
 
 Owner-only webhook file, Discord webhook URLs only, no mentions, verified TLS. Failures never stop the supervisor.
 """
@@ -24,7 +24,7 @@ def read_webhook(path):
 
 
 def tls_context():
-    """Verified TLS; python.org builds may lack a CA bundle, so fall back to the OS one (as job_notify.py does)."""
+    """Verified TLS; python.org builds may lack a CA bundle, so fall back to the OS one (as jobrun.py does)."""
     context=ssl.create_default_context()
     if not context.get_ca_certs() and not os.path.exists(ssl.get_default_verify_paths().cafile or ''):
         for bundle in SYSTEM_CA:

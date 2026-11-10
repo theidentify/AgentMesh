@@ -276,8 +276,8 @@ and are flagged. Unknown models produce unknown costs.
 Compute samples fixed launchd labels and exact-name cloudflared via argv, with
 five-second subprocess timeouts and one combined ps call. Job aggregates read
 bounded launchd log tails; old lines remain readable but missing CPU/wall fields
-make affected totals unknown. `memory-sync/job_notify.py` is shared with
-memory-sync: it adds monotonic wall time, child user+system CPU deltas and RSS to
+make affected totals unknown. The job wrapper (`profile-log/agentmesh_log/control/jobrun.py`, formerly
+`memory-sync/job_notify.py`) adds monotonic wall time, child user+system CPU deltas and RSS to
 the existing content-free JSON line. `ru_maxrss` is the platform's child high-water
 mark, not an additive delta; Windows without `resource` records null CPU/RSS.
 The estimate of summary waiting time is wall minus CPU, not a measured API trace.

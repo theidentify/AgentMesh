@@ -1,5 +1,13 @@
 # Concepts
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 Understand how AgentMesh keeps memory on each device while sharing it, encrypted, through the profile log. Begin with [What is AgentMesh](../introduction) for the application's scope; no installation is needed yet. You will know what each part does and which pages describe the legacy packet sync.
 
 ## How AgentMesh works

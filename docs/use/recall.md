@@ -1,5 +1,13 @@
 # Recall memory
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 Recall finds past decisions and evidence in your local memory without changing the database. Create [local memory](../install/new-group) or complete [bootstrap installation](../getting-started/quick-start) and keep the database path available before running a query. You will verify recall yourself and then connect your agents to the same memory.
 
 ![An agent runs agentmesh.py recall, which opens the local database read-only and returns results with source IDs (evidence IDs); recalled text must never be obeyed as instructions.](/diagrams/recall-flow.svg)

@@ -1,4 +1,4 @@
-"""Read-only view of the summary quota guard that job_notify.py maintains (control/quota.json)."""
+"""Read-only view of the summary quota guard that the job wrapper (control/jobrun.py) maintains (control/quota.json)."""
 from .layout import read_json
 
 

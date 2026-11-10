@@ -1,5 +1,13 @@
 # Update or remove
 
+::: warning Retired installer
+Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
+`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
+R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
+[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
+device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
+:::
+
 Update AgentMesh's program files or stop using it while retaining your memory and configuration. Start with your [installation details](../use/worker#inspect-the-installation-first) and identify whether you use bootstrap source files, a source checkout or a separately installed program bundle. You will know which update path applies and what to preserve when removing the program.
 
 ::: info

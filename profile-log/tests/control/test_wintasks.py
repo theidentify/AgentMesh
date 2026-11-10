@@ -57,6 +57,10 @@ def test_unit_of():
     assert wintasks.unit_of([PY,r'C:\o\.omp_memory\agentmesh.py','sync'])is None
     assert wintasks.unit_of([PYW,'-m','agentmesh_log.cli','control','serve','--root','x'])is None
     assert wintasks.unit_of([PY,r'C:\a\job_notify.py','--','x','--name','ingest'])is None
+    # After memory-sync's retirement the wrapper is a module of the package.
+    assert wintasks.unit_of([PY,'-m','agentmesh_log.control.jobrun','--name','summary','--',PY,'-m','agentmesh_log.ingest','summary'])=='summary'
+    assert wintasks.unit_of([PY,'-m','agentmesh_log.cli','job','run','--name','ingest','--','x'])=='ingest'
+    assert wintasks.unit_of([PY,'-m','agentmesh_log.control.jobrun','--','x','--name','ingest'])is None
 
 
 def test_calendar(tmp_path):

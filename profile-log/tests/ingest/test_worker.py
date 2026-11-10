@@ -1,8 +1,9 @@
 import json
+import os
 
 import pytest
 
-from bounded_protocol import build_request
+from agentmesh_log.ingest.protocol import build_request
 
 AUTH_EXPIRED_RESULT = {
     'is_error': True, 'subtype': 'success', 'terminal_reason': 'api_error',
@@ -17,8 +18,8 @@ def request():
     return build_request(batch, [])
 
 
-def test_command_is_noninteractive_and_uses_request_schema():
-    import claude_digest_worker as worker
+def test_command_noninteractive():
+    from agentmesh_log.ingest import claude_worker as worker
     req = request()
     args = worker.command(req, executable='claude', model='claude-sonnet-5-5')
     assert args[args.index('--tools') + 1] == ''
@@ -30,9 +31,9 @@ def test_command_is_noninteractive_and_uses_request_schema():
     assert args[args.index('--effort') + 1] == 'low'
 
 
-def test_schema_patterns_are_unicode_js_regex_and_keep_python_meaning():
+def test_schema_patterns_js_regex():
     import re
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     batch = [{'id': 7, 'kind': 'user_request', 'project': 'Agent-Mesh.claude-wt 1', 'content': 'use sqlite',
               'occurred_at': '2026-10-13T00:00:00Z'}]
     args = worker.command(build_request(batch, []), model='claude-haiku-5-5')
@@ -47,8 +48,8 @@ def test_schema_patterns_are_unicode_js_regex_and_keep_python_meaning():
             assert not re.match(pattern, 'project.AgentXMesh.claude-wt 1.constraint.x')
 
 
-def test_rejects_requests_with_extra_options():
-    import claude_digest_worker as worker
+def test_rejects_extra_options():
+    from agentmesh_log.ingest import claude_worker as worker
     req = dict(request(), tools=[])
     with pytest.raises(ValueError):
         worker.check_request(req)
@@ -57,8 +58,8 @@ def test_rejects_requests_with_extra_options():
         worker.check_request(req)
 
 
-def test_decode_result_returns_bounded_envelope():
-    import claude_digest_worker as worker
+def test_decode_result_bounded():
+    from agentmesh_log.ingest import claude_worker as worker
     payload = {'items': [], 'reviewed_event_ids': [7], 'conflicts': []}
     result = {'is_error': False, 'subtype': 'success', 'structured_output': payload,
               'modelUsage': {'claude-sonnet-5-5': {}}, 'total_cost_usd': 0.01,
@@ -75,8 +76,9 @@ def test_decode_result_returns_bounded_envelope():
         worker.decode_result(dict(result, is_error=True), 'claude-sonnet-5-5')
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
 def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     fake = tmp_path / 'claude'
     fake.write_text('#!/bin/sh\necho SECRET-EVIDENCE; exit 3\n')
     fake.chmod(0o755)
@@ -86,6 +88,7 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
     assert 'SECRET' not in out and json.loads(out) == {'error_class': 'ValueError', 'reason': 'claude exit 3'}
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
 @pytest.mark.parametrize('stdout, code, reason', [
     (AUTH_EXPIRED_RESULT, 1, 'claude login expired'),
     (AUTH_EXPIRED_RESULT, 0, 'claude login expired'),
@@ -101,9 +104,9 @@ def test_main_never_echoes_cli_output(tmp_path, capsys, monkeypatch):
       'result': 'SECRET provider text'}, 1, 'api_error'),
     ({'type': 'result', 'is_error': True, 'subtype': 'error_max_budget_usd'}, 0, 'error_max_budget_usd'),
     ({'type': 'result', 'is_error': True, 'terminal_reason': 'SECRET Free Text!'}, 1, 'claude exit 1'),
-])
-def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
-    import claude_digest_worker as worker
+], ids=['s%d' % i for i in range(12)])
+def test_fixed_failure_reason(tmp_path, capsys, monkeypatch, stdout, code, reason):
+    from agentmesh_log.ingest import claude_worker as worker
     fake = tmp_path / 'claude'
     fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(stdout) + "'\nexit " + str(code) + "\n")
     fake.chmod(0o755)
@@ -116,20 +119,22 @@ def test_main_reports_only_a_fixed_cli_failure_reason(tmp_path, capsys, monkeypa
         assert stdout['result'] not in out
 
 
-def test_expired_login_detail_end_to_end(tmp_path):
+@pytest.mark.skipif(os.name == 'nt', reason='the claude stand-in is a POSIX shell script')
+def test_expired_login_detail_end_to_end(tmp_path, monkeypatch):
     import sys
     from pathlib import Path
-    import digest_io
-    import claude_digest_worker
-    from bounded_protocol import ValidationError, error_detail
+    from agentmesh_log.ingest import digest_io
+    from agentmesh_log.ingest import claude_worker as claude_digest_worker
+    from agentmesh_log.ingest.protocol import ValidationError, error_detail
 
     fake = tmp_path / 'claude'
     fake.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + json.dumps(AUTH_EXPIRED_RESULT) + "'\nexit 1\n")
     fake.chmod(0o755)
+    monkeypatch.setenv('PYTHONPATH', str(Path(claude_digest_worker.__file__).resolve().parents[2]))
     with pytest.raises(ValidationError) as caught:
         digest_io.extract_command(
             request(), model='claude-haiku-5-5',
-            command=[sys.executable, str(Path(claude_digest_worker.__file__)), '--claude', str(fake)],
+            command=[sys.executable, '-m', 'agentmesh_log.ingest.claude_worker', '--claude', str(fake)],
         )
     detail = error_detail(caught.value)
     assert detail == 'model worker failed: claude login expired; coverage unchanged'
@@ -140,7 +145,7 @@ def test_expired_login_detail_end_to_end(tmp_path):
 def test_windows_batch_shim_rejected(suffix, monkeypatch, capsys):
     import io
     from types import SimpleNamespace
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     monkeypatch.setattr(worker, 'os', SimpleNamespace(name='nt'))
     monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
     monkeypatch.setattr(worker.subprocess, 'run', lambda *a, **k: pytest.fail('batch shim must not run'))
@@ -151,7 +156,7 @@ def test_windows_batch_shim_rejected(suffix, monkeypatch, capsys):
 def test_windows_exe_runs_without_shell(monkeypatch, capsys):
     import io
     from types import SimpleNamespace
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     req = request(); calls = []
     executable = r'C:\Program Files\Claude\claude.exe'
     monkeypatch.setattr(worker, 'os', SimpleNamespace(name='nt'))
@@ -169,7 +174,7 @@ def test_windows_exe_runs_without_shell(monkeypatch, capsys):
 
 def test_posix_batch_suffix_is_unchanged(monkeypatch):
     from types import SimpleNamespace
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     monkeypatch.setattr(worker, 'os', SimpleNamespace(name='posix'))
     assert worker.command(request(), executable='/bin/claude.cmd', model='model')[0] == '/bin/claude.cmd'
 
@@ -185,9 +190,9 @@ def test_posix_batch_suffix_is_unchanged(monkeypatch):
 def test_markers(marker, reason, stream, monkeypatch, capsys):
     import io
     from types import SimpleNamespace
-    import claude_digest_worker as worker
-    from digest_io import worker_reason
-    import job_notify
+    from agentmesh_log.ingest import claude_worker as worker
+    from agentmesh_log.ingest.digest_io import worker_reason
+    from agentmesh_log.control import jobrun as job_notify
     result = dict(returncode=7, stdout='', stderr=''); result[stream] = marker
     monkeypatch.setattr(worker.subprocess, 'run', lambda *a, **k: SimpleNamespace(**result))
     monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
@@ -206,7 +211,7 @@ def test_markers(marker, reason, stream, monkeypatch, capsys):
 def test_launch_failure(kind, reason, monkeypatch, capsys):
     import io
     import subprocess
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     exc = dict(timeout=subprocess.TimeoutExpired('secret source line 42', 1),
                missing=FileNotFoundError('secret source line 42'), denied=PermissionError('secret source line 42'))[kind]
     def fail(*a, **k): raise exc
@@ -229,7 +234,7 @@ def fake_claude(tmp_path, code, stderr):
 
 def run_with(monkeypatch, argv, extra):
     import io
-    import claude_digest_worker as worker
+    from agentmesh_log.ingest import claude_worker as worker
     real = worker.command
     monkeypatch.setattr(worker, 'command', lambda request, **kw: argv + real(request, **kw)[1:1])
     monkeypatch.setattr(worker.sys, 'stdin', io.StringIO(json.dumps(request())))
@@ -254,8 +259,8 @@ def test_failure_log_is_redacted(tmp_path, monkeypatch, capsys):
         assert log.stat().st_mode & 0o777 == 0o600
 
 
-def test_failure_log_from_environment_and_capped(tmp_path, monkeypatch, capsys):
-    import claude_digest_worker as worker
+def test_failure_log_env_capped(tmp_path, monkeypatch, capsys):
+    from agentmesh_log.ingest import claude_worker as worker
     log = tmp_path / 'claude-worker.err.log'
     monkeypatch.setenv(worker.ERROR_LOG_ENV, str(log))
     monkeypatch.setattr(worker, 'ERROR_LOG_MAX', 600)
@@ -267,12 +272,12 @@ def test_failure_log_from_environment_and_capped(tmp_path, monkeypatch, capsys):
     assert all(json.loads(r)['stderr'] == ['fatal error: spawn failed'] for r in rows)
 
 
-def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, capsys):
-    import claude_digest_worker as worker
+def test_no_failure_log_by_default(tmp_path, monkeypatch, capsys):
+    from agentmesh_log.ingest import claude_worker as worker
     monkeypatch.delenv(worker.ERROR_LOG_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
     assert run_with(monkeypatch, fake_claude(tmp_path, 1, 'Error: boom\n'), []) == 1
-    assert sorted(p.name for p in tmp_path.iterdir()) == ['fake_claude.py']
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name != 'agentmesh-settings-home') == ['fake_claude.py']
     # A successful run writes nothing even with a path set.
     result = dict(type='result', subtype='success', is_error=False, structured_output={'items': []},
                   modelUsage={'claude-haiku-5-5': {}}, usage={})
@@ -287,7 +292,7 @@ def test_no_failure_log_without_a_path_or_on_success(tmp_path, monkeypatch, caps
     assert not log.exists()
 
 
-def test_worker_stdio_is_utf8_under_an_ansi_code_page():
+def test_stdio_utf8_under_ansi():
     """A Windows scheduled task starts Python with cp1252 stdio; packets must still cross the pipe as UTF-8."""
     import os
     from pathlib import Path
@@ -295,12 +300,12 @@ def test_worker_stdio_is_utf8_under_an_ansi_code_page():
     import sys
     text = 'ภาษาไทย ✓ naïve'
     # The child checks what it decoded from stdin, then writes the same text back for the parent to decode as UTF-8.
-    script = 'import sys, digest_io\n{}ok = sys.stdin.read() == {}\nsys.stdout.write(("ok " if ok else "bad ") + {})\n'
+    script = 'import sys\nfrom agentmesh_log.ingest import digest_io\n{}ok = sys.stdin.read() == {}\nsys.stdout.write(("ok " if ok else "bad ") + {})\n'
     env = dict(os.environ, PYTHONIOENCODING='cp1252', PYTHONUTF8='0')
     def run(fix):
         code = script.format('digest_io.utf8_stdio()\n' if fix else '', ascii(text), ascii(text))
         result = subprocess.run([sys.executable, '-c', code], input=text.encode('utf-8'), capture_output=True,
-                                env=env, cwd=Path(__file__).parent)
+                                env=env, cwd=Path(__file__).resolve().parents[2])
         return result.returncode, result.stdout.decode('utf-8', 'replace')
     assert run(False) != (0, 'ok ' + text)  # the failure the fix is for
     assert run(True) == (0, 'ok ' + text)

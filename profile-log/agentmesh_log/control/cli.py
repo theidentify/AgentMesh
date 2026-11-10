@@ -27,6 +27,8 @@ def add_parsers(commands):
     for action in ('start','stop','restart','reset','adopt','release','reload'): sub.add_parser(action).add_argument('unit')
     consolidate=sub.add_parser('consolidate',help='run every unit under the supervisor: one background item (dry run unless --apply)')
     consolidate.add_argument('--apply',action='store_true')
+    rewire=sub.add_parser('rewire-ingest',help="point the ingest, summary and retention jobs at agentmesh_log instead of memory-sync (dry run unless --apply)")
+    rewire.add_argument('--apply',action='store_true'); rewire.add_argument('--back',action='store_true')
     handover=sub.add_parser('handover',help='hand the supervisor to AgentMesh Control as its login item (--back to undo)')
     handover.add_argument('--back',action='store_true')
     handover.add_argument('--app',default=None,help='the AgentMesh Control bundle (default ~/Applications)')
@@ -184,6 +186,7 @@ def execute(args, *, layout=None, call=None, console=None, launchd=None, agents=
     if call is None: from .client import call
     if args.action in ('adopt','release','panic-revert','consolidate','reload','handover'):
         return local(args,layout,call,console,launchd,agents,tasks,windows)
+    if args.action=='rewire-ingest': return rewire_ingest(args,layout,console,windows)
     if args.action.startswith('sqlite-'): return sqlite(args,layout,console,helper)
     op,params=CALLS[args.action](args)
     try: response=call(layout,op,params)
@@ -205,6 +208,21 @@ def sqlite(args, layout, console, helper):
         from .presence_helper import HelperPresence
         helper=HelperPresence(layout.presence_helper)
     return sqlite_archive.delete(layout,layout.root,args.archive,console=console,helper=helper)
+
+
+def rewire_ingest(args, layout, console, windows=False, check=None):
+    """memory-sync's retirement: owner-run against state.db with typed presence, like the other moves."""
+    from . import rewire
+    from .migrate import audit
+    from .store import Store
+    if console is None:
+        from ..presence import ConsolePresence
+        console=ConsolePresence(output=lambda text:print(text,file=sys.stderr))
+    layout.ensure(); store=Store(layout.state)
+    try:
+        return rewire.rewire(layout,store,console=console,apply=args.apply,back=args.back,windows=WINDOWS or windows,
+            check=check or rewire.importable,audit=audit)
+    finally: store.close()
 
 
 def local(args, layout, call, console, launchd, agents, tasks=None, windows=False):

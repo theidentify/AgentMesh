@@ -52,13 +52,18 @@ def is_reviewer_session(meta: dict[str, Any] | None) -> bool:
     return isinstance(source, dict) and "subagent" in source
 
 
+def _under(path: str, root: str) -> bool:
+    """True when ``path`` is inside ``root``; either separator counts, since Windows cwds use ``\\``."""
+    return path.startswith((root + "/", root + "\\"))
+
+
 def infer_codex_project(meta: dict[str, Any] | None) -> str:
-    cwd = str((meta or {}).get("cwd") or "").rstrip("/")
-    if cwd.startswith(WORKSPACES_ROOT + "/"):
+    cwd = str((meta or {}).get("cwd") or "").rstrip("/\\")
+    if _under(cwd, WORKSPACES_ROOT):
         # Match Claude Code's project-folder encoding (every non-alphanumeric
         # character becomes "-") so one workspace is one project for both agents.
         return re.sub(r"[^A-Za-z0-9]", "-", cwd[len(WORKSPACES_ROOT) + 1 :])
-    if cwd.startswith(CODEX_SCRATCH_ROOT + "/"):
+    if _under(cwd, CODEX_SCRATCH_ROOT):
         return "codex-scratch"
     return Path(cwd).name or "unknown"
 

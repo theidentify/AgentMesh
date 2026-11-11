@@ -76,6 +76,8 @@ final class Stub: Evaluator, @unchecked Sendable {
     #expect(parse(["confirm", "--action", "export"]) == .confirm("export"))
     // `control sqlite-archive delete` asks the helper with action "delete"; it was refused before (exit 64, no prompt).
     #expect(parse(["confirm", "--action", "delete"]) == .confirm("delete"))
+    // connector.approve asks the helper with action "approve" (the CLI's presence action); refused before 2026-11-11.
+    #expect(parse(["confirm", "--action", "approve"]) == .confirm("approve"))
     #expect(parse(["confirm", "--action", "apply"]) == nil)
     #expect(parse(["confirm", "--action", "migrate", "extra"]) == nil)
     #expect(parse(["available", "--action", "migrate"]) == nil)

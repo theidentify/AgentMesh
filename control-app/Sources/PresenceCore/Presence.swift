@@ -26,7 +26,7 @@ public protocol Evaluator: Sendable {
 /// Actions that may reach this sheet. Kept narrower than presence.ACTIONS: backend moves and mappings (migrate),
 /// opening the memory viewer (read), a plaintext memory export (export) and deleting a SQLite archive for good
 /// (delete, `control sqlite-archive delete`).
-public let actions: Set<String> = ["migrate", "read", "export", "delete", "approve"]
+public let actions: Set<String> = ["migrate", "read", "export", "delete", "approve", "remove"]
 public let maxSummaryBytes = 4096
 public let reasonPrefixChars = 400
 

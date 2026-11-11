@@ -31,6 +31,8 @@ OPS={  # op: (tier, exact argument names)
     'memory.export':(2,frozenset({'path','folder','include_internal','allow_synced'})),
     # Claude connectors: the app lists live gateway requests and approves one with the code the browser shows.
     'connector.pending':(0,frozenset()),'connector.approve':(2,frozenset({'code','code_hash'})),
+    # Devices: revoke another device of this account (M3e). Touch ID every time; it also rotates the scope keys it held.
+    'device.remove':(2,frozenset({'device_id'})),
 }
 REDACTED=frozenset({'code'})  # a live approval code never reaches the audit log
 
@@ -42,9 +44,9 @@ class OpError(Exception):
 
 class Control:
     def __init__(self, layout, backend, *, clock=time.monotonic, units=UNITS, moves=None, mappings=None, memory=None,
-                 connector=None):
+                 connector=None, devices=None):
         self.layout,self.backend,self.clock,self.units,self.moves=layout,backend,clock,units,moves
-        self.mappings,self.memory,self.connector=mappings,memory,connector
+        self.mappings,self.memory,self.connector,self.devices=mappings,memory,connector,devices
         self.lock=threading.Lock(); self.recent={}
 
     def handle(self, request, caller):
@@ -179,6 +181,12 @@ class Control:
     def op_connector_approve(self, code, code_hash):
         """Tier 2: approve the request the app showed, after the supervisor's presence check."""
         return self.connector_call('approve',code,code_hash)
+
+    def op_device_remove(self, device_id):
+        """Tier 2: revoke another device, after the supervisor's presence check for this device."""
+        if self.devices is None: raise OpError('presence_unavailable')
+        try: return self.devices.remove(device_id)
+        except MoveError as error: raise OpError(error.code) from None
 
     def op_moves_get(self, move_id):
         if self.moves is None: raise OpError('unknown_move')

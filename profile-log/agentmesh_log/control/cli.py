@@ -73,6 +73,7 @@ def serve_windows(layout, folder=None):
     import signal
     from . import winmigrate
     from .connector import Connector
+    from .devices import Devices
     from .moves import Moves
     from .native import NativeBackend
     from .notify import notifier
@@ -93,7 +94,7 @@ def serve_windows(layout, folder=None):
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=tasks)
     control=Control(layout,Router(store,tasks,native),moves=moves,mappings=Mappings(layout,presence,moves),
-        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves))
+        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves),devices=Devices(layout,presence,moves))
     def tick():
         native.tick(); write_snapshot(layout,native)
     supervisor=Supervisor(control,layout,ticker=tick,on_close=native.shutdown)
@@ -118,6 +119,7 @@ def serve(layout, folder=None):
     from .presence_helper import HelperPresence
     from .memory import Memory
     from .connector import Connector
+    from .devices import Devices
     from .projects import Mappings
     from .router import Router
     from .server import Supervisor
@@ -135,7 +137,7 @@ def serve(layout, folder=None):
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=launchd)
     control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves),
-        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves))
+        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves),devices=Devices(layout,presence,moves))
     def tick():
         native.tick(); write_snapshot(layout,native)
     supervisor=Supervisor(control,layout,ticker=tick,on_close=native.shutdown)

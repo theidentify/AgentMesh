@@ -30,6 +30,10 @@ final class StatusModel {
     var confirmingMove: [String: String] = [:]
     var confirmingScope: [String: String] = [:]
     var projectErrors: [String: String] = [:]
+    /// Device revoke (M3e): the device asking for confirmation, the one in flight, and the last error per device.
+    var confirmingRevoke: String?
+    var revoking: String?
+    var deviceErrors: [String: String] = [:]
     var loginError: String?
     let supervisorItem = SupervisorLoginItem()
     /// The running ring's angle, 0..<1; nil when nothing spins (not running, or Reduce Motion is on).
@@ -108,6 +112,14 @@ final class StatusModel {
            case .success(let list) = await run({ try client.call("units", as: [UnitInfo].self) }) {
             infos = Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0) })
         }
+    }
+
+    func revoke(_ device: Device) async {
+        let client = client, id = device.deviceId
+        confirmingRevoke = nil; revoking = id; deviceErrors[id] = nil
+        defer { revoking = nil }
+        if case .failure(let error) = await run({ try client.deviceRemove(deviceId: id) }) { deviceErrors[id] = describeDevice(error) }
+        await refresh(inventory: true)
     }
 
     func perform(_ action: Action, unit: String) async {

@@ -68,3 +68,16 @@ def test_not_a_file(tmp_path):
     assert not HelperPresence(tmp_path/'bin'/'nope',runner=runner).available()
     (tmp_path/'d').mkdir(mode=0o700); (tmp_path/'d'/'x').mkdir(mode=0o700)
     assert not HelperPresence(tmp_path/'d'/'x',runner=runner).available() and runner.calls==[]
+
+
+def test_helper_allows_supervisor_actions():
+    """Every action the supervisor hands the Touch ID helper must be in its allowlist (PresenceCore `actions`), or
+    the helper exits 64 without a prompt and the app says Touch ID was cancelled. connector.approve uses the CLI's
+    presence action 'approve' (found 2026-11-11); moves use 'migrate'; sqlite-archive delete uses 'delete'."""
+    import re
+    from pathlib import Path
+    swift = (Path(__file__).resolve().parents[3]/'control-app/Sources/PresenceCore/Presence.swift').read_text(encoding='utf-8')
+    allowed = set(re.findall(r'"([a-z]+)"', re.search(r'public let actions: Set<String> = \[([^\]]*)\]', swift).group(1)))
+    connector = (Path(__file__).resolve().parents[2]/'agentmesh_log/connector_cli.py').read_text(encoding='utf-8')
+    assert "require('agent','approve'" in connector
+    assert {'approve', 'migrate', 'delete'} <= allowed

@@ -33,7 +33,7 @@ The icon is three nodes and a hub, with one corner badge for the most important 
 | A job is running | Green dot, and the hub turns into a spinning ring |
 | All healthy | Green dot |
 
-The app checks every 10 seconds, every 5 seconds with the menu open and every 2 seconds while a job runs, so short runs such as catch-up still show.
+The app checks every 10 seconds, every 5 seconds with the menu open and every 2 seconds while a job runs, so short runs still show.
 
 ## Control jobs and services
 
@@ -96,9 +96,9 @@ To stop the supervisor on purpose, untick **Run supervisor at login** instead.
 
 ## Choose a scope for a new project
 
-When an agent starts working in a project the migration mapping does not cover, catch-up imports everything else and holds that project's memory back. The app asks once, in a notification and in the menu, where it should go: one button per scope (for example Personal or Work), or **Skip** to keep it out of the profile log.
+When an agent starts working in a project the migration mapping does not cover, the summary writes everything else and holds that project's memory back. The app asks once, in a notification and in the menu, where it should go: one button per scope (for example Personal or Work), or **Skip** to keep it out of the profile log.
 
-Choosing a scope sends the request to the supervisor, which asks for Touch ID or your Mac password before it adds the mapping. The held-back memory imports on the next catch-up. This only adds a route for a waiting project; it never changes an existing one.
+Choosing a scope sends the request to the supervisor, which asks for Touch ID or your Mac password before it adds the mapping. The held-back memory is summarized on the next summary run. This only adds a route for a waiting project; it never changes an existing one.
 
 ## Approve a Claude connector
 

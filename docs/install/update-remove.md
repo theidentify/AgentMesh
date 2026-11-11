@@ -1,114 +1,99 @@
 # Update or remove
 
-::: warning Retired installer
-Parts of this page describe the memory-sync installers and runtime: `setup_macos.sh`, `bootstrap_windows.py`,
-`install_agent_rules.py`, `agentmesh.py`, packet sync and the SQLite database. These were removed in SQLite retirement
-R5b (2026-11-09). Until this guide is rewritten, set up a device's broker with the
-[profile-log README](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md). Move an existing
-device's transcript jobs with the [memory-sync migration runbook](../install/migrate-memory-sync).
-:::
+Update the AgentMesh code on a device, or take a device out of your account and remove AgentMesh from it. The commands
+assume the layout from the [macOS](./macos), [Windows](./windows) or [Linux](./linux) page.
 
-Update AgentMesh's program files or stop using it while retaining your memory and configuration. Start with your [installation details](../use/worker#inspect-the-installation-first) and identify whether you use bootstrap source files, a source checkout or a separately installed program bundle. You will know which update path applies and what to preserve when removing the program.
+## Update the code
 
-::: info
-These procedures concern the AgentMesh memory-sync application, not Hermes or other agents. Keep databases and WAL/SHM files, runtime and workflow configuration, identity and trust, security state, backups and the private exchange.
-:::
+Updates replace the copy under `~/.agentmesh/app`. State, keys, settings and the replica stay where they are.
 
-## Update a bootstrap installation
+1. Take a fresh copy from the commit you want to run, into a new folder, and swap it in:
 
-On macOS or Linux, stop the foreground worker or its [background service](./background-service), wait for the supplied package to finish syncing, then rerun the same [macOS](./macos) or [Linux](./linux) installer with the same local directory and device identity. On Windows, stop the current worker using its foreground, managed or service controls and rerun **START-WINDOWS.cmd**, as described in [Windows setup](./windows#updating). If you chose a custom local directory or device identity through the Python installer, repeat the same explicit `--local-dir` and `--node` values instead of reverting to the platform default; the Windows launcher remembers neither.
+   ```sh
+   git archive --format=tar HEAD profile-log | tar -x -C ~/.agentmesh/app.new
+   mv ~/.agentmesh/app ~/.agentmesh/app.old && mv ~/.agentmesh/app.new ~/.agentmesh/app
+   ```
 
-For a signed installation, bootstrap reruns now resolve signing paths using the same explicit-or-default rules as the managed worker and pass them to the sync cycle/loop. Keep the existing signing identity and trust state; rerunning does not create replacement keys or downgrade the signing policy.
+   Create `~/.agentmesh/app.new` first. On Windows, use the `git archive --format=zip` and `Expand-Archive` commands
+   from the Windows page.
+2. Install the pinned requirements again, in case they changed:
 
-Use `--no-ingest` on an update only when you intend to disable transcript ingestion again. To retain an already reviewed and enabled workflow, rerun without that flag.
+   ```sh
+   ~/.agentmesh/venv/bin/pip install -r ~/.agentmesh/app/profile-log/requirements.txt \
+     -r ~/.agentmesh/app/profile-log/requirements-s3.txt
+   ```
 
-The bootstrap extracts application files and preserves an existing database only when its group and device identity match the supplied package. It retains existing workflow settings and recorded security paths. Do not delete a database to get past a mismatch. See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) and [Windows bootstrap reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-WINDOWS.md#console-progress).
+3. Restart the broker. Jobs pick up the new code at their next run.
 
-Older bootstrap packages omitted modules needed by several CLI actions. Stop existing execution, obtain a newly built package from the group administrator, wait for delivery and rerun the installer once with the same identity and local directory. Current bootstrap replaces `runtime.json` and extracted application files with owner-only permissions, repairing older permissive files. Do not patch permissions or module files piecemeal.
+   ```sh
+   agentmesh-log control restart broker
+   agentmesh-log control status
+   ```
 
-Old OTA consumers enforce an exact release file list and reject packages built with the expanded list until re-bootstrapped. OTA activation and recovery remain [operator procedures](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/OTA-UPDATES.md).
+4. Once the broker syncs (`sync-status.json` shows `ok`) and the next jobs are `ok`, delete `~/.agentmesh/app.old`.
 
-A macOS standalone replacement has a different ownership and service model; use the operator's [Mac replacement reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md). Do not rerun bootstrap over that deployment as an upgrade shortcut.
+To roll back, swap `app.old` back in and restart the broker the same way.
 
-## Keep the identity when reinstalling a device
+Other parts update separately:
 
-Before removing an installation, [create and drill an encrypted identity backup](./security#back-up-and-verify-the-device-identity). Also preserve the database, original exchange history, runtime/workflow configuration and wizard state separately. An identity backup includes the signing key and trust snapshot only; it cannot recreate the rest of the installation.
+- **Menu bar app:** quit it, then run `control-app/bundle.sh` again.
+- **Insight:** `insight/deploy_insight.py` deploys a release and reloads its unit.
+- **The supervisor** itself runs from the same venv. Restart it to load new supervisor code; this restarts every
+  service it runs. With the menu bar app owning it, untick and tick **Run supervisor at login**; otherwise run
+  `launchctl kickstart -k "gui/$(id -u)/org.agentmesh.control"`.
 
-Keep the existing identity and trust when they remain intact. If they are lost and a trustworthy backup is available with no suspicion of compromise, use [verified restore](./security#restore-only-after-stopping-the-old-device) after fencing the old installation, with the intended security path selected by the preserved installation configuration. The target must contain no identity; restore does not overwrite a key or rewrite runtime/wizard bindings. Never restore as a shortcut to adding another active device, and do not remove current revocations to force adoption.
+## Upgrade a device set up before 2026-11
 
-A restored identity uses a new identity passphrase and has OS unlock off. Complete a fresh live wizard probe with a real peer, explicitly configure unattended OS unlock if needed, then start the worker and make a new encrypted backup. A native OS-store item may need explicit cleanup or replacement. Review [restore refusals](../troubleshooting#identity-backup-or-restore-refuses) before retrying an interrupted or rejected operation.
+If a device's transcript jobs still run from the `memory-sync` directory, follow the
+[migration runbook](./migrate-memory-sync). The SQLite archives that the retirement left behind can be listed with
+`agentmesh-log control sqlite-archive list` and deleted for good with `control sqlite-archive delete --archive NAME`,
+which asks for typed presence (and Touch ID on a Mac).
 
-If no usable backup exists, or compromise is suspected, use [key rotation](./security#recover-a-lost-or-compromised-key) instead of restoring the old key. For compromise, revoke on every peer immediately, then rotate and review evidence. Preserve the database and published history; rotation is not a database rollback. Finish any rotation journal with `identity-rotate --resume` before restarting. Retain a verified backup of the active key and retire backups of revoked keys under your custody policy.
+## Remove a device
 
-## Update a source checkout
+Removing a device from the account is done **from another device** that holds the keys:
 
-For the [local empty-group route](./new-group), your stable checkout supplies the application. Stop workers, retain private database/runtime/workflow files outside the checkout, and review the intended source revision before replacing code. Record the current and intended revisions and review their changes for database/runtime compatibility; this guide has no verified recommended release or automated compatibility guarantee. If compatibility is uncertain, keep the current revision and request maintainer guidance. Keep the application path stable or update your recall rules and service paths deliberately. Inspect the existing runtime and run a controlled cycle before resuming recurring work; do not run `setup-new` again as an update. No automated source-checkout upgrade or rollback command is provided.
-
-## Update a separately installed Windows program
-
-These commands require an existing program installation tracked and managed by the Windows installer, beyond bootstrap alone. Use PowerShell in the new bundle extracted locally outside the exchange, with `agentmesh.exe`, adjacent `BUILD.json` and all bundled files intact. Begin with a read-only plan:
-
-```powershell
-.\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --dry-run
+```sh
+agentmesh-log device list --home ~/.agentmesh/profile-log
+agentmesh-log device remove DEVICE_ID --home ~/.agentmesh/profile-log REMOTE
 ```
 
-Output (example from code)
+`REMOTE` is the four remote flags from the [Quick start](../getting-started/quick-start#conventions). Removal revokes
+the device's agents and rotates every scope key it could read. Other devices learn of it at their next sync. The
+removed device keeps what it already read, but cannot read anything written later.
 
-JSON with `status: planned`, exit `0`, with no changes. Any error must be investigated before execution.
+## Uninstall from a device
 
-For a basic unsigned installation, stop prior workers using [worker control](../use/worker) or their original foreground/service controls. Then run:
+1. Stop everything. On a Mac or Windows, give every unit back and stop the supervisor:
 
-```powershell
-.\agentmesh.exe windows-upgrade --runtime 'C:\path\to\runtime.json' --legacy-drained
-```
+   ```sh
+   agentmesh-log control panic-revert
+   ```
 
-Output (example from code)
+   Then unload each AgentMesh job: on a Mac, `launchctl bootout "gui/$(id -u)/LABEL"` for
+   `org.agentmesh.control`, `org.agentmesh.profile-log.broker` and the jobs, and delete their plists from
+   `~/Library/LaunchAgents`; on Windows, delete the tasks under `\AgentMesh\` in Task Scheduler. On Linux,
+   `systemctl --user disable --now agentmesh-broker.service`.
+2. [Remove the menu bar app](../use/control-app#remove-the-app) on a Mac.
+3. [Remove agent recall rules](#remove-agent-recall-rules).
+4. Delete `~/.agentmesh` (Windows: `%USERPROFILE%\.agentmesh`). This deletes the device keys, the replica and the
+   agent key files. Memory stays in the profile log for your other devices.
+5. Delete the credential store items: on a Mac, the `agentmesh.profile-log` items and your bucket credential service
+   (`security delete-generic-password -s org.agentmesh.profile-log.r2 -a access-key-id`, and again for
+   `secret-access-key`); on Windows, the `agentmesh.profile-log/…` and bucket items in Credential Manager.
 
-One confirmation and then `status: selected` (or `unchanged` when already selected), exit `0`. Cancellation exits `2`; errors exit `1`. Review the plan and its single interactive confirmation. This stopped-worker upgrade selects the new program and updates an owned login-task binding; it does not start a worker. Start the selected installed version using [worker control](../use/worker), then check its cycles.
-
-For signed policy, omit `--legacy-drained`. If there is no managed record, `--unmanaged-drained` is a separate acknowledgment that prior source workers really exited. A dry run does not perform the later stopped-worker precheck, so a successful plan alone does not prove execution is ready. Live replacement is a separate operator procedure in the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md#upgrade-program-rollback-uninstall).
-
-## Roll back or remove a Windows program
-
-Use an external extracted bundle, not an executable running inside the owned program storage. Stop the worker first. For an unsigned installation, preview whichever operation you need:
-
-```powershell
-.\agentmesh.exe windows-rollback --runtime 'C:\path\to\runtime.json' --legacy-drained --dry-run
-.\agentmesh.exe windows-uninstall --runtime 'C:\path\to\runtime.json' --legacy-drained --dry-run
-```
-
-Output (example from code)
-
- each dry run returns `status: planned`, exit `0`, or an error for invalid prerequisites. The commands only preview separate alternatives.
-
-Run only the chosen command again without `--dry-run` after reviewing it. Interactive rollback requires `ROLLBACK`; removal requires `UNINSTALL`. The signed-policy drain rules above also apply.
-
-After confirmation, expected from code: rollback returns `status: selected`; uninstall returns `status: uninstalled` and `data_preserved: true`, both exit `0`. Cancellation exits `2` and failure exits `1`.
-
-Rollback selects a previous intact version owned by this installer, changes only program/task selection and does not restart the worker. It does not restore a database. Uninstall removes only the verified owned program files and task; it keeps private data, configuration and ownership/recovery records. Unknown files, changed hashes or uncertain ownership block removal. Preserve incomplete-operation state for operator review instead of deleting it or recreating the installation.
-
-## Remove a bootstrap or source-checkout installation
-
-Stop the foreground worker and disable any configured [background service](./background-service). On macOS, move the unloaded LaunchAgent plist to private storage outside the LaunchAgents directory so it cannot load at login. On Linux, disable the user service and retain its unit privately for possible reuse.
-
-For a Windows bootstrap, stop its foreground window with Ctrl-C, or stop the managed worker through its own controls. Retire any startup configuration you added; bootstrap alone does not register one. Confirm execution has stopped before removing files. `windows-uninstall` does not manage this bootstrap layout.
-
-Once no worker or service references it, remove only the application directory identified by your installation. For a bootstrap installation, preserve its private baseline and manifest before removing `app`, and retain the `data` directory beside it. On default Windows installations these are `%LOCALAPPDATA%\AgentMesh\app` and `%LOCALAPPDATA%\AgentMesh\data`; use your chosen root for custom installations. For a source-checkout installation, retain the separate local installation directory created by `setup-new`. In both cases, preserve all private state listed above; do not delete the whole installation root. [Remove the recall rules](#remove-agent-recall-rules) as a separate step. No unified bootstrap/source-checkout uninstall action is provided by this CLI. For an operator-managed macOS bundle, follow [Uninstall while keeping data](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/MAC-REPLACEMENT.md#uninstall-while-keeping-data) instead.
-
-::: warning
-These instructions were checked against source and CLI help, not executed against a native Windows or Linux installation. Verify the resulting worker and service state on the target host.
-:::
+Remove the device from the account as well, from another device, as described above. Deleting the folder alone does
+not revoke anything.
 
 ## Remove agent recall rules
 
-`install_agent_rules.py` has no uninstall action. First inspect the installed instruction files and their managed markers; preserve any text you added outside the managed block. Remove only the AgentMesh-managed instructions and adjacent manifest you intend to retire:
+Delete the rule and its command manifest for each agent you connected:
 
-| Integration | Instruction file and manifest |
+| Agent | Files |
 | --- | --- |
-| OMP and Codex (shared) | `~/.agents/skills/agentmesh-shared-memory/SKILL.md` and its adjacent `command.json` |
-| Claude | `~/.claude/rules/agentmesh-shared-memory.md` and `agentmesh-shared-memory.command.json` in the same directory |
-| Hermes | `skills/agentmesh-shared-memory/SKILL.md` and adjacent `command.json` beneath the selected Hermes profile |
+| Claude Code | `~/.claude/rules/agentmesh-shared-memory.md` and `agentmesh-shared-memory.command.json` beside it |
+| Codex and OMP | `~/.agents/skills/agentmesh-shared-memory/` (the whole folder) |
+| Hermes | `<profile>/skills/agentmesh-shared-memory/` |
 
-Use the actual custom `--home`/`--hermes-home` location if one was selected. Removing the shared OMP/Codex files affects both agents. Do not remove an unowned file or a whole rules directory. Verify the agent no longer loads the retired rule; removing program files alone leaves these instructions behind.
-
-Next, [check sync status](../use/status) after an update or rollback; after removal, follow [Privacy](../privacy) to protect the retained data.
+Then revoke the agent's grant: remove it from `agents` in `settings.json` and run `agentmesh-log apply`. Removal needs
+no confirmation.

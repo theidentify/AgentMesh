@@ -7,6 +7,13 @@ from .test_cli import cli
 from .test_federation import run, sync, write, recall
 
 
+@pytest.fixture(autouse=True)
+def private_home(tmp_path, monkeypatch):
+    """join-link installs agent rules under Path.home() when a run omits --no-rules: never let that be the real home."""
+    monkeypatch.setenv('HOME', str(tmp_path / 'user')); monkeypatch.setenv('USERPROFILE', str(tmp_path / 'user'))
+    monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path / 'am'))
+
+
 def out(result):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
@@ -31,7 +38,6 @@ def make_link(alice, remote, path, **extra):
 
 def test_folder_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENTMESH_HOME', str(tmp_path/'am'))
-    monkeypatch.setenv('HOME', str(tmp_path/'user')); monkeypatch.setenv('USERPROFILE', str(tmp_path/'user'))   # Path.home() on Windows
     alice, remote = admin_workspace(tmp_path)
     link = tmp_path/'bob.link'
     made = make_link(alice, remote, link)

@@ -67,10 +67,12 @@ def shape_remote(remote):
     from .storage import validate_key
     from .storage.r2creds import S3_KINDS
     if type(remote) is not dict: raise ValueError('invalid remote')
+    # ``layout`` is optional (absent means flat): links made before per-home storage stay valid.
+    if remote.get('layout', 'flat') not in ('flat', 'per-home'): raise ValueError('invalid remote')
     if remote.get('kind') == 'filesystem':
-        if set(remote) != {'kind'}: raise ValueError('invalid remote')
+        if set(remote) - {'layout'} != {'kind'}: raise ValueError('invalid remote')
         return remote
-    if set(remote) != {'kind', 'provider', 'endpoint', 'region', 'bucket', 'prefix', 'path_style', 'credentials_kind'} or remote['kind'] != 's3':
+    if set(remote) - {'layout'} != {'kind', 'provider', 'endpoint', 'region', 'bucket', 'prefix', 'path_style', 'credentials_kind'} or remote['kind'] != 's3':
         raise ValueError('invalid remote')
     _https(remote['endpoint'])
     if urlsplit(remote['endpoint']).path not in ('', '/') or urlsplit(remote['endpoint']).query: raise ValueError('invalid remote')

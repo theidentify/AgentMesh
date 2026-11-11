@@ -681,7 +681,9 @@ state. Outbox items use the gateway signing key.
 Policy `read` lists `{profile,scopes}` with opaque IDs; null scopes denotes the
 profile root and its descendants. `remember` is `{profile,scope}` or null.
 `max_label` is general/internal; cross-profile is false. Limits are exact integers:
-recall_limit_max 1–20, requests_per_minute 1–1000. State is active/revoked. Display
+recall_limit_max 1–20, requests_per_minute 1–1000. The gateway's RATE_LIMITER binding (60 per
+minute per app) caps every app, so a value above 60 is not reached; only a value below 60 adds a per-minute
+KV counter, and the default 60 costs no KV write per tool call. State is active/revoked. Display
 and OAuth client names are UTF-8 SHA256 hashes. Policy selection orders valid
 records by signed issued_at then path; future records are ignored. This prevents
 an old policy copied under a newer path from superseding a later signed policy.

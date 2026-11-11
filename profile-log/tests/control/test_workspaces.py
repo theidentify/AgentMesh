@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import pytest
+from pathlib import Path
 from agentmesh_log.control.layout import Layout
 from agentmesh_log.control.native import NativeBackend
 from agentmesh_log.control.store import Store
@@ -37,7 +38,7 @@ def test_ready_homes_only(tmp_path):
     spec = store.spec('ws-aaaaaaaa')
     assert store.backend('ws-aaaaaaaa') == 'native'
     assert spec['argv'] == ['/venv/bin/python', '-m', 'agentmesh_log.cli', 'broker', 'run', '--home', str(ready), '--sync-interval', '120']
-    assert spec['keep_alive'] is True and spec['umask'] == 0o77 and spec['stderr'].endswith('logs/ws-aaaaaaaa.err.log')
+    assert spec['keep_alive'] is True and spec['umask'] == 0o77 and Path(spec['stderr']).parts[-2:] == ('logs', 'ws-aaaaaaaa.err.log')
     assert not any(a.startswith('--s3') or a == '--filesystem' for a in spec['argv'])   # the remote stays in remote.json
     assert 'ws-aaaaaaaa' in native.units and any(u.name == 'ws-aaaaaaaa' for u in units)
     # a second scan changes nothing

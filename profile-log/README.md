@@ -716,9 +716,15 @@ python -m agentmesh_log.cli workspace invite reject --home A --profile work --re
   markers is never overwritten.
 - **Syncing afterwards.** `broker sync --home H` and `broker run --home H` read `remote.json` when no
   remote flags are given.
+- **Supervisor.** Once a home's join is `ready`, the supervisor (`control serve`) runs its broker as a native service
+  unit, `ws-<id8>`: `broker run --home ~/.agentmesh/ws/<id8> --sync-interval 120`.
+  - The remote comes from the home's `remote.json`, so no bucket or credential appears in the unit.
+  - The unit is kept alive and restarted like the personal broker, and `control status` lists it.
+  - The supervisor scans `ws/` at start and once a minute, so a finished join gets its broker within a minute.
+  - A removed home's unit is stopped and taken off the native backend.
+  - Logs go to `~/.agentmesh/logs/ws-<id8>.{out,err}.log`.
 - **Not yet.** The `lan` channel, issuers that create credentials themselves (Cloudflare, AWS IAM,
-  MinIO), per-home storage areas, a broker unit per workspace home, and the local web client come in
-  later phases.
+  MinIO), per-home storage areas, and the local web client come in later phases.
 
 ### Contributor inboxes (W3)
 

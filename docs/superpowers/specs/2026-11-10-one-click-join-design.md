@@ -417,7 +417,7 @@ apply. `secret` content is never shown in the client.
 | **J1** | Token v2 and link encoding; `remote.json`; request and answer objects; `storage`, `folder` and `file` channels; `manual` and `none` issuers; per-provider credential kinds in `r2creds.py`; `invite accept --request`; the CLI `workspace join-link` (one command, resumable, writes `joins.json`). Usable on Windows today. |
 | **J1b** | Per-home storage: the remote adapter's area mapping, union download, the area-matches-author check, `head.json`, and the sync cost measurement for 5, 20 and 50 homes. The `manual` issuer follows the area rule from here on. |
 | **J2** | Issuer interface with `cloudflare-r2`, `aws-iam` and `minio`, each verified against the provider first; signed credential records; removal revokes; invite signer and kill switch. |
-| **J3** | Supervisor: one broker unit per workspace home, the `workspace.*` ops, notifications. |
+| **J3** | Supervisor: one broker unit per workspace home, the `workspace.*` ops, notifications. Broker units done 2026-11-11 (`control/workspaces.py`): ready homes under `ws/` become native service units `ws-<id8>`, found at start and every 60 s, and retired when their home is gone. Still open: the `workspace.*` ops and notifications, which the web client (J4) needs. |
 | **J4** | Local web client: serving, session, `localhost` passkeys, the screens above; `agentmesh://` handlers (`CFBundleURLTypes` on macOS, `HKCU\Software\Classes` on Windows); the `lan` channel over the existing pairing flow. |
 | **J5** | Workspace agent rules and folder mapping. Can land right after J1. |
 | **J6** | Control app reduced to the menu bar, notifications and Open AgentMesh. Memory window moves to the client. |

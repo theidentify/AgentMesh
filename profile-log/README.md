@@ -455,6 +455,32 @@ freeze hybrid (`semantic.mode: keyword`) and retire the host. Weigh this with
 cost: the tree's cost is navigator calls at query time plus `memory build`,
 while hybrid's cost is the always-on embedding host.
 
+### Agent recall rules
+
+`rules install` writes each agent's read-only recall instructions and the argv manifest they run, for the broker.
+It replaces memory-sync's `install_agent_rules.py`, which was removed with the SQLite mode, and writes the same bytes,
+so existing installs update in place.
+
+```sh
+python -m agentmesh_log.cli rules install --agent-key ~/.agentmesh/agents/recall.key --profile work --profile personal \
+  --python ~/.agentmesh/venv/bin/python [--agents claude codex] [--dry-run]
+```
+
+- **Targets:**
+  - Claude: `~/.claude/rules/agentmesh-shared-memory.md` and `agentmesh-shared-memory.command.json` beside it.
+  - OMP and Codex (shared): `~/.agents/skills/agentmesh-shared-memory/SKILL.md` and `command.json`.
+  - Hermes: `<--hermes-home or $HERMES_HOME or ~/.hermes>/skills/agentmesh-shared-memory/SKILL.md` and
+    `command.json`.
+- **The agent key:** use a recall agent with read grants only. Each `--profile` is searched as its own request, because
+  the recall agent has no cross-profile grant.
+- **What it keeps and refuses:**
+  - Only the block between `<!-- BEGIN AGENTMESH MANAGED v1 -->` and `<!-- END … -->` is AgentMesh's; text around it
+    is kept.
+  - It refuses a file, manifest or skill directory it did not create, symlinks, and ambiguous markers.
+  - It checks every target before writing anything, and leaves unchanged files untouched (mtime included).
+- **What it does not touch:** memory, credentials and the broker. `--dry-run` checks and lists the targets without
+  writing.
+
 ### Shared task state (team workspace W0)
 
 Several agents can coordinate one task through a keyed `task_state` chain (`task/<REF>`) in a scope they

@@ -726,10 +726,17 @@ python -m agentmesh_log.cli workspace invite reject --home A --profile work --re
   - Each home rewrites a small `homes/<device>/head.json` (a random generation) after every upload. Readers fetch
     the heads and re-list only the homes that changed. At 50 homes a sync makes 9 LIST requests (8 flat) plus one GET
     per home (`tests/broker/measure_per_home_cost.py`).
+- **Supervisor.** Once a home's join is `ready`, the supervisor (`control serve`) runs its broker as a native service
+  unit, `ws-<id8>`: `broker run --home ~/.agentmesh/ws/<id8> --sync-interval 120`.
+  - The remote comes from the home's `remote.json`, so no bucket or credential appears in the unit.
+  - The unit is kept alive and restarted like the personal broker, and `control status` lists it.
+  - The supervisor scans `ws/` at start and once a minute, so a finished join gets its broker within a minute.
+  - A removed home's unit is stopped and taken off the native backend.
+  - Logs go to `~/.agentmesh/logs/ws-<id8>.{out,err}.log`.
 - **Not yet.**
   - The `lan` channel.
   - Issuers that create credentials themselves (Cloudflare, AWS IAM, MinIO), including R2 bucket-per-home areas.
-  - A broker unit per workspace home.
+  - The `workspace.*` control ops and notifications.
   - The local web client.
 
 ### Contributor inboxes (W3)

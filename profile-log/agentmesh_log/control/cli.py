@@ -88,14 +88,17 @@ def serve_windows(layout, folder=None):
     layout.ensure(); store=Store(layout.state); tasks=TaskSchedulerBackend(folder=task_folder(layout,folder))
     try: winmigrate.evict_reloaded(layout,store,tasks)
     except Exception as exc: print(json.dumps({'evict_error':type(exc).__name__}),file=sys.stderr,flush=True)
-    native=NativeBackend(store,UNITS,notify=notifier(layout))
+    units=list(UNITS)   # workspace brokers join this list at runtime (control/workspaces.py)
+    native=NativeBackend(store,units,notify=notifier(layout))
     native.reconcile()
+    from .workspaces import attach, ticker
+    attach(layout,store,native,units); scan=ticker(layout,store,native,units)
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=tasks)
     control=Control(layout,Router(store,tasks,native),moves=moves,mappings=Mappings(layout,presence,moves),
-        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves))
+        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves),units=units)
     def tick():
-        native.tick(); write_snapshot(layout,native)
+        scan(); native.tick(); write_snapshot(layout,native)
     supervisor=Supervisor(control,layout,ticker=tick,on_close=native.shutdown)
     for name in ('SIGTERM','SIGBREAK','SIGINT'):
         if hasattr(signal,name): signal.signal(getattr(signal,name),lambda signum,frame:supervisor.close())
@@ -129,15 +132,18 @@ def serve(layout, folder=None):
     if layout.root==Path.home()/'.agentmesh':
         try: migrate.evict_reloaded(layout,store,launchd)
         except Exception as exc: print(json.dumps({'evict_error':type(exc).__name__}),file=sys.stderr,flush=True)
-    native=NativeBackend(store,UNITS,notify=notifier(layout))
+    units=list(UNITS)   # workspace brokers join this list at runtime (control/workspaces.py)
+    native=NativeBackend(store,units,notify=notifier(layout))
     native.reconcile()
+    from .workspaces import attach, ticker
+    attach(layout,store,native,units); scan=ticker(layout,store,native,units)
     # unit.backend: the supervisor's own Touch ID / Mac password helper; a client never vouches for presence.
     presence=HelperPresence(layout.presence_helper)
     moves=Moves(layout,store,presence,launchd=launchd)
     control=Control(layout,Router(store,launchd,native),moves=moves,mappings=Mappings(layout,presence,moves),
-        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves))
+        memory=Memory(layout,presence,moves),connector=Connector(layout,presence,moves),units=units)
     def tick():
-        native.tick(); write_snapshot(layout,native)
+        scan(); native.tick(); write_snapshot(layout,native)
     supervisor=Supervisor(control,layout,ticker=tick,on_close=native.shutdown)
     signal.signal(signal.SIGTERM,lambda signum,frame:supervisor.close())
     try: supervisor.serve()

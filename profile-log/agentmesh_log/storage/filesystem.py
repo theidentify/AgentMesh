@@ -109,6 +109,15 @@ class FilesystemStorage:
                 except FileNotFoundError: pass
             if isinstance(parent, int): os.fsync(parent)
 
+    def folders(self, prefix):
+        """Names of the immediate sub-folders of ``prefix`` (per-home areas)."""
+        validate_key(prefix, prefix=True)
+        _check(self.root); start = self.root
+        for part in prefix.split('/')[:-1]:
+            start = start / part; _check(start)
+            if not start.is_dir(): return []
+        return sorted(p.name for p in start.iterdir() if p.is_dir() and not p.is_symlink())
+
     def list(self, prefix, *, start_after=None):
         validate_key(prefix, prefix=True)
         if start_after is not None: validate_key(start_after)

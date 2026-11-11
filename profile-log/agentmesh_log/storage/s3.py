@@ -102,6 +102,21 @@ class S3Storage:
         finally: self._active.value=False
         raise StorageError('S3 list failed') from None
 
+    def folders(self, prefix):
+        """Names of the immediate sub-folders of ``prefix`` (one delimiter listing; per-home areas)."""
+        validate_key(prefix, prefix=True); names = []; self._active.value=True
+        try:
+            for page in self.client.get_paginator('list_objects_v2').paginate(Bucket=self.bucket, Prefix=self.prefix + prefix, Delimiter='/'):
+                if not self._hooks:
+                    with self._lock: self.io['class_a']+=1
+                for item in page.get('CommonPrefixes', []):
+                    name = item['Prefix'][len(self.prefix + prefix):].rstrip('/')
+                    if name and '/' not in name: names.append(name)
+        except Exception: pass
+        else: return sorted(names)
+        finally: self._active.value=False
+        raise StorageError('S3 list failed') from None
+
     def head(self, key):
         validate_key(key); self._active.value=True
         if not self._hooks:

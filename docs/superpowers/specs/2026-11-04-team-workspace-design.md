@@ -353,6 +353,12 @@ Approving devices one by one does not scale when many people join at once. An ad
 
 W0 needs no identity work and can ship first.
 
+Onboarding (one-click join, per-member storage tokens, one home per workspace) and the local web
+client are designed in [2026-11-10 one-click join](2026-11-10-one-click-join-design.md). For new
+workspaces, that design replaces "one shared storage location per workspace" (below) in two ways.
+Each workspace gets its own broker home. Within a workspace's remote, each home writes only its own
+area and reads everyone's.
+
 ## W2: several accounts (implementation design)
 
 Added 2026-11-04 with the first W2 change.

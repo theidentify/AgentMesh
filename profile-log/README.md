@@ -671,6 +671,55 @@ python -m agentmesh_log.cli workspace invite revoke --home A --profile work --id
 - The only change an invite allows after creation is revocation. Accepting needs presence.
   Attestation stays a separate step (`workspace attest`).
 
+### One-click join (J1)
+
+See the [one-click join design](../docs/superpowers/specs/2026-11-10-one-click-join-design.md). A link is one
+invite for one person. It carries no storage credential. The admin hands over a per-member credential
+only when approving, sealed to the joining device.
+
+```sh
+# Admin: a link for Bob (the remote flags name the workspace store; S3 links get presigned request/answer URLs)
+python -m agentmesh_log.cli workspace invite create --home A --profile work --scope work/mesh --label Bob --link bob.link REMOTE_FLAGS
+# Bob: one command. It creates its own home (~/.agentmesh/ws/<id8>), sends the request, and later finishes the join.
+python -m agentmesh_log.cli workspace join-link --link-file bob.link --project ~/code/acme [--folder SHARED_FOLDER] [--wait 600]
+# Admin: see requests, then approve one (with a credential for an S3 store) or refuse it
+python -m agentmesh_log.cli workspace invite requests --home A --profile work REMOTE_FLAGS
+python -m agentmesh_log.cli workspace invite accept --home A --profile work --request SLOT --member-credentials prompt REMOTE_FLAGS
+python -m agentmesh_log.cli workspace invite reject --home A --profile work --request SLOT --reason "…" REMOTE_FLAGS
+```
+
+- **Channels.**
+  - S3 stores use presigned PUT/GET URLs, valid as long as the invite and at most 7 days.
+  - A shared-folder store uses `join/` inside that folder (`--folder`).
+  - Without either, the request and answer travel as files: `--request-out` and `--answer-file` for
+    the member, `--request-file` and `--answer-out` for the admin.
+- **Checks.**
+  - The admin checks the request against the signed invite like `invite accept`: invite proof,
+    device signature, not revoked or expired, uses left.
+  - The admin also checks the request's own device signature.
+  - A request can only hand over its own registry and key records. Workspace entries and events are
+    refused.
+- **Credentials.** `--member-credentials prompt` (or `file:PATH`) is the `manual` issuer: the admin
+  creates a key for this member in the provider's console. The member's command stores it in
+  Keychain or Credential Manager and writes only the reference to `remote.json`. Key formats:
+  - `s3`: R2;
+  - `s3-aws`: AWS;
+  - `s3-generic`: MinIO, Wasabi and similar.
+- **Resuming.** `join-link` is resumable: run it again (or pass `--wait`) after the admin answers. It
+  records the state in `<home>/joins.json` (`waiting_for_admin`, `syncing`, `ready`, `rejected`,
+  `expired`), with no titles or memory.
+- **Approval.** A person approves once per run, with a summary that includes the owner's fingerprint.
+- **When ready.** The workspace agent key is created: read and write for members, write-only for
+  contributors. Its first access is opened. `~/.claude/rules/agentmesh-workspace.md` (and
+  `~/.agents/skills/agentmesh-workspace/SKILL.md` if `~/.agents` exists) list every joined
+  workspace and its project folders, and teach the task loop. A rules file without AgentMesh's
+  markers is never overwritten.
+- **Syncing afterwards.** `broker sync --home H` and `broker run --home H` read `remote.json` when no
+  remote flags are given.
+- **Not yet.** The `lan` channel, issuers that create credentials themselves (Cloudflare, AWS IAM,
+  MinIO), per-home storage areas, a broker unit per workspace home, and the local web client come in
+  later phases.
+
 ### Contributor inboxes (W3)
 
 ```sh

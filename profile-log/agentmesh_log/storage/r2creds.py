@@ -16,7 +16,56 @@ REF=r'(?:keychain|wincred|secret):[A-Za-z0-9.-]+'
 KINDS={
     's3': ('S3', (('access-key-id',32,'[0-9a-f]{32}'),('secret-access-key',64,'[0-9a-f]{64}'))),
     'access': ('embedding', (('client-id',39,r'[0-9a-f]{32}\.access'),('client-secret',128,'[A-Za-z0-9_-]{32,128}'))),
+    # Other S3-compatible stores (one-click join): AWS IAM keys, and a bounded generic form for MinIO, Wasabi and
+    # similar. No quote, backslash or whitespace, so a value can never break the `security -i` command line.
+    's3-aws': ('S3', (('access-key-id',20,'(?:AKIA|ASIA)[A-Z0-9]{16}'),('secret-access-key',40,'[A-Za-z0-9/+]{40}'))),
+    's3-generic': ('S3', (('access-key-id',128,'[A-Za-z0-9._~+=/-]{3,128}'),('secret-access-key',128,'[A-Za-z0-9._~+=/-]{8,128}'))),
 }
+S3_KINDS=('s3','s3-aws','s3-generic')
+
+
+def check_values(kind, values):
+    """Whether ``values`` (access key ID, secret) fit ``kind``; raises without echoing them."""
+    _,accounts=_kind(kind)
+    if type(values) not in (tuple,list) or len(values)!=len(accounts) or any(
+            type(v) is not str or len(v)>size or not re.fullmatch(pattern,v) for v,(_,size,pattern) in zip(values,accounts)):
+        raise StorageError('credentials refused') from None
+    return tuple(values)
+
+
+def store_keychain_credentials(service, values, runner=subprocess.run, keychain=None, kind='s3'):
+    """Store a pair in the login keychain, the secret over stdin (never argv), then load it back to check."""
+    label,accounts=_kind(kind); values=check_values(kind,values)
+    if sys.platform!='darwin' or type(service) is not str or not re.fullmatch('[A-Za-z0-9.-]+',service):
+        raise StorageError(f'{label} credentials refused')
+    try:
+        from ..oskeystore import login_keychain, home
+        keychain=str(keychain or login_keychain())
+        if not os.path.isabs(keychain) or any(c in keychain for c in '"\\\n\r'): raise ValueError()
+        script=''.join('add-generic-password -U -s %s -a %s -w %s "%s"\n'%(service,account,value,keychain)
+                       for (account,_,_),value in zip(accounts,values))
+        runner(['/usr/bin/security','-i'],input=script,capture_output=True,text=True,encoding='utf-8',timeout=15,
+               env={'PATH':'/usr/bin:/bin','HOME':home(),'LANG':'C'})
+        ok=load_keychain_credentials(service,runner=runner,keychain=keychain,kind=kind)==values
+    except Exception: ok=False
+    if not ok: raise StorageError(f'{label} credentials refused') from None
+
+
+def store_credentials(ref, values, *, runner=subprocess.run, api=None, kind='s3'):
+    """Store a key pair under ``ref`` (``keychain:`` on macOS, ``wincred:`` on Windows, ``secret:`` on Linux)."""
+    label,_=_kind(kind)
+    if type(ref) is not str or not re.fullmatch(REF,ref):
+        raise StorageError(f'{label} credentials refused') from None
+    backend,service=ref.split(':',1)
+    if sys.platform=='darwin' and backend=='keychain': return store_keychain_credentials(service,values,runner=runner,kind=kind)
+    if sys.platform=='win32' and backend=='wincred': return WindowsR2Credentials(api,kind=kind).store(service,*check_values(kind,values))
+    if sys.platform.startswith('linux') and backend=='secret':
+        return LinuxR2Credentials(**({} if runner is subprocess.run else {'runner':runner}),kind=kind).store(service,*check_values(kind,values))
+    raise StorageError(f'{label} credentials refused') from None
+
+
+def default_ref(service):
+    return ('wincred:' if sys.platform=='win32' else 'secret:' if sys.platform.startswith('linux') else 'keychain:')+service
 
 
 def _kind(kind):

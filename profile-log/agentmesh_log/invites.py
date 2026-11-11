@@ -45,11 +45,56 @@ def token(workspace, invite_id, secret, owner_account, owner_fingerprint, role, 
                 owner_fingerprint=owner_fingerprint, role=role, expires_at=expires_at)
 
 
+V1_FIELDS = {'format', 'workspace', 'invite', 'secret', 'owner_account', 'owner_fingerprint', 'role', 'expires_at'}
+# v2 (one-click join): the link also carries what a joiner needs before it has storage access. None of it is a
+# storage credential: ``remote`` names the store, ``channels`` say how the request and answer travel.
+TOKEN_V2 = 'agentmesh-workspace-invite-token-v2'
+V2_FIELDS = (V1_FIELDS - {'format'}) | {'format', 'owner_record', 'remote', 'channels', 'slot', 'label'}
+LINK = 'agentmesh://join#'
+
+
 def read_token(record):
-    fields(record, {'format', 'workspace', 'invite', 'secret', 'owner_account', 'owner_fingerprint', 'role', 'expires_at'}, TOKEN)
+    if type(record) is dict and record.get('format') == TOKEN_V2:
+        fields(record, V2_FIELDS, TOKEN_V2)
+        from .joinlink import shape_remote, shape_channels
+        from .federation import account_record, fingerprint
+        hex_bytes(record['slot'], 16)
+        owner = record['owner_record']
+        if type(owner) is not dict or owner != account_record(owner.get('account_id'), owner.get('root_public_key')):
+            raise ValueError('invalid owner record')
+        hex_bytes(owner['account_id'], 16); hex_bytes(owner['root_public_key'], 32)
+        if owner['account_id'] != record['owner_account'] or fingerprint(owner['root_public_key']) != record['owner_fingerprint']:
+            raise ValueError('owner record mismatch')
+        shape_remote(record['remote']); shape_channels(record['channels'])
+        if record['label'] is not None and not (type(record['label']) is str and 1 <= len(record['label']) <= 100
+                                                and not any(ord(c) < 32 for c in record['label'])):
+            raise ValueError('invalid label')
+    else: fields(record, V1_FIELDS, TOKEN)
     for name in ('workspace', 'invite', 'owner_account'): hex_bytes(record[name], 16)
     hex_bytes(record['secret'], 32); milliseconds(record['expires_at'])
+    if record['role'] not in ('member', 'contributor'): raise ValueError('invalid role')
     return record
+
+
+def token_v2(base, owner_record, remote, channels, slot, label):
+    return dict(base, format=TOKEN_V2, owner_record=owner_record, remote=remote, channels=channels, slot=slot, label=label)
+
+
+def encode_link(record):
+    import base64
+    return LINK + base64.urlsafe_b64encode(wire(read_token(record))).rstrip(b'=').decode('ascii')
+
+
+def decode_link(text):
+    """A token from a link (``agentmesh://join#…``) or from token JSON, as a file or pasted text holds it."""
+    import base64, json, re
+    text = text.strip()
+    if text.startswith(LINK):
+        body = text[len(LINK):]
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,16384}', body): raise ValueError('invalid link')
+        return read_token(parse(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4))))
+    try: return read_token(json.loads(text))
+    except json.JSONDecodeError: raise ValueError('invalid link') from None
 
 
 def _message(workspace, invite_id, account, root, device_id):

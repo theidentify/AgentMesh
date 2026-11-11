@@ -73,3 +73,10 @@ def test_secret_refs_valid_everywhere():
     r2creds.validate_remote('secret:org.agentmesh.r2', 'https://acct.r2.cloudflarestorage.com')
     import re
     assert re.fullmatch(r2creds.REF, 'secret:org.agentmesh.r2') and not re.fullmatch(r2creds.REF, 'file:/tmp/x')
+
+
+def test_store_credentials_and_default_ref(linux):
+    """One-click join stores a member's credential through store_credentials; on Linux that is secret:."""
+    assert r2creds.default_ref('org.agentmesh.ws-12345678') == 'secret:org.agentmesh.ws-12345678'
+    r2creds.store_credentials('secret:org.agentmesh.ws-12345678', ('AKIA' + 'Q' * 16, 'r' * 40), kind='s3-aws')
+    assert r2creds.load_credentials('secret:org.agentmesh.ws-12345678', kind='s3-aws') == ('AKIA' + 'Q' * 16, 'r' * 40)

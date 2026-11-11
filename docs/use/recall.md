@@ -163,18 +163,34 @@ read-only:
 {"agents": {"recall": {"read": ["personal", "work"], "write": []}}}
 ```
 
-Run `agentmesh-log apply`, then write the two files for each agent:
+Run `agentmesh-log apply`, then write the rule and manifest for each agent with `rules install`. Pass the recall
+agent's key and every profile it should search:
+
+```sh
+~/.agentmesh/venv/bin/python -m agentmesh_log.cli rules install \
+  --agent-key ~/.agentmesh/agents/recall.key --profile work --profile personal \
+  --python ~/.agentmesh/venv/bin/python
+```
+
+On Windows, use the same command with Windows paths. `--agents claude codex` limits it to some agents, and
+`--dry-run` only lists the targets. It writes:
 
 | Agent | Instruction file | Manifest |
 | --- | --- | --- |
 | Claude Code | `~/.claude/rules/agentmesh-shared-memory.md` | `agentmesh-shared-memory.command.json` beside it |
 | Codex and OMP | `~/.agents/skills/agentmesh-shared-memory/SKILL.md` (shared) | `command.json` beside it |
-| Hermes | `<profile>/skills/agentmesh-shared-memory/SKILL.md` | `command.json` beside it |
+| Hermes | `<--hermes-home, $HERMES_HOME or ~/.hermes>/skills/agentmesh-shared-memory/SKILL.md` | `command.json` beside it |
 
-The manifest holds absolute paths, so the agent never builds a shell string from your query:
+Only the block between `<!-- BEGIN AGENTMESH MANAGED v1 -->` and `<!-- END AGENTMESH MANAGED v1 -->` belongs to
+AgentMesh: text you add around it is kept. The command refuses files it did not write, symlinks and duplicated
+markers, and checks every target before writing anything. Run it again after you move the interpreter or the key,
+or add a profile. An unchanged file is left as it is.
+
+The manifest holds absolute paths, so the agent never builds a shell string from your query. It looks like this:
 
 ```json
 {
+  "managed_by": "AgentMesh agent-rules installer v1",
   "version": 1,
   "recall_argv": ["/absolute/path/to/.agentmesh/venv/bin/python", "-m", "agentmesh_log.cli", "recall",
                   "--compat", "--per-profile", "--profile", "work", "--profile", "personal",
@@ -188,7 +204,7 @@ The manifest holds absolute paths, so the agent never builds a shell string from
 }
 ```
 
-The instruction file should tell the agent to:
+The instruction file tells the agent to:
 
 - recall only when past decisions or context are relevant to the task;
 - run `recall_argv` through a subprocess API without a shell, appending the query as one argument, then
@@ -206,7 +222,7 @@ claims from facts verified now.
 Each agent's first request needs a `first_access` presence window (`agentmesh-log presence open --home
 ~/.agentmesh/profile-log --class first_access`). Then ask the agent to recall something you know is stored, and to show
 the command it ran and the source IDs. If it answers from the conversation instead, check that the rule and manifest
-are where that agent loads them, and run `recall_argv` yourself to separate a rule problem from a broker problem.
+are where that agent loads them (`rules install --dry-run` prints the paths), and run `recall_argv` yourself to separate a rule problem from a broker problem.
 AgentMesh does not control each agent's rule loader.
 
 ## Connect an AI app

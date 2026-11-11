@@ -40,7 +40,8 @@ public struct ControlClient: Sendable {
     /// unit.backend and mapping.set wait for the supervisor's presence decision (up to 90 s there).
     public static let moveTimeout: TimeInterval = 100
     public static let defaultTimeout: TimeInterval = 10
-    public static let presenceOps: Set<String> = ["unit.backend", "mapping.set", "memory.unlock", "connector.approve"]
+    public static let presenceOps: Set<String> = ["unit.backend", "mapping.set", "memory.unlock", "connector.approve",
+                                                 "device.remove"]
 
     public let socketPath: String
 

@@ -1,5 +1,5 @@
-// Keys & devices: the supervisor's read-only keys.inventory. Findings come first; the rest is reference. Nothing here
-// changes a key or a grant (device and grant ops arrive in M3e, behind the approval state machine of M3d).
+// Keys & devices: the supervisor's keys.inventory. Findings come first; the rest is reference. The one action here is
+// revoking another device (M3e): an inline confirmation, then the supervisor's own Touch ID. Grants are not changed here.
 import ControlCore
 import SwiftUI
 
@@ -50,7 +50,7 @@ struct KeysView: View {
             }
             section("Devices") {
                 if let devices = inventory.devices {
-                    ForEach(devices) { device in line(deviceLine(device)) }
+                    ForEach(devices) { device in deviceRow(device) }
                 } else { line("Not reported by the broker yet") }
             }
             section("Agents") {
@@ -92,6 +92,36 @@ struct KeysView: View {
 
     private func line(_ text: String) -> some View {
         Text(text).font(.caption).lineLimit(1).truncationMode(.middle)
+    }
+
+    private func deviceRow(_ device: Device) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                line(deviceLine(device))
+                Spacer()
+                if model.revoking == device.deviceId { ProgressView().controlSize(.mini) }
+                else if canRevoke(device), model.confirmingRevoke != device.deviceId {
+                    Button("Revoke…") { model.confirmingRevoke = device.deviceId; model.deviceErrors[device.deviceId] = nil }
+                        .font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                        .disabled(model.revoking != nil)
+                }
+            }
+            if model.confirmingRevoke == device.deviceId {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(revokeSummary(device)).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { model.confirmingRevoke = nil }
+                        Button("Revoke with Touch ID…", role: .destructive) { Task { await model.revoke(device) } }
+                    }.controlSize(.small)
+                }
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if let error = model.deviceErrors[device.deviceId] {
+                Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func agentLine(_ agent: AgentGrant) -> String {

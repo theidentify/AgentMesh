@@ -57,8 +57,8 @@ def rotate_scopes(state,storage,scopes,*,reason='rotate',only_device=None,recove
     return state
 
 
-def remove_device(home,store,storage,device_id,*,console):
-    PresenceManager(home,store).require('device','remove',console=console)
+def remove_device(home,store,storage,device_id,*,console,one_shot=False,summary='Confirm this operation.'):
+    PresenceManager(home,store).require('device','remove',console=console,one_shot=one_shot,summary=summary)
     state=sync_control(home,store,storage)
     if device_id==state.device.device_id: raise ValueError('cannot remove current device')
     rs=RegistryStore(storage,state.account.public_record()); registry=rs.load(); registry.device_public(device_id)

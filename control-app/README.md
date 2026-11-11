@@ -16,6 +16,7 @@ supervisor uses to ask for Touch ID or your Mac password.
   | Move to supervisor or launchd (`unit.backend`) | Tier 2 | The supervisor's own presence check |
   | Open the Memory window (`memory.unlock`) | Tier 2 | The supervisor's own presence check, then an idle lock |
   | Approve a Claude connector (`connector.approve`) | Tier 2 | The typed code must match the shown request, then the supervisor's own presence check |
+  | Revoke another device (`device.remove`) | Tier 2 | Inline confirmation, then the supervisor's own presence check every time (never a presence window) |
 
 - **Touch ID never comes from this app.** For a move, the supervisor runs its own `agentmesh-presence` child and trusts
   only that child's exit code. A client, this app included, cannot claim the check passed.
@@ -60,6 +61,15 @@ new gateway request appears. The owner types the browser's 6-digit code; `connec
 request's code hash, and the supervisor refuses `code_mismatch` before any prompt. The supervisor reads the broker home
 and R2 remote from the broker's launchd plist, runs the same approve as the CLI with its `agentmesh-presence` helper,
 and redacts the code in the audit log. Polling errors stay quiet; the window shows them only when opened from the menu.
+
+## Device revoke
+
+Keys & devices shows **Revoke…** on every other device that is still trusted. The inline confirmation names the device,
+then `device.remove` asks the supervisor, which checks Touch ID with its own helper every time (an open `device`
+presence window from the CLI never counts). It then runs the same `remove_device` as `agentmesh-log device remove`:
+a signed revocation, plus new keys for every scope the device could read. The supervisor refuses this device itself
+(`current_device`), unknown devices and devices already revoked before any prompt. Stop AgentMesh on the device first,
+once its outbox is empty, so nothing it wrote is left unsynced.
 
 ## Menu bar icon
 

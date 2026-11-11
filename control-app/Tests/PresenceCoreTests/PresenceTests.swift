@@ -78,6 +78,8 @@ final class Stub: Evaluator, @unchecked Sendable {
     #expect(parse(["confirm", "--action", "delete"]) == .confirm("delete"))
     // connector.approve asks the helper with action "approve" (the CLI's presence action); refused before 2026-11-11.
     #expect(parse(["confirm", "--action", "approve"]) == .confirm("approve"))
+    // device.remove (M3e) asks with the CLI's presence action "remove".
+    #expect(parse(["confirm", "--action", "remove"]) == .confirm("remove"))
     #expect(parse(["confirm", "--action", "apply"]) == nil)
     #expect(parse(["confirm", "--action", "migrate", "extra"]) == nil)
     #expect(parse(["available", "--action", "migrate"]) == nil)

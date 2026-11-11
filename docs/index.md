@@ -10,7 +10,7 @@ hero:
     - { theme: alt, text: Install, link: /install/macos }
 features:
   - title: Each device owns its memory
-    details: Sessions are ingested into a local database on each device, then shared as signed, encrypted events through the profile log. The storage provider sees only opaque objects.
+    details: Sessions are summarized into memory on the device and shared as signed, encrypted events through the profile log. The storage provider sees only opaque objects.
   - title: Recall with evidence
     details: Agents query past decisions, constraints and preferences, and get the original source IDs back.
   - title: Every agent has a grant

@@ -1,6 +1,6 @@
 """Summarizer writes through the broker (SQLite retirement R2).
 
-memory-sync's bounded digest calls this through `agentmesh-log summary related|write` with JSON on stdin, so no
+The transcript summary (agentmesh_log/ingest/digest.py) calls this through `agentmesh-log summary related|write` with JSON on stdin, so no
 transcript text or memory content is ever on a command line. The summarizer agent needs allow_summarize: `heads`
 gives the current event per memory key in its own write scopes, and each item becomes a `remember` (new key) or a
 `revise` of that head. A status other than active hides the key, like an imported row that is no longer active.
@@ -157,7 +157,7 @@ def delete(client, scope, memory_key):
 
 
 def valid_request(value, action):
-    """Shape check for the stdin request; content rules are the protocol's, already applied by memory-sync."""
+    """Shape check for the stdin request; content rules are the protocol's, already applied by ingest/protocol.py."""
     if type(value) is not dict: return False
     fields={'project','sessions'} if action=='related' else {'project','sessions','related_digest','items','provenance'}
     if set(value)!=fields: return False

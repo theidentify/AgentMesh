@@ -12,7 +12,7 @@ class Unit:
     name: str
     label: str
     kind: str                         # 'job' runs on a schedule (or once at load); 'service' is KeepAlive
-    wrapped: bool = False             # runs through job_notify.py, so maintenance and quota holds apply
+    wrapped: bool = False             # runs through the job wrapper (control/jobrun.py), so maintenance and quota holds apply
     max_runtime_s: int | None = None  # a job running longer than this is reported stuck
     native_ok: bool = False           # may move to the supervisor's native backend
 

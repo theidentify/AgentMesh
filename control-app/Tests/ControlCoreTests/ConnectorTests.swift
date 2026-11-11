@@ -23,3 +23,11 @@ import Testing
     #expect(describeConnector(.server(code: "code_mismatch", message: "")).contains("different request"))
     #expect(describeConnector(.server(code: "busy", message: "")) == describe(.server(code: "busy", message: "")))
 }
+
+@Test func connectorPollBacksOffOnRefusals() {
+    #expect(connectorPollDelay(failures: 0) == 30)
+    #expect(connectorPollDelay(failures: 1) == 60)
+    #expect(connectorPollDelay(failures: 3) == 240)
+    #expect(connectorPollDelay(failures: 5) == 900)
+    #expect(connectorPollDelay(failures: 1_000) == 900)
+}

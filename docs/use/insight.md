@@ -1,17 +1,21 @@
 # Insight dashboard
 
-Use Insight to browse local memory and recorded operations without changing them. First [check your installation paths](./worker#inspect-the-installation-first) and have a repository checkout available to run the dashboard. You will open a local read-only workspace for memory, ingestion and sync observations.
+Insight is a local, read-only status page for AgentMesh: the profile log, the transcript jobs and this device's
+storage. It shows counts, states and times, never memory content. You need a repository checkout and Python 3.10 or
+later; it uses only the standard library.
 
-| View | What to inspect |
+| View | What it shows |
 | --- | --- |
-| Overview | Source availability and memory counts. |
-| Metrics | Recorded summary usage and coverage. |
-| Memory Browser | Memory items, summaries and linked evidence. |
-| Agents | Observed agent session and event metadata. |
-| Pipeline | Known ingestion and summary job observations. |
-| Sync | Sync metadata, peer reports and transport observations. |
+| Overview | Job health and recent failures, memory counts, backup state, and which AI tools were active recently |
+| Metrics | Summary runs: usage, cost and coverage, from `jobs/summary-metrics.jsonl` |
+| Agents | Each AI tool's transcripts the summary follows: how many, and the latest modification time |
+| Pipeline | The ingest and summary jobs, their failures over 7 days, the last scan and tick, and projects held back for want of a scope |
+| Sync | Profile-log backup to R2, the devices in the profile log, and how AI apps reach memory |
+| Profile log | Profiles, scopes, agent grants, devices, workspaces, the last apply and the last remote sync |
+| Storage | Disk use under the AgentMesh home, the replica and the bucket, with cost and compute estimates |
 
-Missing sources are shown as unavailable. Historical observations and completed-cycle reports do not prove current liveness.
+A time less than an hour old counts as recent. A transcript's modification time or a job's last result is an
+observation, not proof that something is running now.
 
 ## Start it
 
@@ -21,31 +25,19 @@ From the repository root:
 python3 -u insight/server.py --port 0
 ```
 
-Output (example from code)
+It prints JSON with its `url` on `127.0.0.1`, its `pid` and `readonly: true`. Open the URL; stop the server with
+Ctrl-C. A source that is missing shows as unavailable, never as demonstration data.
 
-JSON containing `url` on `127.0.0.1`, `pid` and `readonly: true`. The server chooses an available port. A bind error or missing URL is startup failure; an open page with unavailable sources means the server works but the data source needs checking. Open that URL locally. Stop the server with Ctrl-C.
+Insight reads the AgentMesh home from `--agentmesh-home`, otherwise `AGENTMESH_HOME`, otherwise `~/.agentmesh`. The
+Profile log view reads only the content-free `profile-log-status.json` that `apply` and the broker write. Memory counts
+come from a read-only agent, `agents/insight.key` by default (`--insight-agent-key` names another).
 
-## Point it at your data
-
-Use `--sqlite` for an existing database. Insight reads everything else (job status, summary metrics, profile-log status, the frozen history of the retired cron digest) from the AgentMesh home, `--agentmesh-home` (default `$AGENTMESH_HOME`, otherwise `~/.agentmesh`). Missing files show as unavailable or empty:
-
-```sh
-python3 -u insight/server.py --port 0 \
-  --sqlite "/path/to/node.db" --agentmesh-home "/absolute/path/to/agentmesh"
-```
-
-Output (example from code)
-
-The local URL/PID/`readonly` startup JSON, then a read-only dashboard. Inspect Memory Browser connection availability; an absent database is not created or repaired.
-
-Insight reads nothing from a Hermes profile. `--sqlite` does not create a database. Choosing a connection does not migrate memory or configure workers. To label a backend authoritative in Insight, configure its role explicitly; see the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md).
-
-::: tip
-Optional PostgreSQL access takes its DSN only from the `INSIGHT_PG_DSN` environment variable, never a CLI flag or a file in Git. See the [connection instructions](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#run-from-the-repository-root) for the required format and read-only setup.
-:::
+To keep it running, let the supervisor run it as the `insight` unit; `insight/deploy_insight.py` deploys a release and
+reloads that unit.
 
 ::: warning
-Insight binds only to `127.0.0.1` and is not an authenticated network service. Do not expose it through a tunnel. Memory excerpts and screenshots remain private; redaction does not guarantee that prose contains no secrets.
+Insight binds only to `127.0.0.1` and is not an authenticated service. Do not expose it through a tunnel without the
+Cloudflare Access setup in the [Insight reference](https://github.com/theidentify/AgentMesh/blob/main/insight/README.md#remote-access-via-cloudflare-tunnel).
 :::
 
-If a view shows something unexpected, start with [troubleshooting](../troubleshooting).
+If a view shows something unexpected, start with [Troubleshooting](../troubleshooting).

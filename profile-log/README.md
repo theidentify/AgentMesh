@@ -3,7 +3,13 @@
 Standalone Python 3.11 library and Phase 4 local memory broker for the encrypted profile log design.
 It models local accounts, profiles, scope trees and sensitivity labels; certifies devices
 and agents; seals, verifies and opens signed HPKE events; and stores opaque objects in
-filesystem or S3-compatible storage. It imports nothing from `memory-sync` or `profile-memory`.
+filesystem or S3-compatible storage. It imports nothing from `profile-memory`.
+
+`agentmesh_log/ingest/` is the transcript summary that moved here from `memory-sync/` (2026-11): `python -m
+agentmesh_log.ingest scan|summary` runs the scheduled jobs and `python -m agentmesh_log.control.jobrun` wraps them with
+maintenance and quota holds and failure alerts. Both are standard library only. Ingestion is personal-only
+(`ingest/personal.py`). `control rewire-ingest` and `ingest migrate-config` move an installed device over; see
+[the migration runbook](../docs/install/migrate-memory-sync.md).
 
 ## Tests
 
@@ -236,6 +242,21 @@ Keychain service contains accounts `access-key-id` (32 lowercase hex characters)
 arguments or service files. Ambient AWS environment variables and credential files
 are not used by the broker.
 
+The reference names the OS credential store:
+
+- macOS: `keychain:SERVICE`.
+- Windows: `wincred:SERVICE`, stored with `r2-credentials store`.
+- Linux: `secret:SERVICE`, the desktop Secret Service (GNOME Keyring or KWallet) through `secret-tool`.
+  - It has the same `service`/`account` attributes as the Keychain, and values go over stdin.
+  - It needs a session bus, so a headless server without one still has no store. Use a shared folder remote there.
+
+Store and check the pair without putting it on the command line:
+
+```sh
+python -m agentmesh_log.cli r2-credentials store --ref secret:org.agentmesh.r2
+python -m agentmesh_log.cli r2-credentials check --ref secret:org.agentmesh.r2
+```
+
 `broker run --sync-interval S` requires the same explicit remote flags; automatic
 synchronization is off by default. With an interval, the first attempt is immediate.
 Each S3 attempt rereads both Keychain items, allowing missing/refused credentials to
@@ -323,19 +344,19 @@ On a remote Mac, merge this device-only override into `settings.local.json`:
 }
 ```
 
-Windows uses `wincred:org.agentmesh.embed`. Endpoint and credential reference
+Windows uses `wincred:org.agentmesh.embed` and Linux `secret:org.agentmesh.embed`. Endpoint and credential reference
 must appear together and are accepted only in local settings, never synced
 settings. The settings endpoint is an HTTPS DNS origin without a path or port.
 Store Access credentials in the OS credential store, not JSON: macOS uses the
 referenced Keychain service with `client-id` and `client-secret` accounts. On
-Windows, the CLI prompts for them without putting values on the command line:
+Windows and Linux, the CLI prompts for them without putting values on the command line:
 
 ```sh
 python -m agentmesh_log.cli r2-credentials store --ref wincred:org.agentmesh.embed --kind access
 python -m agentmesh_log.cli r2-credentials check --ref wincred:org.agentmesh.embed --kind access
 ```
 
-These credential commands are Windows-only; `--kind` defaults to `s3`, so Access
+These credential commands work on Windows (`wincred:`) and Linux (`secret:`); on macOS use the Keychain; `--kind` defaults to `s3`, so Access
 credentials need `--kind access`. With hybrid configured, recall uses it unless
 the request specifies keyword mode:
 
@@ -448,6 +469,32 @@ or hybrid hit@5 beating both keyword and the tree by at least 2. Otherwise
 freeze hybrid (`semantic.mode: keyword`) and retire the host. Weigh this with
 cost: the tree's cost is navigator calls at query time plus `memory build`,
 while hybrid's cost is the always-on embedding host.
+
+### Agent recall rules
+
+`rules install` writes each agent's read-only recall instructions and the argv manifest they run, for the broker.
+It replaces memory-sync's `install_agent_rules.py`, which was removed with the SQLite mode, and writes the same bytes,
+so existing installs update in place.
+
+```sh
+python -m agentmesh_log.cli rules install --agent-key ~/.agentmesh/agents/recall.key --profile work --profile personal \
+  --python ~/.agentmesh/venv/bin/python [--agents claude codex] [--dry-run]
+```
+
+- **Targets:**
+  - Claude: `~/.claude/rules/agentmesh-shared-memory.md` and `agentmesh-shared-memory.command.json` beside it.
+  - OMP and Codex (shared): `~/.agents/skills/agentmesh-shared-memory/SKILL.md` and `command.json`.
+  - Hermes: `<--hermes-home or $HERMES_HOME or ~/.hermes>/skills/agentmesh-shared-memory/SKILL.md` and
+    `command.json`.
+- **The agent key:** use a recall agent with read grants only. Each `--profile` is searched as its own request, because
+  the recall agent has no cross-profile grant.
+- **What it keeps and refuses:**
+  - Only the block between `<!-- BEGIN AGENTMESH MANAGED v1 -->` and `<!-- END … -->` is AgentMesh's; text around it
+    is kept.
+  - It refuses a file, manifest or skill directory it did not create, symlinks, and ambiguous markers.
+  - It checks every target before writing anything, and leaves unchanged files untouched (mtime included).
+- **What it does not touch:** memory, credentials and the broker. `--dry-run` checks and lists the targets without
+  writing.
 
 ### Shared task state (team workspace W0)
 

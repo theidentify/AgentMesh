@@ -7,6 +7,10 @@ from urllib.parse import urlsplit
 from . import StorageError
 
 
+# keychain: macOS login keychain, wincred: Windows Credential Manager, secret: the Linux desktop Secret Service.
+REF=r'(?:keychain|wincred|secret):[A-Za-z0-9.-]+'
+
+
 # (account, maximum length, pattern). Cloudflare Access client secrets were 64 hex
 # characters; current ones are shorter URL-safe tokens (54 observed), so accept both.
 KINDS={
@@ -68,7 +72,7 @@ def _kind(kind):
 
 
 def validate_remote(credentials, endpoint):
-    if type(credentials) is not str or not re.fullmatch(r'(?:keychain|wincred):[A-Za-z0-9.-]+',credentials):
+    if type(credentials) is not str or not re.fullmatch(REF,credentials):
         raise ValueError('invalid S3 credentials reference')
     if type(endpoint) is not str or any(ord(c)<=32 or ord(c)==127 for c in endpoint):
         raise ValueError('invalid S3 endpoint')
@@ -106,14 +110,70 @@ def load_keychain_credentials(service, runner=subprocess.run, keychain=None, kin
 
 def load_credentials(ref, *, runner=subprocess.run, api=None, kind='s3'):
     label,_=_kind(kind)
-    if type(ref) is not str or not re.fullmatch(r'(?:keychain|wincred):[A-Za-z0-9.-]+',ref):
+    if type(ref) is not str or not re.fullmatch(REF,ref):
         raise StorageError(f'{label} credentials refused') from None
     backend,service=ref.split(':',1)
     if sys.platform=='darwin' and backend=='keychain':
         return load_keychain_credentials(service,runner=runner,kind=kind)
     if sys.platform=='win32' and backend=='wincred':
         return WindowsR2Credentials(api,kind=kind).load(service)
+    if sys.platform.startswith('linux') and backend=='secret':
+        return LinuxR2Credentials(**({} if runner is subprocess.run else {'runner':runner}),kind=kind).load(service)
     raise StorageError(f'{label} credentials refused') from None
+
+
+class LinuxR2Credentials:
+    """A key pair in the desktop Secret Service (GNOME Keyring, KWallet) through ``secret-tool``: attributes
+    ``service`` and ``account`` as on macOS, secrets over stdin, never argv. Needs a session bus, like the profile-log
+    key store on Linux; a headless server without one has no backend."""
+    def __init__(self,runner=subprocess.run,environ=None,tool=None,kind='s3'):
+        self.label,self.accounts=_kind(kind)
+        from ..oskeystore import LinuxSecretService
+        self.service=LinuxSecretService(tool=tool,runner=runner,environ=environ)
+
+    def _check(self,service):
+        if not sys.platform.startswith('linux') or type(service) is not str or not re.fullmatch('[A-Za-z0-9.-]+',service):
+            raise StorageError(f'{self.label} credentials refused') from None
+
+    def load(self,service):
+        self._check(service); reason=f'{self.label} credentials refused'
+        try:
+            values=[]
+            for account,size,pattern in self.accounts:
+                result=self.service._run(['lookup','service',service,'account',account])
+                value=result.stdout.rstrip('\r\n') if result.returncode==0 else ''
+                if not value:
+                    reason=f'{self.label} credentials missing'; break
+                if len(value)>size or not re.fullmatch(pattern,value): break
+                values.append(value)
+            else: return tuple(values)
+        except Exception: pass
+        raise StorageError(reason) from None
+
+    def store(self,service,access,secret):
+        self._check(service)
+        try:
+            values=check_values_for(self.accounts,(access,secret))
+            for (account,_,_),value in zip(self.accounts,values):
+                self.service._run(['store','--label','AgentMesh '+service+' '+account,'service',service,'account',account],value)
+            if self.load(service)==values: return
+        except Exception: pass
+        raise StorageError(f'{self.label} credentials refused') from None
+
+    def delete(self,service):
+        self._check(service)
+        try:
+            for account,_,_ in self.accounts: self.service._run(['clear','service',service,'account',account])
+            return
+        except Exception: pass
+        raise StorageError(f'{self.label} credentials refused') from None
+
+
+def check_values_for(accounts,values):
+    if len(values)!=len(accounts) or any(type(v) is not str or len(v)>size or not re.fullmatch(pattern,v)
+                                         for v,(_,size,pattern) in zip(values,accounts)):
+        raise StorageError('credentials refused') from None
+    return tuple(values)
 
 
 class WindowsR2Credentials:
@@ -176,9 +236,11 @@ class WindowsR2Credentials:
 
 def credentials_command(action,ref,*,getpass_fn=None,api=None,kind='s3'):
     label,_=_kind(kind)
-    if sys.platform!='win32' or type(ref) is not str or not re.fullmatch(r'wincred:[A-Za-z0-9.-]+',ref):
-        return {'ok':False,'status':'refused'}
-    backend=WindowsR2Credentials(api,kind=kind); service=ref.split(':',1)[1]; status='refused'
+    windows=sys.platform=='win32' and type(ref) is str and re.fullmatch(r'wincred:[A-Za-z0-9.-]+',ref)
+    linux=sys.platform.startswith('linux') and type(ref) is str and re.fullmatch(r'secret:[A-Za-z0-9.-]+',ref)
+    if not (windows or linux): return {'ok':False,'status':'refused'}
+    backend=WindowsR2Credentials(api,kind=kind) if windows else LinuxR2Credentials(kind=kind)
+    service=ref.split(':',1)[1]; status='refused'
     try:
         if action=='store':
             from getpass import getpass

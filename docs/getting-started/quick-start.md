@@ -1,150 +1,128 @@
 # Quick start
 
-::: info Profile log
-These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
-:::
+Create your AgentMesh account on a first device, grant an agent, remember and recall a test memory, then pair a
+second device and find the same memory there. Complete the [prerequisites](./prerequisites) first. The steps use a
+Mac; the [Windows](../install/windows) and [Linux](../install/linux) pages give the equivalents.
 
-Install from a supplied private bootstrap, check sync and run your first recall query. Complete the [prerequisites](./prerequisites) and have the group administrator assign an unused device identity first. You will verify the worker and, with a second device already in the group, test that a record reaches its destination.
+## Conventions
 
-## Choose your starting point
-
-- **Received a private bootstrap:** use the checklist below. The person administering the group supplies the files and identity assignment; these are not public release assets.
-- **Starting alone from GitHub:** use [New sync group](../install/new-group) for local ingestion and recall, then [invite a second device](../install/new-group#adding-another-device) if the group is eligible. After join completes, use the same A → B test below.
-
-::: info
-Output labels distinguish disposable macOS runs from examples derived from code. JSON blocks may show only the fields discussed; private values are redacted. Windows and OS-service behavior still needs verification on the target host.
-:::
-
-## Check, install and query
-
-1. Check Python from a terminal:
-
-   macOS/Linux:
-
-   ```sh
-   python3 -c "import sys,sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sys.version.split()[0]); print('FTS5: ok'); print('JSON:',c.execute(\"select json_valid('{}')\").fetchone()[0])"
-   ```
-
-   Windows Command Prompt:
-
-   ```bat
-   py -3 -c "import sys,sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print(sys.version.split()[0]); print('FTS5: ok'); print('JSON:',c.execute(\"select json_valid('{}')\").fetchone()[0])"
-   ```
-
-   Output (run on macOS)
-
-   `3.14.8`, `FTS5: ok`, `JSON: 1`, exit `0`. A traceback or a version below your route's minimum means stop and fix [Python setup](./prerequisites#install-and-check-python).
-
-2. In Syncthing, confirm the supplied private exchange folder is **Up to Date**, install with `--no-ingest` on [macOS](../install/macos), [Linux](../install/linux) or [Windows](../install/windows). Keep the foreground worker open for the checks below. Then [review roots and explicitly enable ingestion](../use/ingest#before-the-first-bootstrap-cycle); the flag does not disable sync or manual ingestion.
-3. Open a **second terminal** in the installed `app` directory and check the runtime:
-
-   macOS/Linux:
-
-   ```sh
-   python3 agentmesh.py inspect-install --runtime "/path/to/runtime.json"
-   ```
-
-   Windows Command Prompt:
-
-   ```bat
-   py -3 agentmesh.py inspect-install --runtime "C:\path\to\runtime.json"
-   ```
-
-   Output (run on macOS)
-
-   JSON with `status: ready`, exit `0`, and the configured database/exchange paths. `not_found` can also exit `0`; it is not success for this checklist. Copy the actual database path into the next command.
-
-4. Query local status:
-
-   macOS/Linux:
-
-   ```sh
-   python3 agentmesh.py --database "/path/to/memory.db" status
-   ```
-
-   Windows Command Prompt:
-
-   ```bat
-   py -3 agentmesh.py --database "C:\path\to\memory.db" status
-   ```
-
-   Output (run on macOS)
-
-   On an empty test database: zero counts and `outbox`, `pending`, `conflict`, `invalid`, `received` all `0`, exit `0`. Your bootstrap counts can differ. Nonzero conflict/invalid counts require review; zero counts do not prove peer delivery. See [status](../use/status).
-
-5. Try a read-only query:
-
-   macOS/Linux:
-
-   ```sh
-   python3 agentmesh.py --database "/path/to/memory.db" recall "amber orchard verification" --limit 1
-   ```
-
-   Windows Command Prompt:
-
-   ```bat
-   py -3 agentmesh.py --database "C:\path\to\memory.db" recall "amber orchard verification" --limit 1
-   ```
-
-   Output (run on macOS)
-
-   On an empty database: `results: []`, `evidence: []`, exit `0`. After the synthetic test record below was ingested, `results` contained its text with `source_type: event`; `evidence` was still empty. An empty query result is not an execution error. A database or invocation error must be fixed before continuing.
-
-6. [Connect your agents](../use/recall#connect-your-agents) after direct recall works. Verify the agent actually invokes the installed command; installing a rule does not guarantee it is loaded.
-
-## Prove a record travels from A to B
-
-Use two successfully bootstrapped or invitation-joined devices with different identities in the same group. Keep both Syncthing instances and workers available. On **A only**, create a private test directory outside the exchange and save this single line as `test.jsonl`, including a newline at the end:
-
-```json
-{"type":"message","id":"guide-check","message":{"role":"user","content":[{"type":"text","text":"The amber orchard verification record is synthetic."}]}}
-```
-
-This is synthetic OMP-format input, not command output. For a repeat test, create a new transcript file with a unique message ID and a fresh test phrase. Use that phrase in the recall query on B; do not overwrite the previously ingested test file. Do not ingest this transcript independently on B.
-
-From A's installed app directory:
-
-macOS/Linux:
+| Name | Meaning |
+| --- | --- |
+| `AM` | The AgentMesh home: `~/.agentmesh` (Windows: `%USERPROFILE%\.agentmesh`), or `AGENTMESH_HOME` if set |
+| `H` | The broker home inside it: `~/.agentmesh/profile-log` |
+| `agentmesh-log` | `PY -m agentmesh_log.cli`, where `PY` is the Python of the AgentMesh venv |
+| `REMOTE` | The four remote flags below, the same on every command that talks to the bucket |
 
 ```sh
-python3 agentmesh.py --database "/path/to/A-memory.db" ingest \
-  --root "omp=/absolute/path/to/test-transcripts" --project GuideCheck
+--s3-bucket BUCKET --s3-prefix v1/ --s3-endpoint https://ACCOUNT.r2.cloudflarestorage.com --s3-credentials keychain:org.agentmesh.profile-log.r2
 ```
 
-Windows Command Prompt:
+The credential reference names an entry in the OS credential store, never the credentials themselves. On Windows it
+is `wincred:NAME`.
 
-```bat
-py -3 agentmesh.py --database "C:\path\to\A-memory.db" ingest --root "omp=C:\absolute\path\to\test-transcripts" --project GuideCheck
-```
+## 1. Install the code
 
-Output (run on macOS)
+Follow [Install the code](../install/macos#install-the-code) and [Store the bucket
+credentials](../install/macos#store-the-bucket-credentials) on the macOS page, then come back here. Afterwards
+`agentmesh-log --help` lists the commands.
 
-First run, exit `0`: `found: 1`, `processed: 1`, `inserted: 1`, `errors: 0`. A repeated unchanged file is skipped. `errors > 0` exits `1` and needs investigation even if some records were inserted.
-
-Before watching B, confirm A reports `inserted: 1` and `errors: 0` for the new record. If `inserted` is zero, check the file, message ID, root and [ingestion cursor](../use/ingest#inspect-errors-and-cursors); waiting for sync cannot deliver a record that was not inserted.
-
-Allow A to complete a worker cycle, Syncthing to transfer the packet, and B to complete an import cycle. This takes processing and transfer time plus each worker's configured wait. Do not launch another worker over the running one. On B:
-
-macOS/Linux:
+## 2. Create the account
 
 ```sh
-python3 agentmesh.py --database "/path/to/B-memory.db" recall "amber orchard verification" --limit 1
+agentmesh-log broker init --home ~/.agentmesh/profile-log --profile personal --profile work --out /Volumes/USB/agentmesh-kit
 ```
 
-Windows Command Prompt:
+This creates the account, the two profiles and this device's keys, sealed with a key in the login Keychain. `--out`
+writes the three recovery shares as separate files into a new folder, which must be outside `~/.agentmesh`. Copy
+`~/.agentmesh/profile-log/replica/registry/account.json` next to them: recovery on a new device needs this trusted
+copy of the account record. Then store the shares in separate places.
 
-```bat
-py -3 agentmesh.py --database "C:\path\to\B-memory.db" recall "amber orchard verification" --limit 1
-```
+## 3. Declare scopes and an agent
 
-After two disposable bootstrap databases exchanged the packet locally, exit `0`:
-
-Output (run on macOS)
+Write `~/.agentmesh/settings.json` (owner-only, mode `0600`, in a `0700` folder):
 
 ```json
-{"results":[{"content":"The amber orchard verification record is synthetic.","project":"GuideCheck","source_agent":"omp","source_type":"event"}]}
+{
+  "$schema": "agentmesh-settings-v1",
+  "profiles": {
+    "personal": {"scopes": {"inbox": {"label": "internal"}}},
+    "work": {"scopes": {"common": {"label": "internal"}}}
+  },
+  "agents": {
+    "recall": {"read": ["personal", "work"], "write": ["personal/inbox"], "default_write": "personal/inbox"}
+  }
+}
 ```
 
-The local test verified record exchange, not your Syncthing connection. On your devices, finding that distinctive A-only record on B is the acceptance check. Empty results mean delivery/import/query verification is incomplete: inspect A's publication and B's pending/conflict/invalid counts. Do not delete the packet after testing.
+Preview and apply it:
 
-Next, [control the worker](../use/worker) to choose ongoing operation and handle failures.
+```sh
+agentmesh-log apply --dry-run
+agentmesh-log apply
+```
+
+Apply prints the complete change, asks you to confirm at the console because it widens access, then creates the
+scopes and the grant, and writes the agent's key file to `~/.agentmesh/agents/recall.key`. See [settings
+schema](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#settings-schema-v1) for every field.
+
+## 4. Run the broker and sync
+
+```sh
+agentmesh-log broker sync --home ~/.agentmesh/profile-log REMOTE
+agentmesh-log broker run --home ~/.agentmesh/profile-log --sync-interval 120 REMOTE
+```
+
+`broker sync` uploads the account and scope records once and exits `0`. `broker run` keeps the broker in the
+foreground and syncs every 120 seconds. Leave it running in this terminal for now;
+[Run in the background](../install/background-service) makes it permanent.
+
+## 5. Remember and recall
+
+In a second terminal, open a presence window, because each agent's first request needs you:
+
+```sh
+agentmesh-log presence open --home ~/.agentmesh/profile-log --class first_access
+agentmesh-log remember --agent-key ~/.agentmesh/agents/recall.key "The amber orchard check is a synthetic test memory."
+agentmesh-log recall "amber orchard" --agent-key ~/.agentmesh/agents/recall.key
+```
+
+`remember` writes into the agent's default scope, `personal/inbox`. `recall` returns JSON with the memory in
+`results` and its event ID. An empty `results` is not an error; it means nothing matched.
+
+## 6. Pair a second device
+
+On the second device, install the code and store the same bucket credentials. Then ask to join:
+
+```sh
+agentmesh-log join --home ~/.agentmesh/profile-log REMOTE
+```
+
+It prints a request ID and a QR code, and waits up to ten minutes. On the first device, approve it with exactly the
+scopes the new device should receive:
+
+```sh
+agentmesh-log pair approve REQUEST_ID --home ~/.agentmesh/profile-log REMOTE --scope personal --scope work
+```
+
+Check that the approver fingerprint matches on both screens, compare the six-digit codes, and type `yes` only if they
+match. A mismatch stops the pairing (`pairing_mismatch`) and grants nothing.
+
+Settings and agent keys are never synced. On the second device, write its own `settings.json` with the agents it
+needs, run `agentmesh-log apply`, then sync and recall:
+
+```sh
+agentmesh-log broker sync --home ~/.agentmesh/profile-log REMOTE
+agentmesh-log presence open --home ~/.agentmesh/profile-log --class first_access
+agentmesh-log recall "amber orchard" --agent-key ~/.agentmesh/agents/recall.key
+```
+
+Finding the memory written on the first device is the acceptance check. `agentmesh-log device list --home
+~/.agentmesh/profile-log` on either device shows both devices.
+
+## Next steps
+
+- [Run in the background](../install/background-service): the broker, the jobs and the supervisor.
+- [Ingest agent sessions](../use/ingest): turn your transcripts into memory.
+- [Connect your agents](../use/recall#connect-your-agents) so they recall by themselves.
+- Test the recovery kit with `agentmesh-log recovery test`; see [devices and
+  recovery](https://github.com/theidentify/AgentMesh/blob/main/profile-log/README.md#devices-and-recovery).

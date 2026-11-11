@@ -26,10 +26,18 @@ final class ApproveModel {
     func start() {
         guard !started else { return }
         started = true
-        Task { while true { await poll(popUp: true); try? await Task.sleep(nanoseconds: Self.pollSeconds * 1_000_000_000) } }
+        Task {
+            var failures = 0
+            while true {
+                failures = await poll(popUp: true) ? 0 : failures + 1
+                try? await Task.sleep(nanoseconds: connectorPollDelay(failures: failures, base: Self.pollSeconds) * 1_000_000_000)
+            }
+        }
     }
 
-    func poll(popUp: Bool) async {
+    /// false when the supervisor or the gateway refused, so the loop backs off.
+    @discardableResult
+    func poll(popUp: Bool) async -> Bool {
         let client = client
         let result = await Task.detached { () -> Result<ConnectorPending, ControlError> in
             do { return .success(try client.connectorPending()) }
@@ -39,7 +47,7 @@ final class ApproveModel {
         guard case .success(let pending) = result else {
             // Polling stays quiet: an unconfigured Mac or an offline gateway is not worth a window.
             if !popUp, case .failure(let failure) = result { error = describeConnector(failure) }
-            return
+            return false
         }
         nowMs = pending.nowMs ?? Int(Date().timeIntervalSince1970 * 1000)
         requests = pending.requests
@@ -47,6 +55,7 @@ final class ApproveModel {
         let fresh = newRequests(requests, seen: seen)
         seen.formUnion(requests.map(\.codeHash))
         if popUp, let newest = fresh.last { selected = newest.codeHash; approved = nil; show() }
+        return true
     }
 
     func show() {

@@ -4,10 +4,20 @@ export const hour=at=>new Date(at).toISOString().slice(0,13).replace(/[-T]/g,'')
 export function background(env,operation) {
  const task=Promise.resolve().then(operation).catch(()=>{});try{env.STATUS_WAIT_UNTIL?.(task);}catch{}
 }
+// Per isolate, per KV binding: errors since the last flush. A client stuck on a refusal must not cost one KV
+// write per request (the free tier allows 1,000 a day), so counts are flushed at most once a minute.
+export const ERROR_FLUSH_MS=60000;
+const errorBuffers=new WeakMap();
 export function countError(env,code) {
- if(!ERROR_CODES.includes(code))return;
- // Best-effort read-modify-write: concurrent increments can lose counts.
- background(env,async()=>{const key=`status:err:${hour(Date.now())}`,old=await env.OAUTH_KV.get(key,'json'),counts={};for(const c of ERROR_CODES)if(Number.isSafeInteger(old?.[c])&&old[c]>=0)counts[c]=old[c];counts[code]=(counts[code]??0)+1;await env.OAUTH_KV.put(key,JSON.stringify(counts),{expirationTtl:172800});});
+ if(!ERROR_CODES.includes(code)||!env.OAUTH_KV)return;
+ let buffer=errorBuffers.get(env.OAUTH_KV);
+ if(!buffer)errorBuffers.set(env.OAUTH_KV,buffer={counts:{},flushed:-Infinity});
+ buffer.counts[code]=(buffer.counts[code]??0)+1;
+ const at=Date.now();if(at-buffer.flushed<ERROR_FLUSH_MS)return;
+ const add=buffer.counts;buffer.counts={};buffer.flushed=at;
+ // Best-effort read-modify-write: concurrent isolates can lose counts, and counts still buffered when an isolate
+ // ends are never written.
+ background(env,async()=>{const key=`status:err:${hour(at)}`,old=await env.OAUTH_KV.get(key,'json'),counts={};for(const c of ERROR_CODES)if(Number.isSafeInteger(old?.[c])&&old[c]>=0)counts[c]=old[c];for(const [c,n]of Object.entries(add))counts[c]=(counts[c]??0)+n;await env.OAUTH_KV.put(key,JSON.stringify(counts),{expirationTtl:172800});});
 }
 export function bridgeSeen(env,device,latency) {
  background(env,()=>env.OAUTH_KV.put('status:bridge:'+(device??'unattributed'),JSON.stringify({device_id:device,last_seen_ms:Date.now(),latency_ms:latency}),{expirationTtl:604800}));

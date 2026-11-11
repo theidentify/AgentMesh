@@ -1,87 +1,99 @@
 # macOS
 
-::: info Profile log
-These steps set up the local database that ingestion uses. With packet sync off (the default since Phase 7a), the exchange folder carries no memory: devices share it through the [profile log](../getting-started/concepts#how-agentmesh-works). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
-:::
+Install AgentMesh on a Mac: the code and its venv, the bucket credentials in the login Keychain, and the broker. Then
+hand everything to the supervisor and the menu bar app. Complete the [prerequisites](../getting-started/prerequisites)
+first, and have a checkout of the repository.
 
-Install AgentMesh on macOS so this device can recall and exchange memory. Complete the [prerequisites](../getting-started/prerequisites) and obtain a private bootstrap first. You will have a local database and a foreground worker, ready for a status check.
+## Install the code
 
-::: info
-This installs the AgentMesh memory-sync application, not Hermes or other agents.
-:::
-
-## Before you begin
-
-Complete the [prerequisites](../getting-started/prerequisites) and wait for the private exchange folder to finish syncing.
-
-::: warning
-Install with `--no-ingest` to keep local transcript ingestion disabled while reviewing source ownership and roots. The supplied snapshot is still imported and synchronization starts. Without this flag, a fresh bootstrap enables default ingestion immediately, including with `--once`. Then [review roots and enable ingestion](../use/ingest#before-the-first-bootstrap-cycle).
-:::
-
-## Run the installer
-
-Open a terminal in the supplied private exchange folder containing `setup_macos.sh` and `bootstrap_windows.py`. Confirm the assigned device identity is unused before running the wrapper:
+A device runs a copy of `profile-log` taken from a known commit, not a live checkout, so pulling in the repository
+never changes what runs. From the repository root:
 
 ```sh
-sh setup_macos.sh --no-ingest "/absolute/path/to/exchange"
+mkdir -p ~/.agentmesh/app ~/.agentmesh/bin && chmod 700 ~/.agentmesh
+git archive --format=tar HEAD profile-log | tar -x -C ~/.agentmesh/app
+python3 -m venv ~/.agentmesh/venv
+~/.agentmesh/venv/bin/pip install -r ~/.agentmesh/app/profile-log/requirements.txt \
+  -r ~/.agentmesh/app/profile-log/requirements-s3.txt
 ```
 
-Output (example from code)
-
-Numbered checksum/import stages, a `Ready: local database installed; starting synchronization` message, then cycle JSON and a countdown. A checksum/validation error or `Sync needs attention` is not success; inspect the error and [status](../use/status). The foreground loop keeps the terminal occupied.
-
-An optional second argument selects the local installation directory. Keep it outside the exchange folder.
-
-## Use a different device identity
-
-The platform setup wrapper supplies `--node mac` by default; that device identity must be unused in this group. If another device already uses it, choose a different [device identity](../getting-started/concepts#device-identity) with the cross-platform Python installer from the supplied setup directory:
+Use the Python 3.11 or later that you checked in the prerequisites to create the venv. Put the copy on the venv's
+import path, so that every service started with this Python finds `agentmesh_log` without further setup:
 
 ```sh
-python3 bootstrap_windows.py --no-ingest --exchange "/absolute/path/to/exchange" \
-  --local-dir "/absolute/path/to/installation" --node windows
+SITE="$(~/.agentmesh/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+echo "$HOME/.agentmesh/app/profile-log" > "$SITE/agentmesh.pth"
 ```
 
-Output (example from code)
+Then add a small wrapper so that `agentmesh-log` runs the CLI. Save it as `~/.agentmesh/bin/agentmesh-log`:
 
-Verified local state followed by worker cycle reports, or a nonzero failure before successful setup. Despite its filename, `bootstrap_windows.py` is cross-platform. The example selects an alternative identity; confirm it is unused before proceeding. Keep that same selection for future bootstrap updates. After reviewing and enabling ingestion in `workflow.json`, omit `--no-ingest` on restart; repeating it disables ingestion again. The database filename follows the selected identity, so use the database path reported in `data/runtime.json` rather than assuming the platform default below.
+```sh
+#!/bin/sh
+exec "$HOME/.agentmesh/venv/bin/python" -m agentmesh_log.cli "$@"
+```
 
-The same [bootstrap size limits](../getting-started/prerequisites#check-the-supplied-files) apply on this platform. Fresh packages contain the CLI modules used in this guide and write `runtime.json` owner-only; older installations must [re-bootstrap once](./update-remove#update-a-bootstrap-installation) from an updated package.
+```sh
+chmod 700 ~/.agentmesh/bin/agentmesh-log
+export PATH="$HOME/.agentmesh/bin:$PATH"   # add this line to your shell profile too
+agentmesh-log --help
+```
 
-Treat the **whole installation root as private**. In addition to the database, it contains `app/baseline.jsonl.gz`, `app/bootstrap-manifest.json` and `data/baseline.jsonl`: the baseline contains memory and the manifest contains private snapshot metadata. Never share the installed `app` directory as a code bundle. Extracted files are now written owner-only before payload bytes are copied: mode `0600` on POSIX and private ACLs on Windows. Rerunning bootstrap replaces files and repairs older permissive permissions. Keep the whole root private; restricted permissions do not make `app` safe to share.
+`--help` lists the commands. Everything AgentMesh writes lives under `~/.agentmesh`. Set `AGENTMESH_HOME` to use
+another folder, for example a disposable one for testing.
+
+## Store the bucket credentials
+
+The broker reads the bucket's access key ID and secret from one login Keychain item per value, under a service name
+you choose. This guide uses `org.agentmesh.profile-log.r2`. Each command prompts for the value, so it never appears on
+the command line or in your shell history:
+
+```sh
+security add-generic-password -s org.agentmesh.profile-log.r2 -a access-key-id -w
+security add-generic-password -s org.agentmesh.profile-log.r2 -a secret-access-key -w
+```
+
+R2 access key IDs are 32 lowercase hex characters and secrets 64; the broker refuses anything else. The remote flags
+then refer to the item as `--s3-credentials keychain:org.agentmesh.profile-log.r2`. The broker never reads AWS
+environment variables or credential files.
+
+## Create the account or join it
+
+- **First device:** create the account and declare scopes and agents, as in [Quick
+  start](../getting-started/quick-start#_2-create-the-account).
+- **Another device:** pair it with a device that already holds the keys, as in [Pair a second
+  device](../getting-started/quick-start#_6-pair-a-second-device).
+
+The device keys are sealed in `~/.agentmesh/profile-log/keystore.sealed`, protected by a random key in the login
+Keychain under `agentmesh.profile-log`.
+
+## Run it in the background
+
+Write the broker's LaunchAgent, then move it and the scheduled jobs under the supervisor. [Run in the
+background](./background-service#macos) has the steps.
+
+## Install the menu bar app
+
+Build AgentMesh Control and the Touch ID helper the supervisor uses for protected changes:
+
+```sh
+control-app/bundle.sh
+```
+
+See [Menu bar app](../use/control-app) for what it shows and how to let it own the supervisor's login item.
 
 ## What gets installed
 
-| Item | Default path |
+| Item | Path |
 | --- | --- |
-| Application | `$HOME/Library/Application Support/AgentMesh/app` |
-| Local database | `$HOME/Library/Application Support/AgentMesh/data/mac.db` |
-| Runtime paths | `$HOME/Library/Application Support/AgentMesh/data/runtime.json` |
+| Code | `~/.agentmesh/app/profile-log` |
+| Python | `~/.agentmesh/venv` |
+| Settings | `~/.agentmesh/settings.json` (shared declarations), `settings.local.json` (this device only) |
+| Broker home | `~/.agentmesh/profile-log`: sealed keystore, encrypted replica, index snapshots, audit log, `sync-status.json` |
+| Agent key files | `~/.agentmesh/agents/<name>.key` |
+| Jobs | `~/.agentmesh/jobs`: job config, transcript cursors, summary state and metrics |
+| Supervisor | `~/.agentmesh/control`; status in `~/.agentmesh/status`; logs in `~/.agentmesh/logs` |
+| Menu bar app | `~/Applications/AgentMesh Control.app`, `~/.agentmesh/bin/agentmesh-presence` |
 
-The installer verifies the bootstrap and preserves an existing database with the matching device identity and sync group. Use the paths recorded in `data/runtime.json` if you chose another location.
+Keep `~/.agentmesh` owner-only (`0700`). Nothing under it belongs in Git or a support post.
 
-## The worker runs in the foreground
-
-::: warning
-The terminal stays occupied until you press Ctrl-C. Open a second terminal for status and recall checks. Stop this worker before enabling a background service to avoid duplicate workers.
-:::
-
-## Restart the worker later
-
-For the wrapper's default installation; if you selected a different identity or location, substitute the paths from `data/runtime.json`:
-
-```sh
-LOCAL="$HOME/Library/Application Support/AgentMesh"
-EXCHANGE="/absolute/path/to/exchange"
-PYTHON="$(command -v python3)"
-"$PYTHON" "$LOCAL/app/sync_worker.py" "$LOCAL/data/mac.db" "$EXCHANGE" --interval 60
-```
-
-Output (example from code)
-
-Cycle JSON on stdout and progress/countdown on stderr. Inspect `failure_kind` and `warning`; a running loop can still be reporting failures. With `--once`, a successful cycle exits `0`, while [transient (retryable exchange) or permanent (review required) failure](../use/worker#respond-to-failures-and-timeouts) exits `1`.
-
-Append `--once` to run one cycle and exit. These commands cover the basic setup; installations with signed sync enabled should use their configured managed worker.
-
-See the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md) for details.
-
-Next, [check sync status](../use/status) before relying on this worker.
+Next, [run it in the background](./background-service).

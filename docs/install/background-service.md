@@ -1,168 +1,194 @@
 # Run in the background
 
-::: info Profile log
-With packet sync off (the default since Phase 7a), the worker carries no packets; devices share memory through the [profile log](../getting-started/concepts#how-agentmesh-works). On a Mac managed by the AgentMesh supervisor, ingest, summary and catch-up run as supervisor jobs instead, shown in the [menu bar app](../use/control-app). Steps about packets, peers and the exchange folder apply only to [legacy packet sync](../getting-started/concepts#legacy-packet-sync).
-:::
+Keep the broker and the transcript jobs running without a terminal. Finish installing on [macOS](./macos),
+[Windows](./windows) or [Linux](./linux) and create or join the account first. You will have one background item, the
+AgentMesh supervisor, that runs everything else as its children.
 
-Keep AgentMesh running without a foreground terminal by configuring startup for your platform. Complete [installation](../getting-started/quick-start) and stop the existing worker first. You will have a service or sign-in launcher whose worker health you can verify separately.
+## What runs
 
-::: info
-These steps configure background operation for the AgentMesh memory-sync application. They do not install Hermes or other agents.
-:::
+| Unit | Kind | What it does |
+| --- | --- | --- |
+| `broker` | service | Answers agents and syncs the profile log (`broker run --sync-interval`) |
+| `ingest` | job | Reports what the next summary will read ([details](../use/ingest#the-two-jobs)) |
+| `summary` | job | Summarizes new transcript turns into memories, once a day and after a reboot |
+| `retention` | job | Your own retention job, on devices that have one; the supervisor only wraps it |
+| `bridge`, `insight`, tunnels | service | Optional: the AI-app bridge, the [Insight](../use/insight) dashboard and their tunnels |
 
-## Before you enable a service
+Each unit starts life as its own launchd plist (on a Mac) or scheduled task (on Windows). `agentmesh-log control
+consolidate --apply` then moves them under the **supervisor**, `org.agentmesh.control`, so the system lists one
+background item. The supervisor restarts a service that exits (doubling the wait after quick exits, up to 5 minutes),
+runs the jobs on their schedule through the job wrapper, and applies maintenance mode and the summary's daily quota.
 
-Stop the foreground worker with Ctrl-C first. Use the installed paths from `data/runtime.json`, and an absolute Python interpreter path available at login. The macOS and Linux service examples below are for unsigned sync and run from the supplied setup source directory. For an installation with signed sync required, use a service configuration that starts the [configured managed worker](../use/worker#use-managed-execution); these generated examples do not supply signing configuration. Their database filenames match the wrapper defaults; if you selected another device identity, use the database path from your runtime instead.
+## macOS
 
-The generator writes a private configuration file but does not register it. It refuses to overwrite an existing file. Inspect the interpreter, script, database, exchange, interval and log paths in the generated file, and ensure they match this installation before running the registration commands; stop an old service before explicitly removing its configuration to regenerate it.
+In plists, paths must be absolute: replace `HOME_DIR` below with your home folder's absolute path (`echo $HOME`).
 
-## Unlock a protected key before unattended startup
+### 1. The broker
 
-For signed sync with a passphrase-protected device key, [enable and verify OS unlock](./security#enable-unattended-os-unlock) under the account that runs the configured managed worker before enabling login startup. A service does not inherit an unlock from `wizard-resume`, and workers never ask for a passphrase. Without a working OS-unlock path they refuse before sync writes; there is no plaintext or unsigned fallback.
+Save this as `~/Library/LaunchAgents/org.agentmesh.profile-log.broker.plist`, with your bucket, endpoint and Keychain
+service:
 
-The supported backends are the logged-in macOS user’s login keychain and Windows Credential Manager for the task’s user. Linux has no OS-unlock backend. These are user-session mechanisms, not a guarantee of operation before login or after logout. OS-store access is attempted at most once per identity per worker process, including a refusal: fix account/store access and restart the worker. Disabling OS unlock does not clear keys already held by running processes; stop workers before changing policy. The macOS/Linux generated service examples below remain **unsigned** examples and do not configure signing or unlock.
-
-## macOS LaunchAgent
-
-Generate and validate the configuration:
-
-```sh
-LOCAL="$HOME/Library/Application Support/AgentMesh"
-EXCHANGE="/absolute/path/to/exchange"
-PYTHON="$(command -v python3)"
-PLIST="$HOME/Library/LaunchAgents/org.agentmesh.sync.plist"
-"$PYTHON" platform_service.py generate --platform macos --python "$PYTHON" \
-  --app-dir "$LOCAL/app" --database "$LOCAL/data/mac.db" --exchange "$EXCHANGE" \
-  --output "$PLIST" --interval 60
-plutil -lint "$PLIST"
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.agentmesh.profile-log.broker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>HOME_DIR/.agentmesh/venv/bin/python</string>
+    <string>-m</string><string>agentmesh_log.cli</string>
+    <string>broker</string><string>run</string>
+    <string>--home</string><string>HOME_DIR/.agentmesh/profile-log</string>
+    <string>--sync-interval</string><string>120</string>
+    <string>--s3-bucket</string><string>BUCKET</string>
+    <string>--s3-prefix</string><string>v1/</string>
+    <string>--s3-endpoint</string><string>https://ACCOUNT.r2.cloudflarestorage.com</string>
+    <string>--s3-credentials</string><string>keychain:org.agentmesh.profile-log.r2</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>HOME_DIR/.agentmesh/logs/broker.out.log</string>
+  <key>StandardErrorPath</key><string>HOME_DIR/.agentmesh/logs/broker.err.log</string>
+</dict>
+</plist>
 ```
 
-Output (run on macOS)
-
-The generator exits `0` with no stdout and `plutil` prints `/path/to/agentmesh.plist: OK`. A generator error (exit `2`) or failed lint is a stop condition. Lint checks syntax, not that the selected paths are correct.
-
-After inspecting it, load the service and check it:
+Keep this label: `connector approve` reads the broker home and the remote flags from this plist. The plist holds only
+the Keychain reference, never the credentials. Check it and load it:
 
 ```sh
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-launchctl print "gui/$(id -u)/org.agentmesh.sync"
+plutil -lint ~/Library/LaunchAgents/org.agentmesh.profile-log.broker.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.agentmesh.profile-log.broker.plist
+cat ~/.agentmesh/profile-log/sync-status.json
 ```
 
-Output (example from code)
+`sync-status.json` shows `"outcome": "ok"` after the first sync. See [Troubleshooting](../troubleshooting#sync-does-not-run)
+for the other outcomes.
 
-`print` should find the loaded service with the intended program arguments. An OS command failure or repeated failed cycles is not successful setup; inspect private logs and perform the A → B test.
+### 2. The transcript jobs
 
-The LaunchAgent runs at login/loading and restarts the worker. Private logs are `agentmesh.stdout.log` and `agentmesh.stderr.log` in the local `data` directory. To stop and unload it for the current login session, run the following command. To prevent it from loading at a later login, also move the plist out of the LaunchAgents directory after unloading it:
+Write the job config described in [Ingest agent sessions](../use/ingest#configuration) first. Each job runs through the
+job wrapper. For `ingest`, save `~/Library/LaunchAgents/org.agentmesh.ingest.plist` with:
+
+```xml
+<key>Label</key><string>org.agentmesh.ingest</string>
+<key>ProgramArguments</key>
+<array>
+  <string>HOME_DIR/.agentmesh/venv/bin/python</string>
+  <string>-m</string><string>agentmesh_log.control.jobrun</string>
+  <string>--name</string><string>ingest</string>
+  <string>--state-dir</string><string>HOME_DIR/.agentmesh/production-status</string>
+  <string>--</string>
+  <string>HOME_DIR/.agentmesh/venv/bin/python</string>
+  <string>-m</string><string>agentmesh_log.ingest</string><string>scan</string>
+</array>
+<key>StartInterval</key><integer>3600</integer>
+<key>RunAtLoad</key><true/>
+```
+
+with the same plist header, `ProcessType`, `Umask` and log keys as the broker. `org.agentmesh.summary` is the same with
+`--name summary` and `summary` in place of `scan`. Running the summary hourly is fine: it does its work once a day and
+after a reboot, and otherwise ends `scheduled` without calling the model. Add `--webhook-file FILE` before `--` to send
+failure and recovery alerts to a Discord webhook whose URL is in that file. Load both with `launchctl bootstrap` as
+above.
+
+### 3. The supervisor
+
+Write the supervisor's own plist and load it:
 
 ```sh
-launchctl bootout "gui/$(id -u)" "$PLIST"
+agentmesh-log control plist --out ~/Library/LaunchAgents/org.agentmesh.control.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.agentmesh.control.plist
+agentmesh-log control status
 ```
 
-Output (example from code)
-
-`bootout` unloads this exact service. Verify it is no longer loaded and no worker from it remains; a failed command does not establish that it stopped.
-
-### Name shown in Login Items
-
-macOS shows these Python-based agents as "python" in App Background Activity / Login Items. For agents using a virtual environment, preview the name change from the repository root, then apply it:
+Then move the other units under it. Read the plan first; it changes nothing:
 
 ```sh
-python3 memory-sync/mac_launch_name.py
-python3 memory-sync/mac_launch_name.py --apply
+agentmesh-log control consolidate
+agentmesh-log control consolidate --apply
 ```
 
-The helper adds an `AgentMesh` link next to each venv's Python interpreter and updates the plist to use it. It reloads only units launchd has loaded; unloaded units remain unloaded. Use `--no-reload` with `--apply` to update files only. Re-run the helper after re-rendering a plist. To switch back to the venv's `python`, run `python3 memory-sync/mac_launch_name.py --revert --apply`.
+`--apply` asks you to type `migrate`. For each unit it waits for a running job to finish, boots out the launchd job and
+parks its plist in `~/.agentmesh/control/units/`; the supervisor starts it within a second. A plist the supervisor
+cannot reproduce exactly stays with launchd and is listed as `skip`.
 
-## Linux systemd user service
+Finally, [install the menu bar app](../use/control-app#install-the-app). It can also [own the supervisor's login
+item](../use/control-app#let-agentmesh-control-own-the-background-item), so System Settings shows AgentMesh Control
+instead of a Python process.
 
-Generate and validate the unit:
+### Change, release or stop a unit
 
-```sh
-LOCAL="${XDG_DATA_HOME:-$HOME/.local/share}/AgentMesh"
-EXCHANGE="/absolute/path/to/exchange"
-PYTHON="$(command -v python3)"
-UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agentmesh.service"
-"$PYTHON" platform_service.py generate --platform linux --python "$PYTHON" \
-  --app-dir "$LOCAL/app" --database "$LOCAL/data/linux.db" --exchange "$EXCHANGE" \
-  --output "$UNIT" --interval 60
-systemd-analyze --user verify "$UNIT"
+| Task | Command |
+| --- | --- |
+| See every unit, its backend and health | `agentmesh-log control units` / `control status` |
+| Run a job now, or restart a service | `agentmesh-log control start UNIT` / `control restart UNIT` |
+| Stop a service until the next start | `agentmesh-log control stop UNIT` |
+| Pause all jobs | `agentmesh-log control maintenance on --reason "…"`, then `off` |
+| Change what a unit runs | Edit its plist in `~/.agentmesh/control/units/`, then `agentmesh-log control reload UNIT` |
+| Give one unit back to launchd | `agentmesh-log control release UNIT` |
+| Give every unit back without the supervisor | `agentmesh-log control panic-revert` |
+| Read recent supervisor actions | `agentmesh-log control audit` |
+
+Moving a service between launchd and the supervisor needs Touch ID or your Mac password, which the supervisor asks for
+with its own sheet. Logs stay at the paths each plist names; the supervisor's own are
+`~/.agentmesh/logs/control.{out,err}.log`.
+
+## Windows
+
+The Windows supervisor works the same way, over a named pipe, with Task Scheduler in place of launchd.
+
+1. **Create a task per unit** in Task Scheduler, running as your user only when you are logged on:
+   - `broker`: at log on, with **If the task fails, restart every 1 minute** set. The action runs the venv's
+     `python.exe` with `-m agentmesh_log.cli broker run --home %USERPROFILE%\.agentmesh\profile-log --sync-interval 120`
+     and the remote flags, using `--s3-credentials wincred:NAME`. Add `--log-dir` with an absolute folder: a task has no
+     standard output, so the broker then writes `broker.out.log` and `broker.err.log` there. Write the home as an absolute path: the supervisor
+     refuses an environment variable in a task's command.
+   - `ingest` and `summary`: repeating every few minutes, running `-m agentmesh_log.control.jobrun --name ingest
+     --state-dir ... -- PY -m agentmesh_log.ingest scan` (and `summary`).
+2. **Register the supervisor**, from PowerShell:
+
+   ```powershell
+   agentmesh-log control task --out "$env:USERPROFILE\.agentmesh\control-task.xml"
+   schtasks /Create /XML "$env:USERPROFILE\.agentmesh\control-task.xml" /TN "\AgentMesh\Control"
+   schtasks /Run /TN "\AgentMesh\Control"
+   ```
+
+3. **Consolidate**: `agentmesh-log control consolidate`, then `--apply`, typing `migrate`. A task registered from an
+   elevated window can be moved only from one; consolidate says `needs_elevation` and you re-run it elevated.
+
+Moves that need presence are refused over the pipe, because Windows has no Touch ID helper. Run `consolidate`,
+`release` and `panic-revert` in your own terminal.
+
+## Linux
+
+There is no supervisor on Linux yet (`control serve` answers `unsupported_platform`). Run the broker as a systemd user
+service:
+
+```ini
+# ~/.config/systemd/user/agentmesh-broker.service
+[Unit]
+Description=AgentMesh broker
+
+[Service]
+ExecStart=%h/.agentmesh/venv/bin/python -m agentmesh_log.cli broker run --home %h/.agentmesh/profile-log --sync-interval 120 --filesystem /absolute/path/to/shared
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
 ```
-
-Output (run on macOS)
-
-The generator exits `0` with no stdout and writes a unit with the selected `ExecStart` arguments.
-
-Output (example from code)
-
-The `systemd-analyze` step should verify the unit successfully. Errors require correction before enabling.
-
-After inspecting it, enable the service and view its status and logs:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now agentmesh.service
-systemctl --user status agentmesh.service
-journalctl --user -u agentmesh.service
+systemctl --user enable --now agentmesh-broker.service
+systemctl --user status agentmesh-broker.service
 ```
 
-Output (example from code)
+A user service runs while you are logged in, and needs your desktop session for the Secret Service. Run the transcript
+jobs from systemd timers or cron with the same job-wrapper commands as on a Mac.
 
-Status should identify the intended service as active and logs should show recurring successful cycles. A failed/inactive service or recurring cycle errors requires investigation. Registration alone is not a memory-delivery test.
-
-To stop and disable it:
-
-```sh
-systemctl --user disable --now agentmesh.service
-```
-
-Output (example from code)
-
-The service stops and is disabled for future startup. Check status again; a failed disable operation is not evidence of stopped execution.
-
-::: warning
-Linux-host service verification remains outstanding. This requires a working systemd user session and may stop on logout. This guide configures login-session operation only; no lingering is enabled. For SSH/headless operation that must survive logout, have the host administrator configure the user manager lifetime deliberately using the [systemd loginctl reference](https://github.com/systemd/systemd/blob/main/man/loginctl.xml), then test logout and reboot. Do not assume an active SSH session proves unattended operation.
-:::
-
-## Windows sign-in start
-
-First install the standalone Windows program for your existing database and runtime using the [Windows installation reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md). Bootstrap alone does not create the program installation records required by autostart. The standalone program bundle is a separate code distribution, not the private bootstrap ZIP; its source/download and installation remain operator procedures. Confirm all prior workers have stopped before enabling it.
-
-For an existing basic, unsigned installation, run this read-only preview from Command Prompt:
-
-```bat
-py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --enable --legacy-drained --dry-run
-```
-
-Output (example from code)
-
-JSON with `status: planned`, exit `0`, and no changes. An error blocks progress; a successful dry run does not execute the later stopped-worker precheck.
-
-After reviewing the preview, enable it interactively:
-
-```bat
-py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --enable --legacy-drained
-```
-
-Output (example from code)
-
-A confirmation prompt, then `status: enabled` and exit `0` after successful task registration. Cancel returns exit `2`; errors return `1`. This is not proof of a running worker.
-
-`--legacy-drained` explicitly acknowledges that prior legacy workers have stopped. For an installation with signed sync required, omit `--legacy-drained` from the enable command; missing managed-worker metadata needs a separate `--unmanaged-drained` acknowledgment after confirming source workers have exited. Follow the [startup prerequisites and confirmations](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/WINDOWS-INSTALLATION.md#opt-in-start-at-login) for your installation.
-
-Enabling schedules the installed program for the next matching user sign-in; it does not start a worker immediately. Disable the launcher with:
-
-```bat
-py -3 "%LOCALAPPDATA%\AgentMesh\app\agentmesh.py" windows-autostart --runtime "%LOCALAPPDATA%\AgentMesh\data\runtime.json" --disable
-```
-
-Output (example from code)
-
-After confirmation, `status: disabled`, exit `0`. Cancel/error is not successful removal of startup. Disabling does not stop an already running worker. These commands use the runtime to find the database, so `--database` is unnecessary.
-
-::: warning
-Actual Windows sign-in behavior remains a separate host-verification step. A scheduled task's state alone does not establish worker health; [check the worker](../use/status).
-:::
-
-For advanced configuration, including PostgreSQL mirroring, see the [setup reference](https://github.com/theidentify/AgentMesh/blob/main/memory-sync/README-SETUP.md).
-
-Next, [check sync status](../use/status) to verify that the worker completes cycles.
+Next, [ingest agent sessions](../use/ingest).

@@ -242,6 +242,21 @@ Keychain service contains accounts `access-key-id` (32 lowercase hex characters)
 arguments or service files. Ambient AWS environment variables and credential files
 are not used by the broker.
 
+The reference names the OS credential store:
+
+- macOS: `keychain:SERVICE`.
+- Windows: `wincred:SERVICE`, stored with `r2-credentials store`.
+- Linux: `secret:SERVICE`, the desktop Secret Service (GNOME Keyring or KWallet) through `secret-tool`.
+  - It has the same `service`/`account` attributes as the Keychain, and values go over stdin.
+  - It needs a session bus, so a headless server without one still has no store. Use a shared folder remote there.
+
+Store and check the pair without putting it on the command line:
+
+```sh
+python -m agentmesh_log.cli r2-credentials store --ref secret:org.agentmesh.r2
+python -m agentmesh_log.cli r2-credentials check --ref secret:org.agentmesh.r2
+```
+
 `broker run --sync-interval S` requires the same explicit remote flags; automatic
 synchronization is off by default. With an interval, the first attempt is immediate.
 Each S3 attempt rereads both Keychain items, allowing missing/refused credentials to
@@ -329,19 +344,19 @@ On a remote Mac, merge this device-only override into `settings.local.json`:
 }
 ```
 
-Windows uses `wincred:org.agentmesh.embed`. Endpoint and credential reference
+Windows uses `wincred:org.agentmesh.embed` and Linux `secret:org.agentmesh.embed`. Endpoint and credential reference
 must appear together and are accepted only in local settings, never synced
 settings. The settings endpoint is an HTTPS DNS origin without a path or port.
 Store Access credentials in the OS credential store, not JSON: macOS uses the
 referenced Keychain service with `client-id` and `client-secret` accounts. On
-Windows, the CLI prompts for them without putting values on the command line:
+Windows and Linux, the CLI prompts for them without putting values on the command line:
 
 ```sh
 python -m agentmesh_log.cli r2-credentials store --ref wincred:org.agentmesh.embed --kind access
 python -m agentmesh_log.cli r2-credentials check --ref wincred:org.agentmesh.embed --kind access
 ```
 
-These credential commands are Windows-only; `--kind` defaults to `s3`, so Access
+These credential commands work on Windows (`wincred:`) and Linux (`secret:`); on macOS use the Keychain; `--kind` defaults to `s3`, so Access
 credentials need `--kind access`. With hybrid configured, recall uses it unless
 the request specifies keyword mode:
 

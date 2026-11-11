@@ -76,7 +76,7 @@ def validate(value, *, local=False, project=False):
         if 'endpoint' in s or 'credentials' in s:
             check('endpoint' in s and 'credentials' in s)
             check(type(s['endpoint']) is str and bool(re.fullmatch(r'https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+', s['endpoint'])))
-            check(type(s['credentials']) is str and bool(re.fullmatch(r'(?:keychain|wincred):[A-Za-z0-9.-]+', s['credentials'])))
+            check(type(s['credentials']) is str and bool(re.fullmatch(r'(?:keychain|wincred|secret):[A-Za-z0-9.-]+', s['credentials'])))
         if 'mode' in s: check(s['mode'] in ('keyword', 'hybrid'))
         if 'model' in s: check(type(s['model']) is str and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', s['model'])) and '//' not in s['model'])
         if 'embed_labels' in s:

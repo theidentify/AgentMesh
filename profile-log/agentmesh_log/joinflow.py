@@ -38,9 +38,9 @@ def _remote_args(home):
 
 def _sync(home, store):
     from .broker.service import Broker
-    from .cli import remote_storage
+    from .cli import sync_remote
     broker = Broker(home, store=store)
-    try: return broker.sync_once(remote_storage(_remote_args(home)))
+    try: return broker.sync_once(sync_remote(_remote_args(home), store))
     finally: broker.close()
 
 
@@ -67,11 +67,12 @@ def _write_remote(home, token, folder, creds, ref):
     remote = token['remote']
     if remote['kind'] == 'filesystem':
         if folder is None: raise ValueError('invalid_request')   # this workspace syncs through a shared folder
-        value = {'filesystem': str(Path(folder).resolve()), 'layout': 'flat'}
+        value = {'filesystem': str(Path(folder).resolve()), 'layout': remote.get('layout', 'flat')}
     else:
         if creds is None: raise ValueError('denied')   # an S3 workspace must hand over a credential
         value = dict(s3_bucket=remote['bucket'], s3_prefix=remote['prefix'], s3_endpoint=remote['endpoint'], s3_credentials=ref,
-                     s3_credentials_kind=creds['kind'], s3_region=remote['region'], s3_path_style=remote['path_style'], layout='flat')
+                     s3_credentials_kind=creds['kind'], s3_region=remote['region'], s3_path_style=remote['path_style'],
+                     layout=remote.get('layout', 'flat'))
     atomic_write(Path(home.root) / 'remote.json', json.dumps(value, sort_keys=True).encode('utf-8'))
 
 

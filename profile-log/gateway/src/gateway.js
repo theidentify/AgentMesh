@@ -19,6 +19,8 @@ export const schemas={
  remember:z.object({body:z.string().refine(s=>bytes(s).length<=32768),tags:z.array(z.string().max(256)).max(100).optional(),task:z.string().max(2048).nullable().optional(),label:z.enum(['general','internal','secret']).nullable().optional()}).strict(),
 };
 const fixed=new Set(['denied','invalid_request','unavailable','agentmesh_offline','rate_limited','presence_required','wrong_device']);
+// Must equal [[ratelimits]] RATE_LIMITER simple.limit (per 60 s) in wrangler.toml.
+export const BINDING_RATE_PER_MINUTE=60;
 export async function claim(env,key) {return !!await env.STORAGE.put(`connectors/gateway-state/${key}`,bytes('{}'),{onlyIf:{etagDoesNotMatch:'*'}});}
 export async function signingKey(env) {return crypto.subtle.importKey('pkcs8',Buffer.from(env.GATEWAY_SIGNING_KEY,'base64'),'Ed25519',false,['sign']);}
 export async function tunnel(env,app,tool,args,fetcher=fetch) {
@@ -74,9 +76,13 @@ async function invokeTool(env,auth,tool,args,fetcher) {
  const app=auth.props.app_id,p=await policy(env,app);
  if(!p||p.state!=='active'||p.oauth_client_id_hash!==await sha(bytes(auth.clientId)))return {error:'denied'};
  if(!(await env.RATE_LIMITER.limit({key:app})).success)return {error:'rate_limited'};
- const counter=`rate:${app}:${Math.floor(Date.now()/60000)}`,count=Number(await env.OAUTH_KV.get(counter)??0);
- if(!Number.isSafeInteger(count)||count<0||count>=p.limits.requests_per_minute)return {error:'rate_limited'};
- await env.OAUTH_KV.put(counter,String(count+1),{expirationTtl:120});
+ // RATE_LIMITER already caps every app at BINDING_RATE_PER_MINUTE, so the KV counter (one KV write per tool call, against
+ // a 1,000-writes/day free tier) is kept only for an app whose signed policy is stricter than that.
+ if(p.limits.requests_per_minute<BINDING_RATE_PER_MINUTE){
+  const counter=`rate:${app}:${Math.floor(Date.now()/60000)}`,count=Number(await env.OAUTH_KV.get(counter)??0);
+  if(!Number.isSafeInteger(count)||count<0||count>=p.limits.requests_per_minute)return {error:'rate_limited'};
+  await env.OAUTH_KV.put(counter,String(count+1),{expirationTtl:120});
+ }
  if(tool==='whoami'){const w=await secretWindow(env,app);return {app_id:app,display_name:auth.props.display_name,read:p.read,remember:p.remember,max_label:w?'secret':p.max_label,secret_window:!!w};}
  if(tool==='recall'){
   if(/^[0-9a-f]{32}$/.test(args.profile)&&!p.read.some(e=>e.profile===args.profile))return {error:'denied'};

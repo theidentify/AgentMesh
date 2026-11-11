@@ -45,6 +45,7 @@ def parser():
         cmd.add_argument('--s3-prefix',default=''); cmd.add_argument('--s3-endpoint'); cmd.add_argument('--s3-credentials')
         cmd.add_argument('--s3-credentials-kind',choices=('s3','s3-aws','s3-generic'),help='key format (default s3: R2)')
         cmd.add_argument('--s3-region'); cmd.add_argument('--s3-path-style',action='store_true',help='path-style addressing (MinIO)')
+        cmd.add_argument('--layout',choices=('flat','per-home'),help="per-home: this home writes only homes/<device>/ (workspace remotes)")
     init=admin.add_parser('init'); home(init); init.add_argument('--profile',action='append',required=True)
     scope=admin.add_parser('scope'); scope_sub=scope.add_subparsers(dest='scope_action',required=True)
     add=scope_sub.add_parser('add'); home(add); add.add_argument('scope'); add.add_argument('--label',choices=list(Label.__members__),default='general')
@@ -244,7 +245,14 @@ def remote_storage(args, *, filesystem_factory=None):
     return None
 
 
-REMOTE_FIELDS=('filesystem','s3_bucket','s3_prefix','s3_endpoint','s3_credentials','s3_credentials_kind','s3_region','s3_path_style')
+REMOTE_FIELDS=('filesystem','s3_bucket','s3_prefix','s3_endpoint','s3_credentials','s3_credentials_kind','s3_region','s3_path_style','layout')
+
+
+def sync_remote(args,store):
+    """The remote a home syncs with: per-home layouts write only ``homes/<this device>/`` and read every area."""
+    from .storage.areas import wrap
+    layout=getattr(args,'layout',None)
+    return wrap(remote_storage(args),layout,store.load().device.device_id if layout=='per-home' else None)
 
 
 def home_remote(args,home):
@@ -253,7 +261,7 @@ def home_remote(args,home):
     if getattr(args,'filesystem',None) or getattr(args,'s3_bucket',None) or getattr(home,'root',None) is None: return args
     try: value=json.loads((Path(home.root)/'remote.json').read_text(encoding='utf-8'))
     except FileNotFoundError: return args
-    if type(value) is not dict or not set(value)<=set(REMOTE_FIELDS)|{'layout'}: raise ValueError('invalid remote.json')
+    if type(value) is not dict or not set(value)<=set(REMOTE_FIELDS): raise ValueError('invalid remote.json')
     for key in REMOTE_FIELDS:
         if key in value: setattr(args,key,value[key])
     if getattr(args,'s3_prefix',None) is None: args.s3_prefix=''
@@ -369,9 +377,12 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             from .storage.r2creds import validate_remote
             from .storage import validate_key
             validate_remote(args.s3_credentials,args.s3_endpoint); validate_key(args.s3_prefix,prefix=True)
-            def remote(): return remote_storage(args)
+            def remote(): return sync_remote(args,store)
             remote.backend='s3'
-        else: remote=remote_storage(args)
+        elif getattr(args,'layout',None)=='per-home' and args.filesystem:
+            def remote(): return sync_remote(args,store)   # per attempt, so each attempt reads the area heads again
+            remote.backend='filesystem'
+        else: remote=sync_remote(args,store)
         if args.sync_interval is not None and (remote is None or not math.isfinite(args.sync_interval) or args.sync_interval<=0):
             raise ValueError('invalid_request')
         def on_sync(row):
@@ -417,7 +428,7 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             state.revoke(args.agent_id); store.save(state); return {'ok':True}
         if args.action=='sync':
             broker=Broker(home,store=store)
-            try: return broker.sync_once(remote_storage(args))
+            try: return broker.sync_once(sync_remote(args,store))
             finally: broker.close()
     raise ValueError('invalid_request')
 
@@ -809,6 +820,7 @@ def execute_invite(args,home,store,presence,local,state,console,profile_id,curre
             remote_=joinlink.remote_of(store_)
             if getattr(args,'s3_credentials_kind',None) and remote_['kind']=='s3': remote_['credentials_kind']=args.s3_credentials_kind
             if getattr(args,'s3_path_style',False) and remote_['kind']=='s3': remote_['path_style']=True
+            if getattr(args,'layout',None)=='per-home': remote_['layout']='per-home'   # every joiner must write its own area
             token=invites.token_v2(base,federation.account_record(owner,root),remote_,channels,slot,args.label)
             text=invites.encode_link(token)
         workspace.publish(local,entry)

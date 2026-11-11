@@ -112,14 +112,26 @@ test('P6-2 Worker independently refuses missing PKCE before pending state',async
  assert.equal([...h.env.OAUTH_KV.data.keys()].filter(k=>k.startsWith('pending:')).length,0);
 });
 
-test('P6-8 policy counter uses bounded expiring KV and zero R2 writes',async()=>{
+test('P6-8 default policy rate costs no KV or R2 writes; a stricter policy uses a bounded expiring counter',async()=>{
  const h=await harness(),a=await approved(h),auth={props:{app_id:a.p.app_id},clientId:a.client};
  let writes=0;const put=h.env.STORAGE.put.bind(h.env.STORAGE);h.env.STORAGE.put=async(...args)=>{writes++;return put(...args);};
+ const kvPut=h.env.OAUTH_KV.put.bind(h.env.OAUTH_KV);let kvRate=0;
+ h.env.OAUTH_KV.put=async(key,...rest)=>{if(key.startsWith('rate:'))kvRate++;return kvPut(key,...rest);};
+ // requests_per_minute 60 equals the RATE_LIMITER binding: the binding alone limits it
  for(let i=0;i<4;i++)assert.equal((await callTool(h.env,auth,'whoami',{})).app_id,a.p.app_id);
- assert.equal(writes,0);
+ assert.equal(writes,0);assert.equal(kvRate,0);
+ await writePolicy(h,a.client,{...a.p,issued_at:Date.now()+1,limits:{recall_limit_max:3,requests_per_minute:10}});await new Promise(r=>setTimeout(r,5));
+ writes=0;
+ for(let i=0;i<4;i++)assert.equal((await callTool(h.env,auth,'whoami',{})).app_id,a.p.app_id);
+ assert.equal(writes,0);assert.equal(kvRate,4);
  const counters=[...h.env.OAUTH_KV.data].filter(([key])=>key.startsWith('rate:'));
  assert.equal(counters.length,1);assert.equal(counters[0][1].value,'4');
  assert.ok(counters[0][1].expires<=Date.now()+120000);
+});
+test('the binding limit constant matches wrangler.toml',async()=>{
+ const {readFile}=await import('node:fs/promises');const {BINDING_RATE_PER_MINUTE}=await import('../src/gateway.js');
+ const toml=await readFile(new URL('../wrangler.toml.example',import.meta.url),'utf8');
+ assert.match(toml,new RegExp(`name = "RATE_LIMITER"[\\s\\S]*?simple = \\{ limit = ${BINDING_RATE_PER_MINUTE}, period = 60 \\}`));
 });
 
 test('deploy approval CSP allows only self and the validated redirect origin',async()=>{

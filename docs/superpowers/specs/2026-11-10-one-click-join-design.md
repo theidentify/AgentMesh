@@ -170,7 +170,7 @@ Today every writer puts objects at shared paths (`events/<profile>/<scope>/<id>.
 <prefix>/homes/<device_id>/events/<profile>/<scope>/<id>.json
 <prefix>/homes/<device_id>/keys/…
 <prefix>/homes/<device_id>/registry/…
-<prefix>/homes/<device_id>/head.json        # small, rewritten each upload: object count and newest key
+<prefix>/homes/<device_id>/head.json        # random generation, rewritten after each upload (the only mutable object)
 <prefix>/join/req/<slot>, join/ans/<slot>   # written by the admin side, see "Join channels"
 ```
 
@@ -180,18 +180,45 @@ unchanged. The local replica keeps its current flat layout: the remote adapter m
 
 ### Sync
 
-- **Upload:** only to this home's area, only objects this home authored. Objects received from
-  others are never re-uploaded.
-- **Download:** the union of every known home's area. Objects are immutable and verified by
-  signature exactly as today, so the order and the source do not matter. An object whose author
-  device differs from the area it came from is refused. Only author `D` may appear under
-  `homes/D/`.
-- **Known homes** come from the workspace registry: every device certificate of an account with a
-  role, as the reader sees it. A removed member's area is still read for events dated before the
-  removal, as the existing verification rules already require.
-- **Cost:** a full sync is one `GET head.json` per home, plus a listing only of the areas whose head
-  changed. The existing sync cost measurements (`tests/broker/measure_sync_cost.py`) are rerun for
-  N = 5, 20 and 50 homes before J1b ships.
+- **Upload:** only to this home's area. A key found in any area counts as present, so objects
+  received from others are never uploaded again.
+- **Download:** the union of every area. Objects are immutable and verified by signature exactly as
+  today, so the order and the source do not matter.
+- **No author-area check (changed while implementing, 2026-11-11).** The draft also refused an
+  object whose author differs from its area. Two things decided against it:
+  - **One-click join breaks it.** The admin's device uploads a joiner's request records, such as
+    its device certificate and invite use. The joiner has no credential at that point. Those
+    records then sit in the admin's area, and the joiner never re-uploads them.
+  - **The check adds no trust.** A copy elsewhere is the same signed object, so readers already
+    verify it as in the flat layout.
+
+  What the layout must give is that a credential cannot delete or overwrite another home's
+  objects, and that holds.
+- **Known homes** are the `homes/` folders of the remote, found with one delimiter listing (S3
+  `Delimiter='/'`, or the folder's sub-directories) at each listing. A new member's area is read as
+  soon as it exists. A removed member's area stays readable, and the existing verification rules
+  decide which of its events still count.
+- **Cost and `head.json`.** Listing every area on every listing grew with the number of homes:
+  408 LIST requests per sync at 50 homes, about USD 79 per device per 30 days on R2. So each home
+  rewrites `homes/<device>/head.json` with a random generation after every upload. Filesystem
+  storage allows that one mutable object, like heartbeat slots.
+  - **At the start of each sync attempt**, a reader finds the areas with one folder listing and
+    reads every head with a GET (Class B).
+  - **It re-lists only areas whose generation changed**, plus areas with no head. Every other
+    listing is answered from the last one, including a shorter prefix answering a longer one.
+  - **One wrapper per device and remote** lives for the whole process, so `broker run`'s
+    per-attempt S3 client keeps the cache.
+  - **Measured** with `tests/broker/measure_per_home_cost.py` (30,000 events, one new event, 60 s
+    polling):
+
+    | Homes | LIST/cycle | GET/cycle | USD/30 days per device (Class A+B) |
+    |---:|---:|---:|---:|
+    | flat | 8 | 1 | 1.57 |
+    | 1 | 9 | 3 | 1.80 |
+    | 5 | 9 | 7 | 1.86 |
+    | 20 | 9 | 22 | 2.09 |
+    | 50 | 9 | 52 | 2.56 |
+
 - **Maintenance:** compaction or pruning, where any exists, touches only the home's own area.
 
 ### What it fixes
@@ -200,12 +227,11 @@ unchanged. The local replica keeps its current flat layout: the remote adapter m
 |---|---|---|
 | A member deletes others' objects | possible wherever the credential is bucket-wide | impossible: write covers only its own area |
 | Removing a member | revoke credential; their old objects stay unless someone deletes them | revoke credential; their area stays read-only for everyone |
-| Who wrote this object | signature only | signature, and the area must match |
+| Who wrote this object | signature only | signature only (the area is not a proof) |
 | R2 | needs a bucket per workspace and still allows DoS between members | a bucket per home in a dedicated account; no DoS between members |
 
 `folder` remotes use the same layout, but nothing enforces it: anyone who can write the folder can
-write any area. Readers still refuse objects in the wrong area, so mixing them up is detected, not
-prevented.
+write any area, as with the filesystem backend today.
 
 ### Scope
 
@@ -397,8 +423,9 @@ apply. `secret` content is never shown in the client.
 - **A member can still fill or wipe their own area.** Deleting their own objects hides them from
   members who have not synced yet, but cannot touch anyone else's. Quotas already cap event counts.
   Object versioning, where the provider has it, keeps deleted objects recoverable.
-- **Sync cost grows with the number of homes.** It is one head read per home per sync. The cost
-  measurement in J1b decides the default sync interval for large workspaces.
+- **Sync cost grows a little with the number of homes:** one head GET per home per sync (USD 2.56
+  per device per 30 days at 50 homes, against 1.57 flat). An area without a head, written by an
+  older client, is listed on every sync.
 - **The issuer credential is powerful.** On Cloudflare it can mint any token in its account. On AWS
   and MinIO it can be limited to one path, but it still creates credentials. A stolen admin device
   with an unlocked OS store can use it. That is why it is loaded only after a passkey, the provider
@@ -415,7 +442,7 @@ apply. `secret` content is never shown in the client.
 | Phase | Content |
 |---|---|
 | **J1** | Token v2 and link encoding; `remote.json`; request and answer objects; `storage`, `folder` and `file` channels; `manual` and `none` issuers; per-provider credential kinds in `r2creds.py`; `invite accept --request`; the CLI `workspace join-link` (one command, resumable, writes `joins.json`). Usable on Windows today. |
-| **J1b** | Per-home storage: the remote adapter's area mapping, union download, the area-matches-author check, `head.json`, and the sync cost measurement for 5, 20 and 50 homes. The `manual` issuer follows the area rule from here on. |
+| **J1b** | Per-home storage: the remote adapter's area mapping (`storage/areas.py`), union download, folder discovery, `--layout per-home` in remote flags, `remote.json` and links. Per-home `head.json` generations and a listing cache, measured at 1, 5, 20 and 50 homes. Done 2026-11-11. R2 bucket-per-home areas come with the `cloudflare-r2` issuer (J2). |
 | **J2** | Issuer interface with `cloudflare-r2`, `aws-iam` and `minio`, each verified against the provider first; signed credential records; removal revokes; invite signer and kill switch. |
 | **J3** | Supervisor: one broker unit per workspace home, the `workspace.*` ops, notifications. Broker units done 2026-11-11 (`control/workspaces.py`): ready homes under `ws/` become native service units `ws-<id8>`, found at start and every 60 s, and retired when their home is gone. Still open: the `workspace.*` ops and notifications, which the web client (J4) needs. |
 | **J4** | Local web client: serving, session, `localhost` passkeys, the screens above; `agentmesh://` handlers (`CFBundleURLTypes` on macOS, `HKCU\Software\Classes` on Windows); the `lan` channel over the existing pairing flow. |

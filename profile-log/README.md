@@ -716,6 +716,16 @@ python -m agentmesh_log.cli workspace invite reject --home A --profile work --re
   markers is never overwritten.
 - **Syncing afterwards.** `broker sync --home H` and `broker run --home H` read `remote.json` when no
   remote flags are given.
+- **Per-home storage.** Pass `--layout per-home` with the remote flags when you create the workspace's link, and
+  on every `broker sync` / `broker run` of the admin's own home (or put `"layout": "per-home"` in its `remote.json`).
+  - Each home then writes only `homes/<its device>/` and reads every home's folder, so a member's credential needs
+    write access to its own folder only and cannot delete anyone else's objects.
+  - The layout travels in the link to `remote.json`, so `broker sync --home H` keeps using it.
+  - The admin's device uploads a joiner's request records, so a new member's folder appears with its first write.
+  - Objects stay signed and verified as before; where a copy lies proves nothing.
+  - Each home rewrites a small `homes/<device>/head.json` (a random generation) after every upload. Readers fetch
+    the heads and re-list only the homes that changed. At 50 homes a sync makes 9 LIST requests (8 flat) plus one GET
+    per home (`tests/broker/measure_per_home_cost.py`).
 - **Supervisor.** Once a home's join is `ready`, the supervisor (`control serve`) runs its broker as a native service
   unit, `ws-<id8>`: `broker run --home ~/.agentmesh/ws/<id8> --sync-interval 120`.
   - The remote comes from the home's `remote.json`, so no bucket or credential appears in the unit.
@@ -723,8 +733,11 @@ python -m agentmesh_log.cli workspace invite reject --home A --profile work --re
   - The supervisor scans `ws/` at start and once a minute, so a finished join gets its broker within a minute.
   - A removed home's unit is stopped and taken off the native backend.
   - Logs go to `~/.agentmesh/logs/ws-<id8>.{out,err}.log`.
-- **Not yet.** The `lan` channel, issuers that create credentials themselves (Cloudflare, AWS IAM,
-  MinIO), per-home storage areas, and the local web client come in later phases.
+- **Not yet.**
+  - The `lan` channel.
+  - Issuers that create credentials themselves (Cloudflare, AWS IAM, MinIO), including R2 bucket-per-home areas.
+  - The `workspace.*` control ops and notifications.
+  - The local web client.
 
 ### Contributor inboxes (W3)
 

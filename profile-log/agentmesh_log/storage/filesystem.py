@@ -83,8 +83,8 @@ class FilesystemStorage:
             try:
                 with os.fdopen(fd, 'wb') as stream:
                     stream.write(data); stream.flush(); os.fsync(stream.fileno())
-                if re.fullmatch(r'registry/heartbeats/[0-9a-f]{32}\.json',key):
-                    # Only sealed heartbeat slots are mutable; all log objects stay immutable.
+                if re.fullmatch(r'(?:registry/heartbeats/[0-9a-f]{32}|homes/[0-9a-f]{32}/head)\.json',key):
+                    # Only sealed heartbeat slots and per-home area heads are mutable; all log objects stay immutable.
                     if isinstance(parent,int):
                         try: info=os.stat(name,dir_fd=parent,follow_symlinks=False)
                         except FileNotFoundError: pass

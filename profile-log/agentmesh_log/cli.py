@@ -379,6 +379,9 @@ def execute(args,*,backend=None,console=None,input_fn=None):
             validate_remote(args.s3_credentials,args.s3_endpoint); validate_key(args.s3_prefix,prefix=True)
             def remote(): return sync_remote(args,store)
             remote.backend='s3'
+        elif getattr(args,'layout',None)=='per-home' and args.filesystem:
+            def remote(): return sync_remote(args,store)   # per attempt, so each attempt reads the area heads again
+            remote.backend='filesystem'
         else: remote=sync_remote(args,store)
         if args.sync_interval is not None and (remote is None or not math.isfinite(args.sync_interval) or args.sync_interval<=0):
             raise ValueError('invalid_request')

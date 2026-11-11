@@ -723,10 +723,12 @@ python -m agentmesh_log.cli workspace invite reject --home A --profile work --re
   - The layout travels in the link to `remote.json`, so `broker sync --home H` keeps using it.
   - The admin's device uploads a joiner's request records, so a new member's folder appears with its first write.
   - Objects stay signed and verified as before; where a copy lies proves nothing.
+  - Each home rewrites a small `homes/<device>/head.json` (a random generation) after every upload. Readers fetch
+    the heads and re-list only the homes that changed. At 50 homes a sync makes 9 LIST requests (8 flat) plus one GET
+    per home (`tests/broker/measure_per_home_cost.py`).
 - **Not yet.**
   - The `lan` channel.
   - Issuers that create credentials themselves (Cloudflare, AWS IAM, MinIO), including R2 bucket-per-home areas.
-  - The sync cost measurement for many homes.
   - A broker unit per workspace home.
   - The local web client.
 

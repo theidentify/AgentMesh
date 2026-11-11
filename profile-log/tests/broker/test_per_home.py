@@ -16,8 +16,9 @@ def test_area_storage(tmp_path):
     base = FilesystemStorage(tmp_path / 'r')
     a, b = AreaStorage(base, 'aa' * 16), AreaStorage(base, 'bb' * 16)
     a.put('events/x/1.json', b'1'); b.put('events/x/2.json', b'2'); b.put('events/x/1.json', b'1')
-    assert sorted(base.list('')) == ['homes/' + 'aa' * 16 + '/events/x/1.json', 'homes/' + 'bb' * 16 + '/events/x/1.json',
-                                     'homes/' + 'bb' * 16 + '/events/x/2.json']
+    assert sorted(k for k in base.list('') if not k.endswith('/head.json')) == [
+        'homes/' + 'aa' * 16 + '/events/x/1.json', 'homes/' + 'bb' * 16 + '/events/x/1.json', 'homes/' + 'bb' * 16 + '/events/x/2.json']
+    assert {k for k in base.list('') if k.endswith('/head.json')} == {f'homes/{d}/head.json' for d in ('aa' * 16, 'bb' * 16)}
     assert list(a.list('events/')) == ['events/x/1.json', 'events/x/2.json']   # union, no duplicates
     assert list(a.list('events/', start_after='events/x/1.json')) == ['events/x/2.json']
     assert a.get('events/x/2.json') == b'2' and a.get('events/x/1.json') == b'1'
@@ -96,3 +97,21 @@ def test_s3_folders():
     store = S3Storage('bucket', prefix='ws', client=Client())
     assert store.folders('homes/') == ['aa' * 16, 'bb' * 16]
     assert calls == [dict(Bucket='bucket', Prefix='ws/homes/', Delimiter='/')]
+
+
+def test_heads_skip_unchanged(tmp_path):
+    """Areas whose head did not change are answered from the last listing; a changed head or no head means a listing."""
+    from tests.broker.test_replica_sync_cost import CountingStorage
+    base = CountingStorage(tmp_path / 'r')
+    writer, other = AreaStorage(base, 'bb' * 16), AreaStorage(base, 'cc' * 16)
+    writer.put('events/x/1.json', b'1'); other.put('events/x/9.json', b'9')
+    reader = AreaStorage(base, 'aa' * 16)
+    assert list(reader.list('events/')) == ['events/x/1.json', 'events/x/9.json']
+    base.reset(); reader.refreshed = None   # a new sync attempt, nothing changed
+    assert list(reader.list('events/')) == ['events/x/1.json', 'events/x/9.json']
+    assert base.lists == []   # every area answered from cache: no LIST at all
+    writer.put('events/x/2.json', b'2')   # bumps the writer's head
+    base.reset(); reader.refreshed = None
+    assert list(reader.list('events/')) == ['events/x/1.json', 'events/x/2.json', 'events/x/9.json']
+    assert [p for p, _, _ in base.lists] == ['homes/' + 'bb' * 16 + '/events/']   # only the changed area
+    with pytest.raises(Exception): writer.put('head.json', b'{}')   # reserved

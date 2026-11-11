@@ -193,7 +193,7 @@ def test_storage_channel(tmp_path, monkeypatch):
     ((ref, (values, kind)),) = stored.items()
     assert ref.endswith('org.agentmesh.ws-' + base['workspace'][:8]) and values == ('AKIA' + 'A'*16, 'b'*40) and kind == 's3-aws'
     saved = json.loads((erin/'remote.json').read_text())
-    assert saved['s3_credentials'] == ref and saved['s3_bucket'] == 'team-ws' and 'secret' not in json.dumps(saved).replace('s3_credentials', '')
+    assert saved['s3_credentials'] == ref and saved['s3_bucket'] == 'team-ws' and 'b' * 40 not in json.dumps(saved) and 'AKIA' not in json.dumps(saved)   # only the reference, never the pair
 
 
 def test_presign_offline():

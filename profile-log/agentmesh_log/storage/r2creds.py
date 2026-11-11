@@ -52,18 +52,20 @@ def store_keychain_credentials(service, values, runner=subprocess.run, keychain=
 
 
 def store_credentials(ref, values, *, runner=subprocess.run, api=None, kind='s3'):
-    """Store a key pair under ``ref`` (``keychain:`` on macOS, ``wincred:`` on Windows)."""
+    """Store a key pair under ``ref`` (``keychain:`` on macOS, ``wincred:`` on Windows, ``secret:`` on Linux)."""
     label,_=_kind(kind)
-    if type(ref) is not str or not re.fullmatch(r'(?:keychain|wincred):[A-Za-z0-9.-]+',ref):
+    if type(ref) is not str or not re.fullmatch(REF,ref):
         raise StorageError(f'{label} credentials refused') from None
     backend,service=ref.split(':',1)
     if sys.platform=='darwin' and backend=='keychain': return store_keychain_credentials(service,values,runner=runner,kind=kind)
     if sys.platform=='win32' and backend=='wincred': return WindowsR2Credentials(api,kind=kind).store(service,*check_values(kind,values))
+    if sys.platform.startswith('linux') and backend=='secret':
+        return LinuxR2Credentials(**({} if runner is subprocess.run else {'runner':runner}),kind=kind).store(service,*check_values(kind,values))
     raise StorageError(f'{label} credentials refused') from None
 
 
 def default_ref(service):
-    return ('wincred:' if sys.platform=='win32' else 'keychain:')+service
+    return ('wincred:' if sys.platform=='win32' else 'secret:' if sys.platform.startswith('linux') else 'keychain:')+service
 
 
 def _kind(kind):
